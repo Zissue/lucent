@@ -88,7 +88,8 @@ for (const [path, source] of generatedFiles) {
       if (readFileSync(path, "utf8") !== source) {
         staleFiles.push(path);
       }
-    } catch {
+    } catch (cause) {
+      console.error(`Failed to read generated polyfills at ${path}:`, cause);
       staleFiles.push(path);
     }
     continue;

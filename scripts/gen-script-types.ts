@@ -1654,7 +1654,7 @@ if (
 ) {
   main(parseCliOptions(process.argv.slice(2), DEFAULT_REPO_ROOT)).catch(
     (error) => {
-      console.error(error instanceof Error ? error.message : String(error));
+      console.error(error);
       process.exitCode = 1;
     },
   );

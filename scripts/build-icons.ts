@@ -30,8 +30,8 @@ const DEV_ICON_SOURCE = join(
 const SRGB_PROFILE_PATH = "/System/Library/ColorSync/Profiles/sRGB Profile.icc";
 
 class BuildIconsError extends Error {
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
     this.name = "BuildIconsError";
   }
 }
@@ -88,6 +88,7 @@ const run = (
       reject(
         new BuildIconsError(
           `${formatCommand(command, args)} failed to start: ${cause.message}`,
+          { cause },
         ),
       );
     });
@@ -195,7 +196,6 @@ const buildIcons = async (): Promise<void> => {
 };
 
 buildIcons().catch((cause) => {
-  const message = cause instanceof Error ? cause.message : String(cause);
-  console.error(`Icon build failed: ${message}`);
+  console.error("Icon build failed:", cause);
   process.exitCode = 1;
 });

@@ -15,6 +15,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Cause from "effect/Cause";
 import * as Console from "effect/Console";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
@@ -223,7 +224,7 @@ const signalProcessGroup = (
       }),
   }).pipe(
     Effect.catch((error) =>
-      Console.error(error.message).pipe(Effect.as(false)),
+      Console.error(Cause.pretty(Cause.fail(error))).pipe(Effect.as(false)),
     ),
   );
 
@@ -316,7 +317,8 @@ const stopChildProcess = (label: string, child: ChildProcessHandle) =>
       }),
       Effect.catch((cause) =>
         Console.error(
-          `[dev-runner] failed to stop ${label}: ${String(cause)}`,
+          `[dev-runner] failed to stop ${label}:`,
+          Cause.pretty(Cause.fail(cause)),
         ).pipe(Effect.as(false)),
       ),
     );
@@ -336,7 +338,8 @@ const stopChildProcess = (label: string, child: ChildProcessHandle) =>
       }),
       Effect.catch((cause) =>
         Console.error(
-          `[dev-runner] failed to force kill ${label}: ${String(cause)}`,
+          `[dev-runner] failed to force kill ${label}:`,
+          Cause.pretty(Cause.fail(cause)),
         ),
       ),
     );
@@ -404,7 +407,16 @@ const stopChild = (label: string, child: ChildProcessHandle) =>
 const installTerminationCleanup = (
   cleanup: Effect.Effect<void, unknown>,
 ): Effect.Effect<void, never, Scope.Scope> =>
-  Effect.addFinalizer(() => cleanup.pipe(Effect.catch(() => Effect.void)));
+  Effect.addFinalizer(() =>
+    cleanup.pipe(
+      Effect.catch((cause) =>
+        Console.error(
+          "[dev-runner] cleanup failed:",
+          Cause.pretty(Cause.fail(cause)),
+        ),
+      ),
+    ),
+  );
 
 const readDevProcessLease = (): DevProcessLease | null => {
   try {

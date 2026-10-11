@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
+import * as Cause from "effect/Cause";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import { createHighlighter, type ShikiTransformer } from "shiki";
@@ -3977,9 +3978,7 @@ if (
   main(options).pipe(
     Effect.catch((error) =>
       Effect.gen(function* () {
-        yield* Console.error(
-          error instanceof Error ? error.message : String(error),
-        );
+        yield* Console.error(Cause.pretty(Cause.fail(error)));
         yield* Effect.sync(() => {
           process.exitCode = 1;
         });

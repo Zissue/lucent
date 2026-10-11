@@ -11,8 +11,8 @@ const BUILD_PLATFORMS = ["mac", "win", "linux", "all"] as const;
 type BuildPlatform = (typeof BUILD_PLATFORMS)[number];
 
 class BuildDesktopArtifactError extends Error {
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
     this.name = "BuildDesktopArtifactError";
   }
 }
@@ -46,6 +46,7 @@ const run = (
       reject(
         new BuildDesktopArtifactError(
           `${formatCommand(command, args)} failed to start: ${cause.message}`,
+          { cause },
         ),
       );
     });
@@ -169,7 +170,6 @@ const main = async (): Promise<void> => {
 };
 
 main().catch((cause) => {
-  const message = cause instanceof Error ? cause.message : String(cause);
-  console.error(`Desktop artifact build failed: ${message}`);
+  console.error("Desktop artifact build failed:", cause);
   process.exitCode = 1;
 });

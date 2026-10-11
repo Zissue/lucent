@@ -45,9 +45,12 @@ function runChecked(command, args) {
     return;
   }
 
-  const details = [result.stdout, result.stderr].filter(Boolean).join("\n");
+  const details = [result.error?.message, result.stdout, result.stderr]
+    .filter(Boolean)
+    .join("\n");
   throw new Error(
     `Failed to run ${command} ${args.join(" ")}: ${details}`.trim(),
+    { cause: result.error },
   );
 }
 
@@ -74,11 +77,16 @@ function setPlistString(plistPath, key, value) {
     return;
   }
 
-  const details = [replaceResult.stderr, insertResult.stderr]
+  const details = [
+    insertResult.error?.message,
+    replaceResult.stderr,
+    insertResult.stderr,
+  ]
     .filter(Boolean)
     .join("\n");
   throw new Error(
     `Failed to update plist key "${key}" at ${plistPath}: ${details}`.trim(),
+    { cause: insertResult.error },
   );
 }
 
