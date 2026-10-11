@@ -9,13 +9,13 @@
   <p>
     <a href="https://uselucent.vercel.app">Website</a> ·
     <a href="https://github.com/toommyliu/lucent/releases/latest#assets">Download</a> ·
-    <a href="https://uselucent.vercel.app/guides">Documentation</a>
+    <a href="https://uselucent.vercel.app/docs">Documentation</a>
   </p>
 </div>
 
 > [!NOTE]
 > Lucent currently requires a compatible Pepper Flash plugin. Follow the
-> [installation guide](https://uselucent.vercel.app/guides/installation) before
+> [installation guide](https://uselucent.vercel.app/docs/installation) before
 > opening the app.
 
 ## Disclaimer

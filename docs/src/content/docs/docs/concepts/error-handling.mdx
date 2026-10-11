@@ -57,11 +57,9 @@ JavaScript's `try`/`catch` does not catch errors from actions run with `yield*`.
 
 You can also write the same call with `.pipe()`:
 
+{/* prettier-ignore */}
 ```js
-yield *
-  filesystem
-    .writeText("notes.txt", "Run complete.")
-    .pipe(
-      Effect.catch((error) => script.log("Could not save the note:", error)),
-    );
+yield* filesystem.writeText("notes.txt", "Run complete.").pipe(
+  Effect.catch((error) => script.log("Could not save the note:", error)),
+);
 ```
