@@ -29,7 +29,7 @@ import {
   ScriptRelativePathSchema,
 } from "@lucent/core/scriptPackages";
 import { DesktopEnvironment } from "../app/DesktopEnvironment";
-import { makeListenerRegistry } from "../app/ListenerRegistry";
+import { makeListenerRegistry, type Listener } from "../app/ListenerRegistry";
 import { ElectronApp } from "../electron/ElectronApp";
 import {
   hashDirectory,
@@ -168,7 +168,7 @@ export interface ScriptPackageCatalogShape {
     request: ScriptCatalogPageRequest,
   ) => Effect.Effect<ScriptCatalogPage, ScriptPackageCatalogError>;
   readonly onChanged: (
-    listener: (change: ScriptCatalogChange) => void,
+    listener: Listener<ScriptCatalogChange>,
   ) => Effect.Effect<() => void>;
   readonly referenceForPath: (
     path: string,

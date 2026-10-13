@@ -250,7 +250,9 @@ describe("CombatProfiles", () => {
       Effect.gen(function* () {
         const { combatProfiles, path } = yield* makeHarness();
         const changes: CombatProfileLibrary[] = [];
-        yield* combatProfiles.onChanged((library) => changes.push(library));
+        yield* combatProfiles.onChanged((library) => {
+          changes.push(library);
+        });
         yield* Effect.promise(() =>
           writeFile(
             path,
@@ -304,7 +306,9 @@ describe("CombatProfiles", () => {
         }));
         const initial = yield* combatProfiles.load;
         const changes: CombatProfileLibrary[] = [];
-        yield* combatProfiles.onChanged((library) => changes.push(library));
+        yield* combatProfiles.onChanged((library) => {
+          changes.push(library);
+        });
         blockRead = true;
         const loading = yield* combatProfiles.load.pipe(Effect.forkScoped);
         yield* Deferred.await(readStarted);

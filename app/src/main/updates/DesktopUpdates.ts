@@ -14,7 +14,7 @@ import {
   type UpdateReleaseCache,
 } from "../../shared/updates";
 import { DesktopEnvironment } from "../app/DesktopEnvironment";
-import { makeListenerRegistry } from "../app/ListenerRegistry";
+import { makeListenerRegistry, type Listener } from "../app/ListenerRegistry";
 import { ElectronApp } from "../electron/ElectronApp";
 import { ElectronShell } from "../electron/ElectronShell";
 import {
@@ -61,7 +61,7 @@ export interface DesktopUpdatesShape {
   }) => Effect.Effect<UpdateCheckState>;
   readonly getState: Effect.Effect<UpdateCheckState>;
   readonly onStateChanged: (
-    listener: (state: UpdateCheckState) => void,
+    listener: Listener<UpdateCheckState>,
   ) => Effect.Effect<() => void>;
   readonly openReleasePage: Effect.Effect<boolean>;
   readonly shouldPromptForAvailableRelease: (

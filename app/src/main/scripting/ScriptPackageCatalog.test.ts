@@ -487,7 +487,9 @@ describe("ScriptPackageCatalog", () => {
           ),
         );
         const revisions: string[] = [];
-        yield* catalog.onChanged((change) => revisions.push(change.revision));
+        yield* catalog.onChanged((change) => {
+          revisions.push(change.revision);
+        });
 
         const refreshing = yield* catalog.refresh.pipe(
           Effect.provideService(References.MaxOpsBeforeYield, maxOps),

@@ -257,22 +257,18 @@ export const installEventForwarding = Effect.fn(
   const ipc = yield* DesktopIpc;
   const catalog = yield* ScriptPackageCatalog;
   const windows = yield* DesktopWindows;
-  const context = yield* Effect.context<never>();
-  const runPromise = Effect.runPromiseWith(context);
 
   yield* Effect.acquireRelease(
-    catalog.onChanged((change) => {
-      void runPromise(
-        Effect.gen(function* () {
-          const rendererIds = yield* windows.getRendererIds("game");
-          yield* ipc.sendToRendererIds(
-            rendererIds,
-            ScriptingIpc.catalogChanged,
-            change,
-          );
-        }),
-      );
-    }),
+    catalog.onChanged((change) =>
+      Effect.gen(function* () {
+        const rendererIds = yield* windows.getRendererIds("game");
+        yield* ipc.sendToRendererIds(
+          rendererIds,
+          ScriptingIpc.catalogChanged,
+          change,
+        );
+      }),
+    ),
     (unsubscribe) => Effect.sync(unsubscribe),
   );
 });

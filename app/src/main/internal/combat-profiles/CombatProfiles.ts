@@ -17,7 +17,10 @@ import {
   type CombatProfileLibrary,
 } from "@lucent/core/combatProfiles";
 import { DesktopEnvironment } from "../../app/DesktopEnvironment";
-import { makeListenerRegistry } from "../../app/ListenerRegistry";
+import {
+  makeListenerRegistry,
+  type Listener,
+} from "../../app/ListenerRegistry";
 import { FileSystem } from "effect/FileSystem";
 import { type JsonFileError, makeJsonFile } from "../../filesystem/JsonFile";
 
@@ -52,7 +55,7 @@ export interface CombatProfilesShape {
   readonly get: Effect.Effect<CombatProfileLibrary, CombatProfilesError>;
   readonly load: Effect.Effect<CombatProfileLibrary, CombatProfilesError>;
   readonly onChanged: (
-    listener: (library: CombatProfileLibrary) => void,
+    listener: Listener<CombatProfileLibrary>,
   ) => Effect.Effect<() => void>;
   readonly saveProfile: (
     profile: CombatProfile,

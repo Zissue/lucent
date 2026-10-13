@@ -23,7 +23,10 @@ import {
   type ManagedAccountPatch,
   type RecentlyClosedGameSession,
 } from "@lucent/core/accounts";
-import { makeListenerRegistry } from "../../app/ListenerRegistry";
+import {
+  makeListenerRegistry,
+  type Listener,
+} from "../../app/ListenerRegistry";
 import {
   AccountGameWindows,
   type AccountGameWindowEvent,
@@ -84,7 +87,7 @@ export interface AccountsShape {
   ) => Effect.Effect<AccountLaunchResult, AccountsError>;
   readonly load: Effect.Effect<AccountManagerState, AccountsError>;
   readonly onChanged: (
-    listener: (state: AccountManagerState) => void,
+    listener: Listener<AccountManagerState>,
   ) => Effect.Effect<() => void>;
   readonly refreshServers: Effect.Effect<
     AccountGameServersResult,

@@ -1,7 +1,9 @@
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 
-type Listener<Value> = (value: Value) => void | Effect.Effect<void, unknown>;
+export type Listener<Value> = (
+  value: Value,
+) => void | Effect.Effect<void, unknown>;
 
 export interface ListenerRegistry<Value> {
   readonly publish: (

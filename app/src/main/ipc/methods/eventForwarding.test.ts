@@ -1,6 +1,8 @@
 import { describe, expect, it } from "@effect/vitest";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import type * as Scope from "effect/Scope";
 
 import type { AccountManagerState } from "@lucent/core/accounts";
@@ -177,6 +179,38 @@ describe("IPC event forwarding", () => {
             ]),
             "later listener",
           ]);
+        }),
+    );
+
+    it.effect(
+      `logs ${forwarding.name} delivery failures without failing the publisher`,
+      () =>
+        Effect.gen(function* () {
+          const delivered: string[] = [];
+          const failures: unknown[] = [];
+          const failure = new Error("renderer send failed");
+          yield* forwarding
+            .publish(
+              () => {
+                throw failure;
+              },
+              () => {
+                delivered.push("later listener");
+              },
+            )
+            .pipe(
+              Effect.provide(
+                Logger.layer([
+                  Logger.make((options) => {
+                    if (options.logLevel === "Error") {
+                      failures.push(Cause.squash(options.cause));
+                    }
+                  }),
+                ]),
+              ),
+            );
+          expect(delivered).toEqual(["later listener"]);
+          expect(failures).toEqual([failure]);
         }),
     );
   }
