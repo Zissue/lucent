@@ -45,13 +45,11 @@ export const installEventForwarding = Effect.fn(
 )(function* () {
   const combatProfiles = yield* CombatProfiles;
   const ipc = yield* DesktopIpc;
-  const context = yield* Effect.context<never>();
-  const runPromise = Effect.runPromiseWith(context);
 
   yield* Effect.acquireRelease(
-    combatProfiles.onChanged((library) => {
-      void runPromise(ipc.sendToAll(CombatProfilesIpc.changed, library));
-    }),
+    combatProfiles.onChanged((library) =>
+      ipc.sendToAll(CombatProfilesIpc.changed, library),
+    ),
     (unsubscribe) => Effect.sync(unsubscribe),
   );
 });

@@ -31,7 +31,7 @@ import {
   type SettingsCommandId,
 } from "@lucent/core/hotkeys";
 import { DesktopEnvironment } from "../app/DesktopEnvironment";
-import { makeListenerRegistry } from "../app/ListenerRegistry";
+import { makeListenerRegistry, type Listener } from "../app/ListenerRegistry";
 import { FileSystem } from "effect/FileSystem";
 import { type JsonFileError, makeJsonFile } from "../filesystem/JsonFile";
 
@@ -62,7 +62,7 @@ export interface DesktopSettingsShape {
   readonly get: Effect.Effect<AppSettings, DesktopSettingsError>;
   readonly load: Effect.Effect<AppSettings, DesktopSettingsError>;
   readonly onChanged: (
-    listener: (settings: AppSettings) => void,
+    listener: Listener<AppSettings>,
   ) => Effect.Effect<() => void>;
   readonly resetAppearance: Effect.Effect<AppSettings, DesktopSettingsError>;
   readonly resetHotkeys: Effect.Effect<AppSettings, DesktopSettingsError>;
