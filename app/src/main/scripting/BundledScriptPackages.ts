@@ -2,6 +2,7 @@ import { randomBytes } from "crypto";
 import { promises as fs, type Stats } from "fs";
 import { join } from "path";
 
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
@@ -146,10 +147,12 @@ export const initializeBundledScriptPackages = Effect.gen(function* () {
             if (await pathExists(path)) await fs.rm(path, { recursive: true });
           }).pipe(
             Effect.catch((cause) =>
-              Effect.logWarning({
-                message: "Failed to clean bundled package staging.",
-                cause,
-              }),
+              Effect.logWarning(
+                "Failed to clean bundled package staging.",
+                Cause.fail(cause),
+              ).pipe(
+                Effect.annotateLogs({ component: "bundled-script-packages" }),
+              ),
             ),
           );
 
@@ -231,11 +234,15 @@ export const initializeBundledScriptPackages = Effect.gen(function* () {
         for (const pending of history.pending) {
           yield* recover(pending).pipe(
             Effect.catch((cause) =>
-              Effect.logWarning({
-                message: "Failed to finish bundled package setup.",
-                packageName: pending.managed.name,
-                cause,
-              }),
+              Effect.logWarning(
+                "Failed to finish bundled package setup.",
+                Cause.fail(cause),
+              ).pipe(
+                Effect.annotateLogs({
+                  component: "bundled-script-packages",
+                  data: { packageName: pending.managed.name },
+                }),
+              ),
             ),
           );
         }
@@ -343,12 +350,15 @@ export const initializeBundledScriptPackages = Effect.gen(function* () {
             if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
             yield* install(entry.name).pipe(
               Effect.catch((cause) =>
-                Effect.logWarning({
-                  message:
-                    "Failed to install a bundled script package; setup will retry on the next launch.",
-                  directory: entry.name,
-                  cause,
-                }),
+                Effect.logWarning(
+                  "Failed to install a bundled script package; setup will retry on the next launch.",
+                  Cause.fail(cause),
+                ).pipe(
+                  Effect.annotateLogs({
+                    component: "bundled-script-packages",
+                    data: { directory: entry.name },
+                  }),
+                ),
               ),
             );
           }
@@ -360,19 +370,20 @@ export const initializeBundledScriptPackages = Effect.gen(function* () {
         ? Effect.void
         : Effect.tryPromise(release).pipe(
             Effect.catch((cause) =>
-              Effect.logWarning({
-                message: "Failed to release bundled package setup lock.",
-                cause,
-              }),
+              Effect.logWarning(
+                "Failed to release bundled package setup lock.",
+                Cause.fail(cause),
+              ).pipe(
+                Effect.annotateLogs({ component: "bundled-script-packages" }),
+              ),
             ),
           ),
   );
 }).pipe(
   Effect.catch((cause) =>
-    Effect.logWarning({
-      message:
-        "Bundled package setup could not finish. Existing packages have been left alone.",
-      cause,
-    }),
+    Effect.logWarning(
+      "Bundled package setup could not finish. Existing packages have been left alone.",
+      Cause.fail(cause),
+    ).pipe(Effect.annotateLogs({ component: "bundled-script-packages" })),
   ),
 );

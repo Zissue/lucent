@@ -1,5 +1,6 @@
-import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+
+import { logFailure } from "./observability/logFailure";
 
 export type Listener<Value> = (
   value: Value,
@@ -30,9 +31,7 @@ export const makeListenerRegistry = <Value>(
           return Effect.isEffect(result) ? result : Effect.void;
         }).pipe(
           Effect.catchCause((cause) =>
-            Cause.hasInterruptsOnly(cause)
-              ? Effect.void
-              : Effect.logError("Event listener failed", cause),
+            logFailure("Event listener failed", cause, { failure: "error" }),
           ),
         ),
       { concurrency, discard: true },

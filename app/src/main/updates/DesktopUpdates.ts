@@ -1,6 +1,7 @@
 import { join } from "path";
 
 import * as Context from "effect/Context";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -543,10 +544,8 @@ export const layer = Layer.effect(
             : null,
         ),
         Effect.catch((cause) =>
-          Effect.logWarning("Failed to load release cache")
-            .pipe(
-              Effect.annotateLogs({ component: "updates", data: { cause } }),
-            )
+          Effect.logWarning("Failed to load release cache", Cause.fail(cause))
+            .pipe(Effect.annotateLogs({ component: "updates" }))
             .pipe(Effect.as(null)),
         ),
       );
@@ -554,12 +553,12 @@ export const layer = Layer.effect(
     const saveCache: DesktopUpdatesOptions["saveCache"] = (cache) =>
       jsonFile.write(releaseCachePath, serializeUpdateReleaseCache(cache)).pipe(
         Effect.catch((cause) =>
-          Effect.logWarning("Failed to save release cache").pipe(
+          Effect.logWarning(
+            "Failed to save release cache",
+            Cause.fail(cause),
+          ).pipe(
             Effect.annotateLogs({
               component: "updates",
-              data: {
-                cause,
-              },
             }),
           ),
         ),

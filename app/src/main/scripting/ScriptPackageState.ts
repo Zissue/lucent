@@ -1,6 +1,7 @@
 import { join } from "path";
 
 import * as Context from "effect/Context";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -171,11 +172,10 @@ export const layer = Layer.effect(
       }),
     );
     if (initial.status === "failed") {
-      yield* Effect.logWarning({
-        message:
-          "Failed to load script package state; local packages remain available as unmanaged and package mutations are disabled.",
-        cause: initial.error,
-      });
+      yield* Effect.logWarning(
+        "Failed to load script package state; local packages remain available as unmanaged and package mutations are disabled.",
+        Cause.fail(initial.error),
+      ).pipe(Effect.annotateLogs({ component: "script-package-state" }));
     }
     const stateRef = yield* SynchronizedRef.make(initial);
 

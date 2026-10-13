@@ -166,13 +166,7 @@ const startRelay = Effect.gen(function* () {
       resume(Effect.succeed(`ws://${RELAY_HOST}:${address.port}/${token}`));
     });
   });
-}).pipe(
-  Effect.tapError((error) =>
-    Effect.logError(error.message, Cause.fail(error.cause)).pipe(
-      Effect.annotateLogs({ component: "ruffle-socket-relay" }),
-    ),
-  ),
-);
+});
 
 export const layer = Layer.effect(
   RuffleSocketProxy,

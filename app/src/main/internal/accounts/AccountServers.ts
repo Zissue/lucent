@@ -1,6 +1,7 @@
 import * as Cache from "effect/Cache";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -142,12 +143,14 @@ export const layer = Layer.effect(
           Effect.catch((error: AccountsError) =>
             serverCache === null
               ? Effect.fail(error)
-              : Effect.logWarning("Failed to fetch servers; using cache")
+              : Effect.logWarning(
+                  "Failed to fetch servers; using cache",
+                  Cause.fail(error),
+                )
                   .pipe(
                     Effect.annotateLogs({
                       component: "accounts",
                       data: {
-                        error,
                         cachedServerCount: serverCache.servers.length,
                       },
                     }),
