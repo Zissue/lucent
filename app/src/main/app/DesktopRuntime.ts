@@ -1,14 +1,14 @@
 import * as Effect from "effect/Effect";
+import type * as Layer from "effect/Layer";
 
 import { createAppearanceSnapshot } from "@lucent/core/appearance";
 import type { AppSettings } from "@lucent/core/settings";
+import type { CliOptions } from "../cli";
 import { installDesktopDevRendererReload } from "./DesktopDevRendererReload";
 import { DesktopGameRendererRecovery } from "./DesktopGameRendererRecovery";
 import { DesktopEnvironment } from "./DesktopEnvironment";
 import { DesktopLifecycle, provideInsideQuitGuard } from "./DesktopLifecycle";
-import { makeDesktopLayer } from "./Layers";
 import { DesktopObservability } from "./observability/DesktopObservability";
-import type { MainProcessBootstrap } from "./Preflight";
 import { installDesktopRendererObservability } from "./observability/DesktopRendererObservability";
 import { ElectronApp } from "../electron/ElectronApp";
 import { ElectronDialog } from "../electron/ElectronDialog";
@@ -53,10 +53,10 @@ export const installDesktopNativeAppearanceSync = (
     yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
   });
 
-export const makeDesktopRuntime = ({
-  cliOptions,
-  envConfig,
-}: MainProcessBootstrap) =>
+export const makeDesktopRuntime = <ROut, E>(
+  cliOptions: CliOptions,
+  layer: Layer.Layer<ROut, E>,
+) =>
   Effect.gen(function* () {
     const lifecycle = yield* DesktopLifecycle;
     const observability = yield* DesktopObservability;
@@ -139,5 +139,5 @@ export const makeDesktopRuntime = ({
         return yield* Effect.failCause(cause);
       }),
     ),
-    provideInsideQuitGuard(makeDesktopLayer(envConfig)),
+    provideInsideQuitGuard(layer),
   );
