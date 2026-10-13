@@ -1,7 +1,7 @@
-import { randomBytes } from "crypto";
 import { promises as fs } from "fs";
 import { basename, dirname, join, resolve } from "path";
 
+import type * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -27,6 +27,7 @@ import {
 import {
   inspectScriptPackageDirectory,
   ScriptPackageCatalog,
+  type ScriptPackageCatalogReplacement,
 } from "./ScriptPackageCatalog";
 import { hashDirectory } from "./ScriptPackageFileSystem";
 import {
@@ -70,18 +71,6 @@ export class ScriptPackageManagerError extends Schema.TaggedError<ScriptPackageM
     operation: packageManagerOperationSchema,
     detail: Schema.String,
     cause: Schema.optionalKey(Schema.Defect()),
-  },
-) {
-  override get message(): string {
-    return this.detail;
-  }
-}
-
-class PackageDirectoryReplacementError extends Schema.TaggedError<PackageDirectoryReplacementError>()(
-  "PackageDirectoryReplacementError",
-  {
-    detail: Schema.String,
-    cause: Schema.Defect(),
   },
 ) {
   override get message(): string {
@@ -175,6 +164,9 @@ const managerError = (
     detail,
     ...(cause === undefined ? {} : { cause }),
   });
+
+const movePath = (from: string, to: string) =>
+  Effect.tryPromise(() => fs.rename(from, to));
 
 const archivePath = (rawPath: string): readonly string[] => {
   if (
@@ -459,15 +451,16 @@ export const layer = Layer.effect(
 
     const replacePackage = Effect.fn("ScriptPackageManager.replacePackage")(
       function* (
-        stagingPath: string,
-        destination: string,
-        managed: ManagedScriptPackage,
-        temporaryRoot: string,
-      ) {
-        const backupPath = join(
-          temporaryRoot,
-          `previous-${randomBytes(8).toString("hex")}`,
-        );
+        replacement: ScriptPackageCatalogReplacement,
+      ): Effect.fn.Return<ScriptCatalogOverview, ScriptPackageManagerError> {
+        const {
+          managed,
+          rootPath: destination,
+          sourceRoot: staging,
+        } = replacement;
+        const publish = catalog
+          .replacePackage(replacement)
+          .pipe(Effect.mapError(mapCatalogError));
         const destinationExists = yield* Effect.tryPromise({
           try: () => pathExists(destination),
           catch: (cause) =>
@@ -478,75 +471,138 @@ export const layer = Layer.effect(
             ),
         });
         yield* Effect.tryPromise({
-          try: async () => {
-            await fs.mkdir(dirname(destination), { recursive: true });
-            if (destinationExists) await fs.rename(destination, backupPath);
-            try {
-              await fs.rename(stagingPath, destination);
-            } catch (replacementCause) {
-              if (destinationExists && (await pathExists(backupPath))) {
-                try {
-                  await fs.rename(backupPath, destination);
-                } catch (restoreCause) {
-                  throw new PackageDirectoryReplacementError({
-                    detail:
-                      "Failed to replace the package directory and could not restore the previous package.",
-                    cause: { replacementCause, restoreCause },
-                  });
-                }
-              }
-              throw new PackageDirectoryReplacementError({
-                detail:
-                  "Failed to replace the package directory; the previous package was restored.",
-                cause: replacementCause,
-              });
-            }
-          },
+          try: () => fs.mkdir(dirname(destination), { recursive: true }),
           catch: (cause) =>
             managerError(
               "replace",
-              cause instanceof PackageDirectoryReplacementError
-                ? cause.detail
-                : "Failed to replace the package directory.",
+              "Failed to replace the package directory.",
               cause,
             ),
         });
 
-        yield* state.save(managed).pipe(
-          Effect.mapError((cause) =>
+        if (!destinationExists) {
+          yield* movePath(staging, destination).pipe(
+            Effect.mapError(({ cause }) =>
+              managerError(
+                "replace",
+                "Failed to replace the package directory.",
+                cause,
+              ),
+            ),
+          );
+          yield* state.save(managed).pipe(
+            Effect.catch((cause) =>
+              movePath(destination, staging).pipe(
+                Effect.matchEffect({
+                  onFailure: ({ cause: undoCause }) =>
+                    Effect.fail(
+                      managerError(
+                        "replace",
+                        `Failed to save package installation state. The new package was left at ${destination}.`,
+                        { cause, undoCause },
+                      ),
+                    ),
+                  onSuccess: () =>
+                    Effect.fail(
+                      managerError(
+                        "replace",
+                        "Failed to save package installation state.",
+                        cause,
+                      ),
+                    ),
+                }),
+              ),
+            ),
+          );
+          return yield* publish;
+        }
+
+        const backupRoot = yield* Effect.tryPromise({
+          try: () =>
+            fs.mkdtemp(join(env.workspaceDir, ".lucent-package-backup-")),
+          catch: (cause) =>
             managerError(
               "replace",
-              "Failed to save package installation state.",
+              "Failed to prepare the package backup.",
               cause,
             ),
-          ),
-          Effect.catch((error) =>
-            Effect.tryPromise({
-              try: async () => {
-                if (await pathExists(destination)) {
-                  await fs.rename(destination, stagingPath);
-                }
-                if (destinationExists && (await pathExists(backupPath))) {
-                  await fs.rename(backupPath, destination);
-                }
-              },
-              catch: (cause) =>
-                managerError(
-                  "replace",
-                  "Package state failed and the previous package could not be restored.",
-                  cause,
-                ),
-            }).pipe(Effect.flatMap(() => error)),
+        });
+        const backup = join(backupRoot, basename(destination));
+        const discardBackup = Effect.tryPromise(() =>
+          fs.rm(backupRoot, { recursive: true, force: true }),
+        ).pipe(Effect.ignore);
+        const removeEmptyBackup = Effect.tryPromise(() =>
+          fs.rmdir(backupRoot),
+        ).pipe(Effect.ignore);
+        const failReplacement = Effect.fnUntraced(function* (
+          cause: unknown,
+          restoredDetail: string,
+          unrestoredDetail = restoredDetail,
+        ): Effect.fn.Return<never, ScriptPackageManagerError> {
+          const backupExists = yield* Effect.tryPromise(() =>
+            pathExists(backup),
+          ).pipe(Effect.orElseSucceed(() => true));
+          if (!backupExists) yield* removeEmptyBackup;
+          return yield* managerError(
+            "replace",
+            backupExists
+              ? `${unrestoredDetail} The previous package is saved at ${backup}.`
+              : restoredDetail,
+            cause,
+          );
+        });
+        const rollBack = (
+          undo: Effect.Effect<void, Cause.UnknownError>,
+          cause: unknown,
+          restoredDetail: string,
+          unrestoredDetail: string,
+        ) =>
+          undo.pipe(
+            Effect.match({
+              onFailure: ({ cause: restoreCause }) => ({
+                cause,
+                restoreCause,
+              }),
+              onSuccess: () => cause,
+            }),
+            Effect.flatMap((failureCause) =>
+              failReplacement(failureCause, restoredDetail, unrestoredDetail),
+            ),
+          );
+
+        yield* movePath(destination, backup).pipe(
+          Effect.catch(({ cause }) =>
+            failReplacement(cause, "Failed to replace the package directory."),
           ),
         );
-        if (destinationExists) {
-          yield* Effect.tryPromise({
-            try: () => fs.rm(backupPath, { recursive: true }),
-            catch: (cause) =>
-              managerError("replace", "Failed to clean package backup.", cause),
-          }).pipe(Effect.catch(() => Effect.void));
-        }
+        yield* movePath(staging, destination).pipe(
+          Effect.catch(({ cause }) =>
+            rollBack(
+              movePath(backup, destination),
+              cause,
+              "Failed to replace the package directory; the previous package was restored.",
+              "Failed to replace the package directory and could not restore the previous package.",
+            ),
+          ),
+        );
+        yield* state
+          .save(managed)
+          .pipe(
+            Effect.catch((cause) =>
+              rollBack(
+                movePath(destination, staging).pipe(
+                  Effect.andThen(movePath(backup, destination)),
+                ),
+                cause,
+                "Failed to save package installation state.",
+                "Package state failed and the previous package could not be restored.",
+              ),
+            ),
+          );
+        yield* discardBackup;
+        return yield* publish;
       },
+      Effect.uninterruptible,
     );
 
     const installInternal = Effect.fn("ScriptPackageManager.installInternal")(
@@ -843,20 +899,12 @@ export const layer = Layer.effect(
                   ? {}
                   : { etag: resolvedSource.etag }),
               };
-              yield* replacePackage(
-                staging,
-                destination,
+              const nextCatalog = yield* replacePackage({
+                inspected,
                 managed,
-                temporaryRoot,
-              );
-              const nextCatalog = yield* catalog
-                .replacePackage({
-                  inspected,
-                  managed,
-                  rootPath: destination,
-                  sourceRoot: staging,
-                })
-                .pipe(Effect.mapError(mapCatalogError));
+                rootPath: destination,
+                sourceRoot: staging,
+              });
               return {
                 status: "completed",
                 catalog: nextCatalog,
