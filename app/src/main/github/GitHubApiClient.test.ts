@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as Clock from "effect/Clock";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Random from "effect/Random";
@@ -33,7 +34,10 @@ const response = (options: {
 });
 
 const makeHttpClient = (
-  responses: DesktopHttpResponse[],
+  responses: (
+    | DesktopHttpResponse
+    | Effect.Effect<DesktopHttpResponse, DesktopHttpClientError>
+  )[],
   requestCount: { value: number },
 ): Pick<DesktopHttpClientShape, "get" | "download"> => ({
   get: (options) =>
@@ -47,7 +51,7 @@ const makeHttpClient = (
           url: options.url.href,
         });
       }
-      return next;
+      return Effect.isEffect(next) ? yield* next : next;
     }),
   download: (options) =>
     Effect.fail(
@@ -219,6 +223,94 @@ describe("GitHubApiClient", () => {
       expect(second.retryAt).toBe(first.retryAt);
       expect(requestCount.value).toBe(1);
     }),
+  );
+
+  it.effect(
+    "resets cooldown escalation after a response that is not rate limited",
+    () =>
+      Effect.gen(function* () {
+        const requestCount = { value: 0 };
+        const secondaryLimit = () =>
+          response({
+            body: "You have exceeded a secondary rate limit.",
+            statusCode: 403,
+          });
+        const client = makeGitHubApiClient(
+          makeHttpClient(
+            [secondaryLimit(), response({ statusCode: 200 }), secondaryLimit()],
+            requestCount,
+          ),
+          "Lucent/test",
+        );
+
+        const first = yield* client.get({ url: API_URL }).pipe(Effect.flip);
+        expect(first.kind).toBe("rate-limited");
+        yield* TestClock.adjust("60 seconds");
+        const success = yield* client.get({ url: API_URL });
+        expect(success.statusCode).toBe(200);
+
+        const startedAt = yield* Clock.currentTimeMillis;
+        const second = yield* client.get({ url: API_URL }).pipe(Effect.flip);
+        expect(second.kind).toBe("rate-limited");
+        expect(Date.parse(second.retryAt ?? "") - startedAt).toBe(60_000);
+        expect(requestCount.value).toBe(3);
+      }),
+  );
+
+  it.effect(
+    "keeps an active cooldown when an earlier request succeeds afterwards",
+    () =>
+      Effect.gen(function* () {
+        const requestCount = { value: 0 };
+        const firstRequestStarted = yield* Deferred.make<void>();
+        const firstResponse = yield* Deferred.make<DesktopHttpResponse>();
+        const secondaryLimit = () =>
+          response({
+            body: "You have exceeded a secondary rate limit.",
+            statusCode: 403,
+          });
+        const client = makeGitHubApiClient(
+          makeHttpClient(
+            [
+              Effect.gen(function* () {
+                yield* Deferred.succeed(firstRequestStarted, undefined);
+                return yield* Deferred.await(firstResponse);
+              }),
+              secondaryLimit(),
+              secondaryLimit(),
+            ],
+            requestCount,
+          ),
+          "Lucent/test",
+        );
+
+        const first = yield* client
+          .get({ url: API_URL })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(firstRequestStarted);
+        const secondStartedAt = yield* Clock.currentTimeMillis;
+        const second = yield* client.get({ url: API_URL }).pipe(Effect.flip);
+        expect(second.kind).toBe("rate-limited");
+        expect(Date.parse(second.retryAt ?? "") - secondStartedAt).toBe(60_000);
+
+        yield* Deferred.succeed(firstResponse, response({ statusCode: 200 }));
+        const success = yield* Fiber.join(first);
+        expect(success.statusCode).toBe(200);
+
+        const third = yield* client.get({ url: API_URL }).pipe(Effect.flip);
+        expect(third.kind).toBe("rate-limited");
+        expect(third.retryAt).toBe(second.retryAt);
+        expect(requestCount.value).toBe(2);
+
+        yield* TestClock.adjust("60 seconds");
+        const fourthStartedAt = yield* Clock.currentTimeMillis;
+        const fourth = yield* client.get({ url: API_URL }).pipe(Effect.flip);
+        expect(fourth.kind).toBe("rate-limited");
+        expect(Date.parse(fourth.retryAt ?? "") - fourthStartedAt).toBe(
+          120_000,
+        );
+        expect(requestCount.value).toBe(3);
+      }),
   );
 
   it.effect(

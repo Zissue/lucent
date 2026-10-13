@@ -219,24 +219,19 @@ export const makeGitHubApiClient = (
 ): GitHubApiClientShape => {
   const rateLimits = new Map<string, RateLimitState>();
 
-  const activeRateLimit = (
-    key: string,
-    now: number,
-  ): RateLimitState | undefined => {
-    const value = rateLimits.get(key);
-    if (value === undefined) return undefined;
-    if (value.until > now) return value;
-    rateLimits.delete(key);
-    return undefined;
-  };
-
   const recordRateLimit = (
     key: string,
     response: DesktopHttpResponse,
     now: number,
+    requestStartedAt: number,
   ): RateLimitState | undefined => {
-    if (!isGitHubRateLimitResponse(response)) return undefined;
     const previous = rateLimits.get(key);
+    if (!isGitHubRateLimitResponse(response)) {
+      const requestStartedAfterCooldown =
+        previous !== undefined && previous.until <= requestStartedAt;
+      if (requestStartedAfterCooldown) rateLimits.delete(key);
+      return undefined;
+    }
     const strikes = (previous?.strikes ?? 0) + 1;
     const headerTime = retryAtFromGitHubHeaders(response.headers, now);
     const until =
@@ -253,14 +248,19 @@ export const makeGitHubApiClient = (
   ) {
     const key = rateLimitKey(credentialId);
     const requestStartedAt = yield* Clock.currentTimeMillis;
-    const limited = activeRateLimit(key, requestStartedAt);
-    if (limited !== undefined) {
+    const limited = rateLimits.get(key);
+    if (limited !== undefined && limited.until > requestStartedAt) {
       return yield* rateLimitError(limited);
     }
 
     const response = yield* request.pipe(Effect.mapError(httpClientError));
     const responseReceivedAt = yield* Clock.currentTimeMillis;
-    const recordedLimit = recordRateLimit(key, response, responseReceivedAt);
+    const recordedLimit = recordRateLimit(
+      key,
+      response,
+      responseReceivedAt,
+      requestStartedAt,
+    );
     if (
       (response.statusCode >= 200 && response.statusCode < 300) ||
       (acceptNotModified && response.statusCode === 304)
