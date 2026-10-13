@@ -230,9 +230,16 @@ export const makeGitHubApiClient = (
       if (current === observed) rateLimits.delete(key);
       return undefined;
     }
-    if (current !== observed && current !== undefined) return current;
-    const strikes = (current?.strikes ?? 0) + 1;
     const headerTime = retryAtFromGitHubHeaders(response.headers, now);
+    if (current !== observed && current !== undefined) {
+      if (headerTime === undefined || headerTime <= current.until) {
+        return current;
+      }
+      const extended = { strikes: current.strikes, until: headerTime };
+      rateLimits.set(key, extended);
+      return extended;
+    }
+    const strikes = (current?.strikes ?? 0) + 1;
     const until =
       headerTime ?? now + Math.min(15 * 60_000, 60_000 * 2 ** (strikes - 1));
     const state = { strikes, until };

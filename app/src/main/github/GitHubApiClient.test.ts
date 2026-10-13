@@ -13,6 +13,7 @@ import {
   type DesktopHttpResponse,
 } from "../http/DesktopHttpClient";
 import {
+  type GitHubApiClientError,
   isGitHubRateLimitResponse,
   makeGitHubApiClient,
   retryAtFromGitHubHeaders,
@@ -39,6 +40,21 @@ const secondaryLimit = (headers: Record<string, string> = {}) =>
     headers,
     statusCode: 403,
   });
+
+const cooldownMillis = (error: GitHubApiClientError, startedAt: number) =>
+  Date.parse(error.retryAt ?? "") - startedAt;
+
+const gatedResponse = Effect.gen(function* () {
+  const started = yield* Deferred.make<void>();
+  const response = yield* Deferred.make<DesktopHttpResponse>();
+  return {
+    request: Deferred.succeed(started, undefined).pipe(
+      Effect.andThen(Deferred.await(response)),
+    ),
+    respond: (value: DesktopHttpResponse) => Deferred.succeed(response, value),
+    started: Deferred.await(started),
+  };
+});
 
 const makeHttpClient = (
   responses: (
@@ -253,8 +269,7 @@ describe("GitHubApiClient", () => {
 
         const startedAt = yield* Clock.currentTimeMillis;
         const second = yield* client.get({ url: API_URL }).pipe(Effect.flip);
-        expect(second.kind).toBe("rate-limited");
-        expect(Date.parse(second.retryAt ?? "") - startedAt).toBe(60_000);
+        expect(cooldownMillis(second, startedAt)).toBe(60_000);
         expect(requestCount.value).toBe(3);
       }),
   );
@@ -264,18 +279,10 @@ describe("GitHubApiClient", () => {
     () =>
       Effect.gen(function* () {
         const requestCount = { value: 0 };
-        const firstRequestStarted = yield* Deferred.make<void>();
-        const firstResponse = yield* Deferred.make<DesktopHttpResponse>();
+        const stale = yield* gatedResponse;
         const client = makeGitHubApiClient(
           makeHttpClient(
-            [
-              Effect.gen(function* () {
-                yield* Deferred.succeed(firstRequestStarted, undefined);
-                return yield* Deferred.await(firstResponse);
-              }),
-              secondaryLimit(),
-              secondaryLimit(),
-            ],
+            [stale.request, secondaryLimit(), secondaryLimit()],
             requestCount,
           ),
           "Lucent/test",
@@ -284,46 +291,48 @@ describe("GitHubApiClient", () => {
         const first = yield* client
           .get({ url: API_URL })
           .pipe(Effect.forkChild);
-        yield* Deferred.await(firstRequestStarted);
+        yield* stale.started;
         const secondStartedAt = yield* Clock.currentTimeMillis;
         const second = yield* client.get({ url: API_URL }).pipe(Effect.flip);
-        expect(second.kind).toBe("rate-limited");
-        expect(Date.parse(second.retryAt ?? "") - secondStartedAt).toBe(60_000);
+        expect(cooldownMillis(second, secondStartedAt)).toBe(60_000);
 
         yield* TestClock.adjust("60 seconds");
-        yield* Deferred.succeed(firstResponse, response({ statusCode: 200 }));
+        yield* stale.respond(response({ statusCode: 200 }));
         const success = yield* Fiber.join(first);
         expect(success.statusCode).toBe(200);
 
         const thirdStartedAt = yield* Clock.currentTimeMillis;
         const third = yield* client.get({ url: API_URL }).pipe(Effect.flip);
-        expect(third.kind).toBe("rate-limited");
-        expect(Date.parse(third.retryAt ?? "") - thirdStartedAt).toBe(120_000);
+        expect(cooldownMillis(third, thirdStartedAt)).toBe(120_000);
         expect(requestCount.value).toBe(3);
       }),
   );
 
-  it.effect.each([undefined, "1"])(
-    "counts concurrent secondary limits once when the stale retry-after is %s",
-    (retryAfter) =>
+  it.effect.each([
+    { label: "no retry-after", headers: {}, cooldown: 120_000 },
+    {
+      label: "an earlier retry-after",
+      headers: { "retry-after": "1" },
+      cooldown: 120_000,
+    },
+    {
+      label: "a later retry-after",
+      headers: { "retry-after": "600" },
+      cooldown: 600_000,
+    },
+  ])(
+    "counts concurrent secondary limits once when the later one has $label",
+    ({ cooldown, headers }) =>
       Effect.gen(function* () {
         const requestCount = { value: 0 };
-        const firstRequestStarted = yield* Deferred.make<void>();
-        const firstResponse = yield* Deferred.make<DesktopHttpResponse>();
-        const secondRequestStarted = yield* Deferred.make<void>();
-        const secondResponse = yield* Deferred.make<DesktopHttpResponse>();
+        const firstGate = yield* gatedResponse;
+        const secondGate = yield* gatedResponse;
         const client = makeGitHubApiClient(
           makeHttpClient(
             [
               secondaryLimit(),
-              Effect.gen(function* () {
-                yield* Deferred.succeed(firstRequestStarted, undefined);
-                return yield* Deferred.await(firstResponse);
-              }),
-              Effect.gen(function* () {
-                yield* Deferred.succeed(secondRequestStarted, undefined);
-                return yield* Deferred.await(secondResponse);
-              }),
+              firstGate.request,
+              secondGate.request,
               secondaryLimit(),
             ],
             requestCount,
@@ -331,41 +340,30 @@ describe("GitHubApiClient", () => {
           "Lucent/test",
         );
 
-        const initial = yield* client.get({ url: API_URL }).pipe(Effect.flip);
-        expect(initial.kind).toBe("rate-limited");
+        yield* client.get({ url: API_URL }).pipe(Effect.flip);
         yield* TestClock.adjust("60 seconds");
         const admittedAt = yield* Clock.currentTimeMillis;
         const first = yield* client
           .get({ url: API_URL })
           .pipe(Effect.flip, Effect.forkChild);
-        yield* Deferred.await(firstRequestStarted);
+        yield* firstGate.started;
         const second = yield* client
           .get({ url: API_URL })
           .pipe(Effect.flip, Effect.forkChild);
-        yield* Deferred.await(secondRequestStarted);
+        yield* secondGate.started;
 
-        yield* Deferred.succeed(firstResponse, secondaryLimit());
+        yield* firstGate.respond(secondaryLimit());
         const firstError = yield* Fiber.join(first);
-        yield* Deferred.succeed(
-          secondResponse,
-          secondaryLimit(
-            retryAfter === undefined ? {} : { "retry-after": retryAfter },
-          ),
-        );
+        yield* secondGate.respond(secondaryLimit(headers));
         const secondError = yield* Fiber.join(second);
-        expect(firstError.kind).toBe("rate-limited");
-        expect(secondError.kind).toBe("rate-limited");
-        expect(Date.parse(firstError.retryAt ?? "") - admittedAt).toBe(120_000);
-        expect(Date.parse(secondError.retryAt ?? "") - admittedAt).toBe(
-          120_000,
-        );
+        expect(cooldownMillis(firstError, admittedAt)).toBe(120_000);
+        expect(cooldownMillis(secondError, admittedAt)).toBe(cooldown);
         expect(requestCount.value).toBe(3);
 
-        yield* TestClock.adjust("120 seconds");
+        yield* TestClock.adjust(cooldown);
         const nextStartedAt = yield* Clock.currentTimeMillis;
         const next = yield* client.get({ url: API_URL }).pipe(Effect.flip);
-        expect(next.kind).toBe("rate-limited");
-        expect(Date.parse(next.retryAt ?? "") - nextStartedAt).toBe(240_000);
+        expect(cooldownMillis(next, nextStartedAt)).toBe(240_000);
         expect(requestCount.value).toBe(4);
       }),
   );
@@ -399,8 +397,7 @@ describe("GitHubApiClient", () => {
 
       const startedAt = yield* Clock.currentTimeMillis;
       const next = yield* client.get({ url: API_URL }).pipe(Effect.flip);
-      expect(next.kind).toBe("rate-limited");
-      expect(Date.parse(next.retryAt ?? "") - startedAt).toBe(120_000);
+      expect(cooldownMillis(next, startedAt)).toBe(120_000);
       expect(requestCount.value).toBe(3);
     }),
   );
@@ -422,9 +419,9 @@ describe("GitHubApiClient", () => {
         for (let attempt = 0; attempt < 6; attempt += 1) {
           const startedAt = yield* Clock.currentTimeMillis;
           const error = yield* client.get({ url: API_URL }).pipe(Effect.flip);
-          const cooldownMillis = Date.parse(error.retryAt ?? "") - startedAt;
-          cooldownSeconds.push(cooldownMillis / 1000);
-          yield* TestClock.adjust(cooldownMillis);
+          const cooldown = cooldownMillis(error, startedAt);
+          cooldownSeconds.push(cooldown / 1000);
+          yield* TestClock.adjust(cooldown);
         }
 
         expect(cooldownSeconds).toEqual([60, 120, 240, 480, 900, 900]);
