@@ -1352,6 +1352,16 @@ describe("script package local modifications", () => {
     packageName: PACKAGE_NAME,
     reason: "local-modifications",
   };
+  const editBeforeMovingOut = (destination: string) => {
+    const rename = fs.rename;
+    vi.spyOn(fs, "rename").mockImplementation((from, to) =>
+      resolve(String(from)) === destination
+        ? fs
+            .writeFile(join(destination, "index.js"), EDITED_SOURCE)
+            .then(() => rename(from, to))
+        : rename(from, to),
+    );
+  };
 
   it.effect("asks before updating files edited after the catalog scan", () =>
     Effect.gen(function* () {
@@ -1388,14 +1398,16 @@ describe("script package local modifications", () => {
         yield* installedPackage;
       const harness = makeManagerHarness({
         archivePath,
+        live: { appDataDir: join(dirname(workspaceDir), "app-data") },
         managed,
         onDownload: () => write(join(destination, "index.js"), EDITED_SOURCE),
         resolution: { status: "modified", commit: REMOTE_COMMIT },
         workspaceDir,
       });
-      const manager = yield* ScriptPackageManager.pipe(
-        Effect.provide(harness.layer),
-      );
+      const { manager, catalog } = yield* harness.services;
+      expect((yield* catalog.getOverview).packages[0]).toMatchObject({
+        integrity: "verified",
+      });
 
       const result = yield* manager.update({ packageName: PACKAGE_NAME });
 
@@ -1405,15 +1417,46 @@ describe("script package local modifications", () => {
           fs.readFile(join(destination, "index.js"), "utf8"),
         ),
       ).toBe(EDITED_SOURCE);
+      expect((yield* catalog.getOverview).packages[0]).toMatchObject({
+        integrity: "modified",
+      });
     }),
   );
 
-  it.effect("asks before removing files edited after the catalog scan", () =>
+  it.effect("asks before replacing files edited just before the move", () =>
+    Effect.gen(function* () {
+      const { archivePath, destination, managed, workspaceDir } =
+        yield* installedPackage;
+      const harness = makeManagerHarness({
+        archivePath,
+        managed,
+        resolution: { status: "modified", commit: REMOTE_COMMIT },
+        workspaceDir,
+      });
+      const manager = yield* ScriptPackageManager.pipe(
+        Effect.provide(harness.layer),
+      );
+      editBeforeMovingOut(destination);
+
+      const result = yield* manager.update({ packageName: PACKAGE_NAME });
+
+      expect(result).toEqual(localModifications);
+      expect(
+        yield* Effect.promise(() =>
+          fs.readFile(join(destination, "index.js"), "utf8"),
+        ),
+      ).toBe(EDITED_SOURCE);
+      expect(
+        (yield* Effect.promise(() => fs.readdir(workspaceDir))).filter((name) =>
+          name.startsWith(".lucent-package-backup-"),
+        ),
+      ).toEqual([]);
+    }),
+  );
+
+  it.effect("asks before removing files edited just before the move", () =>
     Effect.gen(function* () {
       const { destination, managed, workspaceDir } = yield* installedPackage;
-      yield* Effect.promise(() =>
-        write(join(destination, "index.js"), EDITED_SOURCE),
-      );
       const harness = makeManagerHarness({
         managed,
         resolution: { status: "modified", commit: REMOTE_COMMIT },
@@ -1421,6 +1464,40 @@ describe("script package local modifications", () => {
       });
       const manager = yield* ScriptPackageManager.pipe(
         Effect.provide(harness.layer),
+      );
+      editBeforeMovingOut(destination);
+
+      const result = yield* manager.remove({ packageName: PACKAGE_NAME });
+
+      expect(result).toEqual(localModifications);
+      expect(
+        yield* Effect.promise(() =>
+          fs.readFile(join(destination, "index.js"), "utf8"),
+        ),
+      ).toBe(EDITED_SOURCE);
+      expect(
+        (yield* Effect.promise(() => fs.readdir(workspaceDir))).filter((name) =>
+          name.startsWith(".lucent-package-remove-"),
+        ),
+      ).toEqual([]);
+    }),
+  );
+
+  it.effect("asks before removing files edited after the catalog scan", () =>
+    Effect.gen(function* () {
+      const { destination, managed, workspaceDir } = yield* installedPackage;
+      const harness = makeManagerHarness({
+        live: { appDataDir: join(dirname(workspaceDir), "app-data") },
+        managed,
+        resolution: { status: "modified", commit: REMOTE_COMMIT },
+        workspaceDir,
+      });
+      const { manager, catalog } = yield* harness.services;
+      expect((yield* catalog.getOverview).packages[0]).toMatchObject({
+        integrity: "verified",
+      });
+      yield* Effect.promise(() =>
+        write(join(destination, "index.js"), EDITED_SOURCE),
       );
 
       const result = yield* manager.remove({ packageName: PACKAGE_NAME });
@@ -1431,6 +1508,9 @@ describe("script package local modifications", () => {
           fs.readFile(join(destination, "index.js"), "utf8"),
         ),
       ).toBe(EDITED_SOURCE);
+      expect((yield* catalog.getOverview).packages[0]).toMatchObject({
+        integrity: "modified",
+      });
     }),
   );
 });
