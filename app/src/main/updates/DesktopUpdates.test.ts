@@ -200,6 +200,38 @@ afterEach(async () => {
 });
 
 describe("DesktopUpdates", () => {
+  it.effect("interrupts an in-flight check when its layer closes", () =>
+    Effect.gen(function* () {
+      const started = yield* Deferred.make<void>();
+      const events: string[] = [];
+      const { layer } = yield* makeUpdatesHarness({
+        checkForUpdates: true,
+        currentVersion: "1.0.0",
+        httpClient: {
+          ...httpClient,
+          get: () =>
+            Deferred.succeed(started, undefined).pipe(
+              Effect.andThen(Effect.never),
+              Effect.onInterrupt(() =>
+                Effect.sync(() => {
+                  events.push("check-interrupted");
+                }),
+              ),
+            ),
+        },
+      });
+
+      yield* Effect.gen(function* () {
+        const updates = yield* DesktopUpdates;
+        yield* updates.checkNow().pipe(Effect.forkChild);
+        yield* Deferred.await(started);
+      }).pipe(Effect.provide(layer));
+      events.push("layer-closed");
+
+      expect(events).toEqual(["check-interrupted", "layer-closed"]);
+    }),
+  );
+
   it.effect("starts disabled when update checks are disabled", () =>
     Effect.gen(function* () {
       const harness = yield* makeUpdatesHarness({
