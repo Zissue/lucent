@@ -157,22 +157,27 @@ describe("DesktopLifecycle", () => {
           }).pipe(Effect.provide(harness.layer)),
         ),
       );
-      yield* Deferred.await(registered);
-      harness.emitWillQuit();
+      yield* Effect.gen(function* () {
+        yield* Deferred.await(registered);
+        harness.emitWillQuit();
 
-      yield* Effect.promise(() => vi.advanceTimersByTimeAsync(1_500));
-      yield* Effect.promise(() =>
-        vi.waitFor(() => {
-          expect(harness.events).toEqual([
-            "error:Lucent quit timed out; forcing exit",
-            "flush",
-            "exit:0",
-          ]);
-        }),
+        yield* Effect.promise(() => vi.advanceTimersByTimeAsync(1_500));
+        yield* Effect.promise(() =>
+          vi.waitFor(() => {
+            expect(harness.events).toEqual([
+              "error:Lucent quit timed out; forcing exit",
+              "flush",
+              "exit:0",
+            ]);
+          }),
+        );
+      }).pipe(
+        Effect.ensuring(
+          Deferred.succeed(releaseCleanup, undefined).pipe(
+            Effect.andThen(Fiber.await(runtime)),
+          ),
+        ),
       );
-
-      yield* Deferred.succeed(releaseCleanup, undefined);
-      yield* Fiber.await(runtime);
     }),
   );
 
@@ -313,27 +318,32 @@ describe("DesktopLifecycle", () => {
           }).pipe(Effect.provide(harness.layer)),
         ),
       );
-      yield* Deferred.await(registered);
-      findInstalledSignalListener(previousListeners)(TEST_SIGNAL);
+      yield* Effect.gen(function* () {
+        yield* Deferred.await(registered);
+        findInstalledSignalListener(previousListeners)(TEST_SIGNAL);
 
-      yield* Effect.promise(() => vi.advanceTimersByTimeAsync(1_000));
-      harness.emitWillQuit();
-      yield* Effect.promise(() => vi.advanceTimersByTimeAsync(499));
-      expect(harness.events).toEqual([]);
+        yield* Effect.promise(() => vi.advanceTimersByTimeAsync(1_000));
+        harness.emitWillQuit();
+        yield* Effect.promise(() => vi.advanceTimersByTimeAsync(499));
+        expect(harness.events).toEqual([]);
 
-      yield* Effect.promise(() => vi.advanceTimersByTimeAsync(1));
-      yield* Effect.promise(() =>
-        vi.waitFor(() => {
-          expect(harness.events).toEqual([
-            "error:Lucent quit timed out; forcing exit",
-            "flush",
-            "exit:0",
-          ]);
-        }),
+        yield* Effect.promise(() => vi.advanceTimersByTimeAsync(1));
+        yield* Effect.promise(() =>
+          vi.waitFor(() => {
+            expect(harness.events).toEqual([
+              "error:Lucent quit timed out; forcing exit",
+              "flush",
+              "exit:0",
+            ]);
+          }),
+        );
+      }).pipe(
+        Effect.ensuring(
+          Deferred.succeed(releaseCleanup, undefined).pipe(
+            Effect.andThen(Fiber.await(runtime)),
+          ),
+        ),
       );
-
-      yield* Deferred.succeed(releaseCleanup, undefined);
-      yield* Fiber.await(runtime);
     }),
   );
 });
