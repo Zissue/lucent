@@ -23,6 +23,7 @@ const CLIENT_RELOAD_DETAIL =
   "Only that client will reload. Any running script will stop and won't run automatically.";
 
 interface RecoverableGameCrash {
+  readonly generation: number;
   readonly reason: RenderProcessGoneDetails["reason"];
   readonly scriptWasRunning: boolean;
 }
@@ -230,13 +231,7 @@ export const makeDesktopGameRendererRecovery = (
       const response = yield* dependencies.showRendererRecoveryPrompt(
         attempt.parentWindowId,
       );
-      if (
-        response !== 0 ||
-        !(yield* isCurrent(attempt)) ||
-        recoverableCrashes.get(rendererId) !== crash
-      ) {
-        return;
-      }
+      if (response !== 0 || !(yield* isCurrent(attempt))) return;
 
       if (crash.scriptWasRunning) {
         yield* dependencies
@@ -280,7 +275,9 @@ export const makeDesktopGameRendererRecovery = (
 
       const startAttempt = (
         failure: string,
-        offer: (attempt: RecoveryAttempt) => Effect.Effect<void, unknown>,
+        offer: (
+          attempt: RecoveryAttempt,
+        ) => Effect.Effect<void, unknown> | undefined,
       ): void => {
         void runPromise(
           Effect.gen(function* () {
@@ -298,8 +295,10 @@ export const makeDesktopGameRendererRecovery = (
               generation: info.generation,
               parentWindowId: info.windowId,
             };
+            const recovery = offer(attempt);
+            if (recovery === undefined) return;
             attempts.set(contents.id, attempt);
-            yield* offer(attempt).pipe(
+            yield* recovery.pipe(
               Effect.catchCause((cause) =>
                 dependencies.error(failure, cause, { rendererId: contents.id }),
               ),
@@ -316,11 +315,13 @@ export const makeDesktopGameRendererRecovery = (
         ).catch(() => undefined);
       };
       const startCrashRecovery = (): void => {
-        const crash = recoverableCrashes.get(contents.id);
-        if (crash === undefined) return;
-        startAttempt("Failed to offer renderer crash recovery", (attempt) =>
-          offerCrashRecovery(attempt, crash),
-        );
+        if (!recoverableCrashes.has(contents.id)) return;
+        startAttempt("Failed to offer renderer crash recovery", (attempt) => {
+          const crash = recoverableCrashes.get(contents.id);
+          return crash?.generation === attempt.generation
+            ? offerCrashRecovery(attempt, crash)
+            : undefined;
+        });
       };
       const handleResponsive = (): void => {
         unresponsiveRenderers.delete(contents.id);
@@ -345,15 +346,23 @@ export const makeDesktopGameRendererRecovery = (
           return;
         }
 
-        const current = recoverableCrashes.get(contents.id);
-        recoverableCrashes.set(
-          contents.id,
-          current ?? {
-            reason: details.reason,
-            scriptWasRunning: hasActiveExecution(contents.id),
-          },
-        );
-        startCrashRecovery();
+        const scriptWasRunning = hasActiveExecution(contents.id);
+        void runPromise(
+          Effect.map(dependencies.describe(contents.id), (info) => {
+            if (info?.kind !== "game") return;
+            if (
+              recoverableCrashes.get(contents.id)?.generation !==
+              info.generation
+            ) {
+              recoverableCrashes.set(contents.id, {
+                generation: info.generation,
+                reason: details.reason,
+                scriptWasRunning,
+              });
+            }
+            startCrashRecovery();
+          }),
+        ).catch(() => undefined);
       };
       const handleDidStartLoading = (): void => {
         clearRenderer(contents.id);
