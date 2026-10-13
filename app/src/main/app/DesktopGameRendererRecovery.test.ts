@@ -399,4 +399,35 @@ describe("makeDesktopGameRendererRecovery", () => {
         ]);
       }),
   );
+
+  it.effect(
+    "offers crash recovery once after an open unresponsive dialog closes",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        yield* harness.startScript;
+        yield* harness.hang;
+        yield* harness.crash;
+
+        expect(harness.timeline).toEqual([
+          "unresponsive prompt for generation 1",
+        ]);
+
+        yield* harness.answer(0, DECLINE);
+
+        expect(harness.timeline).toEqual([
+          "unresponsive prompt for generation 1",
+          "crash prompt for generation 1",
+        ]);
+
+        yield* harness.answer(1, RELOAD);
+
+        expect(harness.timeline).toEqual([
+          "unresponsive prompt for generation 1",
+          "crash prompt for generation 1",
+          "suppress",
+          "reload generation 1",
+        ]);
+      }),
+  );
 });
