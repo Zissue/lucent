@@ -1,5 +1,6 @@
 import { join } from "path";
 
+import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -504,7 +505,7 @@ const makeDesktopUpdates = (
     const checkNow: DesktopUpdatesShape["checkNow"] = (checkOptions) =>
       Effect.suspend(() =>
         Fiber.join(inFlight ?? startCheck(checkOptions?.force === true)),
-      );
+      ).pipe(Effect.catchCauseIf(Cause.hasInterruptsOnly, () => getState));
 
     return {
       checkNow,
