@@ -1,6 +1,6 @@
 import { promises as fs } from "fs";
 import { tmpdir } from "os";
-import { dirname, join } from "path";
+import { dirname, join, resolve } from "path";
 
 import { afterEach, describe, expect, it } from "@effect/vitest";
 import { vi } from "vitest";
@@ -24,6 +24,7 @@ import {
   type DiscoveredScriptCatalog,
 } from "./ScriptPackageCatalog";
 import { scriptPackageDirectorySlug } from "./ScriptPackageDirectories";
+import { hashDirectory } from "./ScriptPackageFileSystem";
 import {
   extractScriptPackageArchive,
   layer as scriptPackageManagerLayer,
@@ -32,6 +33,7 @@ import {
 } from "./ScriptPackageManager";
 import {
   ScriptPackageState,
+  ScriptPackageStateError,
   type ManagedScriptPackage,
 } from "./ScriptPackageState";
 
@@ -56,9 +58,43 @@ const write = async (path: string, source: string): Promise<void> => {
   await fs.writeFile(path, source, "utf8");
 };
 
+const findFiles = async (
+  root: string,
+  contents: string,
+): Promise<readonly string[]> => {
+  const entries = await fs.readdir(root, {
+    recursive: true,
+    withFileTypes: true,
+  });
+  const matches: string[] = [];
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    const path = join(entry.parentPath, entry.name);
+    if ((await fs.readFile(path, "utf8")) === contents) matches.push(path);
+  }
+  return matches;
+};
+
+const refuseRenamesInto = (
+  destination: string,
+  isLocked: () => boolean = () => true,
+) => {
+  const rename = fs.rename;
+  vi.spyOn(fs, "rename").mockImplementation((from, to) =>
+    isLocked() && resolve(String(to)) === destination
+      ? Promise.reject(
+          Object.assign(new Error("EPERM: operation not permitted"), {
+            code: "EPERM",
+          }),
+        )
+      : rename(from, to),
+  );
+};
+
 const makeManagerHarness = (options: {
   readonly archivePath?: string;
   readonly directoryTree?: string;
+  readonly failSave?: (value: ManagedScriptPackage) => boolean;
   readonly integrity?: ScriptPackageIntegrity;
   readonly managed?: ManagedScriptPackage;
   readonly resolution: GitHubCommitResolution;
@@ -154,9 +190,16 @@ const makeManagerHarness = (options: {
     getAll: Effect.sync(() => (managed === undefined ? [] : [managed])),
     remove: () => Effect.void,
     save: (value) =>
-      Effect.sync(() => {
-        managed = value;
-      }),
+      options.failSave?.(value) === true
+        ? Effect.fail(
+            new ScriptPackageStateError({
+              operation: "save",
+              cause: new Error("Disk full."),
+            }),
+          )
+        : Effect.sync(() => {
+            managed = value;
+          }),
   });
   const environment = DesktopEnvironment.of({
     appDataDir: "/tmp/lucent-package-manager-data",
@@ -186,6 +229,7 @@ const makeManagerHarness = (options: {
 };
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(
     directories
       .splice(0)
@@ -749,5 +793,115 @@ describe("script package updates", () => {
         ),
       ).toBe(true);
     }),
+  );
+});
+
+describe("script package replacement failures", () => {
+  const OLD_SOURCE = "module.exports = 'old';";
+  const NEW_SOURCE = "module.exports = 'new';";
+
+  const installedPackage = Effect.promise(async () => {
+    const root = await makeDirectory();
+    const workspaceDir = join(root, "workspace");
+    const repository = join(root, "source", "repository-commit");
+    const destination = join(workspaceDir, "packages", PACKAGE_NAME);
+    await Promise.all([
+      write(
+        join(repository, "package.json"),
+        JSON.stringify({ name: PACKAGE_NAME }),
+      ),
+      write(join(repository, "index.js"), NEW_SOURCE),
+      write(
+        join(destination, "package.json"),
+        JSON.stringify({ name: PACKAGE_NAME }),
+      ),
+      write(join(destination, "index.js"), OLD_SOURCE),
+    ]);
+    const archivePath = join(root, "package.tgz");
+    await createTar(
+      { cwd: join(root, "source"), file: archivePath, gzip: true },
+      ["repository-commit"],
+    );
+    const managed: ManagedScriptPackage = {
+      directory: PACKAGE_NAME,
+      files: await hashDirectory(destination),
+      installedAt: "2026-08-01T00:00:00.000Z",
+      name: PACKAGE_NAME,
+      source: {
+        kind: "repository",
+        repositoryUrl: "https://github.com/example/package",
+        resolvedCommit: INSTALLED_COMMIT,
+      },
+    };
+    return { archivePath, destination, managed, workspaceDir };
+  });
+
+  it.effect(
+    "keeps the previous package when replacement and restoration fail",
+    () =>
+      Effect.gen(function* () {
+        const { archivePath, destination, managed, workspaceDir } =
+          yield* installedPackage;
+        const harness = makeManagerHarness({
+          archivePath,
+          managed,
+          resolution: { status: "modified", commit: REMOTE_COMMIT },
+          workspaceDir,
+        });
+        const manager = yield* ScriptPackageManager.pipe(
+          Effect.provide(harness.layer),
+        );
+        refuseRenamesInto(destination);
+
+        const failure = yield* manager
+          .update({ packageName: PACKAGE_NAME })
+          .pipe(Effect.flip);
+
+        const copies = yield* Effect.promise(() =>
+          findFiles(workspaceDir, OLD_SOURCE),
+        );
+        expect(copies).toHaveLength(1);
+        expect(failure.message).toBe(
+          `Failed to replace the package directory and could not restore the previous package. The previous package is saved at ${dirname(copies[0] ?? "")}.`,
+        );
+      }),
+  );
+
+  it.effect(
+    "keeps the previous package when saving state and restoration fail",
+    () =>
+      Effect.gen(function* () {
+        const { archivePath, destination, managed, workspaceDir } =
+          yield* installedPackage;
+        let saveFailed = false;
+        const harness = makeManagerHarness({
+          archivePath,
+          failSave: (value) => {
+            saveFailed ||=
+              value.source.kind === "repository" &&
+              value.source.resolvedCommit === REMOTE_COMMIT;
+            return saveFailed;
+          },
+          managed,
+          resolution: { status: "modified", commit: REMOTE_COMMIT },
+          workspaceDir,
+        });
+        const manager = yield* ScriptPackageManager.pipe(
+          Effect.provide(harness.layer),
+        );
+        refuseRenamesInto(destination, () => saveFailed);
+
+        const failure = yield* manager
+          .update({ packageName: PACKAGE_NAME })
+          .pipe(Effect.flip);
+
+        const copies = yield* Effect.promise(() =>
+          findFiles(workspaceDir, OLD_SOURCE),
+        );
+        expect(copies).toHaveLength(1);
+        expect(failure.message).toBe(
+          `Package state failed and the previous package could not be restored. The previous package is saved at ${dirname(copies[0] ?? "")}.`,
+        );
+      }),
   );
 });
