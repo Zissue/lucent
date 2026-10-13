@@ -25,6 +25,7 @@ import {
   type GitHubScriptPackageClientShape,
 } from "./GitHubScriptPackageClient";
 import {
+  integrityFor,
   layer as scriptPackageCatalogLayer,
   ScriptPackageCatalog,
   type DiscoveredScriptCatalog,
@@ -101,10 +102,10 @@ const refuseRenamesInto = (
 const makeManagerHarness = (options: {
   readonly archivePath?: string;
   readonly directoryTree?: string;
+  readonly integrity?: ScriptPackageIntegrity;
   readonly onSave?: (
     value: ManagedScriptPackage,
   ) => Effect.Effect<void, ScriptPackageStateError>;
-  readonly integrity?: ScriptPackageIntegrity;
   readonly live?: { readonly appDataDir: string };
   readonly managed?: ManagedScriptPackage;
   readonly onDownload?: () => Promise<void>;
@@ -112,6 +113,7 @@ const makeManagerHarness = (options: {
   readonly workspaceDir?: string;
 }) => {
   let managed = options.managed;
+  let integrity = options.integrity ?? "verified";
   let downloadCount = 0;
   const requests: Parameters<
     GitHubScriptPackageClientShape["resolveCommit"]
@@ -133,7 +135,7 @@ const makeManagerHarness = (options: {
                 requiredVersion: "*",
               },
               dependencyStatus: { status: "ready" },
-              integrity: options.integrity ?? "verified",
+              integrity,
               name: managed.name,
               path: join(
                 options.workspaceDir ?? "/tmp/lucent",
@@ -170,9 +172,28 @@ const makeManagerHarness = (options: {
       }),
     onChanged: () => Effect.succeed(() => undefined),
     referenceForPath: () => Effect.succeed(undefined),
-    refresh: Effect.sync(currentOverview),
+    refresh: Effect.gen(function* () {
+      const current = managed;
+      if (current !== undefined) {
+        integrity = yield* Effect.promise(() =>
+          integrityFor(
+            join(
+              options.workspaceDir ?? "/tmp/lucent",
+              "packages",
+              current.directory,
+            ),
+            current,
+          ),
+        );
+      }
+      return currentOverview();
+    }),
     removePackage: () => Effect.sync(currentOverview),
-    replacePackage: () => Effect.sync(currentOverview),
+    replacePackage: () =>
+      Effect.sync(() => {
+        integrity = "verified";
+        return currentOverview();
+      }),
     resolveReference: () => Effect.succeed(undefined),
     updateManagedPackage: () => Effect.sync(currentOverview),
   });
@@ -335,6 +356,45 @@ afterEach(async () => {
       .splice(0)
       .map((path) => fs.rm(path, { recursive: true, force: true })),
   );
+});
+
+const OLD_SOURCE = "module.exports = 'old';";
+const NEW_SOURCE = "module.exports = 'new';";
+
+const installedPackage = Effect.promise(async () => {
+  const root = await makeDirectory();
+  const workspaceDir = join(root, "workspace");
+  const repository = join(root, "source", "repository-commit");
+  const destination = join(workspaceDir, "packages", PACKAGE_NAME);
+  await Promise.all([
+    write(
+      join(repository, "package.json"),
+      JSON.stringify({ name: PACKAGE_NAME }),
+    ),
+    write(join(repository, "index.js"), NEW_SOURCE),
+    write(
+      join(destination, "package.json"),
+      JSON.stringify({ name: PACKAGE_NAME }),
+    ),
+    write(join(destination, "index.js"), OLD_SOURCE),
+  ]);
+  const archivePath = join(root, "package.tgz");
+  await createTar(
+    { cwd: join(root, "source"), file: archivePath, gzip: true },
+    ["repository-commit"],
+  );
+  const managed: ManagedScriptPackage = {
+    directory: PACKAGE_NAME,
+    files: await hashDirectory(destination),
+    installedAt: "2026-08-01T00:00:00.000Z",
+    name: PACKAGE_NAME,
+    source: {
+      kind: "repository",
+      repositoryUrl: "https://github.com/example/package",
+      resolvedCommit: INSTALLED_COMMIT,
+    },
+  };
+  return { archivePath, destination, managed, workspaceDir };
 });
 
 describe("script package archives", () => {
@@ -548,7 +608,7 @@ describe("script package folders", () => {
       const harness = makeManagerHarness({
         managed: {
           directory,
-          files: {},
+          files: yield* Effect.promise(() => hashDirectory(packageRoot)),
           installedAt: "2026-08-01T00:00:00.000Z",
           name: PACKAGE_NAME,
           source: {
@@ -584,24 +644,18 @@ describe("script package updates", () => {
     "does not download when the remote commit is already installed",
     () =>
       Effect.gen(function* () {
+        const { managed, workspaceDir } = yield* installedPackage;
         const harness = makeManagerHarness({
           managed: {
-            directory: PACKAGE_NAME,
+            ...managed,
             etag: "stale-etag-without-a-commit",
-            files: {},
-            installedAt: "2026-07-27T00:00:00.000Z",
-            name: PACKAGE_NAME,
-            source: {
-              kind: "repository",
-              repositoryUrl: "https://github.com/example/package",
-              resolvedCommit: INSTALLED_COMMIT,
-            },
           },
           resolution: {
             status: "modified",
             commit: INSTALLED_COMMIT,
             etag: "current-etag",
           },
+          workspaceDir,
         });
         const manager = yield* ScriptPackageManager.pipe(
           Effect.provide(harness.layer),
@@ -617,6 +671,34 @@ describe("script package updates", () => {
           remoteRevision: { kind: "commit", sha: INSTALLED_COMMIT },
           update: { status: "current" },
         });
+      }),
+  );
+
+  it.effect(
+    "clears a stale modified row when restore finds the files unchanged",
+    () =>
+      Effect.gen(function* () {
+        const { managed, workspaceDir } = yield* installedPackage;
+        const harness = makeManagerHarness({
+          integrity: "modified",
+          managed,
+          resolution: { status: "modified", commit: INSTALLED_COMMIT },
+          workspaceDir,
+        });
+        const manager = yield* ScriptPackageManager.pipe(
+          Effect.provide(harness.layer),
+        );
+
+        const result = yield* manager.update({
+          packageName: PACKAGE_NAME,
+          replaceModified: true,
+        });
+
+        expect(result.status).toBe("unchanged");
+        expect(result).toMatchObject({
+          catalog: { packages: [{ integrity: "verified" }] },
+        });
+        expect(harness.downloadCount()).toBe(0);
       }),
   );
 
@@ -655,7 +737,6 @@ describe("script package updates", () => {
         );
         const harness = makeManagerHarness({
           archivePath,
-          integrity: "modified",
           managed: {
             directory,
             etag: "current-etag",
@@ -838,7 +919,7 @@ describe("script package updates", () => {
         directoryTree: REMOTE_TREE,
         managed: {
           directory: PACKAGE_NAME,
-          files: {},
+          files: yield* Effect.promise(() => hashDirectory(destination)),
           installedAt: "2026-08-01T00:00:00.000Z",
           name: PACKAGE_NAME,
           source: {
@@ -894,45 +975,6 @@ describe("script package updates", () => {
       ).toBe(true);
     }),
   );
-});
-
-const OLD_SOURCE = "module.exports = 'old';";
-const NEW_SOURCE = "module.exports = 'new';";
-
-const installedPackage = Effect.promise(async () => {
-  const root = await makeDirectory();
-  const workspaceDir = join(root, "workspace");
-  const repository = join(root, "source", "repository-commit");
-  const destination = join(workspaceDir, "packages", PACKAGE_NAME);
-  await Promise.all([
-    write(
-      join(repository, "package.json"),
-      JSON.stringify({ name: PACKAGE_NAME }),
-    ),
-    write(join(repository, "index.js"), NEW_SOURCE),
-    write(
-      join(destination, "package.json"),
-      JSON.stringify({ name: PACKAGE_NAME }),
-    ),
-    write(join(destination, "index.js"), OLD_SOURCE),
-  ]);
-  const archivePath = join(root, "package.tgz");
-  await createTar(
-    { cwd: join(root, "source"), file: archivePath, gzip: true },
-    ["repository-commit"],
-  );
-  const managed: ManagedScriptPackage = {
-    directory: PACKAGE_NAME,
-    files: await hashDirectory(destination),
-    installedAt: "2026-08-01T00:00:00.000Z",
-    name: PACKAGE_NAME,
-    source: {
-      kind: "repository",
-      repositoryUrl: "https://github.com/example/package",
-      resolvedCommit: INSTALLED_COMMIT,
-    },
-  };
-  return { archivePath, destination, managed, workspaceDir };
 });
 
 describe("script package replacement failures", () => {

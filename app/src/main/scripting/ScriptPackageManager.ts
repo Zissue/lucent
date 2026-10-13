@@ -26,6 +26,7 @@ import {
 } from "./GitHubScriptPackageClient";
 import {
   inspectScriptPackageDirectory,
+  integrityFor,
   ScriptPackageCatalog,
   type ScriptPackageCatalogReplacement,
 } from "./ScriptPackageCatalog";
@@ -122,6 +123,12 @@ interface ResolvedInstallSource extends ResolvedPackageRevision {
   readonly commit: string;
 }
 
+interface ManagedPackageUpdate {
+  readonly installed: ManagedScriptPackage;
+  readonly source: ResolvedInstallSource;
+  readonly replaceModified: boolean;
+}
+
 const installedRevision = (
   managed: ManagedScriptPackage,
 ): ScriptPackageRevision =>
@@ -164,6 +171,14 @@ const managerError = (
     detail,
     ...(cause === undefined ? {} : { cause }),
   });
+
+const localModifications = (
+  packageName: string,
+): ScriptPackageMutationResult => ({
+  status: "confirmation-required",
+  packageName,
+  reason: "local-modifications",
+});
 
 const movePath = (from: string, to: string) =>
   Effect.tryPromise(() => fs.rename(from, to));
@@ -608,8 +623,7 @@ export const layer = Layer.effect(
     const installInternal = Effect.fn("ScriptPackageManager.installInternal")(
       function* (
         input: Parameters<ScriptPackageManagerShape["install"]>[0],
-        expectedPackage?: ManagedScriptPackage,
-        knownSource?: ResolvedInstallSource,
+        update?: ManagedPackageUpdate,
       ) {
         const repository = yield* Effect.try({
           try: () => normalizeGitHubRepositoryUrl(input.repositoryUrl),
@@ -633,7 +647,7 @@ export const layer = Layer.effect(
                   ),
               });
         const resolvedSource: ResolvedInstallSource =
-          knownSource ??
+          update?.source ??
           (yield* Effect.gen(function* () {
             const commit = yield* client
               .resolveCommit({
@@ -757,12 +771,12 @@ export const layer = Layer.effect(
               });
               const packageName = inspected.manifest.name;
               if (
-                expectedPackage !== undefined &&
-                packageName !== expectedPackage.name
+                update !== undefined &&
+                packageName !== update.installed.name
               ) {
                 return yield* managerError(
                   "update",
-                  `The update declares package ${JSON.stringify(packageName)} instead of ${JSON.stringify(expectedPackage.name)}.`,
+                  `The update declares package ${JSON.stringify(packageName)} instead of ${JSON.stringify(update.installed.name)}.`,
                 );
               }
 
@@ -786,7 +800,7 @@ export const layer = Layer.effect(
               }
               const matchingPackage = matchingPackages[0];
               const savedPackage =
-                expectedPackage ?? (yield* state.get(packageName));
+                update?.installed ?? (yield* state.get(packageName));
               const reservedDirectories = new Set(
                 (yield* state.getAll).map((entry) => entry.directory),
               );
@@ -899,6 +913,15 @@ export const layer = Layer.effect(
                   ? {}
                   : { etag: resolvedSource.etag }),
               };
+              if (
+                update !== undefined &&
+                !update.replaceModified &&
+                (yield* Effect.promise(() =>
+                  integrityFor(destination, update.installed),
+                )) !== "verified"
+              ) {
+                return localModifications(packageName);
+              }
               const nextCatalog = yield* replacePackage({
                 inspected,
                 managed,
@@ -985,26 +1008,21 @@ export const layer = Layer.effect(
                 ),
               ),
             );
-          if (
-            summary.integrity !== "verified" &&
-            input.replaceModified !== true
-          ) {
-            yield* catalog
-              .updateManagedPackage(observed)
-              .pipe(Effect.mapError(mapCatalogError));
-            return {
-              status: "confirmation-required",
-              packageName: input.packageName,
-              reason: "local-modifications",
-            } satisfies ScriptPackageMutationResult;
+          const integrity = yield* Effect.promise(() =>
+            integrityFor(savedRoot, managed),
+          );
+          const nextCatalog = yield* (
+            integrity === summary.integrity
+              ? catalog.updateManagedPackage(observed)
+              : catalog.refresh
+          ).pipe(Effect.mapError(mapCatalogError));
+          if (integrity !== "verified" && input.replaceModified !== true) {
+            return localModifications(input.packageName);
           }
           if (
-            summary.integrity === "verified" &&
+            integrity === "verified" &&
             revisionsMatch(resolution.revision, installedRevision(managed))
           ) {
-            const nextCatalog = yield* catalog
-              .updateManagedPackage(observed)
-              .pipe(Effect.mapError(mapCatalogError));
             return {
               status: "unchanged",
               catalog: nextCatalog,
@@ -1025,8 +1043,11 @@ export const layer = Layer.effect(
                 ? {}
                 : { subdirectory: managed.source.subdirectory }),
             },
-            managed,
-            resolution,
+            {
+              installed: managed,
+              source: resolution,
+              replaceModified: input.replaceModified === true,
+            },
           );
         }),
       );
@@ -1053,17 +1074,6 @@ export const layer = Layer.effect(
               `Package ${JSON.stringify(input.packageName)} is not installed.`,
             );
           }
-          if (
-            summary.integrity !== "verified" &&
-            input.confirmModified !== true
-          ) {
-            return {
-              status: "confirmation-required",
-              packageName: input.packageName,
-              reason: "local-modifications",
-            } satisfies ScriptPackageMutationResult;
-          }
-
           const managed = yield* state.get(input.packageName);
           const directory = yield* Effect.try({
             try: () =>
@@ -1082,6 +1092,13 @@ export const layer = Layer.effect(
               "remove",
               `Package ${JSON.stringify(input.packageName)} is not in its saved folder.`,
             );
+          }
+          if (
+            input.confirmModified !== true &&
+            (yield* Effect.promise(() => integrityFor(root, managed))) !==
+              "verified"
+          ) {
+            return localModifications(input.packageName);
           }
           const temporaryRoot = yield* Effect.tryPromise({
             try: () =>
