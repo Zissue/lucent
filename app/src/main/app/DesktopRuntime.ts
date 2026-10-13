@@ -53,6 +53,31 @@ export const installDesktopNativeAppearanceSync = (
     yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
   });
 
+const checkForUpdatesAtStartup = Effect.gen(function* () {
+  const dialog = yield* ElectronDialog;
+  const updates = yield* DesktopUpdates;
+  const updateState = yield* updates.checkNow();
+  yield* Effect.logInfo("Startup update check completed").pipe(
+    Effect.annotateLogs({
+      component: "updates",
+      data: {
+        status: updateState.status,
+      },
+    }),
+  );
+  yield* showUpdateCheckDialog(updateState, {
+    mode: "automatic",
+    dialog,
+    updates,
+  }).pipe(
+    Effect.catch((cause) =>
+      Effect.logWarning("Failed to show startup update dialog").pipe(
+        Effect.annotateLogs({ component: "updates", data: { cause } }),
+      ),
+    ),
+  );
+});
+
 export const makeDesktopRuntime = <ROut, E>(
   cliOptions: CliOptions,
   layer: Layer.Layer<ROut, E>,
@@ -66,12 +91,10 @@ export const makeDesktopRuntime = <ROut, E>(
     yield* Effect.gen(function* () {
       const app = yield* ElectronApp;
       const applicationMenu = yield* DesktopApplicationMenu;
-      const dialog = yield* ElectronDialog;
       const env = yield* DesktopEnvironment;
       const gameRendererRecovery = yield* DesktopGameRendererRecovery;
       const settingsService = yield* DesktopSettings;
       const scriptWorkspace = yield* ScriptWorkspace;
-      const updates = yield* DesktopUpdates;
       const windows = yield* DesktopWindows;
 
       if (env.debug === true) {
@@ -106,26 +129,7 @@ export const makeDesktopRuntime = <ROut, E>(
       yield* installDesktopDevRendererReload;
 
       if (settings.preferences.checkForUpdates) {
-        const updateState = yield* updates.checkNow();
-        yield* Effect.logInfo("Startup update check completed").pipe(
-          Effect.annotateLogs({
-            component: "updates",
-            data: {
-              status: updateState.status,
-            },
-          }),
-        );
-        yield* showUpdateCheckDialog(updateState, {
-          mode: "automatic",
-          dialog,
-          updates,
-        }).pipe(
-          Effect.catch((cause) =>
-            Effect.logWarning("Failed to show startup update dialog").pipe(
-              Effect.annotateLogs({ component: "updates", data: { cause } }),
-            ),
-          ),
-        );
+        yield* Effect.raceFirst(lifecycle.awaitQuit, checkForUpdatesAtStartup);
       }
 
       yield* lifecycle.awaitQuit;
