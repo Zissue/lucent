@@ -82,6 +82,51 @@ describe("game domain models", () => {
     expect(item.toJSON()).toMatchObject({ context: "bank", weapon: true });
   });
 
+  it("classifies items into inventory pools", () => {
+    const items = [
+      { category: "Weapon", houseItem: false, meta: "" },
+      { category: "Resource", houseItem: false, meta: "" },
+      { category: "Class", houseItem: false, meta: "" },
+      { category: "Item", houseItem: false, meta: " 400 " },
+      { category: "Note", houseItem: false, meta: "" },
+      { category: "Quest Item", houseItem: false, meta: "" },
+      { category: "Item", houseItem: false, meta: "" },
+      { category: "Guild", houseItem: false, meta: "" },
+      { category: "Floor Item", houseItem: true, meta: "" },
+    ].map(
+      (data, index) =>
+        new LiveItem({
+          ...data,
+          coins: false,
+          context: "inventory",
+          cost: 0,
+          description: "",
+          equipped: false,
+          equipmentSlot: "",
+          file: "",
+          itemId: index + 1,
+          link: "",
+          memberOnly: false,
+          name: "Test Item",
+          quantity: 1,
+          temporaryItem: false,
+        }),
+    );
+
+    expect(items.map((item) => item.pool)).toEqual([
+      "bag",
+      "misc",
+      "class",
+      "bag",
+      "misc",
+      "misc",
+      "misc",
+      "house",
+      "house",
+    ]);
+    expect(items[1]?.toJSON().pool).toBe("misc");
+  });
+
   it("derives class rank from cumulative class points", () => {
     const thresholds = [
       900, 3_600, 10_000, 22_500, 44_100, 78_400, 129_600, 202_500, 302_500,

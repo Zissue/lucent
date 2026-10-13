@@ -1,6 +1,6 @@
 {
   "name": "@lucent/consumables",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Buy finished potions or craft consumables.",
   "main": "index.js",
   "types": "index.d.ts",

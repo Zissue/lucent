@@ -4,6 +4,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Cause from "effect/Cause";
 import * as Console from "effect/Console";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
@@ -47,9 +48,6 @@ class ReleaseError extends Data.TaggedError("ReleaseError")<{
   readonly message: string;
   readonly cause?: unknown;
 }> {}
-
-const toErrorMessage = (cause: unknown): string =>
-  cause instanceof Error ? cause.message : String(cause);
 
 const toRelativePath = (path: string): string => {
   const value = relative(REPO_ROOT, path);
@@ -490,11 +488,7 @@ if (
   })(getCliArgs()).pipe(
     Effect.catch((error) =>
       Effect.gen(function* () {
-        yield* error instanceof ReleaseError
-          ? Console.error(
-              `Release failed: ${error.message}${error.cause ? `\n${toErrorMessage(error.cause)}` : ""}`,
-            )
-          : Console.error(`Release failed: ${toErrorMessage(error)}`);
+        yield* Console.error("Release failed:", Cause.pretty(Cause.fail(error)));
         process.exitCode = 1;
       }),
     ),

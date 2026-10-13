@@ -8,7 +8,9 @@
     ".repos/**",
     "dist",
     "build",
-    "scripts",
+    "/scripts",
+    "app/scripts",
+    "packages/*/scripts",
     "*.tsbuildinfo"
   ],
   "plugins": ["eslint", "oxc", "unicorn", "typescript"],
@@ -34,5 +36,13 @@
     ],
     "lucent/no-inline-schema-compile": "warn",
     "lucent/no-manual-effect-runtime-in-tests": "error"
-  }
+  },
+  "overrides": [
+    {
+      "files": ["script-packages/*/scripts/**/*.js"],
+      "rules": {
+        "lucent/static-script-inputs": "error"
+      }
+    }
+  ]
 }

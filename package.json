@@ -32,7 +32,8 @@
     "test": "pnpm test:scripts && pnpm -r --if-present test",
     "test:scripts": "vitest run scripts/release-logic.test.ts scripts/docgen-packages.test.ts scripts/process.test.ts",
     "test:watch": "pnpm -r --if-present test:watch",
-    "typecheck": "tsc -p tsconfig.json --noEmit && pnpm -r typecheck"
+    "typecheck": "tsc -p tsconfig.json --noEmit && pnpm typecheck:script-packages && pnpm -r typecheck",
+    "typecheck:script-packages": "tsc6 -p script-packages/lucent-consumables/jsconfig.repo.json --noEmit && tsc6 -p script-packages/lucent-dailies/jsconfig.repo.json --noEmit"
   },
   "dependencies": {
     "effect": "4.0.0-rc.112"

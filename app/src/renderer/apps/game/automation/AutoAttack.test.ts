@@ -43,7 +43,7 @@ const apiWith = (
       ...combat,
     },
     events: { on },
-    monsters: { getAvailable: () => Effect.succeed([monster]) },
+    monsterLookup: { getAvailable: () => Effect.succeed([monster]) },
     player: {
       auras: { get: () => Effect.succeed(null) },
       getHp: () => Effect.succeed(100),

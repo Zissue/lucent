@@ -1,3 +1,4 @@
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -9,38 +10,16 @@ import {
 } from "../contract/Diagnostic";
 import { WireNumber } from "../contract/Coercion";
 import type { ExtensionPacket, ServerPacket } from "../contract/Packet";
-import {
-  AuraPayload,
-  parseCombatEntityReferences,
-  toAura,
-} from "../contract/payload/Combat";
-import {
-  antiCounterDurationMsFromAura,
-  matchAntiCounterAura,
-  matchAntiCounterMessage,
-} from "../domain/AntiCounter";
+import { parseCombatEntityReferences } from "../contract/payload/Combat";
+import { matchAntiCounterMessage } from "../domain/AntiCounter";
 import {
   EntityPatchPayload,
   entityState,
   type EntityPatchPayload as EntityPatch,
 } from "../contract/payload/World";
 import type { Store } from "../state/Store";
+import { auraEvents, messageText, projectAuraEvents } from "./Auras";
 
-const AuraChange = Schema.Struct({
-  auras: Schema.optionalKey(Schema.Array(AuraPayload)),
-  aura: Schema.optionalKey(AuraPayload),
-  cInf: Schema.optionalKey(Schema.String),
-  cmd: Schema.Literals([
-    "aura+",
-    "aura++",
-    "aura+p",
-    "aura-",
-    "aura--",
-    "aura-p",
-    "aura=",
-  ]),
-  tInf: Schema.String,
-});
 const Animation = Schema.Struct({
   animStr: Schema.optionalKey(Schema.String),
   cInf: Schema.optionalKey(Schema.String),
@@ -70,19 +49,8 @@ const CombatPayload = Schema.Struct({
 });
 const decodeCombat = Schema.decodeUnknownOption(CombatPayload);
 const decodeAnimation = Schema.decodeUnknownOption(Animation);
-const decodeAuraChange = Schema.decodeUnknownOption(AuraChange);
 const decodeCounterAction = Schema.decodeUnknownOption(CounterAction);
 const decodeEntityPatch = Schema.decodeUnknownOption(EntityPatchPayload);
-
-const messageText = (
-  value: string | readonly string[] | undefined,
-): string | undefined => {
-  if (value === undefined) return undefined;
-
-  const message =
-    typeof value === "string" ? value.trim() : value.join(" ").trim();
-  return message === "" ? undefined : message;
-};
 
 const entityPatch = (patch: EntityPatch) => {
   const state = entityState(patch.intState);
@@ -196,7 +164,7 @@ export const projectCombat = (
         );
         continue;
       }
-      const result = yield* store.world.patchMonster(
+      const result = yield* store.world.writeMonster(
         id,
         entityPatch(patch.value),
       );
@@ -211,6 +179,7 @@ export const projectCombat = (
       if (result?.becameDead) {
         events.push({ type: "monster-death", monsterMapId: id });
       }
+      events.push(...auraEvents({ type: "monster", id }, result.auraChanges));
     }
 
     for (const value of decoded.value.anims ?? []) {
@@ -261,133 +230,17 @@ export const projectCombat = (
       });
     }
 
-    for (const value of decoded.value.a ?? []) {
-      const change = decodeAuraChange(value);
-      if (Option.isNone(change)) {
-        yield* diagnose(
-          "combat:malformed-aura-change",
-          new Error("Ignored malformed aura change"),
-          [value],
-        );
-        continue;
-      }
-      const operation = change.value.cmd.startsWith("aura+") ? "add" : "remove";
-      const kind = change.value.cmd.endsWith("p") ? "passive" : "active";
-      const payloads =
-        change.value.auras ??
-        (change.value.aura === undefined ? [] : [change.value.aura]);
-      const source =
-        change.value.cInf === undefined
-          ? undefined
-          : parseCombatEntityReferences(change.value.cInf)[0];
-      for (const target of parseCombatEntityReferences(change.value.tInf)) {
-        for (const payload of payloads) {
-          if (change.value.cmd === "aura=") {
-            if (payload.stk !== undefined) {
-              yield* store.world.setAuraStack(
-                target.type,
-                target.id,
-                payload.nam,
-                Math.max(1, payload.stk),
-              );
-            }
-            continue;
-          }
-          const eventDetails = {
-            ...(payload.dur === undefined ? {} : { duration: payload.dur }),
-            ...(payload.icon === undefined ? {} : { icon: payload.icon }),
-            ...(source === undefined
-              ? {}
-              : { sourceId: source.id, sourceType: source.type }),
-          };
-          if (operation === "add") {
-            // Forced/passive forms may omit isNew; ordinary aura+ relies on it
-            // to distinguish a new stack from a refresh.
-            const auraOperation =
-              change.value.cmd === "aura++" ||
-              change.value.cmd === "aura+p" ||
-              payload.isNew === true
-                ? "add"
-                : "refresh";
-            yield* store.world.addAura(
-              target.type,
-              target.id,
-              toAura(payload, kind),
-              auraOperation,
-            );
-            const antiCounterMatch = matchAntiCounterAura(payload.nam);
-            if (
-              target.type === "monster" &&
-              kind === "active" &&
-              antiCounterMatch !== undefined
-            ) {
-              const durationMs = antiCounterDurationMsFromAura(payload.dur);
-              events.push({
-                type: "counter-attack-start",
-                monsterMapId: target.id,
-                source: "aura",
-                triggerId: antiCounterMatch.triggerId,
-                triggerText: antiCounterMatch.triggerText,
-                ...(durationMs === undefined ? {} : { durationMs }),
-              });
-            }
-            events.push({
-              type: "aura-added",
-              ...eventDetails,
-              name: payload.nam,
-              targetId: target.id,
-              targetType: target.type,
-            });
-          } else {
-            yield* store.world.removeAura(target.type, target.id, payload.nam);
-            const antiCounterMatch = matchAntiCounterAura(payload.nam);
-            if (
-              target.type === "monster" &&
-              kind === "active" &&
-              antiCounterMatch !== undefined
-            ) {
-              events.push({
-                type: "counter-attack-end",
-                monsterMapId: target.id,
-                source: "aura",
-                triggerId: antiCounterMatch.triggerId,
-                triggerText: antiCounterMatch.triggerText,
-              });
-            }
-            events.push({
-              type: "aura-removed",
-              ...eventDetails,
-              name: payload.nam,
-              targetId: target.id,
-              targetType: target.type,
-            });
-          }
-
-          const rawMessage =
-            operation === "add" ? payload.msgOn : payload.msgOff;
-          const message = messageText(rawMessage);
-          if (message !== undefined && kind === "active") {
-            const isSelfOnly = message.startsWith("@");
-            const self = isSelfOnly ? yield* store.world.getMe : null;
-            if (
-              !isSelfOnly ||
-              (target.type === "player" && self?.entityId === target.id)
-            ) {
-              const normalized = isSelfOnly ? message.slice(1).trim() : message;
-              if (normalized !== "") {
-                events.push({
-                  type: "update-message",
-                  message: normalized,
-                  ...(target.type === "monster"
-                    ? { monsterMapId: target.id }
-                    : {}),
-                  source: "aura",
-                });
-              }
-            }
-          }
-        }
-      }
+    if (decoded.value.a != null && decoded.value.a.length > 0) {
+      const nowMs = yield* Clock.currentTimeMillis;
+      events.push(
+        ...(yield* projectAuraEvents(
+          store,
+          decoded.value.a,
+          "merge",
+          nowMs,
+          diagnose,
+        )),
+      );
     }
 
     return events;

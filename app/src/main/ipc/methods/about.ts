@@ -56,7 +56,7 @@ const resolveLinkUrl = Effect.fn("desktop.about.resolveLinkUrl")(function* (
         ? null
         : `${REPOSITORY_URL}/commit/${desktopBuildInfo.commit}`;
     case "documentation":
-      return `${WEBSITE_URL}/guides`;
+      return `${WEBSITE_URL}/docs`;
     case "issues":
       return `${REPOSITORY_URL}/issues/new`;
     case "releaseNotes": {

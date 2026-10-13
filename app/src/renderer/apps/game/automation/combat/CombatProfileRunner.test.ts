@@ -4,9 +4,13 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as Option from "effect/Option";
+import * as TestClock from "effect/testing/TestClock";
 
+import { Bridge, makeBridge } from "../../flash/bridge/Bridge";
+import { Gateway, makeGateway } from "../../flash/bridge/Gateway";
 import type { Event, EventType } from "../../flash/contract/Event";
-import type { ApiService } from "../../flash/api/Api";
+import { makeApi, type ApiService } from "../../flash/api/Api";
 import {
   COMBAT_PROFILE_RETRY_DELAY_MS,
   makeCombatProfileRunner,
@@ -66,7 +70,7 @@ type EventHandler = (event: Event) => Effect.Effect<void, unknown>;
 const makeHarness = (options?: {
   readonly alive?: boolean;
   readonly attack?: (monsterMapId: number) => Effect.Effect<boolean>;
-  readonly getAvailableMonsters?: ApiService["monsters"]["getAvailable"];
+  readonly getAvailableMonsters?: ApiService["monsterLookup"]["getAvailable"];
   readonly getTarget?: ApiService["combat"]["target"]["get"];
   readonly isAttackBlocked?: (monsterMapId: number) => boolean;
   readonly monsters?: readonly LiveMonster[];
@@ -130,7 +134,7 @@ const makeHarness = (options?: {
           };
         }),
     },
-    monsters: {
+    monsterLookup: {
       getAvailable: () =>
         options?.getAvailableMonsters?.() ??
         Effect.succeed(options?.monsters ?? [first, priority]),
@@ -368,7 +372,7 @@ describe("CombatProfileRunner", () => {
       const targetRunner = yield* makeCombatProfileRunner(
         {
           ...targetFailure.api,
-          monsters: {
+          monsterLookup: {
             getAvailable: () => Effect.die("target failed"),
           },
         } as unknown as ApiService,
@@ -556,6 +560,81 @@ describe("CombatProfileRunner", () => {
       yield* left.runCycle();
 
       expect(harness.casts).toEqual([1, 1, 2]);
+    }),
+  );
+
+  it.effect("attacks without waiting for monster drop responses", () =>
+    Effect.gen(function* () {
+      const target = {} as Window;
+      target.swf = {
+        "combat.attackMonster": () => true,
+        "combat.getSkillCooldownRemaining": () => 0,
+        "combat.useSkill": () => true,
+        "player.getUserId": () => 1,
+        "world.getAvailableMonsterMapIds": () => [2],
+        "world.requestMonsterDrops": () => true,
+      } as unknown as Window["swf"];
+      const bridge = yield* makeBridge(target);
+      const gateway = yield* makeGateway(target).pipe(
+        Effect.provideService(Bridge, bridge),
+      );
+      const api = yield* makeApi.pipe(
+        Effect.provideService(Bridge, bridge),
+        Effect.provideService(Gateway, gateway),
+      );
+      yield* api.wait.forPacket(
+        { command: "moveToArea", direction: "extension", encoding: "json" },
+        {
+          timeout: "1 second",
+          trigger: Effect.sync(() => {
+            target.onExtensionResponse?.(
+              JSON.stringify({
+                dataObj: {
+                  areaId: 1,
+                  areaName: "test-1",
+                  cmd: "moveToArea",
+                  monBranch: [
+                    {
+                      MonID: 1,
+                      MonMapID: 2,
+                      intHP: 100,
+                      intHPMax: 100,
+                      intState: 1,
+                      strMonName: "Slime",
+                    },
+                  ],
+                  monmap: [{ MonMapID: 2, strFrame: "Enter" }],
+                  uoBranch: [
+                    {
+                      entID: 1,
+                      intHP: 100,
+                      intHPMax: 100,
+                      intState: 1,
+                      strFrame: "Enter",
+                      strUsername: "Hero",
+                    },
+                  ],
+                },
+                type: "json",
+              }),
+            );
+            return true;
+          }),
+        },
+      );
+
+      const runner = yield* makeCombatProfileRunner(api, {
+        profile,
+        targetPriority: [],
+      });
+      const cycle = yield* runner
+        .runCycle()
+        .pipe(Effect.timeoutOption("1 second"), Effect.forkChild);
+      yield* TestClock.adjust("1 second");
+
+      expect(yield* Fiber.join(cycle)).toEqual(
+        Option.some({ cast: true, delayMs: 120, kind: "attacked" }),
+      );
     }),
   );
 });

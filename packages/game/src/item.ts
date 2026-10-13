@@ -10,6 +10,23 @@ export type ItemContext =
   | "shop"
   | "temporary";
 
+/**
+ * `"bag"` counts equipment and equippable consumables such as potions.
+ * `"misc"` counts resources, quest items, notes, and other non-consumable items
+ * of type Item.
+ * Classes, house items, and Guild items count against neither. A misc item
+ * already in the inventory never takes a new misc slot.
+ */
+export type InventoryPool = "bag" | "misc";
+
+/**
+ * The pool an item counts against in the inventory. `"class"` has no limit,
+ * and `"house"` uses house slots.
+ */
+export type ItemPool = InventoryPool | "class" | "house";
+
+const miscCategories = new Set(["Item", "Note", "Quest Item", "Resource"]);
+
 const itemRarityNames: Readonly<Record<number, string>> = {
   0: "Unknown",
   1: "Enhancement +0",
@@ -161,6 +178,7 @@ export interface Item {
   readonly meta: string;
   readonly name: string;
   readonly pet: boolean;
+  readonly pool: ItemPool;
   readonly quantity: number;
   /** Items consumed per merge for this shop offer. */
   readonly requirements: readonly ItemRequirement[];
@@ -207,6 +225,7 @@ export type ItemSnapshot = Readonly<ItemData> & {
   readonly classRank: number | null;
   readonly helm: boolean;
   readonly pet: boolean;
+  readonly pool: ItemPool;
   readonly weapon: boolean;
   readonly wearable: boolean;
   readonly worn: boolean;
@@ -287,6 +306,14 @@ export class LiveItem extends LiveModel<ItemData> implements Item {
   get pet(): boolean {
     return this.equipmentSlot === "pe";
   }
+  get pool(): ItemPool {
+    if (this.classItem) return "class";
+    if (this.houseItem || this.category === "Guild") return "house";
+    return miscCategories.has(this.category) &&
+      !(this.category === "Item" && /^\s*\d+\s*$/.test(this.meta))
+      ? "misc"
+      : "bag";
+  }
   get quantity(): number {
     return this.modelData.quantity;
   }
@@ -334,6 +361,7 @@ export class LiveItem extends LiveModel<ItemData> implements Item {
       ...(enhancement === undefined ? {} : { enhancement }),
       helm: this.helm,
       pet: this.pet,
+      pool: this.pool,
       ...(this.modelData.requirements === undefined
         ? {}
         : {

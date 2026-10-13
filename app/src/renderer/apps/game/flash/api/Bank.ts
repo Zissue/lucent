@@ -5,7 +5,6 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
-import type { BankView } from "../../Types";
 import type { BridgeService } from "../bridge/Bridge";
 import { PositiveWireInt, WireBoolean, WireInt } from "../contract/Coercion";
 import { packetData } from "../contract/Packet";
@@ -16,19 +15,12 @@ import type { House } from "./House";
 import type { Inventory } from "./Inventory";
 import type { Wait } from "./Wait";
 
-export type { BankView } from "../../Types";
-
 export interface BankOpenOptions {
   /**
-   * Whether to reload bank items before opening the view.
+   * Whether to reload bank items before opening the bank.
    * @defaultValue false
    */
   readonly force?: boolean;
-  /**
-   * The bank view to open.
-   * @defaultValue "regular"
-   */
-  readonly view?: BankView;
 }
 
 const TransferResponse = Schema.Struct({
@@ -67,13 +59,9 @@ export const makeBank = Effect.fnUntraced(function* (
   const loads = yield* Semaphore.make(1);
   const opens = yield* Semaphore.make(1);
 
-  const isOpen = (view?: BankView) =>
+  const isOpen = () =>
     bridge
-      .invoke(
-        "bank.isOpen",
-        view === undefined ? undefined : [view],
-        Schema.Boolean,
-      )
+      .invoke("bank.isOpen", undefined, Schema.Boolean)
       .pipe(Effect.map(Option.getOrElse(() => false)));
 
   const getAll = () =>
@@ -143,27 +131,22 @@ export const makeBank = Effect.fnUntraced(function* (
     );
   };
 
-  const openView = Effect.fn("Bank.openView")(function* (
-    view: BankView,
-    force: boolean,
-  ) {
-    if (!(yield* auth.isLoggedIn())) return false;
-
-    if (!(yield* load(force))) return false;
-
-    const opened = yield* isOpen(view);
-    if (opened) return true;
-
-    if (Option.isNone(yield* bridge.invoke("bank.open", [view], Schema.Void))) {
-      return false;
-    }
-
-    return yield* wait.until(isOpen(view), { timeout: "3 seconds" });
-  });
-
   const open = (options: BankOpenOptions = {}) =>
     opens.withPermits(1)(
-      openView(options.view ?? "regular", options.force ?? false),
+      Effect.gen(function* () {
+        if (!(yield* load(options.force ?? false))) return false;
+        if (yield* isOpen()) return true;
+
+        if (
+          Option.isNone(
+            yield* bridge.invoke("bank.open", undefined, Schema.Void),
+          )
+        ) {
+          return false;
+        }
+
+        return yield* wait.until(isOpen(), { timeout: "3 seconds" });
+      }),
     );
 
   const contains = (selector: ItemQuery, quantity?: number) =>
@@ -231,9 +214,7 @@ export const makeBank = Effect.fnUntraced(function* (
       if (!(yield* load())) return false;
       const bankItem = yield* get(selector);
       if (bankItem === null) return false;
-      if (!(yield* open({ view: bankItem.houseItem ? "house" : "regular" }))) {
-        return false;
-      }
+      if (!(yield* open())) return false;
       const canAccept = bankItem.houseItem
         ? houseCanAccept(bankItem.itemId, house)
         : inventory.canAccept(bankItem);

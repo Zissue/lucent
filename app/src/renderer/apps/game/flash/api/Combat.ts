@@ -185,7 +185,6 @@ export const makeCombat = (
     getConsumableSkillItem,
     inventory,
     player,
-    wait,
   }).prepare;
 
   const getSkillCooldownRemainingMs = (skill: SkillSlot) =>

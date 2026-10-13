@@ -21,4 +21,4 @@ type HttpErrorReason =
   | "body"
 ```
 
-<p class="source-reference">Defined in <a class="source-reference__link" href="https://github.com/toommyliu/lucent/blob/main/app/src/renderer/apps/game/scripting/ScriptApi.ts#L1378" aria-label="Open source: app/src/renderer/apps/game/scripting/ScriptApi.ts:1378" title="app/src/renderer/apps/game/scripting/ScriptApi.ts:1378" target="_blank" rel="noreferrer"><code class="source-reference__path">ScriptApi.ts:1378</code></a></p>
+<p class="source-reference">Defined in <a class="source-reference__link" href="https://github.com/toommyliu/lucent/blob/main/app/src/renderer/apps/game/scripting/ScriptApi.ts#L1387" aria-label="Open source: app/src/renderer/apps/game/scripting/ScriptApi.ts:1387" title="app/src/renderer/apps/game/scripting/ScriptApi.ts:1387" target="_blank" rel="noreferrer"><code class="source-reference__path">ScriptApi.ts:1387</code></a></p>

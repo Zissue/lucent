@@ -13,6 +13,7 @@ import type { Event } from "../contract/Event";
 import { makeWait } from "../protocol/Wait";
 import type { Packet } from "../contract/Packet";
 import { makeStore } from "../state/Store";
+import { makeHouse } from "./House";
 import { makeInventory } from "./Inventory";
 import type { Wait } from "./Wait";
 
@@ -156,6 +157,7 @@ const makeHarness = (items: readonly LiveItem[], autoConfirm = true) =>
           return Option.none();
         }),
     } as unknown as BridgeService;
+    const house = makeHouse(bridge, store);
     const wait = {
       ...makeWait({
         subscribePackets: PubSub.subscribe(packets),
@@ -169,7 +171,7 @@ const makeHarness = (items: readonly LiveItem[], autoConfirm = true) =>
       confirmEquip,
       nextEquip: Queue.take(sentEquips),
       equippedItemIds,
-      inventory: makeInventory(bridge, store, wait),
+      inventory: makeInventory(bridge, store, house, wait),
       unequippedItemIds,
       usedItemIds,
     };

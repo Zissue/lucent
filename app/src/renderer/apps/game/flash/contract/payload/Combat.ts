@@ -1,14 +1,7 @@
-import { LiveAura } from "@lucent/game";
-import type { AuraKind } from "@lucent/game";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
-import {
-  NonNegativeWireInt,
-  WireBoolean,
-  WireInt,
-  WireNumber,
-} from "../Coercion";
+import { NonNegativeWireInt, WireInt } from "../Coercion";
 
 export interface CombatEntityReference {
   readonly id: number;
@@ -155,36 +148,3 @@ export const decodeCombatActionAcknowledgements = (
   append(decoded.value.sarsa, multiActionAcknowledgement);
   return acknowledgements;
 };
-
-export const AuraPayload = Schema.Struct({
-  cat: Schema.optionalKey(Schema.String),
-  dur: Schema.optionalKey(WireNumber),
-  icon: Schema.optionalKey(Schema.String),
-  isNew: Schema.optionalKey(WireBoolean),
-  msgOff: Schema.optionalKey(
-    Schema.Union([Schema.String, Schema.Array(Schema.String)]),
-  ),
-  msgOn: Schema.optionalKey(
-    Schema.Union([Schema.String, Schema.Array(Schema.String)]),
-  ),
-  nam: Schema.String,
-  stk: Schema.optionalKey(WireInt),
-  // AQW uses val for numeric values and string data such as a locked skill's name.
-  val: Schema.optionalKey(Schema.Union([WireNumber, Schema.String])),
-});
-export type AuraPayload = typeof AuraPayload.Type;
-
-export const toAura = (
-  payload: AuraPayload,
-  kind: AuraKind,
-  stack = 1,
-): LiveAura =>
-  new LiveAura({
-    ...(payload.cat === undefined ? {} : { category: payload.cat }),
-    duration: payload.dur ?? 0,
-    ...(payload.icon === undefined ? {} : { icon: payload.icon }),
-    kind,
-    name: payload.nam,
-    stack,
-    ...(payload.val === undefined ? {} : { value: payload.val }),
-  });

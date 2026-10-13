@@ -2,6 +2,42 @@
 
 All notable changes to this project will be documented in this file.
 
+# [0.0.4](https://github.com/toommyliu/lucent/compare/v0.0.3...v0.0.4) - (2026-10-11)
+
+## Bug Fixes
+
+- **lucent-dailies:** Restore Wheel of Doom inputs (#323) ([e77296a](https://github.com/toommyliu/lucent/commit/e77296aa1e776975059bc7bf748c89f9c398215c))
+
+- **lucent-consumables:** Restore inputs for consumable selection (#322) ([7216e1c](https://github.com/toommyliu/lucent/commit/7216e1ca382de22c071ae7d307dc5dd0bdb8dff7))
+
+- **combat-profiles:** Start attacking without waiting for monster drops (#327) ([272b0ed](https://github.com/toommyliu/lucent/commit/272b0eda4b4f5b2a041d6d93060d32be6f2b53b4))
+
+- **combat-profiles:** Stop preflight waiting for consumable cooldowns (#328) ([6ca9c02](https://github.com/toommyliu/lucent/commit/6ca9c02bde8d14af98f2940484289d2c580b7c2e))
+
+- Sync aura state with the client (#329) ([f4c3b51](https://github.com/toommyliu/lucent/commit/f4c3b519116eb465c5094f414f52faa0b14a87f5))
+
+
+## Refactor
+
+- **scripting/bank:** Remove bank views (#336) ([7b5f097](https://github.com/toommyliu/lucent/commit/7b5f097e9ab12b1c375066707e2039c8561a0ea4))
+
+- **inventory:** Reuse house capacity in canAccept (#335) ([f73e971](https://github.com/toommyliu/lucent/commit/f73e971f6183b54d5b99796a2b7dda168bbd4daa))
+
+
+## Features
+
+- **scripting:** Add kind to aura events (#332) ([18fd1a6](https://github.com/toommyliu/lucent/commit/18fd1a6ba6f5a3748b981090fab5505708b37eb8))
+
+- **scripting:** Expose item pools on LiveItem (#334) ([abc0413](https://github.com/toommyliu/lucent/commit/abc0413ff7a94be91d4ce5a764bd2c676d1372ee))
+
+- **scripting:** Expose misc inventory capacity (#331) ([1006152](https://github.com/toommyliu/lucent/commit/10061526d13b302fdd959592935b2caa97f71094))
+
+
+## Documentation
+
+- Reorganize navigation and polish docs UI (#338) ([8aa8685](https://github.com/toommyliu/lucent/commit/8aa8685b11475cae245f7b9407a4da6f071a2e63))
+
+
 # [0.0.3](https://github.com/toommyliu/lucent/compare/v0.0.2...v0.0.3) - (2026-10-10)
 
 ## Bug Fixes

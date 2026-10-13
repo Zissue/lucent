@@ -816,25 +816,30 @@ export const makeArmyLoopTauntRuntime = (
                         return;
                       }
                       case "aura-added":
+                      case "aura-updated":
                       case "aura-removed": {
                         if (
                           event.targetType !== "monster" ||
-                          !isFocusName(event.name) ||
-                          (event.type === "aura-added" &&
-                            event.icon !== LOOP_TAUNT_FOCUS_AURA_ICON)
+                          !isFocusName(event.name)
                         ) {
                           return;
                         }
                         const assignmentIds = yield* assignmentIdsForMonster(
                           event.targetId,
                         );
+                        if (assignmentIds.length === 0) return;
+                        const monster = yield* api.monsterLookup.get(
+                          event.targetId,
+                        );
+                        const active =
+                          monster?.auras.some(isFocusAura) ?? false;
                         yield* Effect.forEach(
                           assignmentIds,
                           (assignmentId) =>
                             updateFocusState(
                               assignmentId,
                               event.targetId,
-                              event.type === "aura-added",
+                              active,
                             ),
                           { discard: true },
                         );

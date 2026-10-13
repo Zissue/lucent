@@ -10,11 +10,6 @@ package lucent.game
     private static var loaded:Boolean = false;
     private static var loading:Boolean = false;
 
-    private static function labelForView(view:String):String
-    {
-      return view == "house" ? "HouseBank" : "Bank";
-    }
-
     private static function failLoad(message:String):void
     {
       loading = false;
@@ -188,30 +183,22 @@ package lucent.game
       return true;
     }
 
-    [BridgeTsParamType("view: FlashTypes.BankView")]
     [BridgeExport]
-    public static function open(view:String = "regular"):void
+    public static function open():void
     {
       var game:Object = Main.Game;
-      var label:String = labelForView(view);
-      if (!game.world.uiLock && game.ui.mcPopup.currentLabel != label)
+      if (!game.world.uiLock && game.ui.mcPopup.currentLabel != "Bank")
       {
-        game.ui.mcPopup.fOpen(label);
+        game.ui.mcPopup.fOpen("Bank");
       }
     }
 
-    [BridgeTsParamType("view: FlashTypes.BankView")]
     [BridgeExport]
-    public static function isOpen(view:String = null):Boolean
+    public static function isOpen():Boolean
     {
       var game:Object = Main.Game;
-      var currentLabel:String = game.ui.mcPopup.currentLabel;
-      if (view == null)
-      {
-        return currentLabel == "Bank" || currentLabel == "HouseBank";
-      }
-
-      return currentLabel == labelForView(view);
+      return game.ui.mcPopup.currentLabel == "Bank"
+        && game.ui.mcPopup.getChildByName("mcBank") != null;
     }
 
     [BridgeIgnore]

@@ -11,4 +11,4 @@ sidebar:
 type HttpRequestBody = string | URLSearchParams | Uint8Array<ArrayBufferLike> | ArrayBuffer
 ```
 
-<p class="source-reference">Defined in <a class="source-reference__link" href="https://github.com/toommyliu/lucent/blob/main/app/src/renderer/apps/game/scripting/ScriptApi.ts#L1402" aria-label="Open source: app/src/renderer/apps/game/scripting/ScriptApi.ts:1402" title="app/src/renderer/apps/game/scripting/ScriptApi.ts:1402" target="_blank" rel="noreferrer"><code class="source-reference__path">ScriptApi.ts:1402</code></a></p>
+<p class="source-reference">Defined in <a class="source-reference__link" href="https://github.com/toommyliu/lucent/blob/main/app/src/renderer/apps/game/scripting/ScriptApi.ts#L1411" aria-label="Open source: app/src/renderer/apps/game/scripting/ScriptApi.ts:1411" title="app/src/renderer/apps/game/scripting/ScriptApi.ts:1411" target="_blank" rel="noreferrer"><code class="source-reference__path">ScriptApi.ts:1411</code></a></p>

@@ -264,6 +264,52 @@ const noInlineSchemaCompile = defineRule({
   },
 });
 
+const staticScriptInputs = defineRule({
+  meta: {
+    type: "problem",
+    docs: {
+      description:
+        "Require script inputs to use a top-level module.exports.inputs assignment.",
+    },
+  },
+  create(context) {
+    return {
+      AssignmentExpression(node) {
+        const left = node.left;
+        if (
+          left.type !== "MemberExpression" ||
+          getPropertyName(left.property) !== "inputs"
+        ) {
+          return;
+        }
+
+        const object = left.object;
+        if (
+          node.operator === "=" &&
+          !left.computed &&
+          object.type === "MemberExpression" &&
+          !object.computed &&
+          object.object.type === "Identifier" &&
+          object.object.name === "module" &&
+          object.property.type === "Identifier" &&
+          object.property.name === "exports" &&
+          node.parent.type === "ExpressionStatement" &&
+          node.parent.parent.type === "Program" &&
+          node.right.type === "ObjectExpression"
+        ) {
+          return;
+        }
+
+        context.report({
+          node,
+          message:
+            "Define script inputs with a top-level module.exports.inputs = { ... } assignment. Lucent discovers inputs without executing the script and cannot read aliased or dynamic definitions.",
+        });
+      },
+    };
+  },
+});
+
 module.exports = definePlugin({
   meta: {
     name: "lucent",
@@ -271,5 +317,6 @@ module.exports = definePlugin({
   rules: {
     "no-manual-effect-runtime-in-tests": noManualEffectRuntimeInTests,
     "no-inline-schema-compile": noInlineSchemaCompile,
+    "static-script-inputs": staticScriptInputs,
   },
 });

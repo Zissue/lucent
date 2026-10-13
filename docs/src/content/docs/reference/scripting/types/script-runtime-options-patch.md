@@ -15,4 +15,4 @@ type ScriptRuntimeOptionsPatch = {
 }
 ```
 
-<p class="source-reference">Defined in <a class="source-reference__link" href="https://github.com/toommyliu/lucent/blob/main/app/src/renderer/apps/game/scripting/ScriptApi.ts#L1005" aria-label="Open source: app/src/renderer/apps/game/scripting/ScriptApi.ts:1005" title="app/src/renderer/apps/game/scripting/ScriptApi.ts:1005" target="_blank" rel="noreferrer"><code class="source-reference__path">ScriptApi.ts:1005</code></a></p>
+<p class="source-reference">Defined in <a class="source-reference__link" href="https://github.com/toommyliu/lucent/blob/main/app/src/renderer/apps/game/scripting/ScriptApi.ts#L1014" aria-label="Open source: app/src/renderer/apps/game/scripting/ScriptApi.ts:1014" title="app/src/renderer/apps/game/scripting/ScriptApi.ts:1014" target="_blank" rel="noreferrer"><code class="source-reference__path">ScriptApi.ts:1014</code></a></p>

@@ -27,8 +27,10 @@ const makeHarness = Effect.fnUntraced(function* (
   const calls = { deposits: 0, swaps: 0, withdrawals: 0 };
   let loaded = false;
   let opened = false;
+  let miscSlots = 2;
   const emit = (dataObj: object) =>
     target.onExtensionResponse?.(JSON.stringify({ dataObj, type: "json" }));
+  const emitConnection = (status: string) => target.onConnection?.(status);
   target.swf = {
     "auth.isLoggedIn": () => true,
     "bank.getItems": () => bankItems,
@@ -65,7 +67,7 @@ const makeHarness = Effect.fnUntraced(function* (
       return true;
     },
     "inventory.getSlots": () => 1,
-    "inventory.getMiscSlots": () => 2,
+    "inventory.getMiscSlots": () => miscSlots,
     "house.getSlots": () => 1,
   } as unknown as Window["swf"];
   const bridge = yield* makeBridge(target);
@@ -86,7 +88,15 @@ const makeHarness = Effect.fnUntraced(function* (
     },
   );
   expect(loadedInventory).not.toBeNull();
-  return { api, calls };
+  return {
+    api,
+    calls,
+    emit,
+    emitConnection,
+    setMiscSlots: (slots: number) => {
+      miscSlots = slots;
+    },
+  };
 });
 
 describe("inventory capacity after the AQW inventory update", () => {
@@ -269,5 +279,118 @@ describe("inventory capacity after the AQW inventory update", () => {
       ]);
       expect(yield* api.bank.contains(3)).toBe(false);
     }),
+  );
+
+  it.effect("reports bag and misc capacity independently", () =>
+    Effect.gen(function* () {
+      const { api } = yield* makeHarness([
+        equipment,
+        misc,
+        classItem,
+        { ItemID: 8, sName: "Guild Item", sType: "Guild" },
+        potion,
+      ]);
+      expect(yield* api.inventory.getSlots()).toBe(1);
+      expect(yield* api.inventory.getSlots("bag")).toBe(1);
+      expect(yield* api.inventory.getUsedSlots()).toBe(2);
+      expect(yield* api.inventory.getAvailableSlots()).toBe(0);
+      expect(yield* api.inventory.getSlots("misc")).toBe(2);
+      expect(yield* api.inventory.getUsedSlots("misc")).toBe(1);
+      expect(yield* api.inventory.getAvailableSlots("misc")).toBe(1);
+    }),
+  );
+
+  it.effect(
+    "rejects a new misc withdrawal when availability reaches zero",
+    () =>
+      Effect.gen(function* () {
+        const { api, calls } = yield* makeHarness(
+          [misc],
+          [
+            bankMisc,
+            { ItemID: 12, sName: "Another Resource", sType: "Resource" },
+          ],
+        );
+        expect(yield* api.bank.withdraw(11)).toBe(true);
+        expect(yield* api.inventory.getUsedSlots("misc")).toBe(2);
+        expect(yield* api.inventory.getAvailableSlots("misc")).toBe(0);
+        expect(yield* api.inventory.contains(11)).toBe(true);
+        expect(yield* api.bank.contains(11)).toBe(false);
+        expect(calls.withdrawals).toBe(1);
+        expect(yield* api.bank.withdraw(12)).toBe(false);
+        expect(calls.withdrawals).toBe(1);
+        expect(yield* api.inventory.contains(12)).toBe(false);
+        expect(yield* api.bank.contains(12)).toBe(true);
+      }),
+  );
+
+  it.effect("uses the current misc limit for reads and withdrawals", () =>
+    Effect.gen(function* () {
+      const { api, setMiscSlots } = yield* makeHarness([
+        misc,
+        { ItemID: 5, sName: "Quest Item", sType: "Quest Item" },
+      ]);
+      expect(yield* api.inventory.getSlots("misc")).toBe(2);
+      expect(yield* api.inventory.getAvailableSlots("misc")).toBe(0);
+      setMiscSlots(3);
+      expect(yield* api.inventory.getSlots("misc")).toBe(3);
+      expect(yield* api.inventory.getAvailableSlots("misc")).toBe(1);
+      expect(yield* api.bank.withdraw(11)).toBe(true);
+      expect(yield* api.inventory.getUsedSlots("misc")).toBe(3);
+      expect(yield* api.inventory.getAvailableSlots("misc")).toBe(0);
+    }),
+  );
+
+  it.effect(
+    "resets capacity until inventory reloads after connection events",
+    () =>
+      Effect.gen(function* () {
+        const items = [equipment, misc];
+        const { api, emit, emitConnection } = yield* makeHarness(items);
+        expect(yield* api.inventory.getSlots("misc")).toBe(2);
+        expect(yield* api.inventory.getAvailableSlots("misc")).toBe(1);
+        expect(yield* api.inventory.getSlots()).toBe(1);
+
+        for (const status of [
+          "OnConnection",
+          "OnConnectionLost",
+          "OnConnectionFailed",
+        ]) {
+          const reset = yield* api.wait.forEvent(
+            { type: "connection", status },
+            {
+              trigger: Effect.sync(() => {
+                emitConnection(status);
+                return true;
+              }),
+            },
+          );
+          expect(reset).toEqual({ type: "connection", status });
+          expect(yield* api.inventory.getSlots("misc")).toBe(0);
+          expect(yield* api.inventory.getAvailableSlots("misc")).toBe(0);
+          expect(yield* api.inventory.getSlots()).toBe(0);
+
+          const reloadedInventory = yield* api.wait.forPacket(
+            {
+              command: "loadInventoryBig",
+              direction: "extension",
+              encoding: "json",
+            },
+            {
+              trigger: Effect.sync(() => {
+                emit({ cmd: "loadInventoryBig", items, hitems: [] });
+                return true;
+              }),
+            },
+          );
+          expect(reloadedInventory?.command).toBe("loadInventoryBig");
+          expect(yield* api.inventory.getSlots("misc")).toBe(2);
+          expect(yield* api.inventory.getUsedSlots("misc")).toBe(1);
+          expect(yield* api.inventory.getAvailableSlots("misc")).toBe(1);
+          expect(yield* api.inventory.getSlots()).toBe(1);
+          expect(yield* api.inventory.getUsedSlots()).toBe(1);
+          expect(yield* api.inventory.getAvailableSlots()).toBe(0);
+        }
+      }),
   );
 });

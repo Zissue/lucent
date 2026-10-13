@@ -38,8 +38,8 @@ const makeApiServices = Effect.gen(function* () {
   const events = yield* makeEvents(gateway, wait);
   const packet = yield* makePacket(gateway, store, wait);
   const auth = makeAuth(bridge, store, wait);
-  const inventory = makeInventory(bridge, store, wait);
   const house = makeHouse(bridge, store);
+  const inventory = makeInventory(bridge, store, house, wait);
   const bank = yield* makeBank(bridge, store, auth, inventory, house, wait);
   const drops = yield* makeDrops(bridge, store, auth, wait);
   const map = makeMap(bridge, store, wait);
@@ -101,6 +101,7 @@ const makeApiServices = Effect.gen(function* () {
       house,
       inventory,
       map,
+      monsterLookup: monsterServices.lookup,
       monsters,
       packet,
       player,

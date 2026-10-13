@@ -66,9 +66,10 @@ module.exports = function* run() {
 };
 ```
 
-Typically, call [`api.army.start()`][start] near the beginning of the script.
-It loads `example.yaml` and waits for every account under `players` before
-moving on. Run the script for every configured account on the same server.
+Call [`api.army.start()`][start] before actions that require a started army.
+Those actions fail with `ArmyError` until it runs. It loads `example.yaml` and waits
+for every account under `players` before moving on. Run the script for every
+configured account on the same server.
 
 ## Sync account-specific work
 

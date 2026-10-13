@@ -4,6 +4,7 @@ import type { BridgeService } from "../bridge/Bridge";
 import type { Event, RuntimeEvent } from "../contract/Event";
 import type { DiagnosticReporter } from "../contract/Diagnostic";
 import type { Packet } from "../contract/Packet";
+import { projectStandaloneAuras } from "../projection/Auras";
 import { projectAuth } from "../projection/Auth";
 import { projectCombat } from "../projection/Combat";
 import { projectMonsterDrops } from "../projection/MonsterDrops";
@@ -89,6 +90,15 @@ const extensionItemCommands = new Set([
   "enhanceItemShop",
   "Wheel",
 ]);
+const extensionAuraCommands = new Set([
+  "aura+",
+  "aura++",
+  "aura-",
+  "aura--",
+  "aura+p",
+  "aura*",
+  "auSnap",
+]);
 const extensionQuestCommands = new Set(["getQuests", "getQuests2", "ccqr"]);
 const clientWorldCommands = new Set(["moveToCell", "mv"]);
 const extensionWorldCommands = new Set([
@@ -171,6 +181,9 @@ export const makePipeline = (
       case "extension":
         if (packet.command === "cb") {
           return projectCombat(store, packet, diagnose);
+        }
+        if (extensionAuraCommands.has(packet.command)) {
+          return projectStandaloneAuras(store, packet, diagnose);
         }
         if (packet.command === "monsterDrops") {
           return projectMonsterDrops(store, packet, diagnose);

@@ -800,7 +800,7 @@ interface ScriptBankApi {
     getAvailableSlots(): Effect<number, never>;
     getSlots(): Effect<number, never>;
     getUsedSlots(): Effect<number, never>;
-    isOpen(view?: BankView): Effect<boolean, never>;
+    isOpen(): Effect<boolean, never>;
   /** @param force Whether to reload an already loaded bank. */
     load(/** @defaultValue false */ force?: boolean): Effect<boolean, never>;
     open(/** @defaultValue {} */ options?: BankOpenOptions): Effect<boolean, never>;
@@ -982,9 +982,9 @@ interface ScriptInventoryApi {
     equipByEnhancement(query: ScriptEquipEnhancementSelector, options?: EquipOptions): Effect<boolean, never>;
     get(query: ItemQuery): Effect<LiveItem | null, never>;
     getAll(): Effect<readonly LiveItem[], never>;
-    getAvailableSlots(): Effect<number, never>;
-    getSlots(): Effect<number, never>;
-    getUsedSlots(): Effect<number, never>;
+    getAvailableSlots(/** @defaultValue "bag" */ pool?: InventoryPool): Effect<number, never>;
+    getSlots(/** @defaultValue "bag" */ pool?: InventoryPool): Effect<number, never>;
+    getUsedSlots(/** @defaultValue "bag" */ pool?: InventoryPool): Effect<number, never>;
     unequipConsumable(query: ItemQuery): Effect<boolean, never>;
   /** Uses an eligible item directly from inventory, such as a Tonic, Elixir, or boost. */
     use(query: ItemQuery): Effect<boolean, never>;
@@ -1245,17 +1245,11 @@ interface AutoZoneState {
 type AutoZoneSupportedMap = 'ledgermayne' | 'moreskulls' | 'ultradage' | 'darkcarnax' | 'astralshrine' | 'queeniona' | 'magnumopus';
 interface BankOpenOptions {
   /**
-   * Whether to reload bank items before opening the view.
+   * Whether to reload bank items before opening the bank.
    * @defaultValue false
    */
   readonly force?: boolean;
-  /**
-   * The bank view to open.
-   * @defaultValue "regular"
-   */
-  readonly view?: BankView;
 }
-type BankView = "house" | "regular";
 type BoostType = "classPoints" | "exp" | "gold" | "rep";
 interface CellPositionOptions {
   /** Destination cell. */
@@ -1417,13 +1411,23 @@ interface HuntOptions {
    */
   readonly preferMostMatches?: boolean;
 }
+/**
+ * `"bag"` counts equipment and equippable consumables such as potions.
+ * `"misc"` counts resources, quest items, notes, and other non-consumable items
+ * of type Item.
+ * Classes, house items, and Guild items count against neither. A misc item
+ * already in the inventory never takes a new misc slot.
+ */
+type InventoryPool = "bag" | "misc";
 type ItemQuery = ItemSelector | number | string;
 interface LiveAura extends LiveModel<AuraData> {
   readonly category: string | undefined;
   readonly duration: number;
+  readonly expiresAt: number | undefined;
   readonly icon: string | undefined;
   readonly kind: AuraKind;
   readonly name: string;
+  readonly persistent: boolean;
   readonly stack: number;
   readonly value: string | number | undefined;
   toJSON(): Readonly<AuraData>;
@@ -1460,6 +1464,7 @@ interface LiveItem extends LiveModel<ItemData> {
   readonly meta: string;
   readonly name: string;
   readonly pet: boolean;
+  readonly pool: ItemPool;
   readonly quantity: number;
   readonly requirements: readonly ItemRequirement[];
   readonly shopItemId: number | undefined;
@@ -1600,12 +1605,13 @@ type ProjectionEventSelector =
   | {
       readonly duration?: number;
       readonly icon?: string;
+      readonly kind?: "active" | "passive";
       readonly name?: string;
       readonly sourceId?: number;
       readonly sourceType?: "monster" | "player";
       readonly targetId?: number;
       readonly targetType?: "monster" | "player";
-      readonly type: "aura-added" | "aura-removed";
+      readonly type: "aura-added" | "aura-updated" | "aura-removed";
     }
   | {
       readonly durationMs?: number;
@@ -1959,9 +1965,11 @@ interface LiveModel<State extends object> {
 interface AuraData {
   category?: string;
   duration: number;
+  expiresAt?: number;
   icon?: string;
   kind: AuraKind;
   name: string;
+  persistent: boolean;
   stack: number;
   value?: number | string;
 }
@@ -2017,6 +2025,11 @@ interface Enhancement {
   /** Special label, such as `Dauntless` or `Ether`. */
   readonly special?: string | undefined;
 }
+/**
+ * The pool an item counts against in the inventory. `"class"` has no limit,
+ * and `"house"` uses house slots.
+ */
+type ItemPool = InventoryPool | "class" | "house";
 interface ItemRequirement {
   readonly itemId: number;
   readonly name: string;
@@ -2043,6 +2056,7 @@ type ItemSnapshot = Readonly<ItemData> & {
   readonly classRank: number | null;
   readonly helm: boolean;
   readonly pet: boolean;
+  readonly pool: ItemPool;
   readonly weapon: boolean;
   readonly wearable: boolean;
   readonly worn: boolean;
@@ -2196,6 +2210,7 @@ interface Item {
   readonly meta: string;
   readonly name: string;
   readonly pet: boolean;
+  readonly pool: ItemPool;
   readonly quantity: number;
   /** Items consumed per merge for this shop offer. */
   readonly requirements: readonly ItemRequirement[];
@@ -2320,12 +2335,30 @@ type ProjectionEvent =
       readonly type: "players-changed";
     }
   | {
-      /** An aura is added to or refreshed on a player or monster. */
+      /** An aura first appears on a player or monster. */
       readonly type: "aura-added";
       /** The aura duration in seconds, when available. */
       readonly duration?: number;
       readonly icon?: string;
+      readonly kind: "active" | "passive";
       readonly name: string;
+      readonly stack: number;
+      /** The applying entity's map-scoped ID, when known. */
+      readonly sourceId?: number;
+      readonly sourceType?: "monster" | "player";
+      /** The affected entity's map-scoped ID. */
+      readonly targetId: number;
+      readonly targetType: "monster" | "player";
+    }
+  | {
+      /** An existing aura changes stack, timer, or metadata. */
+      readonly type: "aura-updated";
+      /** The aura duration in seconds, when available. */
+      readonly duration?: number;
+      readonly icon?: string;
+      readonly kind: "active" | "passive";
+      readonly name: string;
+      readonly stack: number;
       /** The applying entity's map-scoped ID, when known. */
       readonly sourceId?: number;
       readonly sourceType?: "monster" | "player";
@@ -2339,6 +2372,7 @@ type ProjectionEvent =
       /** The aura duration in seconds, when available. */
       readonly duration?: number;
       readonly icon?: string;
+      readonly kind: "active" | "passive";
       readonly name: string;
       /** The applying entity's map-scoped ID, when known. */
       readonly sourceId?: number;
@@ -2348,9 +2382,9 @@ type ProjectionEvent =
       readonly targetType: "monster" | "player";
     }
   | {
-      /** A monster's counter attack starts. */
+      /** A monster's counter attack is applied, refreshed, or announced in a combat message. */
       readonly type: "counter-attack-start";
-      /** The expected window duration in milliseconds, when known. */
+      /** The applied aura duration or announced window in milliseconds, when known. */
       readonly durationMs?: number;
       /** The monster's map-scoped ID. */
       readonly monsterMapId: number;
@@ -2362,7 +2396,7 @@ type ProjectionEvent =
       readonly triggerText: string;
     }
   | {
-      /** A monster's counter attack ends. */
+      /** A monster's active counter-attack aura is removed, including server state clears. */
       readonly type: "counter-attack-end";
       /** The monster's map-scoped ID. */
       readonly monsterMapId: number;

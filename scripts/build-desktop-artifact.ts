@@ -14,8 +14,8 @@ const BUILD_PLATFORMS = ["mac", "win", "linux", "all"] as const;
 type BuildPlatform = (typeof BUILD_PLATFORMS)[number];
 
 class BuildDesktopArtifactError extends Error {
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
     this.name = "BuildDesktopArtifactError";
   }
 }
@@ -145,7 +145,7 @@ const main = Effect.gen(function* () {
 main.pipe(
   Effect.catch((cause) =>
     Effect.sync(() => {
-      console.error(`Desktop artifact build failed: ${cause.message}`);
+      console.error("Desktop artifact build failed:", cause);
       process.exitCode = 1;
     }),
   ),

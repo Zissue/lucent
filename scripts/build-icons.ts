@@ -19,8 +19,8 @@ const DEV_ICON_SOURCE = join(REPO_ROOT, "assets", "icons", "lucent-dev.icon");
 const SRGB_PROFILE_PATH = "/System/Library/ColorSync/Profiles/sRGB Profile.icc";
 
 class BuildIconsError extends Error {
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
     this.name = "BuildIconsError";
   }
 }
@@ -131,7 +131,7 @@ buildIcons.pipe(
   Effect.scoped,
   Effect.catch((cause) =>
     Effect.sync(() => {
-      console.error(`Icon build failed: ${cause.message}`);
+      console.error("Icon build failed:", cause);
       process.exitCode = 1;
     }),
   ),
