@@ -867,9 +867,13 @@ describe("script package replacement failures", () => {
         expect(failure.message).toBe(
           "Failed to replace the package directory.",
         );
+        const copies = yield* Effect.promise(() =>
+          findFiles(workspaceDir, OLD_SOURCE),
+        );
+        expect(copies).toHaveLength(1);
         expect(
-          yield* Effect.promise(() => findFiles(workspaceDir, OLD_SOURCE)),
-        ).toHaveLength(1);
+          yield* Effect.promise(() => hashDirectory(dirname(copies[0] ?? ""))),
+        ).toEqual(managed.files);
       }),
   );
 
@@ -898,6 +902,9 @@ describe("script package replacement failures", () => {
           findFiles(workspaceDir, OLD_SOURCE),
         );
         expect(copies).toHaveLength(1);
+        expect(
+          yield* Effect.promise(() => hashDirectory(dirname(copies[0] ?? ""))),
+        ).toEqual(managed.files);
         expect(failure.message).toBe(
           `Failed to replace the package directory and could not restore the previous package. The previous package is saved at ${dirname(copies[0] ?? "")}.`,
         );
@@ -945,6 +952,9 @@ describe("script package replacement failures", () => {
           findFiles(workspaceDir, OLD_SOURCE),
         );
         expect(copies).toHaveLength(1);
+        expect(
+          yield* Effect.promise(() => hashDirectory(dirname(copies[0] ?? ""))),
+        ).toEqual(managed.files);
         expect(failure.message).toBe(
           `Package state failed and the previous package could not be restored. The previous package is saved at ${dirname(copies[0] ?? "")}.`,
         );
