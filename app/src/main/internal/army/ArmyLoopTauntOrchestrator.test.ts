@@ -805,7 +805,7 @@ describe("ArmyLoopTauntOrchestrator", () => {
   );
 
   it.effect(
-    "makes active leave idempotent and completes after the last leave",
+    "makes active leave idempotent and completes and retires after the last leave",
     () =>
       Effect.gen(function* () {
         const harness = yield* makeHarness(["Alice", "Bob"]);
@@ -837,6 +837,58 @@ describe("ArmyLoopTauntOrchestrator", () => {
           status: "completed",
         });
         yield* harness.orchestrator.leave(leave, harness.ids[1]!);
+        expect(
+          yield* harness.orchestrator
+            .await(leave, harness.ids[1]!)
+            .pipe(Effect.result),
+        ).toMatchObject({
+          _tag: "Failure",
+          failure: { reason: "inactive-run", runId },
+        });
+      }),
+  );
+
+  it.effect(
+    "serves a finished run's result to late awaits and retires it after every participant leaves",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* makeHarness(["Alice", "Bob"]);
+        const { runId } = yield* registerAll(
+          harness,
+          makeRegistration(harness.sessionId),
+        );
+        const run = { runId, sessionId: harness.sessionId };
+
+        yield* report(harness, runId, harness.ids[0]!, {
+          reason: "Alice changed maps",
+          type: "failed",
+        });
+        yield* harness.orchestrator.leave(run, harness.ids[0]!);
+
+        expect(yield* harness.orchestrator.await(run, harness.ids[1]!)).toEqual(
+          {
+            reason: "Alice changed maps",
+            status: "failed",
+          },
+        );
+        expect(
+          yield* harness.orchestrator
+            .ready(run, harness.ids[1]!)
+            .pipe(Effect.flip),
+        ).toMatchObject({
+          message: "Alice changed maps",
+          reason: "registration-failed",
+        });
+
+        yield* harness.orchestrator.leave(run, harness.ids[1]!);
+
+        const afterRetirement = yield* Effect.forEach(harness.ids, (senderId) =>
+          harness.orchestrator.await(run, senderId).pipe(Effect.result),
+        );
+        expect(afterRetirement).toMatchObject([
+          { _tag: "Failure", failure: { reason: "inactive-run", runId } },
+          { _tag: "Failure", failure: { reason: "inactive-run", runId } },
+        ]);
       }),
   );
 
