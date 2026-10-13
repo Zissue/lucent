@@ -10,6 +10,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Semaphore from "effect/Semaphore";
 import { create as createTar } from "tar";
 
 import type {
@@ -101,9 +102,10 @@ const refuseRenamesInto = (
 
 const makeManagerHarness = (options: {
   readonly archivePath?: string;
-  readonly beforeResolveCommit?: (call: number) => Effect.Effect<void>;
+  readonly beforeResolveCommit?: Effect.Effect<void>;
   readonly directoryTree?: string;
   readonly integrity?: ScriptPackageIntegrity;
+  readonly onRemove?: (name: string) => Effect.Effect<void>;
   readonly onSave?: (
     value: ManagedScriptPackage,
   ) => Effect.Effect<void, ScriptPackageStateError>;
@@ -116,7 +118,6 @@ const makeManagerHarness = (options: {
   let managed = options.managed;
   let integrity = options.integrity ?? "verified";
   let downloadCount = 0;
-  let resolveCommitCalls = 0;
   const requests: Parameters<
     GitHubScriptPackageClientShape["resolveCommit"]
   >[0][] = [];
@@ -209,16 +210,12 @@ const makeManagerHarness = (options: {
         await options.onDownload?.();
       }),
     resolveCommit: (input) =>
-      Effect.suspend(() =>
-        (
-          options.beforeResolveCommit?.(resolveCommitCalls++) ?? Effect.void
-        ).pipe(
-          Effect.andThen(
-            Effect.sync(() => {
-              requests.push(input);
-              return options.resolution;
-            }),
-          ),
+      (options.beforeResolveCommit ?? Effect.void).pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            requests.push(input);
+            return options.resolution;
+          }),
         ),
       ),
     resolveDirectory: (input) =>
@@ -227,18 +224,19 @@ const makeManagerHarness = (options: {
         return { tree: options.directoryTree ?? REMOTE_TREE };
       }),
   });
+  const stateLock = Semaphore.makeUnsafe(1);
   const state = ScriptPackageState.of({
     get: (name) =>
       Effect.sync(() => (name === managed?.name ? managed : undefined)),
     getAll: Effect.sync(() => (managed === undefined ? [] : [managed])),
-    remove: (name) =>
-      Effect.sync(() => {
-        if (managed?.name === name) managed = undefined;
-      }),
+    remove: Effect.fnUntraced(function* (name) {
+      yield* options.onRemove?.(name) ?? Effect.void;
+      if (managed?.name === name) managed = undefined;
+    }, stateLock.withPermits(1)),
     save: Effect.fnUntraced(function* (value) {
       yield* options.onSave?.(value) ?? Effect.void;
       managed = value;
-    }),
+    }, stateLock.withPermits(1)),
   });
   const environment = DesktopEnvironment.of({
     appDataDir: options.live?.appDataDir ?? "/tmp/lucent-package-manager-data",
@@ -1529,16 +1527,58 @@ describe("script package local modifications", () => {
 });
 
 describe("script package update check races", () => {
+  it.effect("waits for an in-flight remove before saving a check", () =>
+    Effect.gen(function* () {
+      const { managed, workspaceDir } = yield* installedPackage;
+      const checkStarted = yield* Deferred.make<void>();
+      const finishCheck = yield* Deferred.make<void>();
+      const removeStarted = yield* Deferred.make<void>();
+      const finishRemove = yield* Deferred.make<void>();
+      const harness = makeManagerHarness({
+        beforeResolveCommit: Deferred.succeed(checkStarted, undefined).pipe(
+          Effect.andThen(Deferred.await(finishCheck)),
+        ),
+        managed,
+        onRemove: () =>
+          Deferred.succeed(removeStarted, undefined).pipe(
+            Effect.andThen(Deferred.await(finishRemove)),
+          ),
+        resolution: { status: "modified", commit: REMOTE_COMMIT },
+        workspaceDir,
+      });
+      const manager = yield* ScriptPackageManager.pipe(
+        Effect.provide(harness.layer),
+      );
+
+      const checking = yield* manager
+        .checkUpdate({ packageName: PACKAGE_NAME })
+        .pipe(Effect.forkScoped);
+      yield* Deferred.await(checkStarted);
+      const removing = yield* manager
+        .remove({ packageName: PACKAGE_NAME })
+        .pipe(Effect.forkScoped);
+      yield* Deferred.await(removeStarted);
+      yield* Deferred.succeed(finishCheck, undefined);
+      yield* Effect.promise(() => setTimeout(50));
+      yield* Deferred.succeed(finishRemove, undefined);
+      const removed = yield* Fiber.join(removing);
+      const checked = yield* Fiber.join(checking);
+
+      expect(removed.status).toBe("completed");
+      expect(checked.packages).toEqual([]);
+      expect(harness.managed()).toBeUndefined();
+    }),
+  );
+
   it.effect("does not restore a package removed during an update check", () =>
     Effect.gen(function* () {
       const { managed, workspaceDir } = yield* installedPackage;
       const checkStarted = yield* Deferred.make<void>();
       const finishCheck = yield* Deferred.make<void>();
       const harness = makeManagerHarness({
-        beforeResolveCommit: () =>
-          Deferred.succeed(checkStarted, undefined).pipe(
-            Effect.andThen(Deferred.await(finishCheck)),
-          ),
+        beforeResolveCommit: Deferred.succeed(checkStarted, undefined).pipe(
+          Effect.andThen(Deferred.await(finishCheck)),
+        ),
         managed,
         resolution: { status: "modified", commit: REMOTE_COMMIT },
         workspaceDir,
@@ -1567,14 +1607,16 @@ describe("script package update check races", () => {
         yield* installedPackage;
       const checkStarted = yield* Deferred.make<void>();
       const finishCheck = yield* Deferred.make<void>();
+      let resolveCommitCalls = 0;
       const harness = makeManagerHarness({
         archivePath,
-        beforeResolveCommit: (call) =>
-          call === 0
+        beforeResolveCommit: Effect.suspend(() =>
+          resolveCommitCalls++ === 0
             ? Deferred.succeed(checkStarted, undefined).pipe(
                 Effect.andThen(Deferred.await(finishCheck)),
               )
             : Effect.void,
+        ),
         managed,
         resolution: { status: "modified", commit: REMOTE_COMMIT },
         workspaceDir,
