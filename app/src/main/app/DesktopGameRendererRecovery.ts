@@ -15,6 +15,7 @@ import * as Scope from "effect/Scope";
 import { Accounts } from "../internal/accounts/Accounts";
 import { ElectronDialog } from "../electron/ElectronDialog";
 import { DesktopWindows } from "../window/DesktopWindows";
+import { logFailure } from "./observability/logFailure";
 
 const RECOVERY_MESSAGE =
   "The client was reloaded because the script stopped responding.";
@@ -74,7 +75,7 @@ export interface DesktopGameRendererRecoveryDependencies {
   readonly warn: (message: string, data?: unknown) => Effect.Effect<void>;
   readonly error: (
     message: string,
-    cause: unknown,
+    cause: Cause.Cause<unknown>,
     data?: unknown,
   ) => Effect.Effect<void>;
   readonly info: (message: string, data?: unknown) => Effect.Effect<void>;
@@ -198,7 +199,7 @@ export const makeDesktopGameRendererRecovery = (
           Effect.catch((cause) =>
             dependencies.error(
               "Failed to suppress a script before renderer recovery",
-              cause,
+              Cause.fail(cause),
               { rendererId },
             ),
           ),
@@ -240,7 +241,7 @@ export const makeDesktopGameRendererRecovery = (
             Effect.catch((cause) =>
               dependencies.error(
                 "Failed to suppress a script before renderer crash recovery",
-                cause,
+                Cause.fail(cause),
                 { rendererId },
               ),
             ),
@@ -467,7 +468,7 @@ const makeLiveDesktopGameRendererRecovery = Effect.gen(function* () {
         }),
       ),
     error: (message, cause, data) =>
-      Effect.logError(message, Cause.fail(cause)).pipe(
+      logFailure(message, cause, { failure: "error" }).pipe(
         Effect.annotateLogs({
           component: "game-renderer-recovery",
           data: data,
