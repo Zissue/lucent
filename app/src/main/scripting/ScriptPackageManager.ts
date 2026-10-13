@@ -27,6 +27,7 @@ import {
 import {
   inspectScriptPackageDirectory,
   ScriptPackageCatalog,
+  type ScriptPackageCatalogReplacement,
 } from "./ScriptPackageCatalog";
 import { hashDirectory } from "./ScriptPackageFileSystem";
 import {
@@ -450,10 +451,16 @@ export const layer = Layer.effect(
 
     const replacePackage = Effect.fn("ScriptPackageManager.replacePackage")(
       function* (
-        staging: string,
-        destination: string,
-        managed: ManagedScriptPackage,
-      ): Effect.fn.Return<void, ScriptPackageManagerError> {
+        replacement: ScriptPackageCatalogReplacement,
+      ): Effect.fn.Return<ScriptCatalogOverview, ScriptPackageManagerError> {
+        const {
+          managed,
+          rootPath: destination,
+          sourceRoot: staging,
+        } = replacement;
+        const publish = catalog
+          .replacePackage(replacement)
+          .pipe(Effect.mapError(mapCatalogError));
         const destinationExists = yield* Effect.tryPromise({
           try: () => pathExists(destination),
           catch: (cause) =>
@@ -507,7 +514,7 @@ export const layer = Layer.effect(
               ),
             ),
           );
-          return;
+          return yield* publish;
         }
 
         const backupRoot = yield* Effect.tryPromise({
@@ -527,6 +534,23 @@ export const layer = Layer.effect(
         const removeEmptyBackup = Effect.tryPromise(() =>
           fs.rmdir(backupRoot),
         ).pipe(Effect.ignore);
+        const failReplacement = Effect.fnUntraced(function* (
+          cause: unknown,
+          restoredDetail: string,
+          unrestoredDetail = restoredDetail,
+        ): Effect.fn.Return<never, ScriptPackageManagerError> {
+          const backupExists = yield* Effect.tryPromise(() =>
+            pathExists(backup),
+          ).pipe(Effect.orElseSucceed(() => true));
+          if (!backupExists) yield* removeEmptyBackup;
+          return yield* managerError(
+            "replace",
+            backupExists
+              ? `${unrestoredDetail} The previous package is saved at ${backup}.`
+              : restoredDetail,
+            cause,
+          );
+        });
         const rollBack = (
           undo: Effect.Effect<void, Cause.UnknownError>,
           cause: unknown,
@@ -534,37 +558,21 @@ export const layer = Layer.effect(
           unrestoredDetail: string,
         ) =>
           undo.pipe(
-            Effect.matchEffect({
-              onFailure: ({ cause: restoreCause }) =>
-                Effect.fail(
-                  managerError(
-                    "replace",
-                    `${unrestoredDetail} The previous package is saved at ${backup}.`,
-                    { cause, restoreCause },
-                  ),
-                ),
-              onSuccess: () =>
-                removeEmptyBackup.pipe(
-                  Effect.andThen(
-                    Effect.fail(managerError("replace", restoredDetail, cause)),
-                  ),
-                ),
+            Effect.match({
+              onFailure: ({ cause: restoreCause }) => ({
+                cause,
+                restoreCause,
+              }),
+              onSuccess: () => cause,
             }),
+            Effect.flatMap((failureCause) =>
+              failReplacement(failureCause, restoredDetail, unrestoredDetail),
+            ),
           );
 
         yield* movePath(destination, backup).pipe(
           Effect.catch(({ cause }) =>
-            removeEmptyBackup.pipe(
-              Effect.andThen(
-                Effect.fail(
-                  managerError(
-                    "replace",
-                    "Failed to replace the package directory.",
-                    cause,
-                  ),
-                ),
-              ),
-            ),
+            failReplacement(cause, "Failed to replace the package directory."),
           ),
         );
         yield* movePath(staging, destination).pipe(
@@ -592,6 +600,7 @@ export const layer = Layer.effect(
             ),
           );
         yield* discardBackup;
+        return yield* publish;
       },
       Effect.uninterruptible,
     );
@@ -890,15 +899,12 @@ export const layer = Layer.effect(
                   ? {}
                   : { etag: resolvedSource.etag }),
               };
-              yield* replacePackage(staging, destination, managed);
-              const nextCatalog = yield* catalog
-                .replacePackage({
-                  inspected,
-                  managed,
-                  rootPath: destination,
-                  sourceRoot: staging,
-                })
-                .pipe(Effect.mapError(mapCatalogError));
+              const nextCatalog = yield* replacePackage({
+                inspected,
+                managed,
+                rootPath: destination,
+                sourceRoot: staging,
+              });
               return {
                 status: "completed",
                 catalog: nextCatalog,
