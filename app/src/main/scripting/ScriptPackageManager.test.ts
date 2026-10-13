@@ -10,6 +10,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Semaphore from "effect/Semaphore";
 import { create as createTar } from "tar";
 
 import type {
@@ -101,15 +102,18 @@ const refuseRenamesInto = (
 
 const makeManagerHarness = (options: {
   readonly archivePath?: string;
-  readonly directoryTree?: string;
+  readonly directoryTree?: string | Effect.Effect<string>;
   readonly integrity?: ScriptPackageIntegrity;
+  readonly onRemove?: (name: string) => Effect.Effect<void>;
   readonly onSave?: (
     value: ManagedScriptPackage,
   ) => Effect.Effect<void, ScriptPackageStateError>;
   readonly live?: { readonly appDataDir: string };
   readonly managed?: ManagedScriptPackage;
   readonly onDownload?: () => Promise<void>;
-  readonly resolution: GitHubCommitResolution;
+  readonly resolution:
+    | GitHubCommitResolution
+    | Effect.Effect<GitHubCommitResolution>;
   readonly workspaceDir?: string;
 }) => {
   let managed = options.managed;
@@ -207,25 +211,35 @@ const makeManagerHarness = (options: {
         await options.onDownload?.();
       }),
     resolveCommit: (input) =>
-      Effect.sync(() => {
+      Effect.suspend(() => {
         requests.push(input);
-        return options.resolution;
+        return Effect.isEffect(options.resolution)
+          ? options.resolution
+          : Effect.succeed(options.resolution);
       }),
     resolveDirectory: (input) =>
-      Effect.sync(() => {
+      Effect.suspend(() => {
         directoryRequests.push(input);
-        return { tree: options.directoryTree ?? REMOTE_TREE };
+        const tree = options.directoryTree ?? REMOTE_TREE;
+        return Effect.map(
+          Effect.isEffect(tree) ? tree : Effect.succeed(tree),
+          (sha) => ({ tree: sha }),
+        );
       }),
   });
+  const stateLock = Semaphore.makeUnsafe(1);
   const state = ScriptPackageState.of({
     get: (name) =>
       Effect.sync(() => (name === managed?.name ? managed : undefined)),
     getAll: Effect.sync(() => (managed === undefined ? [] : [managed])),
-    remove: () => Effect.void,
+    remove: Effect.fnUntraced(function* (name) {
+      yield* options.onRemove?.(name) ?? Effect.void;
+      if (managed?.name === name) managed = undefined;
+    }, stateLock.withPermits(1)),
     save: Effect.fnUntraced(function* (value) {
       yield* options.onSave?.(value) ?? Effect.void;
       managed = value;
-    }),
+    }, stateLock.withPermits(1)),
   });
   const environment = DesktopEnvironment.of({
     appDataDir: options.live?.appDataDir ?? "/tmp/lucent-package-manager-data",
@@ -1512,5 +1526,246 @@ describe("script package local modifications", () => {
         integrity: "modified",
       });
     }),
+  );
+});
+
+describe("script package update check races", () => {
+  it.effect("waits for an in-flight remove before saving a check", () =>
+    Effect.gen(function* () {
+      const { managed, workspaceDir } = yield* installedPackage;
+      const checkStarted = yield* Deferred.make<void>();
+      const finishCheck = yield* Deferred.make<void>();
+      const removeStarted = yield* Deferred.make<void>();
+      const finishRemove = yield* Deferred.make<void>();
+      const harness = makeManagerHarness({
+        managed,
+        onRemove: () =>
+          Deferred.succeed(removeStarted, undefined).pipe(
+            Effect.andThen(Deferred.await(finishRemove)),
+          ),
+        resolution: Deferred.succeed(checkStarted, undefined).pipe(
+          Effect.andThen(Deferred.await(finishCheck)),
+          Effect.as<GitHubCommitResolution>({
+            status: "modified",
+            commit: REMOTE_COMMIT,
+          }),
+        ),
+        workspaceDir,
+      });
+      const manager = yield* ScriptPackageManager.pipe(
+        Effect.provide(harness.layer),
+      );
+
+      const checking = yield* manager
+        .checkUpdate({ packageName: PACKAGE_NAME })
+        .pipe(Effect.forkScoped);
+      yield* Deferred.await(checkStarted);
+      const removing = yield* manager
+        .remove({ packageName: PACKAGE_NAME })
+        .pipe(Effect.forkScoped);
+      yield* Deferred.await(removeStarted);
+      yield* Deferred.succeed(finishCheck, undefined);
+      yield* Effect.promise(() => setTimeout(50));
+      yield* Deferred.succeed(finishRemove, undefined);
+      const removed = yield* Fiber.join(removing);
+      const checked = yield* Fiber.join(checking);
+
+      expect(removed.status).toBe("completed");
+      expect(checked.packages).toEqual([]);
+      expect(harness.managed()).toBeUndefined();
+    }),
+  );
+
+  it.effect("does not restore a package removed during an update check", () =>
+    Effect.gen(function* () {
+      const { managed, workspaceDir } = yield* installedPackage;
+      const checkStarted = yield* Deferred.make<void>();
+      const finishCheck = yield* Deferred.make<void>();
+      const harness = makeManagerHarness({
+        live: { appDataDir: join(dirname(workspaceDir), "app-data") },
+        managed,
+        resolution: Deferred.succeed(checkStarted, undefined).pipe(
+          Effect.andThen(Deferred.await(finishCheck)),
+          Effect.as<GitHubCommitResolution>({
+            status: "modified",
+            commit: REMOTE_COMMIT,
+          }),
+        ),
+        workspaceDir,
+      });
+      const { manager, catalog, state } = yield* harness.services;
+      expect((yield* catalog.getOverview).packages[0]).toMatchObject({
+        integrity: "verified",
+        source: { resolvedCommit: INSTALLED_COMMIT },
+      });
+
+      const checking = yield* manager
+        .checkUpdate({ packageName: PACKAGE_NAME })
+        .pipe(Effect.forkScoped);
+      yield* Deferred.await(checkStarted);
+      const removed = yield* manager.remove({ packageName: PACKAGE_NAME });
+      yield* Deferred.succeed(finishCheck, undefined);
+      const checked = yield* Fiber.join(checking);
+
+      expect(removed.status).toBe("completed");
+      expect(checked.packages).toEqual([]);
+      expect(yield* state.get(PACKAGE_NAME)).toBeUndefined();
+      expect((yield* catalog.getOverview).packages).toEqual([]);
+    }),
+  );
+
+  it.effect("keeps a new install when an update check finishes after it", () =>
+    Effect.gen(function* () {
+      const { archivePath, destination, managed, workspaceDir } =
+        yield* installedPackage;
+      const checkStarted = yield* Deferred.make<void>();
+      const finishCheck = yield* Deferred.make<void>();
+      let resolveCommitCalls = 0;
+      const harness = makeManagerHarness({
+        archivePath,
+        live: { appDataDir: join(dirname(workspaceDir), "app-data") },
+        managed,
+        resolution: Effect.suspend(() =>
+          resolveCommitCalls++ === 0
+            ? Deferred.succeed(checkStarted, undefined).pipe(
+                Effect.andThen(Deferred.await(finishCheck)),
+              )
+            : Effect.void,
+        ).pipe(
+          Effect.as<GitHubCommitResolution>({
+            status: "modified",
+            commit: REMOTE_COMMIT,
+          }),
+        ),
+        workspaceDir,
+      });
+      const { manager, catalog, state } = yield* harness.services;
+      expect((yield* catalog.getOverview).packages[0]).toMatchObject({
+        integrity: "verified",
+        source: { resolvedCommit: INSTALLED_COMMIT },
+      });
+
+      const checking = yield* manager
+        .checkUpdate({ packageName: PACKAGE_NAME })
+        .pipe(Effect.forkScoped);
+      yield* Deferred.await(checkStarted);
+      const updated = yield* manager.update({ packageName: PACKAGE_NAME });
+      yield* Deferred.succeed(finishCheck, undefined);
+      const checked = yield* Fiber.join(checking);
+
+      expect(updated.status).toBe("completed");
+      expect(yield* state.get(PACKAGE_NAME)).toMatchObject({
+        files: yield* Effect.promise(() => hashDirectory(destination)),
+        source: { resolvedCommit: REMOTE_COMMIT },
+        update: { status: "current" },
+      });
+      expect(checked.packages[0]).toMatchObject({
+        source: { resolvedCommit: REMOTE_COMMIT },
+        update: { status: "current" },
+      });
+    }),
+  );
+
+  it.effect("drops a check whose record another check changed", () =>
+    Effect.gen(function* () {
+      const { managed, workspaceDir } = yield* installedPackage;
+      const firstStarted = yield* Deferred.make<void>();
+      const finishFirst = yield* Deferred.make<void>();
+      let resolveCommitCalls = 0;
+      const harness = makeManagerHarness({
+        live: { appDataDir: join(dirname(workspaceDir), "app-data") },
+        managed,
+        resolution: Effect.suspend(() =>
+          resolveCommitCalls++ === 0
+            ? Deferred.succeed(firstStarted, undefined).pipe(
+                Effect.andThen(Deferred.await(finishFirst)),
+                Effect.as<GitHubCommitResolution>({
+                  status: "modified",
+                  commit: INSTALLED_COMMIT,
+                }),
+              )
+            : Effect.succeed<GitHubCommitResolution>({
+                status: "modified",
+                commit: REMOTE_COMMIT,
+              }),
+        ),
+        workspaceDir,
+      });
+      const { manager, catalog, state } = yield* harness.services;
+      expect((yield* catalog.getOverview).packages[0]).toMatchObject({
+        integrity: "verified",
+        update: { status: "unchecked" },
+      });
+
+      const first = yield* manager
+        .checkUpdate({ packageName: PACKAGE_NAME })
+        .pipe(Effect.forkScoped);
+      yield* Deferred.await(firstStarted);
+      const second = yield* manager.checkUpdate({
+        packageName: PACKAGE_NAME,
+      });
+      yield* Deferred.succeed(finishFirst, undefined);
+      const firstChecked = yield* Fiber.join(first);
+
+      const available = {
+        status: "available",
+        revision: { kind: "commit", sha: REMOTE_COMMIT },
+      };
+      expect(second.packages[0]).toMatchObject({ update: available });
+      expect(yield* state.get(PACKAGE_NAME)).toMatchObject({
+        remoteRevision: { kind: "commit", sha: REMOTE_COMMIT },
+        update: available,
+      });
+      expect((yield* catalog.getOverview).packages[0]).toMatchObject({
+        update: available,
+      });
+      expect(firstChecked.packages[0]).toMatchObject({ update: available });
+    }),
+  );
+
+  it.effect(
+    "does not restore a directory package removed during an update check",
+    () =>
+      Effect.gen(function* () {
+        const { managed, workspaceDir } = yield* installedPackage;
+        const checkStarted = yield* Deferred.make<void>();
+        const finishCheck = yield* Deferred.make<void>();
+        const harness = makeManagerHarness({
+          directoryTree: Deferred.succeed(checkStarted, undefined).pipe(
+            Effect.andThen(Deferred.await(finishCheck)),
+            Effect.as(REMOTE_TREE),
+          ),
+          live: { appDataDir: join(dirname(workspaceDir), "app-data") },
+          managed: {
+            ...managed,
+            source: {
+              kind: "directory",
+              repositoryUrl: "https://github.com/example/monorepo",
+              resolvedTree: INSTALLED_TREE,
+              subdirectory: PACKAGE_SUBDIRECTORY,
+            },
+          },
+          resolution: { status: "modified", commit: REMOTE_COMMIT },
+          workspaceDir,
+        });
+        const { manager, catalog, state } = yield* harness.services;
+        expect((yield* catalog.getOverview).packages[0]).toMatchObject({
+          integrity: "verified",
+          source: { kind: "directory", resolvedTree: INSTALLED_TREE },
+        });
+
+        const checking = yield* manager
+          .checkUpdate({ packageName: PACKAGE_NAME })
+          .pipe(Effect.forkScoped);
+        yield* Deferred.await(checkStarted);
+        const removed = yield* manager.remove({ packageName: PACKAGE_NAME });
+        yield* Deferred.succeed(finishCheck, undefined);
+        const checked = yield* Fiber.join(checking);
+
+        expect(removed.status).toBe("completed");
+        expect(checked.packages).toEqual([]);
+        expect(yield* state.get(PACKAGE_NAME)).toBeUndefined();
+        expect((yield* catalog.getOverview).packages).toEqual([]);
+      }),
   );
 });

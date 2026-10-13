@@ -1,5 +1,6 @@
 import { promises as fs } from "fs";
 import { basename, dirname, join, resolve } from "path";
+import { isDeepStrictEqual } from "util";
 
 import type * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -1242,20 +1243,30 @@ export const layer = Layer.effect(
                           : { checkedAt: lastSuccessfulCheckAt }),
                       },
               };
-        yield* state
-          .save(next)
-          .pipe(
-            Effect.mapError((cause) =>
-              managerError(
-                "check-update",
-                "Failed to save update state.",
-                cause,
-              ),
-            ),
-          );
-        return yield* catalog
-          .updateManagedPackage(next)
-          .pipe(Effect.mapError(mapCatalogError));
+        return yield* mutationGate.withPermits(1)(
+          Effect.gen(function* () {
+            const current = yield* state.get(input.packageName);
+            if (current === undefined || !isDeepStrictEqual(current, managed)) {
+              return yield* catalog.getOverview.pipe(
+                Effect.mapError(mapCatalogError),
+              );
+            }
+            yield* state
+              .save(next)
+              .pipe(
+                Effect.mapError((cause) =>
+                  managerError(
+                    "check-update",
+                    "Failed to save update state.",
+                    cause,
+                  ),
+                ),
+              );
+            return yield* catalog
+              .updateManagedPackage(next)
+              .pipe(Effect.mapError(mapCatalogError));
+          }),
+        );
       });
 
     return ScriptPackageManager.of({
