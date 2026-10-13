@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it } from "@effect/vitest";
 import { vi } from "vitest";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Logger from "effect/Logger";
 import * as Layer from "effect/Layer";
 
@@ -15,6 +17,10 @@ vi.mock("electron", () => ({ app: {} }));
 
 const TEST_SIGNAL = "SIGTERM";
 type ProcessSignalListener = (signal: NodeJS.Signals) => void;
+type QuitEvent = {
+  readonly defaultPrevented: boolean;
+  readonly preventDefault: () => void;
+};
 
 const makeSignal = () => {
   let resolve!: () => void;
@@ -27,6 +33,7 @@ const makeSignal = () => {
 const makeHarness = (flushCompletes: boolean) => {
   const events: string[] = [];
   const exited = makeSignal();
+  const willQuitListeners = new Set<(event: QuitEvent) => void>();
   const flushStarted = Effect.sync(() => {
     events.push("flush");
   });
@@ -48,7 +55,16 @@ const makeHarness = (flushCompletes: boolean) => {
       }),
     getAppMetrics: Effect.succeed([]),
     getVersion: Effect.succeed("1.0.0"),
-    on: () => Effect.succeed(() => undefined),
+    on: (eventName, listener) =>
+      Effect.sync(() => {
+        if (eventName !== "will-quit") {
+          return () => undefined;
+        }
+        willQuitListeners.add(listener);
+        return () => {
+          willQuitListeners.delete(listener);
+        };
+      }),
     quit: Effect.void,
     relaunch: Effect.void,
     whenReady: Effect.void,
@@ -65,7 +81,25 @@ const makeHarness = (flushCompletes: boolean) => {
     Layer.succeed(ElectronApp, app),
   );
 
-  return { events, exited: exited.promise, layer };
+  const emitWillQuit = (): void => {
+    let defaultPrevented = false;
+    const event: QuitEvent = {
+      get defaultPrevented() {
+        return defaultPrevented;
+      },
+      preventDefault: () => {
+        defaultPrevented = true;
+      },
+    };
+    for (const listener of willQuitListeners) {
+      listener(event);
+    }
+    if (!defaultPrevented) {
+      events.push("electron-terminated");
+    }
+  };
+
+  return { emitWillQuit, events, exited: exited.promise, layer };
 };
 
 const findInstalledSignalListener = (
@@ -85,6 +119,66 @@ afterEach(() => {
 });
 
 describe("DesktopLifecycle", () => {
+  it.live("keeps the process alive until cleanup after quit finishes", () =>
+    Effect.gen(function* () {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const harness = makeHarness(true);
+
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const lifecycle = yield* DesktopLifecycle;
+          yield* lifecycle.register;
+          yield* Effect.addFinalizer(() =>
+            Effect.sync(() => {
+              harness.events.push("cleanup");
+            }),
+          );
+          harness.emitWillQuit();
+          yield* lifecycle.awaitQuit;
+        }).pipe(Effect.provide(harness.layer)),
+      );
+
+      expect(harness.events).toEqual(["cleanup"]);
+    }),
+  );
+
+  it.live("forces exit when cleanup after quit outlasts the deadline", () =>
+    Effect.gen(function* () {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const harness = makeHarness(true);
+      const registered = yield* Deferred.make<void>();
+      const releaseCleanup = yield* Deferred.make<void>();
+
+      const runtime = yield* Effect.forkDetach(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const lifecycle = yield* DesktopLifecycle;
+            yield* lifecycle.register;
+            yield* Effect.addFinalizer(() => Deferred.await(releaseCleanup));
+            yield* Deferred.succeed(registered, undefined);
+            yield* lifecycle.awaitQuit;
+          }).pipe(Effect.provide(harness.layer)),
+        ),
+      );
+      yield* Deferred.await(registered);
+      harness.emitWillQuit();
+
+      yield* Effect.promise(() => vi.advanceTimersByTimeAsync(1_500));
+      yield* Effect.promise(() =>
+        vi.waitFor(() => {
+          expect(harness.events).toEqual([
+            "error:Lucent quit timed out; forcing exit",
+            "flush",
+            "exit:0",
+          ]);
+        }),
+      );
+
+      yield* Deferred.succeed(releaseCleanup, undefined);
+      yield* Fiber.await(runtime);
+    }),
+  );
+
   it.live("flushes the timeout diagnostic before forcing exit", () =>
     Effect.gen(function* () {
       vi.useFakeTimers();
