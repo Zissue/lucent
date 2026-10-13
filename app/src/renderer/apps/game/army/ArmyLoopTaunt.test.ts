@@ -1,5 +1,8 @@
 import { describe, expect, it } from "@effect/vitest";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Scope from "effect/Scope";
 
@@ -12,7 +15,9 @@ import { EntityState, LiveMonster, type PlayerSnapshot } from "@lucent/game";
 import type { DesktopArmyBridge } from "../../../../shared/desktopBridge";
 import type { ApiService } from "../flash/api/Api";
 import type { Event } from "../flash/contract/Event";
+import { makeWait } from "../flash/protocol/Wait";
 import {
+  type ArmyLoopTauntRuntime,
   type ArmyLoopTauntRuntimePlan,
   makeArmyLoopTauntRuntime,
 } from "./ArmyLoopTaunt";
@@ -69,10 +74,15 @@ interface Harness {
   >;
 }
 
-const makeHarness = Effect.fn("ArmyLoopTaunt.test.makeHarness")(function* (
-  plan: ArmyLoopTauntRuntimePlan,
+interface RuntimeHarness extends Harness {
+  readonly exitMap: Effect.Effect<void>;
+  readonly runtime: ArmyLoopTauntRuntime;
+}
+
+const makeRuntime = Effect.fn("ArmyLoopTaunt.test.makeRuntime")(function* (
   initialAlive: Readonly<Record<number, boolean>> = {},
-): Effect.fn.Return<Harness, unknown, Scope.Scope> {
+  bridgeOverrides: Partial<DesktopArmyBridge> = {},
+): Effect.fn.Return<RuntimeHarness, never, Scope.Scope> {
   const players = ["Alice", "Bob"];
   const casts: number[] = [];
   const reports: ArmyLoopTauntReport[] = [];
@@ -90,6 +100,11 @@ const makeHarness = Effect.fn("ArmyLoopTaunt.test.makeHarness")(function* (
       Extract<ArmyLoopTauntReport, { readonly type: "command-result" }>
     >();
   const runFork = Effect.runForkWith(yield* Effect.context<never>());
+  const events = yield* PubSub.unbounded<Event>();
+  const wait = makeWait({
+    subscribeEvents: PubSub.subscribe(events),
+    subscribePackets: Effect.die("Loop Taunt does not wait for packets"),
+  });
   let commandListener:
     | ((payload: ArmyLoopTauntCommandPayload) => void)
     | undefined;
@@ -115,6 +130,7 @@ const makeHarness = Effect.fn("ArmyLoopTaunt.test.makeHarness")(function* (
         commandListener = undefined;
       };
     },
+    ...bridgeOverrides,
   } as unknown as DesktopArmyBridge;
 
   const api = {
@@ -142,15 +158,7 @@ const makeHarness = Effect.fn("ArmyLoopTaunt.test.makeHarness")(function* (
             eventListener = undefined;
           };
         }),
-      once: (
-        _selector: unknown,
-        waitOptions?: { readonly trigger?: Effect.Effect<boolean, unknown> },
-      ) =>
-        (waitOptions?.trigger ?? Effect.succeed(true)).pipe(
-          Effect.flatMap((expected) =>
-            expected ? Effect.never : Effect.succeed(null),
-          ),
-        ),
+      once: wait.forEvent,
     },
     map: {
       getId: () => Effect.succeed(100),
@@ -185,13 +193,15 @@ const makeHarness = Effect.fn("ArmyLoopTaunt.test.makeHarness")(function* (
       sessionId: "session-1",
     }),
   );
-  const handle = yield* runtime.loopTaunt(plan, () => Effect.void);
-  yield* Effect.addFinalizer(() => handle.stop());
-
   return {
     casts,
+    exitMap: PubSub.publish(events, {
+      map: { id: 101, name: "battleon", roomNumber: 1 },
+      type: "join-map",
+    }).pipe(Effect.asVoid),
     monster,
     reports,
+    runtime,
     emitEvent: (event) =>
       eventListener === undefined
         ? Effect.die("Loop Taunt event listener was not registered")
@@ -215,6 +225,16 @@ const makeHarness = Effect.fn("ArmyLoopTaunt.test.makeHarness")(function* (
     },
     nextCommandResult: Queue.take(commandResults),
   };
+});
+
+const makeHarness = Effect.fn("ArmyLoopTaunt.test.makeHarness")(function* (
+  plan: ArmyLoopTauntRuntimePlan,
+  initialAlive: Readonly<Record<number, boolean>> = {},
+): Effect.fn.Return<Harness, unknown, Scope.Scope> {
+  const { runtime, ...harness } = yield* makeRuntime(initialAlive);
+  const handle = yield* runtime.loopTaunt(plan, () => Effect.void);
+  yield* Effect.addFinalizer(() => handle.stop());
+  return harness;
 });
 
 describe("Army Loop Taunt renderer", () => {
@@ -409,6 +429,70 @@ describe("Army Loop Taunt renderer", () => {
           type: "command-result",
         });
         expect(harness.casts).toHaveLength(0);
+      }),
+  );
+
+  it.effect(
+    "sends leave last when the map changes as Loop Taunt startup completes",
+    () =>
+      Effect.gen(function* () {
+        const calls: string[] = [];
+        const leaveResponded = yield* Deferred.make<void>();
+        const context = yield* Effect.context();
+        const runFork = Effect.runForkWith(context);
+        const runPromise = Effect.runPromiseWith(context);
+        let exitMap: Effect.Effect<void> = Effect.void;
+        const harness = yield* makeRuntime(
+          {},
+          {
+            loopTauntAwait: () => {
+              calls.push("await");
+              return runPromise(Effect.never);
+            },
+            loopTauntLeave: () => {
+              calls.push("leave");
+              return runPromise(Deferred.await(leaveResponded));
+            },
+            loopTauntReady: () => {
+              calls.push("ready");
+              runFork(exitMap);
+              return Promise.resolve();
+            },
+            loopTauntRegister: () => {
+              calls.push("register");
+              return Promise.resolve({ runId: "run-1" });
+            },
+          },
+        );
+        exitMap = harness.exitMap;
+
+        const startup = yield* harness.runtime
+          .loopTaunt(
+            [
+              {
+                assignments: [
+                  { players: [1, 2], strategy: { type: "focus" }, target: 42 },
+                ],
+              },
+            ],
+            () => Effect.void,
+          )
+          .pipe(
+            Effect.tap((handle) => Effect.addFinalizer(() => handle.stop())),
+            Effect.result,
+            Effect.forkChild,
+          );
+        for (let turn = 0; turn < 100 && !calls.includes("await"); turn++) {
+          yield* Effect.yieldNow;
+        }
+        yield* Deferred.succeed(leaveResponded, undefined);
+
+        const result = yield* Fiber.join(startup);
+        expect(calls).toEqual(["register", "ready", "leave"]);
+        expect(result).toMatchObject({
+          _tag: "Failure",
+          failure: { message: "The map changed while Loop Taunt was starting" },
+        });
       }),
   );
 });
