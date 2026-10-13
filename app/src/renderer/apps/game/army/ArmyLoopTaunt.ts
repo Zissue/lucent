@@ -451,12 +451,8 @@ export const makeArmyLoopTauntRuntime = (
 
           const run = Effect.scoped(
             Effect.gen(function* () {
-              const runScope = yield* Effect.scope;
-              const startup = yield* Deferred.make<
-                LoopTauntRun,
-                ArmyLoopTauntError
-              >();
               const mapExited = yield* Deferred.make<void>();
+              const mapArmed = yield* Deferred.make<void>();
 
               const setup = Effect.gen(function* () {
                 const mapIdentity: ArmyLoopTauntMapIdentity = yield* Effect.all(
@@ -1300,42 +1296,22 @@ export const makeArmyLoopTauntRuntime = (
 
               // Arm map exit before setup so a transition during target
               // resolution or registration cannot expose a stale run handle.
-              const mapWatcher = api.events
+              yield* api.events
                 .once(
                   { type: "join-map" },
                   {
-                    trigger: setup.pipe(
-                      Effect.matchCauseEffect({
-                        onFailure: (cause) =>
-                          Deferred.failCause(startup, cause).pipe(
-                            Effect.asVoid,
-                          ),
-                        onSuccess: (loopRun) =>
-                          Deferred.succeed(startup, loopRun).pipe(
-                            Effect.asVoid,
-                          ),
-                      }),
-                      Effect.forkIn(runScope, {
-                        startImmediately: true,
-                      }),
+                    trigger: Deferred.succeed(mapArmed, undefined).pipe(
                       Effect.as(true),
                     ),
                   },
                 )
                 .pipe(
-                  Effect.matchCauseEffect({
-                    onFailure: (cause) =>
-                      Deferred.failCause(startup, cause).pipe(Effect.asVoid),
-                    onSuccess: () =>
-                      Deferred.succeed(mapExited, undefined).pipe(
-                        Effect.asVoid,
-                      ),
-                  }),
+                  Effect.andThen(Deferred.succeed(mapExited, undefined)),
                   Effect.forkScoped,
                 );
-              yield* mapWatcher;
+              yield* Deferred.await(mapArmed);
 
-              const loopRun = yield* Deferred.await(startup);
+              const loopRun = yield* setup;
               // Let an exit published with startup win before exposing the run.
               yield* Effect.yieldNow;
               if (yield* Deferred.isDone(mapExited)) {
