@@ -83,7 +83,7 @@ describe("ScriptInputsExtractor service", () => {
       const source = yield* Effect.promise(() =>
         readFile(
           new URL(
-            "../../../../../script-packages/lucent-consumables/scripts/get-consumables.js",
+            "../../../../script-packages/lucent-consumables/scripts/get-consumables.js",
             import.meta.url,
           ),
           "utf8",
@@ -142,7 +142,7 @@ describe("ScriptInputsExtractor service", () => {
       const source = yield* Effect.promise(() =>
         readFile(
           new URL(
-            "../../../../../script-packages/lucent-dailies/scripts/spin-wheel-of-doom.js",
+            "../../../../script-packages/lucent-dailies/scripts/spin-wheel-of-doom.js",
             import.meta.url,
           ),
           "utf8",
