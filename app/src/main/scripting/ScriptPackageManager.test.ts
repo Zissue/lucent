@@ -107,6 +107,7 @@ const makeManagerHarness = (options: {
   readonly integrity?: ScriptPackageIntegrity;
   readonly live?: { readonly appDataDir: string };
   readonly managed?: ManagedScriptPackage;
+  readonly onDownload?: () => Promise<void>;
   readonly resolution: GitHubCommitResolution;
   readonly workspaceDir?: string;
 }) => {
@@ -182,6 +183,7 @@ const makeManagerHarness = (options: {
         if (options.archivePath !== undefined) {
           await fs.copyFile(options.archivePath, targetPath);
         }
+        await options.onDownload?.();
       }),
     resolveCommit: (input) =>
       Effect.sync(() => {
@@ -894,46 +896,46 @@ describe("script package updates", () => {
   );
 });
 
+const OLD_SOURCE = "module.exports = 'old';";
+const NEW_SOURCE = "module.exports = 'new';";
+
+const installedPackage = Effect.promise(async () => {
+  const root = await makeDirectory();
+  const workspaceDir = join(root, "workspace");
+  const repository = join(root, "source", "repository-commit");
+  const destination = join(workspaceDir, "packages", PACKAGE_NAME);
+  await Promise.all([
+    write(
+      join(repository, "package.json"),
+      JSON.stringify({ name: PACKAGE_NAME }),
+    ),
+    write(join(repository, "index.js"), NEW_SOURCE),
+    write(
+      join(destination, "package.json"),
+      JSON.stringify({ name: PACKAGE_NAME }),
+    ),
+    write(join(destination, "index.js"), OLD_SOURCE),
+  ]);
+  const archivePath = join(root, "package.tgz");
+  await createTar(
+    { cwd: join(root, "source"), file: archivePath, gzip: true },
+    ["repository-commit"],
+  );
+  const managed: ManagedScriptPackage = {
+    directory: PACKAGE_NAME,
+    files: await hashDirectory(destination),
+    installedAt: "2026-08-01T00:00:00.000Z",
+    name: PACKAGE_NAME,
+    source: {
+      kind: "repository",
+      repositoryUrl: "https://github.com/example/package",
+      resolvedCommit: INSTALLED_COMMIT,
+    },
+  };
+  return { archivePath, destination, managed, workspaceDir };
+});
+
 describe("script package replacement failures", () => {
-  const OLD_SOURCE = "module.exports = 'old';";
-  const NEW_SOURCE = "module.exports = 'new';";
-
-  const installedPackage = Effect.promise(async () => {
-    const root = await makeDirectory();
-    const workspaceDir = join(root, "workspace");
-    const repository = join(root, "source", "repository-commit");
-    const destination = join(workspaceDir, "packages", PACKAGE_NAME);
-    await Promise.all([
-      write(
-        join(repository, "package.json"),
-        JSON.stringify({ name: PACKAGE_NAME }),
-      ),
-      write(join(repository, "index.js"), NEW_SOURCE),
-      write(
-        join(destination, "package.json"),
-        JSON.stringify({ name: PACKAGE_NAME }),
-      ),
-      write(join(destination, "index.js"), OLD_SOURCE),
-    ]);
-    const archivePath = join(root, "package.tgz");
-    await createTar(
-      { cwd: join(root, "source"), file: archivePath, gzip: true },
-      ["repository-commit"],
-    );
-    const managed: ManagedScriptPackage = {
-      directory: PACKAGE_NAME,
-      files: await hashDirectory(destination),
-      installedAt: "2026-08-01T00:00:00.000Z",
-      name: PACKAGE_NAME,
-      source: {
-        kind: "repository",
-        repositoryUrl: "https://github.com/example/package",
-        resolvedCommit: INSTALLED_COMMIT,
-      },
-    };
-    return { archivePath, destination, managed, workspaceDir };
-  });
-
   it.effect(
     "keeps the previous package when moving it aside fails after the move",
     () =>
@@ -1297,6 +1299,96 @@ describe("script package replacement failures", () => {
       expect(yield* Effect.promise(() => fs.readdir(workspaceDir))).toEqual([
         "packages",
       ]);
+    }),
+  );
+});
+
+describe("script package local modifications", () => {
+  const EDITED_SOURCE = "module.exports = 'edited';";
+  const localModifications = {
+    status: "confirmation-required",
+    packageName: PACKAGE_NAME,
+    reason: "local-modifications",
+  };
+
+  it.effect("asks before updating files edited after the catalog scan", () =>
+    Effect.gen(function* () {
+      const { archivePath, destination, managed, workspaceDir } =
+        yield* installedPackage;
+      yield* Effect.promise(() =>
+        write(join(destination, "index.js"), EDITED_SOURCE),
+      );
+      const harness = makeManagerHarness({
+        archivePath,
+        managed,
+        resolution: { status: "modified", commit: REMOTE_COMMIT },
+        workspaceDir,
+      });
+      const manager = yield* ScriptPackageManager.pipe(
+        Effect.provide(harness.layer),
+      );
+
+      const result = yield* manager.update({ packageName: PACKAGE_NAME });
+
+      expect(result).toEqual(localModifications);
+      expect(harness.downloadCount()).toBe(0);
+      expect(
+        yield* Effect.promise(() =>
+          fs.readFile(join(destination, "index.js"), "utf8"),
+        ),
+      ).toBe(EDITED_SOURCE);
+    }),
+  );
+
+  it.effect("asks before replacing files edited during the download", () =>
+    Effect.gen(function* () {
+      const { archivePath, destination, managed, workspaceDir } =
+        yield* installedPackage;
+      const harness = makeManagerHarness({
+        archivePath,
+        managed,
+        onDownload: () => write(join(destination, "index.js"), EDITED_SOURCE),
+        resolution: { status: "modified", commit: REMOTE_COMMIT },
+        workspaceDir,
+      });
+      const manager = yield* ScriptPackageManager.pipe(
+        Effect.provide(harness.layer),
+      );
+
+      const result = yield* manager.update({ packageName: PACKAGE_NAME });
+
+      expect(result).toEqual(localModifications);
+      expect(
+        yield* Effect.promise(() =>
+          fs.readFile(join(destination, "index.js"), "utf8"),
+        ),
+      ).toBe(EDITED_SOURCE);
+    }),
+  );
+
+  it.effect("asks before removing files edited after the catalog scan", () =>
+    Effect.gen(function* () {
+      const { destination, managed, workspaceDir } = yield* installedPackage;
+      yield* Effect.promise(() =>
+        write(join(destination, "index.js"), EDITED_SOURCE),
+      );
+      const harness = makeManagerHarness({
+        managed,
+        resolution: { status: "modified", commit: REMOTE_COMMIT },
+        workspaceDir,
+      });
+      const manager = yield* ScriptPackageManager.pipe(
+        Effect.provide(harness.layer),
+      );
+
+      const result = yield* manager.remove({ packageName: PACKAGE_NAME });
+
+      expect(result).toEqual(localModifications);
+      expect(
+        yield* Effect.promise(() =>
+          fs.readFile(join(destination, "index.js"), "utf8"),
+        ),
+      ).toBe(EDITED_SOURCE);
     }),
   );
 });
