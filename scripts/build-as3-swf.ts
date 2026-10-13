@@ -8,7 +8,7 @@ import * as Console from "effect/Console";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
-import { Argument, Command, Flag } from "effect/unstable/cli";
+import { Argument, Command, Flag } from "effect/cli";
 
 import { generateBridgeArtifacts } from "./gen-as3-bridge";
 
@@ -277,24 +277,24 @@ const main = (input: CliInput): Effect.Effect<void, unknown> =>
   });
 
 const command = Command.make("build-as3-swf", {
-  checkBridge: Flag.boolean("check-bridge").pipe(
+  checkBridge: Flag.Boolean("check-bridge").pipe(
     Flag.withDescription("Check if bridge artifacts are up to date"),
     Flag.withDefault(false)
   ),
-  skipBridge: Flag.boolean("skip-bridge").pipe(
+  skipBridge: Flag.Boolean("skip-bridge").pipe(
     Flag.withDescription("Skip bridge artifact generation"),
     Flag.withDefault(false)
   ),
-  project: Flag.string("project").pipe(
+  project: Flag.String("project").pipe(
     Flag.withAlias("p"),
     Flag.withDescription("AS3 project directory (defaults to ./as3)"),
     Flag.optional
   ),
-  sdk: Flag.string("sdk").pipe(
+  sdk: Flag.String("sdk").pipe(
     Flag.withDescription("AS3 SDK path (overrides auto-detection)"),
     Flag.optional
   ),
-  asconfigArgs: Argument.string("asconfig-args").pipe(
+  asconfigArgs: Argument.String("asconfig-args").pipe(
     Argument.variadic(),
     Argument.withDescription(
       "Arguments forwarded to asconfigc (use `--` before passthrough flags)"

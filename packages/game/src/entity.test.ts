@@ -1,4 +1,4 @@
-import { describe, expect, it } from "@effect/vitest";
+import { describe, expect, it } from "vitest";
 
 import type { AuraApplication } from "./aura";
 import { EntityState } from "./entity";

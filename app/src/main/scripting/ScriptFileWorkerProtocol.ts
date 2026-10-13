@@ -1,5 +1,5 @@
 import * as Schema from "effect/Schema";
-import { Rpc, RpcGroup } from "effect/unstable/rpc";
+import { Rpc, RpcGroup } from "effect/rpc";
 import { ScriptFileSchema } from "@lucent/core/scriptInputs";
 
 export const SCRIPT_FILE_WORKER_HEAP_MB = 256;

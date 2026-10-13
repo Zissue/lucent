@@ -4,7 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FiberSet from "effect/FiberSet";
 import * as Layer from "effect/Layer";
-import type * as RpcGroup from "effect/unstable/rpc/RpcGroup";
+import type * as RpcGroup from "effect/rpc/RpcGroup";
 
 import { serveGameRendererRpcPort } from "../../../renderer/apps/game/gameRendererRpc";
 import { GameRendererRpcs } from "../../../shared/gameRendererRpc";

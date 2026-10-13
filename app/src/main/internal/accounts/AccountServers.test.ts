@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import { afterEach, expect, layer } from "@effect/vitest";
 import * as Effect from "effect/Effect";
-import { HttpClient } from "effect/unstable/http";
+import { HttpClient } from "effect/http";
 import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient";
 import { requestAccountServers } from "./AccountServers";
 

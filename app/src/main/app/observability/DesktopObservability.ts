@@ -50,7 +50,7 @@ const makeDesktopObservability = Effect.gen(function* () {
       data,
       ...annotations
     } = options.fiber.getRef(References.CurrentLogAnnotations);
-    const span = options.fiber.currentSpan;
+    const span = options.fiber.cache.span;
     bufferedWriter.write({
       at: options.date.toISOString(),
       level: options.logLevel.toLowerCase(),

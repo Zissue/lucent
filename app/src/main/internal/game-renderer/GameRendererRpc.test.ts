@@ -1,6 +1,8 @@
 import { describe, expect, it } from "@effect/vitest";
+import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import { TestClock } from "effect/testing";
 
@@ -144,6 +146,42 @@ describe("GameRendererRpc", () => {
         }),
       );
     }),
+  );
+
+  it.effect(
+    "preserves caller cancellation and interrupts the renderer handler",
+    () =>
+      Effect.gen(function* () {
+        const started = yield* Deferred.make<void>();
+        const interrupted = yield* Deferred.make<void>();
+        const game = yield* makeTestGameRenderer({
+          LoaderGrabberGrab: () =>
+            Deferred.succeed(started, undefined).pipe(
+              Effect.andThen(Effect.never),
+              Effect.onInterrupt(() =>
+                Deferred.succeed(interrupted, undefined),
+              ),
+            ),
+        });
+        yield* game.ready;
+
+        const call = yield* game.rpc
+          .call(
+            TEST_GAME_RENDERER_ID,
+            (client) => client.LoaderGrabberGrab(grabInventory),
+            options,
+          )
+          .pipe(Effect.forkScoped);
+        yield* Deferred.await(started);
+        yield* Fiber.interrupt(call);
+
+        const exit = yield* Fiber.await(call);
+        expect(Exit.isFailure(exit)).toBe(true);
+        if (Exit.isFailure(exit)) {
+          expect(Cause.hasInterruptsOnly(exit.cause)).toBe(true);
+        }
+        yield* Deferred.await(interrupted);
+      }),
   );
 
   it.effect(

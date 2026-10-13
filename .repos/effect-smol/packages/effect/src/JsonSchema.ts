@@ -6,10 +6,11 @@
  * JSON Schema Draft-04. The module also defines document types, meta-schema
  * constants, and OpenAPI component-key helpers.
  *
+ * @stability stable
  * @since 4.0.0
  */
 import * as InternalRecord from "./internal/record.ts"
-import { escapeToken, unescapeToken } from "./JsonPointer.ts"
+import { formatUriFragment, parseUriFragment } from "./JsonPointer.ts"
 import * as Predicate from "./Predicate.ts"
 
 /**
@@ -24,6 +25,7 @@ import * as Predicate from "./Predicate.ts"
  * This is an open record type (`[x: string]: unknown`) so it can hold any JSON
  * Schema keyword. Most functions in this module accept or return this type.
  *
+ * @stability stable
  * @category models
  * @since 4.0.0
  */
@@ -49,6 +51,7 @@ export interface JsonSchema {
  * @see {@link Document} for a single root schema tagged with a dialect
  * @see {@link MultiDocument} for multiple root schemas tagged with a dialect
  *
+ * @stability stable
  * @category models
  * @since 4.0.0
  */
@@ -61,6 +64,7 @@ export type Dialect = "draft-04" | "draft-07" | "draft-2020-12" | "openapi-3.1" 
  *
  * Use to restrict a JSON Schema `type` keyword to the supported primitive names.
  *
+ * @stability stable
  * @category models
  * @since 4.0.0
  */
@@ -81,6 +85,7 @@ export type Type = "string" | "number" | "boolean" | "array" | "object" | "null"
  *
  * @see {@link Document} for a single root schema with definitions
  * @see {@link MultiDocument} for multiple root schemas sharing definitions
+ * @stability stable
  * @category models
  * @since 4.0.0
  */
@@ -123,6 +128,7 @@ export interface Definitions extends Record<string, JsonSchema> {}
  *
  * @see {@link MultiDocument}
  * @see {@link fromSchemaDraft2020_12}
+ * @stability stable
  * @category models
  * @since 4.0.0
  */
@@ -147,6 +153,7 @@ export interface Document<D extends Dialect> {
  *
  * @see {@link Document}
  * @see {@link toMultiDocumentOpenApi3_1}
+ * @stability stable
  * @category models
  * @since 4.0.0
  */
@@ -165,6 +172,7 @@ export interface MultiDocument<D extends Dialect> {
  * value for the root `$schema` field.
  *
  * @see {@link META_SCHEMA_URI_DRAFT_07} for the Draft-07 `$schema` URI
+ * @stability stable
  * @category constants
  * @since 4.0.0
  */
@@ -186,6 +194,7 @@ export const META_SCHEMA_URI_DRAFT_04 = "http://json-schema.org/draft-04/schema#
  * @see {@link META_SCHEMA_URI_DRAFT_04} for the Draft-04 `$schema` URI
  * @see {@link META_SCHEMA_URI_DRAFT_2020_12} for the Draft 2020-12 `$schema` URI
  *
+ * @stability stable
  * @category constants
  * @since 4.0.0
  */
@@ -206,6 +215,7 @@ export const META_SCHEMA_URI_DRAFT_07 = "http://json-schema.org/draft-07/schema#
  *
  * @see {@link META_SCHEMA_URI_DRAFT_07} for the Draft-07 `$schema` URI
  *
+ * @stability stable
  * @category constants
  * @since 4.0.0
  */
@@ -218,9 +228,9 @@ function isMetaSchemaUri(value: unknown, uri: string): boolean {
 }
 
 function rewriteOpenApiComponentsReference(reference: string): string {
-  const path = reference.startsWith("#") ? parsePointerFragment(reference) : undefined
+  const path = reference.startsWith("#") ? parseUriFragment(reference) : undefined
   return path !== undefined && path[0] === "components" && path[1] === "schemas"
-    ? formatPointerFragment(["$defs", ...path.slice(2)])
+    ? formatUriFragment(["$defs", ...path.slice(2)])
     : reference
 }
 
@@ -276,6 +286,7 @@ const OPEN_API_31_TARGET_COLLISIONS = ["example", "discriminator", "xml", "exter
  * @see {@link fromSchemaDraft2020_12}
  * @see {@link fromSchemaOpenApi3_0}
  * @see {@link toDocumentDraft07}
+ * @stability stable
  * @category decoding
  * @since 4.0.0
  */
@@ -313,6 +324,7 @@ export function fromSchemaDraft07(js: JsonSchema): Document<"draft-2020-12"> {
  *
  * @see {@link fromSchemaDraft07}
  * @see {@link fromSchemaOpenApi3_1}
+ * @stability stable
  * @category decoding
  * @since 4.0.0
  */
@@ -365,6 +377,7 @@ export function fromSchemaDraft2020_12(js: JsonSchema): Document<"draft-2020-12"
  *
  * @see {@link fromSchemaOpenApi3_0}
  * @see {@link toMultiDocumentOpenApi3_1}
+ * @stability stable
  * @category decoding
  * @since 4.0.0
  */
@@ -426,6 +439,7 @@ export function fromSchemaOpenApi3_1(js: JsonSchema): Document<"draft-2020-12"> 
  *
  * @see {@link fromSchemaOpenApi3_1}
  * @see {@link fromSchemaDraft07}
+ * @stability stable
  * @category decoding
  * @since 4.0.0
  */
@@ -480,6 +494,7 @@ export function fromSchemaOpenApi3_0(schema: JsonSchema): Document<"draft-2020-1
  * @see {@link fromSchemaDraft07}
  * @see {@link toDocumentDraft04} for converting to Draft-04
  * @see {@link toMultiDocumentOpenApi3_1}
+ * @stability stable
  * @category encoding
  * @since 4.0.0
  */
@@ -532,6 +547,7 @@ export function toDocumentDraft07(document: Document<"draft-2020-12">): Document
  * ```
  *
  * @see {@link toDocumentDraft07} for converting to Draft-07
+ * @stability stable
  * @category encoding
  * @since 4.0.0
  */
@@ -592,6 +608,7 @@ export function toDocumentDraft04(document: Document<"draft-2020-12">): Document
  *
  * @see {@link toDocumentDraft07}
  * @see {@link MultiDocument}
+ * @stability stable
  * @category encoding
  * @since 4.0.0
  */
@@ -627,7 +644,7 @@ export function toMultiDocumentOpenApi3_1(multiDocument: MultiDocument<"draft-20
     return transformSchema(schema, (schema, inEmbeddedResource) => {
       rejectKeywordCollisions(schema, OPEN_API_31_TARGET_COLLISIONS, "OpenAPI 3.1", "Draft 2020-12")
       rewriteSchemaRef(schema, (reference, keyword) => {
-        const path = reference.startsWith("#") ? parsePointerFragment(reference) : undefined
+        const path = reference.startsWith("#") ? parseUriFragment(reference) : undefined
         if (path === undefined || path[0] !== "$defs" || path.length < 2) return reference
         const key = path[1]
         if (isRootResource) {
@@ -643,7 +660,7 @@ export function toMultiDocumentOpenApi3_1(multiDocument: MultiDocument<"draft-20
         }
         return inEmbeddedResource
           ? reference
-          : formatPointerFragment(["components", "schemas", keyMap.get(key) ?? key, ...path.slice(2)])
+          : formatUriFragment(["components", "schemas", keyMap.get(key) ?? key, ...path.slice(2)])
       })
     }) as JsonSchema
   }
@@ -682,7 +699,7 @@ export function sanitizeOpenApiComponentsSchemasKey(s: string): string {
 
 /** @internal */
 export function getReferenceKey($ref: string): string | undefined {
-  const path = $ref.startsWith("#") ? parsePointerFragment($ref) : undefined
+  const path = $ref.startsWith("#") ? parseUriFragment($ref) : undefined
   return path !== undefined && path.length === 2 && path[0] === "$defs"
     ? path[1]
     : undefined
@@ -815,7 +832,7 @@ function runConverter<A>(adapter: Adapter, options: ConverterOptions | undefined
       let reference = value
       const resolved = resolveUrl(value, sourceResource)
       if (resolved !== undefined) {
-        const sourcePointer = parsePointerFragment(resolved.hash)
+        const sourcePointer = parseUriFragment(resolved.hash)
         resolved.hash = ""
         if (sourcePointer !== undefined) {
           const targetPath = locations.get(locationKey(resolved.href, sourcePointer))
@@ -927,29 +944,11 @@ function resolveResourceUri(value: unknown, base: string): string | undefined {
   return url.href
 }
 
-function parsePointerFragment(hash: string): Path | undefined {
-  if (hash.length === 0) return []
-  let pointer: string
-  try {
-    pointer = decodeURIComponent(hash.slice(1))
-  } catch {
-    return undefined
-  }
-  if (!pointer.startsWith("/")) return undefined
-  return /~(?:[^01]|$)/.test(pointer) ? undefined : pointer.slice(1).split("/").map(unescapeToken)
-}
-
 function relocateReference(reference: string, targetPath: Path): string {
   const index = reference.indexOf("#")
   if (index === -1 && targetPath.length === 0) return reference
   const uri = index === -1 ? reference : reference.slice(0, index)
-  return `${uri}${formatPointerFragment(targetPath)}`
-}
-
-function formatPointerFragment(path: Path): string {
-  return path.length === 0
-    ? "#"
-    : `#/${path.map((token) => encodeURI(escapeToken(token)).replace(/#/g, "%23")).join("/")}`
+  return `${uri}${formatUriFragment(targetPath)}`
 }
 
 function locationKey(resource: string, pointer: Path): string {

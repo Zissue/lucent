@@ -8,7 +8,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import type { RpcClientError } from "effect/unstable/rpc/RpcClientError";
+import type { RpcClientError } from "effect/rpc/RpcClientError";
 
 import {
   FollowerIpc,

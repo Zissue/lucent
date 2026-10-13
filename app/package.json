@@ -19,14 +19,14 @@
     "electron-builder": "electron-builder"
   },
   "dependencies": {
-    "@effect/platform-node": "4.0.0-rc.112",
+    "@effect/platform-node": "4.0.3",
     "@lucent/core": "workspace:*",
     "@lucent/game": "workspace:*",
     "@lucent/ui": "workspace:*",
     "@tanstack/solid-hotkeys": "^0.10.0",
     "@tanstack/solid-virtual": "3.13.24",
     "acorn": "8.16.0",
-    "effect": "4.0.0-rc.112",
+    "effect": "4.0.3",
     "semver": "7.7.4",
     "solid-js": "^1.9.12",
     "tar": "7.5.22",

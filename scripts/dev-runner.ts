@@ -23,9 +23,9 @@ import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
-import { Argument, Command, Flag } from "effect/unstable/cli";
-import { ChildProcess } from "effect/unstable/process";
-import type { ChildProcessHandle } from "effect/unstable/process/ChildProcessSpawner";
+import { Argument, Command, Flag } from "effect/cli";
+import { ChildProcess } from "effect/process";
+import type { ChildProcessHandle } from "effect/process/ChildProcessSpawner";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(SCRIPT_DIR, "..");
@@ -1117,10 +1117,10 @@ const runDevRunner = (input: CliInput) => {
 
 const makeCommand = (electronArgs: ReadonlyArray<string>) =>
   Command.make("dev-runner", {
-    mode: Argument.choice("mode", DEV_RUNNER_MODES).pipe(
+    mode: Argument.Literals("mode", DEV_RUNNER_MODES).pipe(
       Argument.withDescription("Development mode to run"),
     ),
-    dryRun: Flag.boolean("dry-run").pipe(
+    dryRun: Flag.Boolean("dry-run").pipe(
       Flag.withDescription("Print resolved dev commands without spawning them"),
       Flag.withDefault(false),
     ),

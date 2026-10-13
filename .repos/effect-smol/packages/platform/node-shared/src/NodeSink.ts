@@ -7,6 +7,7 @@
  * the supplied `onError` function, and can end the writable when the upstream
  * data is done.
  *
+ * @stability unstable
  * @since 4.0.0
  */
 import type { NonEmptyReadonlyArray } from "effect/Array"
@@ -23,6 +24,7 @@ import type { Writable } from "node:stream"
  * backpressure, mapping writable errors with `onError`, and ending the stream
  * on completion unless `endOnDone` is `false`.
  *
+ * @stability unstable
  * @category constructors
  * @since 4.0.0
  */
@@ -41,6 +43,7 @@ export const fromWritable = <E, A = Uint8Array | string>(
  * Node writable stream, respecting backpressure and optionally ending the
  * writable when upstream is done.
  *
+ * @stability unstable
  * @category constructors
  * @since 4.0.0
  */
@@ -70,6 +73,7 @@ export const fromWritableChannel = <IE, E, A = Uint8Array | string>(
  * The loop waits for `drain` when needed, fails on writable errors, and ends
  * the writable on upstream completion unless `endOnDone` is `false`.
  *
+ * @stability unstable
  * @category converting
  * @since 4.0.0
  */
@@ -83,34 +87,53 @@ export const pullIntoWritable = <A, IE, E>(options: {
   options.pull.pipe(
     Effect.flatMap((chunk) => {
       let i = 0
-      return Effect.callback<void, E>(function loop(resume) {
-        for (; i < chunk.length;) {
-          const success = options.writable.write(chunk[i++], options.encoding as any)
-          if (!success) {
-            options.writable.once("drain", () => (loop as any)(resume))
-            return
+      return Effect.callback<void, E>((resume) => {
+        let cancelled = false
+        const loop = () => {
+          for (; i < chunk.length;) {
+            if (cancelled) {
+              return
+            }
+            const success = options.writable.write(chunk[i++], options.encoding as any)
+            if (!success) {
+              if (!cancelled) {
+                options.writable.once("drain", loop)
+              }
+              return
+            }
+          }
+          if (!cancelled) {
+            resume(Effect.void)
           }
         }
-        resume(Effect.void)
+        loop()
+        return Effect.sync(() => {
+          cancelled = true
+          options.writable.off("drain", loop)
+        })
       })
     }),
     Effect.forever({ disableYield: true }),
-    Effect.raceFirst(Effect.callback<never, E>((resume) => {
-      const onError = (error: unknown) => resume(Effect.fail(options.onError(error)))
-      options.writable.once("error", onError)
-      return Effect.sync(() => {
-        options.writable.off("error", onError)
-      })
-    })),
     options.endOnDone !== false ?
       Pull.catchDone((_) => {
         if ("closed" in options.writable && options.writable.closed) {
           return Cause.done(_)
         }
         return Effect.callback<never, E | Cause.Done<unknown>>((resume) => {
-          options.writable.once("finish", () => resume(Cause.done(_)))
+          const onFinish = () => resume(Cause.done(_))
+          options.writable.once("finish", onFinish)
           options.writable.end()
+          return Effect.sync(() => {
+            options.writable.off("finish", onFinish)
+          })
         })
       }) :
-      identity
+      identity,
+    Effect.raceFirst(Effect.callback<never, E>((resume) => {
+      const onError = (error: unknown) => resume(Effect.fail(options.onError(error)))
+      options.writable.once("error", onError)
+      return Effect.sync(() => {
+        options.writable.off("error", onError)
+      })
+    }))
   )

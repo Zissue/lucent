@@ -36,12 +36,12 @@
     "typecheck:script-packages": "tsc6 -p script-packages/lucent-consumables/jsconfig.repo.json --noEmit && tsc6 -p script-packages/lucent-dailies/jsconfig.repo.json --noEmit"
   },
   "dependencies": {
-    "effect": "4.0.0-rc.112"
+    "effect": "4.0.3"
   },
   "devDependencies": {
-    "@effect/platform-node": "4.0.0-rc.112",
+    "@effect/platform-node": "4.0.3",
     "@effect/tsgo": "0.37.0",
-    "@effect/vitest": "4.0.0-rc.112",
+    "@effect/vitest": "4.0.3",
     "@storybook/addon-themes": "10.5.10",
     "@types/node": "^24.12.2",
     "@types/semver": "7.7.1",
@@ -64,6 +64,6 @@
     "typescript": "npm:@typescript/typescript6@^6.0.2",
     "vite": "7.3.2",
     "vite-plugin-solid": "2.11.14",
-    "vitest": "^4.1.11"
+    "vitest": "^5.0.4"
   }
 }

@@ -160,6 +160,9 @@ describe("ScriptFiles service", () => {
               ? new Worker("throw new Error('worker crashed')", { eval: true })
               : new Worker(workerPath);
           workers.push(worker);
+          expect(workers.filter((entry) => entry.threadId !== -1)).toHaveLength(
+            1,
+          );
           return worker;
         });
         const first = yield* resolve("/scripts/crash.js").pipe(

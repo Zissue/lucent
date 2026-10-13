@@ -1,4 +1,5 @@
 import { MessageChannelMain, type MessagePortMain } from "electron";
+import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -7,11 +8,8 @@ import * as FiberSet from "effect/FiberSet";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
-import * as RpcClient from "effect/unstable/rpc/RpcClient";
-import {
-  RpcClientDefect,
-  RpcClientError,
-} from "effect/unstable/rpc/RpcClientError";
+import * as RpcClient from "effect/rpc/RpcClient";
+import { RpcClientDefect, RpcClientError } from "effect/rpc/RpcClientError";
 
 import { GameRendererRpcs } from "../../../shared/gameRendererRpc";
 import { GAME_RENDERER_RPC_PORT_CHANNEL } from "../../../shared/ipc";
@@ -226,6 +224,13 @@ export const makeGameRendererRpc = Effect.fn("makeGameRendererRpc")(function* (
         ),
       Effect.fail,
     ).pipe(
+      Effect.catchCauseIf(Cause.hasInterruptsOnly, () =>
+        Effect.fail(
+          new GameRendererUnavailableError({
+            detail: "The connection was unavailable.",
+          }),
+        ),
+      ),
       Effect.timeoutOrElse({
         duration: options.timeout,
         orElse: () =>

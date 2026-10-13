@@ -7,16 +7,16 @@ import * as Duration from "effect/Duration";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
-import * as Pool from "effect/Pool";
+import * as RcRef from "effect/RcRef";
 import * as Semaphore from "effect/Semaphore";
 import type * as Scope from "effect/Scope";
-import { RpcClient } from "effect/unstable/rpc";
-import { RpcClientError } from "effect/unstable/rpc/RpcClientError";
-import type { FromServerEncoded } from "effect/unstable/rpc/RpcMessage";
+import { RpcClient } from "effect/rpc";
+import { RpcClientError } from "effect/rpc/RpcClientError";
+import type { FromServerEncoded } from "effect/rpc/RpcMessage";
 import {
   WorkerReceiveError,
   WorkerSendError,
-} from "effect/unstable/workers/WorkerError";
+} from "effect/workers/WorkerError";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -161,23 +161,21 @@ export const makeScriptFileWorker = Effect.fn("makeScriptFileWorker")(
       const client = yield* RpcClient.make(ScriptFileWorkerRpcs).pipe(
         Effect.provideService(RpcClient.Protocol, protocol),
       );
-      invalidate = Pool.invalidate(workers, client).pipe(Effect.scoped);
+      invalidate = RcRef.invalidate(worker);
       return client;
     });
-    const workers = yield* Pool.makeWithTTL({
+    const worker = yield* RcRef.make({
       acquire,
-      min: 0,
-      max: 1,
-      concurrency: 1,
-      timeToLive: Duration.infinity,
+      idleTimeToLive: Duration.infinity,
     });
+    const requests = yield* Semaphore.make(1);
     const slots = yield* Semaphore.make(SCRIPT_FILE_WORKER_QUEUE_LIMIT);
 
     return Effect.fn("ScriptFiles.processFile")(function* (path: string) {
       const result = yield* slots.withPermitsIfAvailable(1)(
         Effect.scoped(
           Effect.gen(function* () {
-            const client = yield* Pool.get(workers);
+            const client = yield* RcRef.get(worker);
             return yield* client.ResolveScriptFile({ path }).pipe(
               Effect.timeoutOrElse({
                 duration: SCRIPT_FILE_WORKER_TIMEOUT_MS,
@@ -190,13 +188,11 @@ export const makeScriptFileWorker = Effect.fn("makeScriptFileWorker")(
                   ),
               }),
               Effect.onExit((exit) =>
-                Exit.isFailure(exit)
-                  ? Pool.invalidate(workers, client)
-                  : Effect.void,
+                Exit.isFailure(exit) ? RcRef.invalidate(worker) : Effect.void,
               ),
             );
           }),
-        ),
+        ).pipe(requests.withPermits(1)),
       );
       return yield* Option.match(result, {
         onNone: () =>

@@ -13,7 +13,7 @@ const NumberInput = Schema.Union([Schema.Number, Schema.String]);
 export const WireNumber = NumberInput.pipe(
   Schema.decodeTo(
     Schema.Number,
-    SchemaTransformation.transformOrFail({
+    SchemaTransformation.transformEffect({
       decode: (value) => {
         if (typeof value === "number") {
           return Number.isFinite(value)
@@ -39,7 +39,7 @@ export const WireNumber = NumberInput.pipe(
 export const WireInt = WireNumber.pipe(
   Schema.decodeTo(
     Schema.Int,
-    SchemaTransformation.transformOrFail({
+    SchemaTransformation.transformEffect({
       decode: (value) => Effect.succeed(Math.trunc(value)),
       encode: Effect.succeed,
     }),
@@ -60,7 +60,7 @@ const BooleanInput = Schema.Union([
 export const WireBoolean = BooleanInput.pipe(
   Schema.decodeTo(
     Schema.Boolean,
-    SchemaTransformation.transformOrFail({
+    SchemaTransformation.transformEffect({
       decode: (value) => {
         if (typeof value === "boolean") return Effect.succeed(value);
         if (value === 1 || value === "1" || value === "true") {

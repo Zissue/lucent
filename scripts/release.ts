@@ -8,7 +8,7 @@ import * as Cause from "effect/Cause";
 import * as Console from "effect/Console";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
-import { Argument, Command, Flag } from "effect/unstable/cli";
+import { Argument, Command, Flag } from "effect/cli";
 import { commandOutput, runCommand as executeCommand } from "./process.mjs";
 
 import {
@@ -454,16 +454,16 @@ const release = (input: CliInput) =>
   });
 
 const command = Command.make("release", {
-  bumpOrVersion: Argument.string("bump-or-version").pipe(
+  bumpOrVersion: Argument.String("bump-or-version").pipe(
     Argument.withDescription(
       "patch, minor, major, prerelease, or a semver version",
     ),
   ),
-  dryRun: Flag.boolean("dry-run").pipe(
+  dryRun: Flag.Boolean("dry-run").pipe(
     Flag.withDescription("Print the release plan without writing files"),
     Flag.withDefault(false),
   ),
-  allowDirty: Flag.boolean("allow-dirty").pipe(
+  allowDirty: Flag.Boolean("allow-dirty").pipe(
     Flag.withDescription(
       "Allow existing working tree changes when using --dry-run",
     ),

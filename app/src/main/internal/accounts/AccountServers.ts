@@ -5,13 +5,13 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
-import * as FileSystem from "effect/FileSystem";
+import * as ByteSize from "effect/ByteSize";
 import {
   HttpClient,
   HttpClientError,
   HttpClientResponse,
   HttpIncomingMessage,
-} from "effect/unstable/http";
+} from "effect/http";
 
 import { ACCOUNT_SERVER_REFRESH_COOLDOWN_MS } from "../../../shared/accountPolicy";
 import type {
@@ -46,10 +46,7 @@ export const requestAccountServers = Effect.fn("requestAccountServers")(
       Schema.Array(AccountServerDataSchema),
     )(response);
   },
-  Effect.provideService(
-    HttpIncomingMessage.MaxBodySize,
-    FileSystem.Size(1024 * 1024),
-  ),
+  Effect.provideService(HttpIncomingMessage.MaxBodySize, ByteSize.mebibytes(1)),
   Effect.timeout(SERVER_REQUEST_TIMEOUT_MS),
   Effect.scoped,
 );

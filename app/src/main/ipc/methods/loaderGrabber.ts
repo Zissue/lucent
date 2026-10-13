@@ -1,5 +1,5 @@
 import * as Effect from "effect/Effect";
-import type { RpcClientError } from "effect/unstable/rpc/RpcClientError";
+import type { RpcClientError } from "effect/rpc/RpcClientError";
 
 import type { LoaderGrabberError } from "../../../shared/gameRendererRpc";
 import { LoaderGrabberIpc } from "../../../shared/ipc";
