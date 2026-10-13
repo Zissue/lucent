@@ -7,8 +7,10 @@ import { afterEach, describe, expect, it } from "@effect/vitest";
 import { vi } from "vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import { TestClock } from "effect/testing";
 
 import { DEFAULT_APP_SETTINGS, type AppSettings } from "@lucent/core/settings";
@@ -27,11 +29,15 @@ import {
   type DesktopHttpGetOptions,
   type DesktopHttpResponse,
 } from "../http/DesktopHttpClient";
+import { createDesktopIpcInvokeHandler } from "../ipc/DesktopIpcInvoke";
+import type { DesktopIpcSender } from "../ipc/DesktopIpcSenders";
+import * as UpdatesIpcMethods from "../ipc/methods/updates";
 import { DesktopSettings } from "../settings/DesktopSettings";
 import { DesktopUpdates, layer as desktopUpdatesLayer } from "./DesktopUpdates";
 
 vi.mock("electron", () => ({
   app: {},
+  ipcMain: {},
   shell: {
     openExternal: vi.fn(),
   },
@@ -189,6 +195,28 @@ const makeUpdatesHarness = (options: {
     return { env, layer };
   });
 
+const makeHangingCheckHarness = Effect.gen(function* () {
+  const started = yield* Deferred.make<void>();
+  const events: string[] = [];
+  const { layer } = yield* makeUpdatesHarness({
+    checkForUpdates: true,
+    currentVersion: "1.0.0",
+    httpClient: {
+      ...httpClient,
+      get: () =>
+        Deferred.succeed(started, undefined).pipe(
+          Effect.andThen(Effect.never),
+          Effect.onInterrupt(() =>
+            Effect.sync(() => {
+              events.push("check-interrupted");
+            }),
+          ),
+        ),
+    },
+  });
+  return { events, layer, started };
+});
+
 afterEach(async () => {
   vi.clearAllMocks();
   httpRequests.length = 0;
@@ -200,6 +228,106 @@ afterEach(async () => {
 });
 
 describe("DesktopUpdates", () => {
+  it.effect(
+    "answers an IPC check without an error when shutdown cancels it",
+    () =>
+      Effect.gen(function* () {
+        const { layer, started } = yield* makeHangingCheckHarness;
+        const errors: string[] = [];
+        const sender: DesktopIpcSender = {
+          rendererId: 1,
+          kind: "settings",
+          isCurrent: () => true,
+        };
+
+        const { pending, state } = yield* Effect.gen(function* () {
+          const context = yield* Effect.context<DesktopUpdates>();
+          const invoke = createDesktopIpcInvokeHandler(
+            UpdatesIpcMethods.checkNow.descriptor,
+            (payload) => UpdatesIpcMethods.checkNow.handler(payload, sender),
+            Effect.runPromiseWith(context),
+          );
+          const pending = invoke(undefined, { force: true });
+          yield* Deferred.await(started);
+          const state = yield* (yield* DesktopUpdates).getState;
+          return { pending, state };
+        }).pipe(
+          Effect.provide(
+            Layer.merge(
+              layer,
+              Logger.layer([
+                Logger.make((log) => {
+                  if (log.logLevel === "Error") {
+                    errors.push(String(log.message));
+                  }
+                }),
+              ]),
+            ),
+          ),
+        );
+        const envelope = yield* Effect.promise(() => pending);
+
+        expect({ envelope, errors }).toEqual({
+          envelope: { ok: true, value: state },
+          errors: [],
+        });
+      }),
+  );
+
+  it.effect("keeps a shared check running when one caller is interrupted", () =>
+    Effect.gen(function* () {
+      const { events, layer, started } = yield* makeHangingCheckHarness;
+
+      const firstExit = yield* Effect.gen(function* () {
+        const updates = yield* DesktopUpdates;
+        const first = yield* updates.checkNow().pipe(Effect.forkChild);
+        yield* Deferred.await(started);
+        yield* Fiber.interrupt(first);
+        const exit = yield* Fiber.await(first);
+        events.push("first-caller-done");
+        return exit;
+      }).pipe(Effect.provide(layer));
+
+      expect({
+        firstInterrupted: Exit.hasInterrupts(firstExit),
+        events,
+      }).toEqual({
+        firstInterrupted: true,
+        events: ["first-caller-done", "check-interrupted"],
+      });
+    }),
+  );
+
+  it.effect("reports a defect in the shared check to its caller", () =>
+    Effect.gen(function* () {
+      const { layer } = yield* makeUpdatesHarness({
+        checkForUpdates: true,
+        currentVersion: "1.0.0",
+        httpClient: { ...httpClient, get: () => Effect.die("boom") },
+      });
+      const updates = yield* DesktopUpdates.pipe(Effect.provide(layer));
+
+      const exit = yield* Effect.exit(updates.checkNow());
+
+      expect(Exit.hasDies(exit)).toBe(true);
+    }),
+  );
+
+  it.effect("interrupts an in-flight check when its layer closes", () =>
+    Effect.gen(function* () {
+      const { events, layer, started } = yield* makeHangingCheckHarness;
+
+      yield* Effect.gen(function* () {
+        const updates = yield* DesktopUpdates;
+        yield* updates.checkNow().pipe(Effect.forkChild);
+        yield* Deferred.await(started);
+      }).pipe(Effect.provide(layer));
+      events.push("layer-closed");
+
+      expect(events).toEqual(["check-interrupted", "layer-closed"]);
+    }),
+  );
+
   it.effect("starts disabled when update checks are disabled", () =>
     Effect.gen(function* () {
       const harness = yield* makeUpdatesHarness({
