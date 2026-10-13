@@ -2139,17 +2139,18 @@ export const makeArmyLoopTauntOrchestrator = (): Effect.Effect<
             stateRef,
             (state): readonly [MutationEffects, OrchestratorState] => {
               const run = state.runs.get(outcome.result.runId);
-              if (
-                run === undefined ||
-                run.status === "terminal" ||
-                !run.participants.has(senderId)
-              ) {
+              if (run === undefined || !run.participants.has(senderId)) {
                 return [noEffects(), state];
               }
-              const mutation = terminalize(run, {
-                reason: "Army session ended during Loop Taunt registration",
-                status: "failed",
-              });
+              const participants = new Map(run.participants);
+              participants.delete(senderId);
+              const mutation = terminalize(
+                { ...run, participants },
+                {
+                  reason: "Army session ended during Loop Taunt registration",
+                  status: "failed",
+                },
+              );
               return [mutation, storeRun(state, mutation.run)];
             },
           );
