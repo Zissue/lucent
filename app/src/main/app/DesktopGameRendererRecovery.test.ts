@@ -430,4 +430,70 @@ describe("makeDesktopGameRendererRecovery", () => {
         ]);
       }),
   );
+
+  it.effect(
+    "reloads a newer generation's crash after an older crash dialog is declined",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        yield* harness.crash;
+        yield* harness.navigateWhileLoading;
+        yield* harness.crash;
+
+        yield* harness.answer(0, DECLINE);
+        yield* harness.answer(1, RELOAD);
+
+        expect(harness.timeline).toEqual([
+          "crash prompt for generation 1",
+          "crash prompt for generation 2",
+          "reload generation 2",
+        ]);
+      }),
+  );
+
+  it.effect(
+    "suppresses the script of a newer generation's crash after an older crash without one",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        yield* harness.crash;
+        yield* harness.navigateWhileLoading;
+        yield* harness.startScript;
+        yield* harness.crash;
+
+        yield* harness.answer(1, RELOAD);
+
+        expect(harness.timeline).toEqual([
+          "crash prompt for generation 1",
+          "crash prompt for generation 2",
+          "suppress",
+          "reload generation 2",
+        ]);
+      }),
+  );
+
+  it.effect(
+    "does not offer an older generation's crash to a generation that loaded behind a hang dialog",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        yield* harness.startScript;
+        yield* harness.hang;
+        yield* harness.crash;
+        yield* harness.navigateWhileLoading;
+
+        yield* harness.answer(0, DECLINE);
+
+        expect(harness.timeline).toEqual([
+          "unresponsive prompt for generation 1",
+        ]);
+
+        yield* harness.crash;
+
+        expect(harness.timeline).toEqual([
+          "unresponsive prompt for generation 1",
+          "crash prompt for generation 2",
+        ]);
+      }),
+  );
 });
