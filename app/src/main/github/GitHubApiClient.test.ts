@@ -1,4 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Random from "effect/Random";
@@ -218,5 +219,37 @@ describe("GitHubApiClient", () => {
       expect(second.retryAt).toBe(first.retryAt);
       expect(requestCount.value).toBe(1);
     }),
+  );
+
+  it.effect(
+    "escalates cooldowns across consecutive secondary rate limits",
+    () =>
+      Effect.gen(function* () {
+        const requestCount = { value: 0 };
+        const secondaryLimit = () =>
+          response({
+            body: "You have exceeded a secondary rate limit.",
+            statusCode: 403,
+          });
+        const client = makeGitHubApiClient(
+          makeHttpClient(
+            [secondaryLimit(), secondaryLimit(), secondaryLimit()],
+            requestCount,
+          ),
+          "Lucent/test",
+        );
+
+        const cooldownSeconds: number[] = [];
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          const startedAt = yield* Clock.currentTimeMillis;
+          const error = yield* client.get({ url: API_URL }).pipe(Effect.flip);
+          const cooldownMillis = Date.parse(error.retryAt ?? "") - startedAt;
+          cooldownSeconds.push(cooldownMillis / 1000);
+          yield* TestClock.adjust(cooldownMillis);
+        }
+
+        expect(cooldownSeconds).toEqual([60, 120, 240]);
+        expect(requestCount.value).toBe(3);
+      }),
   );
 });
