@@ -9,6 +9,7 @@ import {
 } from "electron";
 
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Scope from "effect/Scope";
@@ -1664,6 +1665,11 @@ const makeDesktopWindows = Effect.gen(function* () {
         }),
     });
 
+  const pendingOpens = new Map<
+    string,
+    Deferred.Deferred<number, DesktopWindowError>
+  >();
+
   const open: DesktopWindowsShape["open"] = (kind, options) =>
     Effect.gen(function* () {
       const definition = getDesktopWindowDefinition(kind);
@@ -1703,18 +1709,7 @@ const makeDesktopWindows = Effect.gen(function* () {
           }),
       });
       const ownerId = owner?.rendererId;
-      if (definition.singleInstance) {
-        const existing = findOpenInstance(kind, ownerId);
-        if (existing !== undefined) {
-          yield* revealRenderer(existing.rendererId);
-          return existing.rendererId;
-        }
-      }
-
       const isTopLevelWindow = definition.scope !== "game-child";
-      if (isTopLevelWindow) {
-        openingTopLevelWindowCount += 1;
-      }
       const openEffect = Effect.fn(function* (scope: Scope.Closeable) {
         const bootstrapSettings = yield* getBootstrapSettings;
         const systemPrefersDark = yield* theme.shouldUseDarkColors;
@@ -1903,16 +1898,24 @@ const makeDesktopWindows = Effect.gen(function* () {
         );
         return rendererId;
       });
-      return yield* inScope(owner?.scope ?? layerScope, openEffect).pipe(
-        Effect.mapError(
-          (cause) =>
-            new DesktopWindowError({
-              id: kind,
-              detail: `Failed to open desktop window: ${kind}`,
-              cause,
-            }),
-        ),
-        Effect.ensuring(
+      const createWindow = Effect.acquireUseRelease(
+        Effect.sync(() => {
+          if (isTopLevelWindow) {
+            openingTopLevelWindowCount += 1;
+          }
+        }),
+        () =>
+          inScope(owner?.scope ?? layerScope, openEffect).pipe(
+            Effect.mapError(
+              (cause) =>
+                new DesktopWindowError({
+                  id: kind,
+                  detail: `Failed to open desktop window: ${kind}`,
+                  cause,
+                }),
+            ),
+          ),
+        () =>
           Effect.sync(() => {
             if (!isTopLevelWindow) {
               return;
@@ -1921,8 +1924,36 @@ const makeDesktopWindows = Effect.gen(function* () {
             openingTopLevelWindowCount -= 1;
             quitIfNoTopLevelWindow();
           }),
-        ),
       );
+      if (!definition.singleInstance) {
+        return yield* createWindow;
+      }
+
+      return yield* Effect.uninterruptibleMask((restore) => {
+        const key = `${kind}:${ownerId ?? "application"}`;
+        const pending = pendingOpens.get(key);
+        if (pending !== undefined) {
+          return restore(Deferred.await(pending));
+        }
+
+        const existing = findOpenInstance(kind, ownerId);
+        if (existing !== undefined) {
+          return restore(revealRenderer(existing.rendererId)).pipe(
+            Effect.as(existing.rendererId),
+          );
+        }
+
+        const result = Deferred.makeUnsafe<number, DesktopWindowError>();
+        pendingOpens.set(key, result);
+        return restore(createWindow).pipe(
+          Effect.onExit((exit) =>
+            Effect.sync(() => {
+              pendingOpens.delete(key);
+              Deferred.doneUnsafe(result, exit);
+            }),
+          ),
+        );
+      });
     });
 
   const restorePrimaryWindow = Effect.fn("DesktopWindows.restorePrimaryWindow")(
