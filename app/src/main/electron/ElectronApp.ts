@@ -5,13 +5,24 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
+export interface ElectronWillQuitEvent {
+  readonly preventDefault: () => void;
+}
+
+export interface ElectronAppListeners {
+  readonly activate: () => void;
+  readonly "before-quit": () => void;
+  readonly "will-quit": (event: ElectronWillQuitEvent) => void;
+  readonly "window-all-closed": () => void;
+}
+
 export interface ElectronAppShape {
   readonly exit: (code?: number) => Effect.Effect<void>;
   readonly getAppMetrics: Effect.Effect<readonly ProcessMetric[]>;
   readonly getVersion: Effect.Effect<string>;
-  readonly on: (
-    eventName: "activate" | "before-quit" | "will-quit" | "window-all-closed",
-    listener: () => void,
+  readonly on: <EventName extends keyof ElectronAppListeners>(
+    eventName: EventName,
+    listener: ElectronAppListeners[EventName],
   ) => Effect.Effect<() => void>;
   readonly relaunch: Effect.Effect<void>;
   readonly quit: Effect.Effect<void>;
