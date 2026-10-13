@@ -44,9 +44,21 @@ export const createDesktopIpcInvokeHandler =
     runPromise(
       descriptor.decodePayloadEffect(rawPayload).pipe(
         Effect.flatMap((payload) => handler(payload, event)),
-        Effect.flatMap((result) => descriptor.encodeResultEffect(result)),
+        Effect.flatMap((result) =>
+          descriptor.encodeResultEffect(result).pipe(Effect.orDie),
+        ),
         Effect.map(
           (value) => ({ ok: true, value }) satisfies IpcInvokeEnvelope<unknown>,
+        ),
+        Effect.tapCauseIf(
+          (cause) => Cause.hasDies(cause) || Cause.hasInterrupts(cause),
+          (cause) =>
+            Effect.logError("IPC handler failed unexpectedly", cause).pipe(
+              Effect.annotateLogs({
+                component: "ipc",
+                data: { channel: descriptor.channel },
+              }),
+            ),
         ),
         Effect.catchCause((cause) =>
           Effect.succeed({
