@@ -2,10 +2,12 @@ import { join } from "path";
 
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import type * as Scope from "effect/Scope";
 import { gt, prerelease, valid } from "semver";
 
 import {
@@ -295,12 +297,12 @@ interface DesktopUpdatesOptions {
 
 const makeDesktopUpdates = (
   options: DesktopUpdatesOptions,
-): Effect.Effect<DesktopUpdatesShape> =>
+): Effect.Effect<DesktopUpdatesShape, never, Scope.Scope> =>
   Effect.gen(function* () {
     const currentVersion = normalizeVersion(options.currentVersion);
     const now = options.now ?? (() => new Date());
     const context = yield* Effect.context<never>();
-    const runPromise = Effect.runPromiseWith(context);
+    const runFork = Effect.runForkWith(context);
     const disabledState = (): UpdateCheckState => ({
       status: "disabled",
       currentVersion,
@@ -320,7 +322,10 @@ const makeDesktopUpdates = (
     const cacheRef = yield* Ref.make<UpdateReleaseCache | null>(null);
     const cacheLoadedRef = yield* Ref.make(false);
     const stateChanges = makeListenerRegistry<UpdateCheckState>();
-    let inFlight: Promise<UpdateCheckState> | null = null;
+    let inFlight: Fiber.Fiber<UpdateCheckState> | null = null;
+    yield* Effect.addFinalizer(() =>
+      inFlight === null ? Effect.void : Fiber.interrupt(inFlight),
+    );
 
     const setState = (state: UpdateCheckState): Effect.Effect<void> =>
       Ref.set(stateRef, state).pipe(
@@ -485,22 +490,21 @@ const makeDesktopUpdates = (
         Effect.orElseSucceed(() => false),
       );
 
-    const checkNow: DesktopUpdatesShape["checkNow"] = (checkOptions) => {
-      if (inFlight !== null) {
-        const active = inFlight;
-        return Effect.promise(() => active);
-      }
-
-      const promise = runPromise(runCheck(checkOptions?.force === true));
-      inFlight = promise;
-      return Effect.promise(() =>
-        promise.finally(() => {
-          if (inFlight === promise) {
-            inFlight = null;
-          }
-        }),
-      );
+    const startCheck = (force: boolean): Fiber.Fiber<UpdateCheckState> => {
+      const fiber = runFork(runCheck(force));
+      inFlight = fiber;
+      fiber.addObserver(() => {
+        if (inFlight === fiber) {
+          inFlight = null;
+        }
+      });
+      return fiber;
     };
+
+    const checkNow: DesktopUpdatesShape["checkNow"] = (checkOptions) =>
+      Effect.suspend(() =>
+        Fiber.join(inFlight ?? startCheck(checkOptions?.force === true)),
+      );
 
     return {
       checkNow,
