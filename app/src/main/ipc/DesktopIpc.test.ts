@@ -45,6 +45,7 @@ const senders = DesktopIpcSenders.of({
       return {
         rendererId: 42,
         kind: "game" as const,
+        isCurrent: () => true,
       };
     }),
 } satisfies DesktopIpcSendersShape);

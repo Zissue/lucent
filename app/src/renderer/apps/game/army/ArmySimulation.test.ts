@@ -76,7 +76,12 @@ const makeClientBridge = (
     progress: (payload) =>
       run(coordinator.progress(payload.sessionId, participantId, payload)),
     start: (payload) =>
-      run(coordinator.join(config, payload.playerName, participantId)),
+      run(
+        coordinator.join(config, payload.playerName, {
+          rendererId: participantId,
+          isCurrent: () => true,
+        }),
+      ),
     sync: (payload) =>
       run(coordinator.sync(payload.sessionId, participantId, payload)),
   }) as DesktopArmyBridge;
@@ -486,7 +491,10 @@ describe("army session lifecycle", () => {
           Effect.sync(() => ended.push(event)),
         );
         const alice = yield* Effect.forkChild(
-          coordinator.join(config, "Alice", 1),
+          coordinator.join(config, "Alice", {
+            rendererId: 1,
+            isCurrent: () => true,
+          }),
         );
         yield* advance(121_000);
         const exit = alice.pollUnsafe();

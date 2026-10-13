@@ -121,6 +121,10 @@ export interface DesktopWindowsShape {
   readonly describe: (
     rendererId: number,
   ) => Effect.Effect<DesktopRendererInfo | undefined>;
+  readonly generationGuard: (
+    rendererId: number,
+    generation: number,
+  ) => Effect.Effect<() => boolean>;
   readonly getOwnedRendererIds: (
     ownerRendererId: number,
     kind?: DesktopWindowKind,
@@ -748,6 +752,21 @@ const makeDesktopWindows = Effect.gen(function* () {
         generation: chrome ? 0 : record.generation,
         ready: chrome ? false : record.rendererReady,
       };
+    });
+
+  const generationGuard: DesktopWindowsShape["generationGuard"] = (
+    rendererId,
+    generation,
+  ) =>
+    Effect.succeed(() => {
+      const record = renderers.get(rendererId);
+      if (record === undefined) return false;
+      if ("host" in record) return generation === 0;
+      return (
+        record.scope.state._tag !== "Closed" &&
+        record.generation === generation &&
+        record.unavailableGeneration !== generation
+      );
     });
 
   const getRendererIds: DesktopWindowsShape["getRendererIds"] = (kind) =>
@@ -2007,6 +2026,7 @@ const makeDesktopWindows = Effect.gen(function* () {
     closeGameView,
     getRendererIds,
     describe,
+    generationGuard,
     getGameViewHostState,
     getGameViewPresentation,
     getOwnedRendererIds,

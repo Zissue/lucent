@@ -10,6 +10,7 @@ import { DesktopWindows } from "../window/DesktopWindows";
 export interface DesktopIpcSender {
   readonly rendererId: number;
   readonly kind: DesktopRendererKind;
+  readonly isCurrent: () => boolean;
 }
 
 export type DesktopIpcSenderKinds = readonly [
@@ -41,7 +42,7 @@ export class DesktopIpcSenders extends Context.Service<
 >()("lucent/desktop/ipc/DesktopIpcSenders") {}
 
 export const makeDesktopIpcSenders = (
-  windows: Pick<DesktopWindows["Service"], "describe">,
+  windows: Pick<DesktopWindows["Service"], "describe" | "generationGuard">,
 ): DesktopIpcSenders["Service"] => {
   const requireSender = Effect.fn("DesktopIpcSenders.require")(function* (
     event: { readonly sender: Pick<WebContents, "id"> },
@@ -58,6 +59,7 @@ export const makeDesktopIpcSenders = (
     return {
       rendererId,
       kind: info.kind,
+      isCurrent: yield* windows.generationGuard(rendererId, info.generation),
     };
   });
 
@@ -76,7 +78,7 @@ export const layer = Layer.effect(
 
 export const resolveGameRendererId = Effect.fn(
   "DesktopIpcSenders.resolveGameRendererId",
-)(function* (sender: DesktopIpcSender) {
+)(function* (sender: Pick<DesktopIpcSender, "rendererId" | "kind">) {
   if (sender.kind === "game") return sender.rendererId;
   const windows = yield* DesktopWindows;
   const ownerId = (yield* windows.describe(sender.rendererId))?.ownerId;

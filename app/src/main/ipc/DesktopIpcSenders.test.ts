@@ -11,33 +11,44 @@ import {
 } from "./DesktopIpcSenders";
 
 const event = { sender: { id: 42 } };
-const makeWindows = (kind: DesktopRendererKind | null) => ({
-  describe: (rendererId: number) =>
-    Effect.succeed(
-      kind === null
-        ? undefined
-        : {
-            rendererId,
-            kind,
-            windowId: 1,
-            ownerId: undefined,
-            generation: 1,
-            ready: false,
-          },
-    ),
-});
+const makeWindows = (kind: DesktopRendererKind | null) => {
+  const generations = new Map(kind === null ? [] : [[42, 1]]);
+  return {
+    generations,
+    describe: (rendererId: number) =>
+      Effect.sync(() => {
+        const generation = generations.get(rendererId);
+        return kind === null || generation === undefined
+          ? undefined
+          : {
+              rendererId,
+              kind,
+              windowId: 1,
+              ownerId: undefined,
+              generation,
+              ready: false,
+            };
+      }),
+    generationGuard: (rendererId: number, generation: number) =>
+      Effect.succeed(() => generations.get(rendererId) === generation),
+  };
+};
 
 describe("DesktopIpcSenders", () => {
   it.effect("resolves an allowed sender with its managed window identity", () =>
     Effect.gen(function* () {
-      const senders = makeDesktopIpcSenders(makeWindows("game"));
+      const windows = makeWindows("game");
+      const senders = makeDesktopIpcSenders(windows);
 
       const sender = yield* senders.require(event, ["game"]);
 
-      expect(sender).toEqual({
-        rendererId: 42,
-        kind: "game",
-      });
+      expect(sender.rendererId).toBe(42);
+      expect(sender.kind).toBe("game");
+      expect(sender.isCurrent()).toBe(true);
+
+      windows.generations.set(42, 2);
+
+      expect(sender.isCurrent()).toBe(false);
     }),
   );
 

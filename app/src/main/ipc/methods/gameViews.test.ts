@@ -37,7 +37,11 @@ const hostState: GameViewHostState = {
   selectedId: "42",
   sessions: [{ id: "42", name: "Alice", phase: "ready" }],
 };
-const sender = { kind: "game-host", rendererId: 100 } as const;
+const sender = {
+  kind: "game-host",
+  rendererId: 100,
+  isCurrent: () => true,
+} as const;
 
 describe("game view lifecycle IPC", () => {
   it.effect("keeps running scripts open until close is confirmed", () =>
@@ -130,7 +134,11 @@ describe("game view lifecycle IPC", () => {
             Effect.sync(() => sessions.closeWindow(id, 50)),
         });
         yield* closeCurrent
-          .handler(undefined, { kind: "game", rendererId: 42 })
+          .handler(undefined, {
+            kind: "game",
+            rendererId: 42,
+            isCurrent: () => true,
+          })
           .pipe(Effect.provide(dependencies));
         expect(
           sessions.snapshot().map((session) => session.gameWindowId),
@@ -222,7 +230,11 @@ describe("game view host command IPC", () => {
           yield* run(
             setGroupControlsOpen.handler(
               { open: true },
-              { kind: "game-group-controls", rendererId: 101 },
+              {
+                kind: "game-group-controls",
+                rendererId: 101,
+                isCurrent: () => true,
+              },
             ),
           ),
         ).toEqual(hostState);
@@ -282,7 +294,7 @@ describe("game view host command IPC", () => {
         yield* dispatchGroupOptionHotkey
           .handler(
             { commandId: "toggleInfiniteRange" },
-            { kind: "game", rendererId: 42 },
+            { kind: "game", rendererId: 42, isCurrent: () => true },
           )
           .pipe(Effect.provide(dependencies)),
       ).toEqual({ recipientCount: 0, skippedCount: 0, status: "sent" });
