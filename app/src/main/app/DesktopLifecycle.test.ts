@@ -37,8 +37,6 @@ const makeHarness = (flushCompletes: boolean) => {
     flush,
     installProcessHooks: Effect.void,
     logFilePath: "lucent.log",
-    record: () => Effect.void,
-    recordUnsafe: () => undefined,
   });
   const app = ElectronApp.of({
     exit: (code) =>

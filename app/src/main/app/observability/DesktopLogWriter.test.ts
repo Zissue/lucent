@@ -232,7 +232,10 @@ describe("DesktopLogWriter", () => {
         self: "[Circular]",
       },
     ]);
-    expect(desktopLogErrorDetails("plain cause")).toBe("plain cause");
+    expect(desktopLogErrorDetails("plain cause")).toEqual({
+      name: "NonError",
+      message: "plain cause",
+    });
   });
 
   it("reports a failed append at the start of the next successful batch", async () => {

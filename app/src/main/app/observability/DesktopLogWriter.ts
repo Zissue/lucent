@@ -40,16 +40,42 @@ const recordLevel = (record: unknown): LogLevel => {
   }
 };
 
-export const desktopLogErrorDetails = (cause: unknown): unknown => {
-  if (cause instanceof Error) {
+export interface DesktopLogError {
+  readonly name: string;
+  readonly message: string;
+  readonly stack?: string;
+  readonly cause?: DesktopLogError;
+}
+
+export const desktopLogErrorDetails = (
+  value: unknown,
+  depth = 0,
+): DesktopLogError => {
+  if (value instanceof Error) {
     return {
-      name: cause.name,
-      message: cause.message,
-      stack: cause.stack,
+      name: value.name,
+      message: value.message,
+      ...(value.stack === undefined ? {} : { stack: value.stack }),
+      ...(value.cause === undefined || depth >= 5
+        ? {}
+        : { cause: desktopLogErrorDetails(value.cause, depth + 1) }),
     };
   }
 
-  return cause;
+  let message: string;
+  try {
+    message =
+      typeof value === "string"
+        ? value
+        : (JSON.stringify(value) ?? String(value));
+  } catch {
+    try {
+      message = String(value);
+    } catch {
+      message = "[Unserializable]";
+    }
+  }
+  return { name: "NonError", message: message.slice(0, 1_024) };
 };
 
 const fallbackSerializationRecord = () => ({
