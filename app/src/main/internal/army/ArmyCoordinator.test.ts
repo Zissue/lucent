@@ -17,12 +17,18 @@ import {
   joinSession,
   makeArmyCoordinator,
   type ArmyCoordinatorState,
+  type ArmyParticipant,
   type ArmySessionEndedEvent,
 } from "./ArmyCoordinator";
 
 let nextParticipantId = 1;
 
 const makeParticipant = (): number => nextParticipantId++;
+
+const live = (rendererId: number): ArmyParticipant => ({
+  rendererId,
+  isCurrent: () => true,
+});
 
 const makeConfig = (players: readonly string[]): ArmyConfigPayload => ({
   configName: "test",
@@ -34,6 +40,28 @@ const makeConfig = (players: readonly string[]): ArmyConfigPayload => ({
 });
 
 describe("ArmyCoordinator", () => {
+  it.effect(
+    "rejects an unavailable participant without creating a session",
+    () =>
+      Effect.gen(function* () {
+        const coordinator = yield* makeArmyCoordinator();
+        const error = yield* Effect.flip(
+          coordinator.join(makeConfig(["Alice"]), "Alice", {
+            rendererId: 7,
+            isCurrent: () => false,
+          }),
+        );
+
+        expect(error).toMatchObject({
+          _tag: "ArmyParticipantError",
+          reason: "unavailable",
+          message: "Army window is no longer available",
+          playerName: "Alice",
+        });
+        expect(yield* coordinator.getSessions()).toEqual([]);
+      }),
+  );
+
   it.effect("publishes session-ended events without an IPC dependency", () =>
     Effect.gen(function* () {
       const coordinator = yield* makeArmyCoordinator();
@@ -47,7 +75,7 @@ describe("ArmyCoordinator", () => {
       const session = yield* coordinator.join(
         makeConfig(["Alice"]),
         "Alice",
-        participantId,
+        live(participantId),
       );
 
       yield* coordinator.abortSession(session.sessionId, {
@@ -72,7 +100,11 @@ describe("ArmyCoordinator", () => {
         const coordinator = yield* makeArmyCoordinator();
         const participantId = makeParticipant();
         const config = makeConfig(["Alice"]);
-        const first = yield* coordinator.join(config, "Alice", participantId);
+        const first = yield* coordinator.join(
+          config,
+          "Alice",
+          live(participantId),
+        );
         yield* coordinator.sync(first.sessionId, participantId, {
           label: "first-run",
           step: 0,
@@ -83,7 +115,11 @@ describe("ArmyCoordinator", () => {
           reason: "Renderer reloaded",
         });
 
-        const second = yield* coordinator.join(config, "Alice", participantId);
+        const second = yield* coordinator.join(
+          config,
+          "Alice",
+          live(participantId),
+        );
         yield* coordinator.sync(second.sessionId, participantId, {
           label: "second-run",
           step: 0,
@@ -102,7 +138,7 @@ describe("ArmyCoordinator", () => {
       const aliceWindow = makeParticipant();
       const bobWindow = makeParticipant();
       const alice = yield* coordinator
-        .join(makeConfig(["Alice", "Bob"]), "Alice", aliceWindow)
+        .join(makeConfig(["Alice", "Bob"]), "Alice", live(aliceWindow))
         .pipe(Effect.forkScoped);
 
       yield* Effect.yieldNow;
@@ -111,7 +147,7 @@ describe("ArmyCoordinator", () => {
       const bob = yield* coordinator.join(
         makeConfig(["Alice", "Bob"]),
         "Bob",
-        bobWindow,
+        live(bobWindow),
       );
       const alicePayload = yield* Fiber.join(alice);
 
@@ -130,8 +166,16 @@ describe("ArmyCoordinator", () => {
       const bobWindow = makeParticipant();
       const [alice] = yield* Effect.all(
         [
-          coordinator.join(makeConfig(["Alice", "Bob"]), "Alice", aliceWindow),
-          coordinator.join(makeConfig(["Alice", "Bob"]), "Bob", bobWindow),
+          coordinator.join(
+            makeConfig(["Alice", "Bob"]),
+            "Alice",
+            live(aliceWindow),
+          ),
+          coordinator.join(
+            makeConfig(["Alice", "Bob"]),
+            "Bob",
+            live(bobWindow),
+          ),
         ],
         { concurrency: "unbounded" },
       );
@@ -192,10 +236,14 @@ describe("ArmyCoordinator", () => {
       yield* coordinator.join(
         makeConfig(["Alice"]),
         "Alice",
-        makeParticipant(),
+        live(makeParticipant()),
       );
       const error = yield* Effect.flip(
-        coordinator.join(makeConfig(["Alice"]), "Alice", makeParticipant()),
+        coordinator.join(
+          makeConfig(["Alice"]),
+          "Alice",
+          live(makeParticipant()),
+        ),
       );
       expect(error.message).toBe("Army player already joined: Alice");
     }),
@@ -208,7 +256,7 @@ describe("ArmyCoordinator", () => {
       const session = yield* coordinator.join(
         makeConfig(["Alice"]),
         "Alice",
-        aliceWindow,
+        live(aliceWindow),
       );
       const error = yield* Effect.flip(
         coordinator.sync(session.sessionId, makeParticipant(), {
@@ -231,9 +279,13 @@ describe("ArmyCoordinator", () => {
           coordinator.join(
             makeConfig(["Alice", "Bob"]),
             " alice ",
-            aliceWindow,
+            live(aliceWindow),
           ),
-          coordinator.join(makeConfig(["Alice", "Bob"]), "BOB", bobWindow),
+          coordinator.join(
+            makeConfig(["Alice", "Bob"]),
+            "BOB",
+            live(bobWindow),
+          ),
         ],
         { concurrency: "unbounded" },
       );
@@ -253,7 +305,7 @@ describe("ArmyCoordinator", () => {
     Effect.gen(function* () {
       const coordinator = yield* makeArmyCoordinator();
       const pending = yield* coordinator
-        .join(makeConfig(["Alice", "Bob"]), "Alice", makeParticipant())
+        .join(makeConfig(["Alice", "Bob"]), "Alice", live(makeParticipant()))
         .pipe(Effect.result, Effect.forkScoped);
       yield* Effect.yieldNow;
       yield* TestClock.adjust("120 seconds");
@@ -271,8 +323,16 @@ describe("ArmyCoordinator", () => {
       const bobWindow = makeParticipant();
       const [alice, bob] = yield* Effect.all(
         [
-          coordinator.join(makeConfig(["Alice", "Bob"]), "Alice", aliceWindow),
-          coordinator.join(makeConfig(["Alice", "Bob"]), "Bob", bobWindow),
+          coordinator.join(
+            makeConfig(["Alice", "Bob"]),
+            "Alice",
+            live(aliceWindow),
+          ),
+          coordinator.join(
+            makeConfig(["Alice", "Bob"]),
+            "Bob",
+            live(bobWindow),
+          ),
         ],
         { concurrency: "unbounded" },
       );
@@ -306,9 +366,13 @@ describe("ArmyCoordinator", () => {
             coordinator.join(
               makeConfig(["Alice", "Bob"]),
               "Alice",
-              aliceWindow,
+              live(aliceWindow),
             ),
-            coordinator.join(makeConfig(["Alice", "Bob"]), "Bob", bobWindow),
+            coordinator.join(
+              makeConfig(["Alice", "Bob"]),
+              "Bob",
+              live(bobWindow),
+            ),
           ],
           { concurrency: "unbounded" },
         );
@@ -363,7 +427,7 @@ describe("ArmyCoordinator", () => {
         Effect.sync(() => events.push(event)),
       );
       const pending = yield* coordinator
-        .join(makeConfig(["Alice", "Bob"]), "Alice", aliceWindow)
+        .join(makeConfig(["Alice", "Bob"]), "Alice", live(aliceWindow))
         .pipe(Effect.flip, Effect.forkScoped);
       yield* Effect.yieldNow;
       yield* TestClock.adjust("120 seconds");
@@ -396,8 +460,16 @@ describe("ArmyCoordinator", () => {
       );
       const [alice] = yield* Effect.all(
         [
-          coordinator.join(makeConfig(["Alice", "Bob"]), "Alice", aliceWindow),
-          coordinator.join(makeConfig(["Alice", "Bob"]), "Bob", bobWindow),
+          coordinator.join(
+            makeConfig(["Alice", "Bob"]),
+            "Alice",
+            live(aliceWindow),
+          ),
+          coordinator.join(
+            makeConfig(["Alice", "Bob"]),
+            "Bob",
+            live(bobWindow),
+          ),
         ],
         { concurrency: "unbounded" },
       );
@@ -433,10 +505,10 @@ describe("ArmyCoordinator", () => {
       );
       const config = makeConfig(["Alice", "Bob", "Carol"]);
       const bob = yield* coordinator
-        .join(config, "Bob", bobWindow)
+        .join(config, "Bob", live(bobWindow))
         .pipe(Effect.flip, Effect.forkScoped);
       yield* coordinator
-        .join(config, "Alice", aliceWindow)
+        .join(config, "Alice", live(aliceWindow))
         .pipe(Effect.forkScoped);
       yield* Effect.yieldNow;
 
@@ -469,8 +541,16 @@ describe("ArmyCoordinator", () => {
       );
       const [alice] = yield* Effect.all(
         [
-          coordinator.join(makeConfig(["Alice", "Bob"]), "Alice", aliceWindow),
-          coordinator.join(makeConfig(["Alice", "Bob"]), "Bob", bobWindow),
+          coordinator.join(
+            makeConfig(["Alice", "Bob"]),
+            "Alice",
+            live(aliceWindow),
+          ),
+          coordinator.join(
+            makeConfig(["Alice", "Bob"]),
+            "Bob",
+            live(bobWindow),
+          ),
         ],
         { concurrency: "unbounded" },
       );
@@ -511,9 +591,13 @@ describe("ArmyCoordinator", () => {
             coordinator.join(
               makeConfig(["Alice", "Bob"]),
               "Alice",
-              aliceWindow,
+              live(aliceWindow),
             ),
-            coordinator.join(makeConfig(["Alice", "Bob"]), "Bob", bobWindow),
+            coordinator.join(
+              makeConfig(["Alice", "Bob"]),
+              "Bob",
+              live(bobWindow),
+            ),
           ],
           { concurrency: "unbounded" },
         );
@@ -561,7 +645,7 @@ describe("army registration interruption", () => {
         Effect.sync(() => events.push(event)),
       );
       const joining = yield* coordinator
-        .join(makeConfig(["Alice"]), "Alice", 1)
+        .join(makeConfig(["Alice"]), "Alice", live(1))
         .pipe(Effect.forkScoped);
       yield* Fiber.await(joining);
       expect(interrupted).toBe(1);
@@ -602,7 +686,7 @@ describe("army checkpoint cursor", () => {
       const session = yield* coordinator.join(
         makeConfig(["Alice"]),
         "Alice",
-        1,
+        live(1),
       );
       const error = yield* Effect.flip(
         coordinator.sync(session.sessionId, 1, { step: 1 }),
@@ -628,7 +712,7 @@ describe("army checkpoint cursor", () => {
       const session = yield* coordinator.join(
         makeConfig(["Alice"]),
         "Alice",
-        1,
+        live(1),
       );
       const report = (step: number) =>
         coordinator.progress(session.sessionId, 1, {
@@ -661,7 +745,7 @@ describe("army checkpoint cursor", () => {
           const session = yield* coordinator.join(
             makeConfig(["Alice"]),
             "Alice",
-            1,
+            live(1),
           );
           yield* coordinator.progress(session.sessionId, 1, {
             complete: true,
@@ -777,12 +861,12 @@ describe("army end logging", () => {
             Effect.sync(() => events.push(event)),
           );
           const joining = yield* coordinator
-            .join(config, "Alice", 1)
+            .join(config, "Alice", live(1))
             .pipe(Effect.forkScoped);
           yield* Effect.yieldNow;
           let waiting: Fiber.Fiber<unknown, unknown> = joining;
           if (phase === "active") {
-            const session = yield* coordinator.join(config, "Bob", 2);
+            const session = yield* coordinator.join(config, "Bob", live(2));
             yield* Fiber.join(joining);
             waiting = yield* coordinator
               .sync(session.sessionId, 1, { step: 0 })
@@ -825,9 +909,9 @@ describe("army timeout diagnostics", () => {
         const config = makeConfig(["Alice", "Bob", "Carol"]);
         const [session] = yield* Effect.all(
           [
-            coordinator.join(config, "Alice", 1),
-            coordinator.join(config, "Bob", 2),
-            coordinator.join(config, "Carol", 3),
+            coordinator.join(config, "Alice", live(1)),
+            coordinator.join(config, "Bob", live(2)),
+            coordinator.join(config, "Carol", live(3)),
           ],
           { concurrency: "unbounded" },
         );

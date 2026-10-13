@@ -39,6 +39,7 @@ const ParticipantReasons = Schema.Literals([
   "not-configured",
   "already-joined",
   "sender-mismatch",
+  "unavailable",
 ]);
 
 export class ArmyParticipantError extends Schema.TaggedError<ArmyParticipantError>()(
@@ -83,6 +84,11 @@ export type ArmyCoordinatorError =
   | ArmySynchronizationError;
 
 export type ArmyParticipantId = number;
+
+export interface ArmyParticipant {
+  readonly rendererId: ArmyParticipantId;
+  readonly isCurrent: () => boolean;
+}
 
 export type ArmySessionEndKind =
   | "application-quit"
@@ -826,7 +832,7 @@ export interface ArmyCoordinatorShape {
   readonly join: (
     config: ArmyConfigPayload,
     playerName: string,
-    participantId: ArmyParticipantId,
+    participant: ArmyParticipant,
   ) => Effect.Effect<ArmySessionPayload, ArmyCoordinatorError>;
   readonly leave: (participantId: ArmyParticipantId) => Effect.Effect<void>;
   readonly onSessionEnded: (
@@ -987,19 +993,30 @@ export const makeArmyCoordinator = (): Effect.Effect<
     const join: ArmyCoordinatorShape["join"] = (
       config,
       playerName,
-      participantId,
+      participant,
     ) =>
       Effect.uninterruptibleMask((restore) =>
         Effect.gen(function* () {
           const waiter = yield* Deferred.make<void, ArmyCoordinatorError>();
           const joined = yield* dispatch((state, nowMs) =>
-            joinSession(state, {
-              config,
-              nowMs,
-              participantId,
-              playerName,
-              waiter,
-            }),
+            participant.isCurrent()
+              ? joinSession(state, {
+                  config,
+                  nowMs,
+                  participantId: participant.rendererId,
+                  playerName,
+                  waiter,
+                })
+              : unchanged(
+                  state,
+                  Result.fail(
+                    new ArmyParticipantError({
+                      reason: "unavailable",
+                      detail: "Army window is no longer available",
+                      playerName,
+                    }),
+                  ),
+                ),
           ).pipe(Effect.flatMap(Effect.fromResult));
           yield* awaitWaiter({
             restore,

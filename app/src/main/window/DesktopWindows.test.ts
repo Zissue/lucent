@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 
 import { describe, expect, it } from "@effect/vitest";
 import { vi } from "vitest";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -29,6 +30,8 @@ import {
 import {
   DesktopWindows,
   layer as desktopWindowsLayer,
+  type DesktopRendererEvent,
+  type DesktopRendererInfo,
   type DesktopWindowOpenOptions,
 } from "./DesktopWindows";
 
@@ -38,7 +41,7 @@ const singleInstanceKinds = DesktopWindowKindSchema.literals.filter(
   (kind) => getDesktopWindowDefinition(kind).singleInstance,
 );
 
-const makeWindow = (id: number): ElectronWindowHandle =>
+const makeWindow = (id: number) =>
   Object.assign(new EventEmitter(), {
     id,
     hide: () => {},
@@ -49,15 +52,21 @@ const makeWindow = (id: number): ElectronWindowHandle =>
       id,
       isDestroyed: () => false,
     }),
-  }) as unknown as ElectronWindowHandle;
+  });
 
 const makeHarness = () => {
   let settingsRead: Effect.Effect<void> = Effect.void;
   let nextLoad: Effect.Effect<void, ElectronWindowLoadError> | undefined;
   let nextRendererId = 101;
+  const created = new Map<number, ReturnType<typeof makeWindow>>();
 
   const windowService = ElectronWindow.of({
-    create: () => Effect.sync(() => makeWindow(nextRendererId++)),
+    create: () =>
+      Effect.sync(() => {
+        const window = makeWindow(nextRendererId++);
+        created.set(window.id, window);
+        return window as unknown as ElectronWindowHandle;
+      }),
     createHost: () => Effect.die("unused"),
     createView: () => Effect.die("unused"),
     loadFile: () =>
@@ -135,6 +144,7 @@ const makeHarness = () => {
   );
 
   return {
+    created,
     failNextLoadAfter: (gate: Effect.Effect<void>) => {
       nextLoad = gate.pipe(
         Effect.andThen(
@@ -316,4 +326,96 @@ describe("DesktopWindows.open", () => {
       expect(yield* windows.getRendererIds("game")).toEqual([101, 102]);
     }).pipe(Effect.provide(harness.layer));
   });
+});
+
+const navigate = { isMainFrame: true, isSameDocument: false };
+const liveInfo = (generation: number): DesktopRendererInfo => ({
+  rendererId: 101,
+  kind: "game",
+  windowId: 101,
+  ownerId: undefined,
+  generation,
+  ready: false,
+});
+
+const lifecycles = [
+  {
+    end: (window: ReturnType<typeof makeWindow>) => window.emit("closed"),
+    expected: {
+      event: { type: "closed", rendererId: 101, kind: "game" },
+      current: false,
+      next: false,
+      info: undefined,
+    },
+  },
+  {
+    end: ({ webContents }: ReturnType<typeof makeWindow>) => {
+      webContents.emit("did-start-navigation", navigate);
+      webContents.emit("did-start-navigation", navigate);
+    },
+    expected: {
+      event: { type: "reloaded", rendererId: 101, kind: "game", generation: 2 },
+      current: false,
+      next: true,
+      info: liveInfo(2),
+    },
+  },
+  {
+    end: ({ webContents }: ReturnType<typeof makeWindow>) =>
+      webContents.emit("render-process-gone", {}, { reason: "crashed" }),
+    expected: {
+      event: {
+        type: "crashed",
+        rendererId: 101,
+        kind: "game",
+        reason: "crashed",
+      },
+      current: false,
+      next: false,
+      info: liveInfo(1),
+    },
+  },
+] as const;
+
+describe("DesktopWindows renderer generations", () => {
+  for (const { end, expected } of lifecycles) {
+    it.effect(
+      `invalidates the generation before publishing ${expected.event.type}`,
+      () => {
+        const harness = makeHarness();
+        return Effect.gen(function* () {
+          const windows = yield* DesktopWindows;
+          const rendererId = yield* windows.open("game");
+          const isFirstGeneration = yield* windows.generationGuard(
+            rendererId,
+            1,
+          );
+          const isSecondGeneration = yield* windows.generationGuard(
+            rendererId,
+            2,
+          );
+          const observed = yield* Deferred.make<{
+            readonly event: DesktopRendererEvent;
+            readonly current: boolean;
+            readonly next: boolean;
+            readonly info: DesktopRendererInfo | undefined;
+          }>();
+          yield* windows.observe({ kind: "game" }, (event) =>
+            Effect.gen(function* () {
+              const current = isFirstGeneration();
+              const next = isSecondGeneration();
+              const info = yield* windows.describe(rendererId);
+              yield* Deferred.succeed(observed, { event, current, next, info });
+            }),
+          );
+          expect(rendererId).toBe(101);
+          expect(isFirstGeneration()).toBe(true);
+
+          end(harness.created.get(rendererId)!);
+
+          expect(yield* Deferred.await(observed)).toEqual(expected);
+        }).pipe(Effect.provide(harness.layer));
+      },
+    );
+  }
 });

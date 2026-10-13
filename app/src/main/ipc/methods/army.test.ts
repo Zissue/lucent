@@ -4,6 +4,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import type * as Scope from "effect/Scope";
 
 import type { ArmyConfigPayload } from "@lucent/core/army";
 import { ArmyIpc } from "../../../shared/ipc";
@@ -34,21 +35,35 @@ const soloConfig: ArmyConfigPayload = {
 };
 
 const makeGameWindows = () => {
-  const generations = new Map<number, number>([[rendererId, 1]]);
+  const generations = new Map<
+    number,
+    { generation: number; unavailableGeneration?: number }
+  >([[rendererId, { generation: 1 }]]);
   const events = makeListenerRegistry<DesktopRendererEvent>();
   const describe: DesktopWindows["Service"]["describe"] = (id) =>
     Effect.sync(() => {
-      const generation = generations.get(id);
-      return generation === undefined
+      const record = generations.get(id);
+      return record === undefined
         ? undefined
         : {
             rendererId: id,
             kind: "game",
             windowId: id,
             ownerId: undefined,
-            generation,
+            generation: record.generation,
             ready: true,
           };
+    });
+  const generationGuard: DesktopWindows["Service"]["generationGuard"] = (
+    id,
+    generation,
+  ) =>
+    Effect.succeed(() => {
+      const record = generations.get(id);
+      return (
+        record?.generation === generation &&
+        record.unavailableGeneration !== generation
+      );
     });
   const observe: DesktopWindows["Service"]["observe"] = (filter, listener) =>
     Effect.acquireRelease(
@@ -59,7 +74,7 @@ const makeGameWindows = () => {
       ),
       (unsubscribe) => Effect.sync(unsubscribe),
     ).pipe(Effect.asVoid);
-  const end = (lifecycle: "closed" | "reloaded") =>
+  const end = (lifecycle: "closed" | "reloaded" | "crashed") =>
     Effect.suspend(() => {
       if (lifecycle === "closed") {
         generations.delete(rendererId);
@@ -68,94 +83,157 @@ const makeGameWindows = () => {
           "unbounded",
         );
       }
-      const generation = generations.get(rendererId)! + 1;
-      generations.set(rendererId, generation);
+      const record = generations.get(rendererId)!;
+      if (lifecycle === "crashed") {
+        record.unavailableGeneration = record.generation;
+        return events.publish(
+          { type: "crashed", rendererId, kind: "game", reason: "crashed" },
+          "unbounded",
+        );
+      }
+      const generation = record.generation + 1;
+      generations.set(rendererId, { generation });
       return events.publish(
         { type: "reloaded", rendererId, kind: "game", generation },
         "unbounded",
       );
     });
-  return { describe, end, observe };
+  return { describe, end, generationGuard, observe };
 };
 
-const makeIpcMain = () => {
+const runStartIpc = <A, E>(
+  read: ArmyConfigRepository["Service"]["read"],
+  test: (
+    windows: ReturnType<typeof makeGameWindows>,
+    invokeStart: (configName: string) => Effect.Effect<Fiber.Fiber<unknown>>,
+  ) => Effect.Effect<A, E, ArmyCoordinator | Scope.Scope>,
+) => {
+  const windows = makeGameWindows();
   const handlers = new Map<string, Parameters<DesktopIpcMain["handle"]>[1]>();
-  const main: DesktopIpcMain = {
-    handle: (channel, listener) => {
-      handlers.set(channel, listener);
+  const ipc = makeDesktopIpc(
+    {
+      handle: (channel, listener) => {
+        handlers.set(channel, listener);
+      },
+      removeHandler: (channel) => {
+        handlers.delete(channel);
+      },
     },
-    removeHandler: (channel) => {
-      handlers.delete(channel);
-    },
-  };
-  return { handlers, main };
+    { getAllWebContents: () => [], fromId: () => undefined },
+  );
+  return Effect.gen(function* () {
+    yield* installLifecycle();
+    yield* ipc.handle(start);
+    const invoke = handlers.get(ArmyIpc.start.channel)!;
+    return yield* test(windows, (configName) =>
+      Effect.promise(() =>
+        invoke({ sender: { id: rendererId } } as IpcMainInvokeEvent, {
+          configName,
+          playerName: "Alice",
+        }),
+      ).pipe(Effect.forkChild),
+    );
+  }).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        armyCoordinatorLayer,
+        Layer.succeed(DesktopIpc, ipc),
+        Layer.mock(DesktopWindows, {
+          describe: windows.describe,
+          generationGuard: windows.generationGuard,
+          observe: windows.observe,
+        }),
+        Layer.succeed(DesktopIpcSenders, makeDesktopIpcSenders(windows)),
+        Layer.succeed(ArmyConfigRepository, { read }),
+        Layer.mock(ArmyLoopTauntOrchestrator, {
+          onCommand: () => Effect.succeed(() => {}),
+        }),
+      ),
+    ),
+  );
 };
 
 describe("army start IPC", () => {
-  for (const lifecycle of ["closed", "reloaded"] as const) {
+  for (const lifecycle of ["closed", "reloaded", "crashed"] as const) {
     it.effect(
       `does not seat a game renderer ${lifecycle} while its army config loads`,
       () =>
         Effect.gen(function* () {
           const reading = yield* Deferred.make<void>();
           const released = yield* Deferred.make<ArmyConfigPayload>();
-          const windows = makeGameWindows();
-          const { handlers, main } = makeIpcMain();
-          const ipc = makeDesktopIpc(main, {
-            getAllWebContents: () => [],
-            fromId: () => undefined,
-          });
+          const read = () =>
+            Deferred.succeed(reading, undefined).pipe(
+              Effect.andThen(Deferred.await(released)),
+            );
 
-          yield* Effect.gen(function* () {
-            yield* installLifecycle();
-            yield* ipc.handle(start);
-            const invoke = handlers.get(ArmyIpc.start.channel)!;
-            const reply = yield* Effect.promise(() =>
-              invoke({ sender: { id: rendererId } } as IpcMainInvokeEvent, {
-                configName: "solo",
-                playerName: "Alice",
-              }),
-            ).pipe(Effect.forkChild);
+          yield* runStartIpc(read, (windows, invokeStart) =>
+            Effect.gen(function* () {
+              const reply = yield* invokeStart("solo");
+              yield* Deferred.await(reading);
+              yield* windows.end(lifecycle);
+              yield* Deferred.succeed(released, soloConfig);
+              const envelope = yield* Fiber.join(reply);
 
-            yield* Deferred.await(reading);
-            yield* windows.end(lifecycle);
-            yield* Deferred.succeed(released, soloConfig);
-            const envelope = yield* Fiber.join(reply);
-
-            const coordinator = yield* ArmyCoordinator;
-            const sessions = yield* coordinator.getSessions();
-            expect(
-              sessions.map((session) =>
-                Array.from(session.participants.values()),
-              ),
-            ).toEqual([]);
-            expect(envelope).toMatchObject({ ok: false });
-          }).pipe(
-            Effect.provide(
-              Layer.mergeAll(
-                armyCoordinatorLayer,
-                Layer.succeed(DesktopIpc, ipc),
-                Layer.mock(DesktopWindows, {
-                  describe: windows.describe,
-                  observe: windows.observe,
-                }),
-                Layer.succeed(
-                  DesktopIpcSenders,
-                  makeDesktopIpcSenders(windows),
+              const coordinator = yield* ArmyCoordinator;
+              const sessions = yield* coordinator.getSessions();
+              expect(
+                sessions.map((session) =>
+                  Array.from(session.participants.values()),
                 ),
-                Layer.succeed(ArmyConfigRepository, {
-                  read: () =>
-                    Deferred.succeed(reading, undefined).pipe(
-                      Effect.andThen(Deferred.await(released)),
-                    ),
-                }),
-                Layer.mock(ArmyLoopTauntOrchestrator, {
-                  onCommand: () => Effect.succeed(() => {}),
-                }),
-              ),
-            ),
+              ).toEqual([]);
+              expect(envelope).toEqual({
+                ok: false,
+                error: {
+                  channel: "desktop:army:start",
+                  code: "IPC_HANDLER_FAILED",
+                  message: "Army window is no longer available",
+                },
+              });
+            }),
           );
         }),
     );
   }
+
+  it.effect("keeps the window-closed reason while waiting for the roster", () =>
+    runStartIpc(
+      () =>
+        Effect.succeed({
+          ...soloConfig,
+          configName: "duo",
+          players: ["Alice", "Bob"],
+          raw: { players: ["Alice", "Bob"], room: "1234" },
+        }),
+      (windows, invokeStart) =>
+        Effect.gen(function* () {
+          const reply = yield* invokeStart("duo");
+          const coordinator = yield* ArmyCoordinator;
+          const sessions = yield* coordinator.getSessions().pipe(
+            Effect.tap(() => Effect.yieldNow),
+            Effect.repeat({
+              until: (sessions) => sessions.length > 0,
+              times: 10,
+            }),
+          );
+          expect(
+            sessions.map((session) => ({
+              participants: Array.from(session.participants.entries()),
+              phase: session.phase,
+            })),
+          ).toEqual([{ participants: [["alice", 7]], phase: "collecting" }]);
+
+          yield* windows.end("closed");
+
+          expect(yield* Fiber.join(reply)).toEqual({
+            ok: false,
+            error: {
+              channel: "desktop:army:start",
+              code: "IPC_HANDLER_FAILED",
+              message: "Army window closed",
+            },
+          });
+          expect(yield* coordinator.getSessions()).toEqual([]);
+        }),
+    ),
+  );
 });
