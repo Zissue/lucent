@@ -309,20 +309,41 @@ describe("GitHubApiClient", () => {
   );
 
   it.effect.each([
-    { label: "no retry-after", headers: {}, cooldown: 120_000 },
+    {
+      label: "no retry-after",
+      firstHeaders: {},
+      secondHeaders: {},
+      gap: 0,
+      firstCooldown: 120_000,
+      secondCooldown: 120_000,
+    },
     {
       label: "an earlier retry-after",
-      headers: { "retry-after": "1" },
-      cooldown: 120_000,
+      firstHeaders: {},
+      secondHeaders: { "retry-after": "1" },
+      gap: 0,
+      firstCooldown: 120_000,
+      secondCooldown: 120_000,
     },
     {
       label: "a later retry-after",
-      headers: { "retry-after": "600" },
-      cooldown: 600_000,
+      firstHeaders: {},
+      secondHeaders: { "retry-after": "600" },
+      gap: 0,
+      firstCooldown: 120_000,
+      secondCooldown: 600_000,
+    },
+    {
+      label: "no retry-after after the first cooldown expired",
+      firstHeaders: { "retry-after": "1" },
+      secondHeaders: {},
+      gap: 2_000,
+      firstCooldown: 1_000,
+      secondCooldown: 122_000,
     },
   ])(
     "counts concurrent secondary limits once when the later one has $label",
-    ({ cooldown, headers }) =>
+    ({ firstCooldown, firstHeaders, gap, secondCooldown, secondHeaders }) =>
       Effect.gen(function* () {
         const requestCount = { value: 0 };
         const firstGate = yield* gatedResponse;
@@ -352,19 +373,53 @@ describe("GitHubApiClient", () => {
           .pipe(Effect.flip, Effect.forkChild);
         yield* secondGate.started;
 
-        yield* firstGate.respond(secondaryLimit());
+        yield* firstGate.respond(secondaryLimit(firstHeaders));
         const firstError = yield* Fiber.join(first);
-        yield* secondGate.respond(secondaryLimit(headers));
+        yield* TestClock.adjust(gap);
+        yield* secondGate.respond(secondaryLimit(secondHeaders));
         const secondError = yield* Fiber.join(second);
-        expect(cooldownMillis(firstError, admittedAt)).toBe(120_000);
-        expect(cooldownMillis(secondError, admittedAt)).toBe(cooldown);
+        expect(cooldownMillis(firstError, admittedAt)).toBe(firstCooldown);
+        expect(cooldownMillis(secondError, admittedAt)).toBe(secondCooldown);
         expect(requestCount.value).toBe(3);
 
-        yield* TestClock.adjust(cooldown);
+        yield* TestClock.adjust(secondCooldown - gap);
         const nextStartedAt = yield* Clock.currentTimeMillis;
         const next = yield* client.get({ url: API_URL }).pipe(Effect.flip);
         expect(cooldownMillis(next, nextStartedAt)).toBe(240_000);
         expect(requestCount.value).toBe(4);
+      }),
+  );
+
+  it.effect(
+    "keeps strikes when a concurrent success lands with a zero retry-after limit",
+    () =>
+      Effect.gen(function* () {
+        const requestCount = { value: 0 };
+        const stale = yield* gatedResponse;
+        const client = makeGitHubApiClient(
+          makeHttpClient(
+            [
+              stale.request,
+              secondaryLimit({ "retry-after": "0" }),
+              secondaryLimit(),
+            ],
+            requestCount,
+          ),
+          "Lucent/test",
+        );
+
+        const first = yield* client
+          .get({ url: API_URL })
+          .pipe(Effect.forkChild);
+        yield* stale.started;
+        yield* client.get({ url: API_URL }).pipe(Effect.flip);
+        yield* stale.respond(response({ statusCode: 200 }));
+        yield* Fiber.join(first);
+
+        const startedAt = yield* Clock.currentTimeMillis;
+        const next = yield* client.get({ url: API_URL }).pipe(Effect.flip);
+        expect(cooldownMillis(next, startedAt)).toBe(120_000);
+        expect(requestCount.value).toBe(3);
       }),
   );
 
