@@ -4,7 +4,7 @@ import * as Schema from "effect/Schema";
 import { makeAtomicFile } from "./AtomicFile";
 import type { FileSystem } from "effect/FileSystem";
 import type { PlatformError } from "effect/PlatformError";
-import { readFileBounded } from "./BoundedFileSystem";
+import { FileSystemLimitError, readFileBounded } from "./BoundedFileSystem";
 
 /** JSON state files are intentionally bounded to protect the main process. */
 export const JSON_FILE_MAX_BYTES = 8 * 1024 * 1024;
@@ -33,7 +33,11 @@ export class JsonFileError extends Schema.TaggedError<JsonFileError>()(
   },
 ) {
   override get message(): string {
-    return `JSON file ${this.operation} failed at ${this.path}.`;
+    const reason =
+      this.cause instanceof FileSystemLimitError
+        ? ` The document exceeds the limit of ${this.cause.limit} ${this.cause.kind}.`
+        : "";
+    return `JSON file ${this.operation} failed at ${this.path}.${reason}`;
   }
 }
 
@@ -101,8 +105,21 @@ export const makeJsonFile = (fileSystem: FileSystem) => {
       catch: (cause) => makeError(path, "write", cause),
     });
 
-    yield* atomicFile
-      .write(path, source, options)
+    const bytes = Buffer.from(source, "utf8");
+    if (bytes.byteLength > JSON_FILE_MAX_BYTES) {
+      return yield* makeError(
+        path,
+        "write",
+        new FileSystemLimitError({
+          path,
+          limit: JSON_FILE_MAX_BYTES,
+          kind: "bytes",
+        }),
+      );
+    }
+
+    return yield* atomicFile
+      .write(path, bytes, options)
       .pipe(
         Effect.mapError((error) =>
           makeError(path, atomicOperation(error), error),
