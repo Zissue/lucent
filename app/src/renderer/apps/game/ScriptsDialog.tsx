@@ -109,6 +109,7 @@ import {
   touchScriptCatalogPages,
   type ScriptCatalogPageCache,
 } from "./scriptCatalogPages";
+import { confirmScriptPackageRemoval } from "./scriptPackageRemoval";
 import {
   checkScriptPackageUpdatesSerially,
   formatScriptPackageUpdateCheckFailures,
@@ -1976,27 +1977,18 @@ export function ScriptsDialog(props: ScriptsDialogProps): JSX.Element {
   };
 
   const removePackage = (entry: ValidScriptPackage): void => {
-    askForConfirmation({
-      confirmLabel: "Remove package",
-      description:
-        entry.integrity === "modified"
-          ? `${entry.name} has local changes. Removing it will permanently delete the entire package folder, including your changes.`
-          : `Remove ${entry.name} and delete its entire package folder?`,
-      destructive: true,
-      onConfirm: async () => {
-        const bridge = props.bridge;
-        if (bridge === undefined) return;
-        const result = await bridge.removePackage({
-          packageName: entry.name,
-          confirmModified: true,
-        });
+    const bridge = props.bridge;
+    if (bridge === undefined) return;
+    confirmScriptPackageRemoval(entry, {
+      askForConfirmation,
+      removePackage: (request) => bridge.removePackage(request),
+      applyMutation: (result) => {
         applyMutation(result);
         if (result.status === "completed" || result.status === "unchanged") {
           setSelectedPackagePath(undefined);
           setPackageManagementView("installed");
         }
       },
-      title: "Remove this package?",
     });
   };
 
