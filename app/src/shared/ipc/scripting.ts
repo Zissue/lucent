@@ -19,6 +19,7 @@ import {
   ScriptPackageLeftoverCopySchema,
   ScriptPackageMutationResultSchema,
   ScriptPackageRemoveRequestSchema,
+  ScriptPackageRestoreRequestSchema,
   ScriptPackageUpdateRequestSchema,
   ScriptReferenceSchema,
 } from "@lucent/core/scriptPackages";
@@ -86,6 +87,12 @@ export const ScriptingIpc = {
     channel: `${namespace}:update-package`,
     name: "scripting.updatePackage",
     payload: ScriptPackageUpdateRequestSchema,
+    result: ScriptPackageMutationResultSchema,
+  }),
+  restorePackage: defineInvoke({
+    channel: `${namespace}:restore-package`,
+    name: "scripting.restorePackage",
+    payload: ScriptPackageRestoreRequestSchema,
     result: ScriptPackageMutationResultSchema,
   }),
   removePackage: defineInvoke({

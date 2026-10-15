@@ -1987,10 +1987,15 @@ export function ScriptsDialog(props: ScriptsDialogProps): JSX.Element {
         ? "Restore package"
         : "Discard changes and update",
       description: restoring
-        ? `${entry.name} has local changes. Restoring will replace the entire package with Lucent's saved copy and permanently discard your changes.`
+        ? `${entry.name} has local changes. Restoring will download the installed version from GitHub and permanently discard your changes.`
         : `${entry.name} has local changes. Updating will replace the entire package with the latest version from GitHub and permanently discard your changes.`,
       destructive: true,
-      onConfirm: () => updatePackage(entry, true),
+      onConfirm: async () => {
+        if (!restoring) return updatePackage(entry, true);
+        const bridge = props.bridge;
+        if (bridge === undefined) return;
+        applyMutation(await bridge.restorePackage({ packageName: entry.name }));
+      },
       title: restoring ? "Restore this package?" : "Replace local changes?",
     });
   };

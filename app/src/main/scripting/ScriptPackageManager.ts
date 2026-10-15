@@ -72,6 +72,7 @@ const packageManagerOperationSchema = Schema.Literals([
   "list-leftovers",
   "remove",
   "replace",
+  "restore",
   "update",
   "validate",
 ]);
@@ -140,11 +141,13 @@ interface ResolvedInstallSource extends ResolvedPackageRevision {
   readonly commit: string;
 }
 
-interface ManagedPackageUpdate {
+type ManagedPackageReplacement = {
   readonly installed: ManagedScriptPackage;
   readonly source: ResolvedInstallSource;
-  readonly replaceModified: boolean;
-}
+} & (
+  | { readonly kind: "update"; readonly replaceModified: boolean }
+  | { readonly kind: "restore" }
+);
 
 const installedRevision = (
   managed: ManagedScriptPackage,
@@ -692,7 +695,7 @@ export const layer = Layer.effect(
     const installInternal = Effect.fn("ScriptPackageManager.installInternal")(
       function* (
         input: Parameters<ScriptPackageManagerShape["install"]>[0],
-        update?: ManagedPackageUpdate,
+        replacement?: ManagedPackageReplacement,
       ) {
         const repository = yield* Effect.try({
           try: () => normalizeGitHubRepositoryUrl(input.repositoryUrl),
@@ -716,7 +719,7 @@ export const layer = Layer.effect(
                   ),
               });
         const resolvedSource: ResolvedInstallSource =
-          update?.source ??
+          replacement?.source ??
           (yield* Effect.gen(function* () {
             const commit = yield* client
               .resolveCommit({
@@ -811,7 +814,14 @@ export const layer = Layer.effect(
                 })
                 .pipe(
                   Effect.mapError((cause) =>
-                    managerError("install", cause.message, cause),
+                    managerError(
+                      replacement?.kind === "restore" ? "restore" : "install",
+                      replacement?.kind === "restore" &&
+                        cause.kind === "not-found"
+                        ? "GitHub could not provide the installed commit. Check repository access or use Update to install the latest version."
+                        : cause.message,
+                      cause,
+                    ),
                   ),
                 );
               yield* Effect.tryPromise({
@@ -840,12 +850,12 @@ export const layer = Layer.effect(
               });
               const packageName = inspected.manifest.name;
               if (
-                update !== undefined &&
-                packageName !== update.installed.name
+                replacement !== undefined &&
+                packageName !== replacement.installed.name
               ) {
                 return yield* managerError(
                   "update",
-                  `The update declares package ${JSON.stringify(packageName)} instead of ${JSON.stringify(update.installed.name)}.`,
+                  `The downloaded package declares ${JSON.stringify(packageName)} instead of ${JSON.stringify(replacement.installed.name)}.`,
                 );
               }
 
@@ -869,7 +879,7 @@ export const layer = Layer.effect(
               }
               const matchingPackage = matchingPackages[0];
               const savedPackage =
-                update?.installed ?? (yield* state.get(packageName));
+                replacement?.installed ?? (yield* state.get(packageName));
               const reservedDirectories = new Set(
                 (yield* state.getAll).map((entry) => entry.directory),
               );
@@ -942,46 +952,53 @@ export const layer = Layer.effect(
                     cause,
                   ),
               });
-              const managed: ManagedScriptPackage = {
-                directory,
-                files,
-                installedAt: new Date().toISOString(),
-                name: packageName,
-                remoteRevision: resolvedSource.revision,
-                source:
-                  subdirectory === undefined
-                    ? {
-                        kind: "repository",
-                        repositoryUrl: repository.url,
-                        resolvedCommit: resolvedSource.commit,
-                        ...(input.credentialId === undefined
-                          ? {}
-                          : { credentialId: input.credentialId }),
-                        ...(input.ref?.trim()
-                          ? { requestedRef: input.ref.trim() }
-                          : {}),
-                      }
-                    : {
-                        kind: "directory",
-                        repositoryUrl: repository.url,
-                        resolvedCommit: resolvedSource.commit,
-                        resolvedTree: resolvedSource.revision.sha,
-                        subdirectory,
-                        ...(input.credentialId === undefined
-                          ? {}
-                          : { credentialId: input.credentialId }),
-                        ...(input.ref?.trim()
-                          ? { requestedRef: input.ref.trim() }
-                          : {}),
+              const managed: ManagedScriptPackage =
+                replacement?.kind === "restore"
+                  ? {
+                      ...replacement.installed,
+                      files,
+                      installedAt: new Date().toISOString(),
+                    }
+                  : {
+                      directory,
+                      files,
+                      installedAt: new Date().toISOString(),
+                      name: packageName,
+                      remoteRevision: resolvedSource.revision,
+                      source:
+                        subdirectory === undefined
+                          ? {
+                              kind: "repository",
+                              repositoryUrl: repository.url,
+                              resolvedCommit: resolvedSource.commit,
+                              ...(input.credentialId === undefined
+                                ? {}
+                                : { credentialId: input.credentialId }),
+                              ...(input.ref?.trim()
+                                ? { requestedRef: input.ref.trim() }
+                                : {}),
+                            }
+                          : {
+                              kind: "directory",
+                              repositoryUrl: repository.url,
+                              resolvedCommit: resolvedSource.commit,
+                              resolvedTree: resolvedSource.revision.sha,
+                              subdirectory,
+                              ...(input.credentialId === undefined
+                                ? {}
+                                : { credentialId: input.credentialId }),
+                              ...(input.ref?.trim()
+                                ? { requestedRef: input.ref.trim() }
+                                : {}),
+                            },
+                      update: {
+                        status: "current",
+                        checkedAt: resolvedSource.checkedAt,
                       },
-                update: {
-                  status: "current",
-                  checkedAt: resolvedSource.checkedAt,
-                },
-                ...(resolvedSource.etag === undefined
-                  ? {}
-                  : { etag: resolvedSource.etag }),
-              };
+                      ...(resolvedSource.etag === undefined
+                        ? {}
+                        : { etag: resolvedSource.etag }),
+                    };
               return yield* replacePackage(
                 {
                   inspected,
@@ -989,8 +1006,10 @@ export const layer = Layer.effect(
                   rootPath: destination,
                   sourceRoot: staging,
                 },
-                update !== undefined && !update.replaceModified
-                  ? update.installed
+                replacement !== undefined &&
+                  replacement.kind === "update" &&
+                  !replacement.replaceModified
+                  ? replacement.installed
                   : undefined,
               );
             }),
@@ -1104,9 +1123,54 @@ export const layer = Layer.effect(
                 : { subdirectory: managed.source.subdirectory }),
             },
             {
+              kind: "update",
               installed: managed,
               source: resolution,
               replaceModified: input.replaceModified === true,
+            },
+          );
+        }),
+      );
+
+    const restore: ScriptPackageManagerShape["restore"] = (input) =>
+      mutationGate.withPermits(1)(
+        Effect.gen(function* () {
+          const managed = yield* state.get(input.packageName);
+          if (managed === undefined) {
+            return yield* managerError(
+              "restore",
+              "This package has no saved GitHub installation to restore.",
+            );
+          }
+          const commit = managed.source.resolvedCommit;
+          if (commit === undefined) {
+            return yield* managerError(
+              "restore",
+              "The installed package has no saved commit to download. Use Update to install the latest version.",
+            );
+          }
+          return yield* installInternal(
+            {
+              repositoryUrl: managed.source.repositoryUrl,
+              replaceExisting: true,
+              ...(managed.source.credentialId === undefined
+                ? {}
+                : { credentialId: managed.source.credentialId }),
+              ...(managed.source.requestedRef === undefined
+                ? {}
+                : { ref: managed.source.requestedRef }),
+              ...(managed.source.kind === "repository"
+                ? {}
+                : { subdirectory: managed.source.subdirectory }),
+            },
+            {
+              kind: "restore",
+              installed: managed,
+              source: {
+                commit,
+                revision: installedRevision(managed),
+                checkedAt: managed.installedAt,
+              },
             },
           );
         }),
@@ -1382,7 +1446,7 @@ export const layer = Layer.effect(
       ),
       install,
       remove,
-      restore: (input) => update({ ...input, replaceModified: true }),
+      restore,
       update,
     });
   }),

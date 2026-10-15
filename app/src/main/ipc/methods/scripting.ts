@@ -69,6 +69,15 @@ export const updatePackage = makeDesktopIpcMethod({
   }),
 });
 
+export const restorePackage = makeDesktopIpcMethod({
+  descriptor: ScriptingIpc.restorePackage,
+  allowedSenders: scriptingSenders,
+  handler: Effect.fn("desktop.ipc.scripting.restorePackage")(function* (input) {
+    const packages = yield* ScriptPackageManager;
+    return yield* packages.restore(input);
+  }),
+});
+
 export const removePackage = makeDesktopIpcMethod({
   descriptor: ScriptingIpc.removePackage,
   allowedSenders: scriptingSenders,
@@ -252,6 +261,7 @@ export const packageMethods = [
   listPackageLeftovers,
   installPackage,
   updatePackage,
+  restorePackage,
   removePackage,
   checkPackageUpdate,
 ] as const;
