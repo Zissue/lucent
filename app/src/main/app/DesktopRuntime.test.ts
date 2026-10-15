@@ -154,8 +154,6 @@ const makeStartup = (options: {
         }),
         installProcessHooks: Effect.void,
         logFilePath: join(directory, "lucent.log"),
-        record: () => Effect.void,
-        recordUnsafe: () => undefined,
       }),
     ),
     Layer.succeed(

@@ -14,19 +14,24 @@ import {
   makeBufferedDesktopLogWriter,
 } from "./DesktopLogWriter";
 
-export interface DesktopDiagnosticRecord {
-  readonly component: string;
-  readonly event: string;
-  readonly data?: unknown;
-  readonly cause?: unknown;
-}
+const boundReason = (reason: Cause.Reason<unknown>): Cause.Reason<unknown> => {
+  if (Cause.isFailReason(reason) && reason.error instanceof Error) {
+    return Cause.makeFailReason(desktopLogErrorDetails(reason.error)).annotate(
+      Cause.reasonAnnotations(reason),
+    );
+  }
+  if (Cause.isDieReason(reason) && reason.defect instanceof Error) {
+    return Cause.makeDieReason(desktopLogErrorDetails(reason.defect)).annotate(
+      Cause.reasonAnnotations(reason),
+    );
+  }
+  return reason;
+};
 
 export interface DesktopObservabilityShape {
   readonly flush: Effect.Effect<void>;
   readonly installProcessHooks: Effect.Effect<void, never, Scope.Scope>;
   readonly logFilePath: string;
-  readonly record: (record: DesktopDiagnosticRecord) => Effect.Effect<void>;
-  readonly recordUnsafe: (record: DesktopDiagnosticRecord) => void;
 }
 
 export class DesktopObservability extends Context.Service<
@@ -39,10 +44,6 @@ const makeDesktopObservability = Effect.gen(function* () {
   const logsDir = join(env.appDataDir, "logs");
   const logFilePath = join(logsDir, "lucent.log");
   const bufferedWriter = makeBufferedDesktopLogWriter(logsDir, logFilePath);
-  const diagnosticRecordingEnabled = env.debug === true;
-  const recordingStartedAt = diagnosticRecordingEnabled
-    ? new Date().toISOString()
-    : null;
 
   const logger = Logger.make<unknown, void>((options) => {
     const {
@@ -51,19 +52,30 @@ const makeDesktopObservability = Effect.gen(function* () {
       ...annotations
     } = options.fiber.getRef(References.CurrentLogAnnotations);
     const span = options.fiber.cache.span;
+    const messages = Array.isArray(options.message)
+      ? options.message
+      : [options.message];
+    const errors = messages
+      .slice(1)
+      .map((value) => desktopLogErrorDetails(value));
+    if (options.cause.reasons.length > 0) {
+      errors.push(
+        ...Cause.prettyErrors(
+          Cause.fromReasons(options.cause.reasons.map(boundReason)),
+        ).map((error) => desktopLogErrorDetails(error)),
+      );
+    }
     bufferedWriter.write({
       at: options.date.toISOString(),
       level: options.logLevel.toLowerCase(),
       component,
       message:
-        Array.isArray(options.message) && options.message.length === 1
-          ? options.message[0]
+        typeof messages[0] === "string" || messages.length === 1
+          ? messages[0]
           : options.message,
       ...(data === undefined ? {} : { data }),
       ...(Object.keys(annotations).length === 0 ? {} : { annotations }),
-      ...(options.cause.reasons.length === 0
-        ? {}
-        : { error: Cause.prettyErrors(options.cause) }),
+      ...(errors.length === 0 ? {} : { error: errors }),
       ...(span === undefined
         ? {}
         : { traceId: span.traceId, spanId: span.spanId }),
@@ -73,28 +85,6 @@ const makeDesktopObservability = Effect.gen(function* () {
   const flush: DesktopObservabilityShape["flush"] = Effect.promise(() =>
     bufferedWriter.flush(),
   );
-
-  const recordUnsafe: DesktopObservabilityShape["recordUnsafe"] =
-    diagnosticRecordingEnabled === false
-      ? () => undefined
-      : (diagnostic) => {
-          bufferedWriter.write({
-            at: new Date().toISOString(),
-            level: "debug",
-            component: diagnostic.component,
-            message: diagnostic.event,
-            event: diagnostic.event,
-            ...(diagnostic.data === undefined ? {} : { data: diagnostic.data }),
-            ...(diagnostic.cause === undefined
-              ? {}
-              : { error: desktopLogErrorDetails(diagnostic.cause) }),
-          });
-        };
-
-  const record: DesktopObservabilityShape["record"] =
-    diagnosticRecordingEnabled === false
-      ? () => Effect.void
-      : (diagnostic) => Effect.sync(() => recordUnsafe(diagnostic));
 
   const installProcessHooks = Effect.gen(function* () {
     const context = yield* Effect.context<never>();
@@ -132,41 +122,8 @@ const makeDesktopObservability = Effect.gen(function* () {
     );
   });
 
-  if (recordingStartedAt !== null) {
-    bufferedWriter.write({
-      at: recordingStartedAt,
-      level: "debug",
-      component: "startup",
-      message: "Diagnostic recording started",
-      event: "recording.started",
-      data: {
-        architecture: process.arch,
-        pid: process.pid,
-        platform: env.platform,
-        runtimeVersions: {
-          chrome: process.versions.chrome ?? "unknown",
-          electron: process.versions.electron ?? "unknown",
-          node: process.versions.node,
-        },
-      },
-    });
-  }
-
   yield* Effect.addFinalizer(() =>
-    Effect.promise(() =>
-      bufferedWriter.close(
-        diagnosticRecordingEnabled
-          ? {
-              at: new Date().toISOString(),
-              level: "debug",
-              component: "startup",
-              message: "Diagnostic recording stopped",
-              event: "recording.stopped",
-              data: { pid: process.pid },
-            }
-          : undefined,
-      ),
-    ),
+    Effect.promise(() => bufferedWriter.close()),
   );
 
   return Context.make(
@@ -175,12 +132,13 @@ const makeDesktopObservability = Effect.gen(function* () {
       flush,
       installProcessHooks,
       logFilePath,
-      record,
-      recordUnsafe,
     }),
   ).pipe(
     Context.add(Logger.CurrentLoggers, new Set([logger])),
-    Context.add(References.MinimumLogLevel, "Debug"),
+    Context.add(
+      References.MinimumLogLevel,
+      env.debug === true ? "Debug" : "Info",
+    ),
   );
 });
 

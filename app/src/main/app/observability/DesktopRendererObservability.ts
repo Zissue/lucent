@@ -9,7 +9,6 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 
 import { DiagnosticsIpc, GameConsoleIpc } from "../../../shared/ipc";
-import { DesktopObservability } from "./DesktopObservability";
 
 const decodeRendererRecord = Option.liftThrowable(
   DiagnosticsIpc.rendererRecord.decodePayload,
@@ -19,10 +18,9 @@ const decodeConsoleMessage = Option.liftThrowable(
 );
 
 export const installDesktopRendererObservability = Effect.gen(function* () {
-  const observability = yield* DesktopObservability;
+  const context = yield* Effect.context();
+  const runFork = Effect.runForkWith(context);
   const webContentsCleanups = new Set<() => void>();
-
-  const record = observability.recordUnsafe;
 
   const handleRendererRecord = (
     event: IpcMainEvent,
@@ -33,11 +31,18 @@ export const installDesktopRendererObservability = Effect.gen(function* () {
       return;
     }
     const { type, ...data } = decoded.value;
-    record({
-      component: "renderer",
-      event: type,
-      data: { rendererId: event.sender.id, ...data },
-    });
+    runFork(
+      Effect.logError(
+        type === "renderer.error"
+          ? "Renderer error"
+          : "Renderer unhandled rejection",
+      ).pipe(
+        Effect.annotateLogs({
+          component: "renderer",
+          data: { rendererId: event.sender.id, ...data },
+        }),
+      ),
+    );
   };
 
   const handleConsoleMessage = (
@@ -48,22 +53,26 @@ export const installDesktopRendererObservability = Effect.gen(function* () {
     if (Option.isNone(decoded)) {
       return;
     }
-    record({
-      component: "renderer",
-      event: "console",
-      data: { message: decoded.value.message, rendererId: event.sender.id },
-    });
+    runFork(
+      Effect.logDebug("Renderer console message").pipe(
+        Effect.annotateLogs({
+          component: "renderer",
+          data: { message: decoded.value.message, rendererId: event.sender.id },
+        }),
+      ),
+    );
   };
 
   const handleChildProcessGone = (
     _event: ElectronEvent,
     details: Electron.Details,
   ): void => {
-    record({
-      component: "process",
-      event: "child.gone",
-      data: details,
-    });
+    runFork(
+      (details.reason === "clean-exit"
+        ? Effect.logInfo("Child process gone")
+        : Effect.logError("Child process gone")
+      ).pipe(Effect.annotateLogs({ component: "process", data: details })),
+    );
   };
 
   const handleRenderProcessGone = (
@@ -71,11 +80,17 @@ export const installDesktopRendererObservability = Effect.gen(function* () {
     contents: WebContents,
     details: Electron.RenderProcessGoneDetails,
   ): void => {
-    record({
-      component: "renderer",
-      event: "process.gone",
-      data: { rendererId: contents.id, ...details },
-    });
+    runFork(
+      (details.reason === "clean-exit"
+        ? Effect.logInfo("Renderer process gone")
+        : Effect.logError("Renderer process gone")
+      ).pipe(
+        Effect.annotateLogs({
+          component: "renderer",
+          data: { rendererId: contents.id, ...details },
+        }),
+      ),
+    );
   };
 
   const observeWebContents = (contents: WebContents): void => {
@@ -86,31 +101,40 @@ export const installDesktopRendererObservability = Effect.gen(function* () {
       validatedUrl: string,
       isMainFrame: boolean,
     ): void => {
-      record({
-        component: "renderer",
-        event: "load.failed",
-        data: {
-          errorCode,
-          errorDescription,
-          isMainFrame,
-          rendererId: contents.id,
-          validatedUrl,
-        },
-      });
+      runFork(
+        Effect.logWarning("Renderer load failed").pipe(
+          Effect.annotateLogs({
+            component: "renderer",
+            data: {
+              errorCode,
+              errorDescription,
+              isMainFrame,
+              rendererId: contents.id,
+              validatedUrl,
+            },
+          }),
+        ),
+      );
     };
     const handleResponsive = (): void => {
-      record({
-        component: "renderer",
-        event: "responsive",
-        data: { rendererId: contents.id },
-      });
+      runFork(
+        Effect.logInfo("Renderer responsive").pipe(
+          Effect.annotateLogs({
+            component: "renderer",
+            data: { rendererId: contents.id },
+          }),
+        ),
+      );
     };
     const handleUnresponsive = (): void => {
-      record({
-        component: "renderer",
-        event: "unresponsive",
-        data: { rendererId: contents.id },
-      });
+      runFork(
+        Effect.logWarning("Renderer unresponsive").pipe(
+          Effect.annotateLogs({
+            component: "renderer",
+            data: { rendererId: contents.id },
+          }),
+        ),
+      );
     };
     let cleanedUp = false;
     const cleanup = (): void => {
