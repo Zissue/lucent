@@ -1029,6 +1029,7 @@ export const layer = Layer.effect(
       env.workspaceDir,
     );
     const changes = makeListenerRegistry<ScriptCatalogChange>();
+    let publicationRevision = 0;
     const discoveryRef =
       yield* SynchronizedRef.make<DiscoveredScriptCatalog | null>(null);
     const scan = Effect.gen(function* () {
@@ -1057,19 +1058,24 @@ export const layer = Layer.effect(
     );
     const refresh = SynchronizedRef.modifyEffect(discoveryRef, () =>
       scan.pipe(
-        Effect.tap((next) =>
-          changes.publish({ revision: next.catalog.revision }),
+        Effect.map(
+          (next) =>
+            [{ value: next, revision: ++publicationRevision }, next] as const,
         ),
-        Effect.map((next) => [next, next] as const),
       ),
-    ).pipe(Effect.map(catalogOverview));
+    ).pipe(
+      Effect.tap(({ value, revision }) =>
+        changes.publishLatest(revision, { revision: value.catalog.revision }),
+      ),
+      Effect.map(({ value }) => catalogOverview(value)),
+    );
     const updateDiscovery = Effect.fn("ScriptPackageCatalog.updateDiscovery")(
       function* (
         transform: (
           current: DiscoveredScriptCatalog,
         ) => DiscoveredScriptCatalog | undefined,
       ) {
-        const next = yield* SynchronizedRef.modifyEffect(
+        const committed = yield* SynchronizedRef.modifyEffect(
           discoveryRef,
           (current) =>
             (current === null ? scan : Effect.succeed(current)).pipe(
@@ -1078,17 +1084,29 @@ export const layer = Layer.effect(
                 return (
                   transformed === undefined ? scan : Effect.succeed(transformed)
                 ).pipe(
-                  Effect.flatMap((next) =>
-                    (previous === next
-                      ? Effect.void
-                      : changes.publish({ revision: next.catalog.revision })
-                    ).pipe(Effect.as([next, next] as const)),
+                  Effect.map(
+                    (next) =>
+                      [
+                        {
+                          value: next,
+                          revision:
+                            previous === next
+                              ? undefined
+                              : ++publicationRevision,
+                        },
+                        next,
+                      ] as const,
                   ),
                 );
               }),
             ),
         );
-        return catalogOverview(next);
+        if (committed.revision !== undefined) {
+          yield* changes.publishLatest(committed.revision, {
+            revision: committed.value.catalog.revision,
+          });
+        }
+        return catalogOverview(committed.value);
       },
     );
 

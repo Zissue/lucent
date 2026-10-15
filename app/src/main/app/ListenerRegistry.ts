@@ -22,15 +22,20 @@ export const makeListenerRegistry = <Value>(
   options: { readonly concurrency?: 1 | "unbounded" } = {},
 ): ListenerRegistry<Value> => {
   const listeners = new Set<Listener<Value>>();
+  let lastDeliveredRevision = -Infinity;
 
-  const publish: ListenerRegistry<Value>["publish"] = (
-    value,
-    concurrency = options.concurrency,
+  const publish = (
+    value: Value,
+    concurrency: 1 | "unbounded" | undefined = options.concurrency,
+    revision?: number,
   ) =>
     Effect.forEach(
       [...listeners],
       (listener) =>
         Effect.suspend(() => {
+          if (revision !== undefined && revision < lastDeliveredRevision) {
+            return Effect.void;
+          }
           const result = listener(value);
           return Effect.isEffect(result) ? result : Effect.void;
         }).pipe(
@@ -50,7 +55,12 @@ export const makeListenerRegistry = <Value>(
     });
 
   return {
-    publishLatest: (_revision, value) => publish(value),
+    publishLatest: (revision, value) =>
+      Effect.suspend(() => {
+        if (revision <= lastDeliveredRevision) return Effect.void;
+        lastDeliveredRevision = revision;
+        return publish(value, options.concurrency, revision);
+      }),
     publish,
     subscribe,
   };

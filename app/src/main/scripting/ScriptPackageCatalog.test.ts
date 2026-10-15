@@ -506,7 +506,10 @@ describe("ScriptPackageCatalog", () => {
           "tools",
         ]);
         expect(removed.packages).toEqual([]);
-        expect(revisions).toEqual([refreshed.revision, removed.revision]);
+        expect([
+          [refreshed.revision, removed.revision],
+          [removed.revision],
+        ]).toContainEqual(revisions);
         expect((yield* catalog.getOverview).revision).toBe(revisions.at(-1));
       }),
   );

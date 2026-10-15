@@ -135,7 +135,7 @@ describe("CombatProfiles", () => {
         yield* Fiber.join(first);
         yield* Fiber.join(second);
 
-        expect(labels).toEqual(["First", "Second"]);
+        expect([["First", "Second"], ["Second"]]).toContainEqual(labels);
         expect((yield* combatProfiles.get).profiles.at(-1)?.label).toBe(
           "Second",
         );

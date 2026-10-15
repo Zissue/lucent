@@ -143,6 +143,7 @@ const makeCombatProfiles = Effect.gen(function* () {
     null,
   );
   const libraryChanges = makeListenerRegistry<CombatProfileLibrary>();
+  let revision = 0;
 
   const readLibraryFromFile = Effect.gen(function* () {
     const result = yield* jsonFile
@@ -190,9 +191,16 @@ const makeCombatProfiles = Effect.gen(function* () {
   );
   const load = SynchronizedRef.modifyEffect(libraryRef, () =>
     readLibraryFromFile.pipe(
-      Effect.tap(libraryChanges.publish),
-      Effect.map((library) => [library, library] as const),
+      Effect.map(
+        (library) =>
+          [{ value: library, revision: ++revision }, library] as const,
+      ),
     ),
+  ).pipe(
+    Effect.tap(({ value, revision }) =>
+      libraryChanges.publishLatest(revision, value),
+    ),
+    Effect.map(({ value }) => value),
   );
   const update = (
     modify: (
@@ -203,9 +211,15 @@ const makeCombatProfiles = Effect.gen(function* () {
       (current === null ? readLibraryFromFile : Effect.succeed(current)).pipe(
         Effect.flatMap(modify),
         Effect.flatMap(writeLibraryFile),
-        Effect.tap(libraryChanges.publish),
-        Effect.map((saved) => [saved, saved] as const),
+        Effect.map(
+          (saved) => [{ value: saved, revision: ++revision }, saved] as const,
+        ),
       ),
+    ).pipe(
+      Effect.tap(({ value, revision }) =>
+        libraryChanges.publishLatest(revision, value),
+      ),
+      Effect.map(({ value }) => value),
     );
 
   const deleteProfile: CombatProfilesShape["deleteProfile"] = (profileId) =>
