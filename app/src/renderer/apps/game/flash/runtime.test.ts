@@ -95,4 +95,28 @@ describe("renderer Effect logger", () => {
       ]);
     }),
   );
+
+  it.effect("forwards repeat keys with renderer records", () =>
+    Effect.gen(function* () {
+      const write = vi.fn();
+      vi.stubGlobal("window", { desktop: { debug: false, log: { write } } });
+      yield* Effect.logWarning("Environment automation failed").pipe(
+        Effect.annotateLogs({
+          component: "environment",
+          repeatKey: "environment/quests/load",
+        }),
+        Effect.provide(loggingLayer),
+      );
+      expect(write.mock.calls).toEqual([
+        [
+          {
+            level: "warn",
+            message: "Environment automation failed",
+            component: "environment",
+            repeatKey: "environment/quests/load",
+          },
+        ],
+      ]);
+    }),
+  );
 });

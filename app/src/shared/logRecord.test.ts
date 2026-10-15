@@ -74,6 +74,30 @@ describe("log records", () => {
       }),
   );
 
+  it.effect("keeps repeat keys separate from saved annotations", () =>
+    Effect.gen(function* () {
+      const records: unknown[] = [];
+      yield* Effect.logWarning("Environment automation failed").pipe(
+        Effect.annotateLogs({
+          component: "environment",
+          repeatKey: "environment/quests/load",
+          requestId: "r1",
+        }),
+        Effect.provide(collect(records)),
+      );
+      expect(records).toEqual([
+        {
+          at: "1970-01-01T00:00:00.000Z",
+          level: "warn",
+          component: "environment",
+          message: "Environment automation failed",
+          repeatKey: "environment/quests/load",
+          annotations: { requestId: "r1" },
+        },
+      ]);
+    }),
+  );
+
   it("makes bigint, cycles, errors, functions, and symbols safe for IPC", () => {
     const circular: { self?: unknown } = {};
     circular.self = circular;
@@ -105,10 +129,42 @@ describe("log records", () => {
           cause: { name: "Error", message: "root", stack: "root stack" },
         },
         shared: { count: 1 },
-        again: { count: 1 },
+        again: "[Circular]",
       },
     });
     expect(desktopLogJsonSafe(undefined)).toBeUndefined();
+  });
+
+  it("retains back-references after serializing an error with a cause", () => {
+    const error = new Error("x", { cause: "root" });
+    error.stack = "error stack";
+    const value: { err: Error; self?: unknown } = { err: error };
+    value.self = value;
+    expect(desktopLogJsonSafe(value)).toEqual({
+      err: {
+        name: "Error",
+        message: "x",
+        stack: "error stack",
+        cause: { name: "NonError", message: "root" },
+      },
+      self: "[Circular]",
+    });
+  });
+
+  it("retains back-references in objects returned by toJSON", () => {
+    const error = new Error("x", { cause: "root" });
+    error.stack = "error stack";
+    const value: { err: Error; self?: unknown } = { err: error };
+    value.self = value;
+    expect(desktopLogJsonSafe({ toJSON: () => value })).toEqual({
+      err: {
+        name: "Error",
+        message: "x",
+        stack: "error stack",
+        cause: { name: "NonError", message: "root" },
+      },
+      self: "[Circular]",
+    });
   });
 
   it("limits only data using UTF-8 JSON bytes above 16 KiB", () => {

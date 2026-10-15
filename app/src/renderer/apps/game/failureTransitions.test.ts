@@ -62,6 +62,7 @@ describe("failure transitions", () => {
           message: ["Environment automation failed"],
           annotations: {
             component: "environment",
+            repeatKey: "environment/quests/load",
             data: { key: "environment/quests/load", questId: 123 },
           },
         },
@@ -70,6 +71,7 @@ describe("failure transitions", () => {
           message: ["Environment automation recovered"],
           annotations: {
             component: "environment",
+            repeatKey: "environment/quests/load",
             data: { key: "environment/quests/load", questId: 123 },
           },
         },
@@ -81,11 +83,19 @@ describe("failure transitions", () => {
   it.effect(
     "keeps keys independent and logs a new failure after recovery",
     () => {
-      const logs: { readonly level: string; readonly data: unknown }[] = [];
+      const logs: {
+        readonly level: string;
+        readonly data: unknown;
+        readonly repeatKey: unknown;
+      }[] = [];
       const logger = Logger.make((options) => {
+        const annotations = options.fiber.getRef(
+          References.CurrentLogAnnotations,
+        );
         logs.push({
           level: options.logLevel,
-          data: options.fiber.getRef(References.CurrentLogAnnotations)["data"],
+          data: annotations["data"],
+          repeatKey: annotations["repeatKey"],
         });
       });
 
@@ -101,7 +111,8 @@ describe("failure transitions", () => {
           [
             automationLogs.failed("quest/1", Cause.fail("load failed")),
             automationLogs.failed("quest/1", Cause.fail("load failed again")),
-            automationLogs.failed("quest/2", Cause.die("defect")),
+            automationLogs.failed("quest/2", Cause.fail("offline")),
+            automationLogs.failed("quest/3", Cause.die("defect")),
           ],
           { concurrency: "unbounded" },
         );
@@ -110,11 +121,12 @@ describe("failure transitions", () => {
         yield* automationLogs.recovered("quest/2");
 
         expect(logs).toEqual([
-          { level: "Warn", data: { key: "quest/1" } },
-          { level: "Error", data: { key: "quest/2" } },
-          { level: "Info", data: { key: "quest/1" } },
-          { level: "Warn", data: { key: "quest/1" } },
-          { level: "Info", data: { key: "quest/2" } },
+          { level: "Warn", data: { key: "quest/1" }, repeatKey: "quest/1" },
+          { level: "Warn", data: { key: "quest/2" }, repeatKey: "quest/2" },
+          { level: "Error", data: { key: "quest/3" }, repeatKey: "quest/3" },
+          { level: "Info", data: { key: "quest/1" }, repeatKey: "quest/1" },
+          { level: "Warn", data: { key: "quest/1" }, repeatKey: "quest/1" },
+          { level: "Info", data: { key: "quest/2" }, repeatKey: "quest/2" },
         ]);
       }).pipe(Effect.provideService(Logger.CurrentLoggers, new Set([logger])));
     },

@@ -1,6 +1,7 @@
 import { ipcMain, type IpcMainEvent } from "electron";
 import * as Clock from "effect/Clock";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import type { EventEmitter } from "events";
 import { join } from "path";
 import * as Cause from "effect/Cause";
@@ -15,7 +16,9 @@ import * as Scope from "effect/Scope";
 import { DesktopEnvironment } from "../DesktopEnvironment";
 import { makeBufferedDesktopLogWriter } from "./DesktopLogWriter";
 import {
+  desktopLogJsonSafe,
   desktopLogRecord,
+  type DesktopLogError,
   type DesktopLogRecord,
 } from "../../../shared/logRecord";
 import { RendererLogIpc } from "../../../shared/ipc/rendererLog";
@@ -28,6 +31,7 @@ interface RepeatWindow {
   readonly level: string;
   readonly component: unknown;
   readonly message: string;
+  readonly rendererId?: number;
   readonly startedAt: number;
   suppressed: number;
   lastAt: number;
@@ -36,6 +40,25 @@ interface RepeatWindow {
 const decodeRendererRecord = Option.liftThrowable(
   RendererLogIpc.record.decodePayload,
 );
+
+const boundRendererString = (value: string, length: number): string =>
+  value.length <= length
+    ? value
+    : Buffer.from(value.slice(0, length), "utf16le").toString("utf16le");
+
+const boundRendererError = (
+  error: DesktopLogError,
+  depth = 0,
+): DesktopLogError => ({
+  name: boundRendererString(error.name, 256),
+  message: boundRendererString(error.message, 1_024),
+  ...(error.stack === undefined
+    ? {}
+    : { stack: boundRendererString(error.stack, 8_192) }),
+  ...(error.cause === undefined || depth >= 5
+    ? {}
+    : { cause: boundRendererError(error.cause, depth + 1) }),
+});
 
 export interface DesktopObservabilityShape {
   readonly flush: Effect.Effect<void>;
@@ -62,6 +85,9 @@ const makeDesktopObservability = Effect.gen(function* () {
       level: window.level,
       component: window.component,
       message: window.message,
+      ...(window.rendererId === undefined
+        ? {}
+        : { annotations: { rendererId: window.rendererId } }),
       suppressed: window.suppressed,
       lastAt: DateTime.formatIso(DateTime.makeUnsafe(window.lastAt)),
     });
@@ -87,9 +113,21 @@ const makeDesktopObservability = Effect.gen(function* () {
     }
   }, Effect.uninterruptible);
 
-  const writeRecord = (record: DesktopLogRecord, at: number): void => {
-    const { level, component, message } = record;
-    const key = `${level}\u0000${String(component)}\u0000${message}`;
+  const writeRecord = (
+    record: DesktopLogRecord,
+    at: number,
+    rendererId?: number,
+  ): void => {
+    const { repeatKey, ...output } = record;
+    const { level, component, message } = output;
+    const origin = rendererId === undefined ? "main" : `renderer:${rendererId}`;
+    const key = JSON.stringify([
+      origin,
+      level,
+      String(component),
+      message,
+      repeatKey,
+    ]);
     const window = windows.get(key);
     if (window !== undefined) {
       if (at - window.startedAt < REPEAT_WINDOW_MS) {
@@ -100,12 +138,13 @@ const makeDesktopObservability = Effect.gen(function* () {
       if (window.suppressed > 0) writeTail(window, new Date(at));
       windows.delete(key);
     }
-    const kept = bufferedWriter.write(record);
+    const kept = bufferedWriter.write(output);
     if (kept && windows.size < MAX_REPEAT_WINDOWS) {
       windows.set(key, {
         level,
         component,
         message,
+        ...(rendererId === undefined ? {} : { rendererId }),
         startedAt: at,
         suppressed: 0,
         lastAt: at,
@@ -123,17 +162,41 @@ const makeDesktopObservability = Effect.gen(function* () {
   ): void => {
     const decoded = decodeRendererRecord(rawPayload);
     if (Option.isNone(decoded)) return;
-    const { component = "renderer", ...record } = decoded.value;
+    const {
+      component = "renderer",
+      data,
+      error,
+      repeatKey,
+      ...record
+    } = decoded.value;
     if (record.level === "debug" && !env.debug) return;
+    const safeData = desktopLogJsonSafe({ data });
+    const boundedData =
+      Predicate.isObject(safeData) && "data" in safeData
+        ? safeData["data"]
+        : undefined;
     const at = clock.currentTimeMillisUnsafe();
     writeRecord(
       {
         ...record,
         at: new Date(at).toISOString(),
-        component,
+        message: boundRendererString(record.message, 1_024),
+        component: boundRendererString(component, 64),
+        ...(boundedData === undefined ? {} : { data: boundedData }),
+        ...(error === undefined
+          ? {}
+          : {
+              error: error
+                .slice(0, 8)
+                .map((entry) => boundRendererError(entry)),
+            }),
+        ...(repeatKey === undefined
+          ? {}
+          : { repeatKey: boundRendererString(repeatKey, 256) }),
         annotations: { rendererId: event.sender.id },
       },
       at,
+      event.sender.id,
     );
   };
 
