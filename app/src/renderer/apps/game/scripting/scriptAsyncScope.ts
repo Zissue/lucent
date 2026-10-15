@@ -16,10 +16,9 @@ const runCleanup = (cleanup: ScriptCleanup): Effect.Effect<void> =>
     return Effect.isEffect(result) ? result.pipe(Effect.asVoid) : Effect.void;
   }).pipe(
     Effect.catchCause((cause) =>
-      Effect.logWarning({
-        cause,
-        message: "script cleanup failed",
-      }),
+      Effect.logWarning("script cleanup failed", cause).pipe(
+        Effect.annotateLogs({ component: "scripting" }),
+      ),
     ),
   );
 

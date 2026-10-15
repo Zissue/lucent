@@ -4,7 +4,6 @@ import { basename, join } from "path";
 
 import type { TraceConfig } from "electron";
 import * as Cause from "effect/Cause";
-import { logFailure } from "./logFailure";
 import * as Clock from "effect/Clock";
 import * as Exit from "effect/Exit";
 import * as Schedule from "effect/Schedule";
@@ -15,6 +14,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
+import { logFailure } from "../../../shared/logFailure";
 import { ElectronApp } from "../../electron/ElectronApp";
 import {
   ElectronChromiumPerformance,

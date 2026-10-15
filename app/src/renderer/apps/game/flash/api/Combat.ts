@@ -502,10 +502,12 @@ export const makeCombat = (
         },
       );
       if (session.warning !== undefined) {
-        yield* Effect.logWarning({
-          message: session.warning,
-          profile: profile.label,
-        });
+        yield* Effect.logWarning("Combat profile session degraded").pipe(
+          Effect.annotateLogs({
+            component: "combat",
+            data: { profile: profile.label, warning: session.warning },
+          }),
+        );
       }
       return session;
     });

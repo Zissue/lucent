@@ -15,7 +15,7 @@ import * as Scope from "effect/Scope";
 import { Accounts } from "../internal/accounts/Accounts";
 import { ElectronDialog } from "../electron/ElectronDialog";
 import { DesktopWindows } from "../window/DesktopWindows";
-import { logFailure } from "./observability/logFailure";
+import { logFailure } from "../../shared/logFailure";
 
 const RECOVERY_MESSAGE =
   "The client was reloaded because the script stopped responding.";

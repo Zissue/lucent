@@ -738,7 +738,6 @@ export const projectExtensionWorld = (
         return events;
       }
       case "mtcid": {
-        yield* Effect.log("[world] mtcid packet received", { packet });
         if (bridge === undefined) return [];
         const loaded = yield* bridge.invoke(
           "world.isLoaded",

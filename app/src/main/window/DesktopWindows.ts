@@ -44,7 +44,7 @@ import {
 import { DEFAULT_APP_SETTINGS, type AppSettings } from "@lucent/core/settings";
 import { makeListenerRegistry } from "../app/ListenerRegistry";
 import { DesktopEnvironment } from "../app/DesktopEnvironment";
-import { logFailure } from "../app/observability/logFailure";
+import { logFailure } from "../../shared/logFailure";
 import { ElectronApp } from "../electron/ElectronApp";
 import { ElectronSession } from "../electron/ElectronSession";
 import { ElectronShell } from "../electron/ElectronShell";

@@ -630,10 +630,12 @@ export const makeArmyLoopTauntRuntime = (
                 const reportBestEffort = (value: ArmyLoopTauntReport) =>
                   report(value).pipe(
                     Effect.catchCause((cause) =>
-                      Effect.logWarning({
-                        cause,
-                        message: "Loop Taunt report failed",
-                      }),
+                      Effect.logWarning("Loop Taunt report failed", cause).pipe(
+                        Effect.annotateLogs({
+                          component: "army",
+                          data: { runId: loopRun.runId },
+                        }),
+                      ),
                     ),
                   );
 
@@ -871,10 +873,15 @@ export const makeArmyLoopTauntRuntime = (
                     }
                   }).pipe(
                     Effect.catchCause((cause) =>
-                      Effect.logWarning({
+                      Effect.logWarning(
+                        "Loop Taunt event handling failed",
                         cause,
-                        message: "Loop Taunt event handling failed",
-                      }),
+                      ).pipe(
+                        Effect.annotateLogs({
+                          component: "army",
+                          data: { runId: loopRun.runId },
+                        }),
+                      ),
                     ),
                   );
 
@@ -995,12 +1002,19 @@ export const makeArmyLoopTauntRuntime = (
                         );
                         return;
                       case "diagnostic":
-                        yield* Effect.logWarning({
-                          assignmentId: command.assignmentId,
-                          code: command.code,
-                          message: command.message,
-                          runId: loopRun.runId,
-                        });
+                        yield* Effect.logWarning(
+                          "Loop Taunt diagnostic",
+                          Cause.fail(command.message),
+                        ).pipe(
+                          Effect.annotateLogs({
+                            component: "army",
+                            data: {
+                              assignmentId: command.assignmentId,
+                              code: command.code,
+                              runId: loopRun.runId,
+                            },
+                          }),
+                        );
                         return;
                       case "taunt":
                         yield* Effect.gen(function* () {
@@ -1205,13 +1219,20 @@ export const makeArmyLoopTauntRuntime = (
                                 ? "Server rejected the scroll cast"
                                 : "Scroll cast confirmed a different target";
                           if (reason !== undefined) {
-                            yield* Effect.logWarning({
-                              commandId: payload.commandId,
-                              cooldownMs,
-                              message: reason,
-                              monsterMapId: dispatchTarget.monsterMapId,
-                              playerNumber: session.playerNumber,
-                            });
+                            yield* Effect.logWarning(
+                              "Loop Taunt scroll cast failed",
+                              Cause.fail(reason),
+                            ).pipe(
+                              Effect.annotateLogs({
+                                component: "army",
+                                data: {
+                                  commandId: payload.commandId,
+                                  cooldownMs,
+                                  monsterMapId: dispatchTarget.monsterMapId,
+                                  playerNumber: session.playerNumber,
+                                },
+                              }),
+                            );
                           }
                           yield* reportCommandResult(
                             payload.commandId,
@@ -1258,10 +1279,15 @@ export const makeArmyLoopTauntRuntime = (
                   // event source, so readiness must be sampled while active.
                   reportParticipantState.pipe(
                     Effect.catchCause((cause) =>
-                      Effect.logWarning({
+                      Effect.logWarning(
+                        "Loop Taunt readiness report failed",
                         cause,
-                        message: "Loop Taunt readiness report failed",
-                      }),
+                      ).pipe(
+                        Effect.annotateLogs({
+                          component: "army",
+                          data: { runId: loopRun.runId },
+                        }),
+                      ),
                     ),
                     Effect.andThen(
                       Effect.sleep(`${LOOP_TAUNT_STATUS_INTERVAL_MS} millis`),
@@ -1281,10 +1307,15 @@ export const makeArmyLoopTauntRuntime = (
                     },
                   ).pipe(
                     Effect.catchCause((cause) =>
-                      Effect.logWarning({
+                      Effect.logWarning(
+                        "Loop Taunt target refresh failed",
                         cause,
-                        message: "Loop Taunt target refresh failed",
-                      }),
+                      ).pipe(
+                        Effect.annotateLogs({
+                          component: "army",
+                          data: { runId: loopRun.runId },
+                        }),
+                      ),
                     ),
                     Effect.andThen(
                       Effect.sleep(`${LOOP_TAUNT_TARGET_INTERVAL_MS} millis`),
