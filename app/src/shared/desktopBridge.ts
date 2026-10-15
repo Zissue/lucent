@@ -67,6 +67,7 @@ import type {
   ScriptPackageLeftoverCopy,
   ScriptPackageMutationResult,
   ScriptPackageRemoveRequest,
+  ScriptPackageRestoreRequest,
   ScriptPackageUpdateRequest,
   ScriptReference,
 } from "@lucent/core/scriptPackages";
@@ -196,6 +197,9 @@ export interface DesktopScriptingBridge {
   readonly readFile: (path: string) => Promise<ScriptFile>;
   readonly readReference: (reference: ScriptReference) => Promise<ScriptFile>;
   readonly refreshCatalog: () => Promise<ScriptCatalogOverview>;
+  readonly restorePackage: (
+    request: ScriptPackageRestoreRequest,
+  ) => Promise<ScriptPackageMutationResult>;
   readonly removePackage: (
     request: ScriptPackageRemoveRequest,
   ) => Promise<ScriptPackageMutationResult>;

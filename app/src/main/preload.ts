@@ -291,6 +291,7 @@ const scriptingBridge: DesktopScriptingBridge = {
   readFile: (path) => invoke(ScriptingIpc.readFile, { path }),
   readReference: (reference) => invoke(ScriptingIpc.readReference, reference),
   refreshCatalog: () => invoke(ScriptingIpc.refreshCatalog, undefined),
+  restorePackage: (input) => invoke(ScriptingIpc.restorePackage, input),
   removePackage: (input) => invoke(ScriptingIpc.removePackage, input),
   resolveFile: (path) => invoke(ScriptingIpc.resolveFile, { path }),
   resolveReference: (reference) =>
