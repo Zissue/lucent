@@ -118,8 +118,9 @@ export const layer = Layer.effect(
       });
       yield* Effect.addFinalizer(() => Effect.sync(disposeWindowAllClosed));
 
-      for (const signal of TERMINATION_SIGNALS) {
-        yield* addProcessSignalListener(signal, () => {
+      const signalListeners = TERMINATION_SIGNALS.map((signal) => ({
+        signal,
+        listener: () => {
           if (!beginShutdown(signal)) {
             return;
           }
@@ -131,8 +132,22 @@ export const layer = Layer.effect(
           );
           runFork(app.quit);
           Deferred.doneUnsafe(quitRequested, Effect.void);
-        });
+        },
+      }));
+      for (const { signal, listener } of signalListeners) {
+        yield* addProcessSignalListener(signal, listener);
       }
+      yield* app.whenReady.pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            for (const { signal, listener } of signalListeners) {
+              (process as EventEmitter).removeListener(signal, listener);
+              (process as EventEmitter).on(signal, listener);
+            }
+          }),
+        ),
+        Effect.forkScoped,
+      );
     });
 
     const awaitQuit: DesktopLifecycleShape["awaitQuit"] =

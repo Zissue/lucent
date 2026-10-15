@@ -196,6 +196,7 @@ export const makeDesktopRuntime = <ROut, E>(
 
         return yield* Effect.never;
       }).pipe(
+        Effect.scoped,
         Effect.catchCause((cause) =>
           Effect.gen(function* () {
             if (Cause.hasInterruptsOnly(cause)) {
@@ -208,7 +209,6 @@ export const makeDesktopRuntime = <ROut, E>(
           }),
         ),
         Effect.provide(layer),
-        Effect.scoped,
       ),
     );
   }).pipe(Effect.scoped, Effect.provide(desktopLifecycleLayer));
