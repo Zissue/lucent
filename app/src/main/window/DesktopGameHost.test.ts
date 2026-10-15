@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as Scope from "effect/Scope";
 
+import { makeLifetime } from "./RendererLifetimeTesting";
 import type { GameViewPresentation } from "../../shared/gameViews";
 import type { ElectronGameViewHandle } from "../electron/ElectronWindow";
 import type { ElectronNativeWindowHandle } from "../electron/ElectronWindow";
@@ -59,12 +60,7 @@ const makeHost = (ids: readonly number[]) => {
       scope: Scope.makeUnsafe(),
       gameView: makeView((presentation) => sent.push(presentation)),
       gameViewPhase: "ready",
-      lifetime: {
-        rendererId: id,
-        generation: 0,
-        scope: Scope.makeUnsafe(),
-        isCurrent: () => true,
-      },
+      lifetime: makeLifetime(id, 0),
       hostWindow: window,
       kind: "game",
       rendererId: id,

@@ -1,6 +1,6 @@
 import type { Event as ElectronEvent, Input } from "electron";
 import type * as Scope from "effect/Scope";
-import type { RendererLifetime } from "./DesktopWindows";
+import type { CloseableRendererLifetime } from "./DesktopWindows";
 
 import {
   MAX_GAME_VIEWS_PER_WINDOW,
@@ -37,7 +37,7 @@ export interface DesktopGameViewRecord {
   gameViewError?: string;
   gameViewName?: string;
   gameViewPhase: GameViewSession["phase"];
-  lifetime: RendererLifetime & { readonly scope: Scope.Closeable };
+  lifetime: CloseableRendererLifetime;
   readonly hostWindow: ElectronNativeWindowHandle;
   readonly kind: "game";
   loggedInUsername?: string;

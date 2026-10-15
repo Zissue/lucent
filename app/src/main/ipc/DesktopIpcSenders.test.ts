@@ -2,6 +2,8 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Scope from "effect/Scope";
+import * as Exit from "effect/Exit";
+import { makeLifetime } from "../window/RendererLifetimeTesting";
 
 import type { DesktopRendererKind } from "../window/DesktopWindowCatalog";
 import { DesktopWindows } from "../window/DesktopWindows";
@@ -13,34 +15,15 @@ import {
 
 const event = { sender: { id: 42 } };
 const makeWindows = (kind: DesktopRendererKind | null) => {
-  const generations = new Map(kind === null ? [] : [[42, 1]]);
+  const lifetimes = new Map(kind === null ? [] : [[42, makeLifetime(42)]]);
   return {
-    generations,
-    describe: (rendererId: number) =>
+    lifetimes,
+    identify: (rendererId: number) =>
       Effect.sync(() => {
-        const generation = generations.get(rendererId);
-        return kind === null || generation === undefined
+        const lifetime = lifetimes.get(rendererId);
+        return kind === null || lifetime === undefined
           ? undefined
-          : {
-              rendererId,
-              kind,
-              windowId: 1,
-              ownerId: undefined,
-              generation,
-              ready: false,
-            };
-      }),
-    lifetime: (rendererId: number) =>
-      Effect.sync(() => {
-        const generation = generations.get(rendererId);
-        return generation === undefined
-          ? undefined
-          : {
-              rendererId,
-              generation,
-              scope: Scope.makeUnsafe(),
-              isCurrent: () => generations.get(rendererId) === generation,
-            };
+          : { rendererId, kind, lifetime };
       }),
   };
 };
@@ -57,7 +40,8 @@ describe("DesktopIpcSenders", () => {
       expect(sender.kind).toBe("game");
       expect(sender.lifetime.isCurrent()).toBe(true);
 
-      windows.generations.set(42, 2);
+      yield* Scope.close(windows.lifetimes.get(42)!.scope, Exit.void);
+      windows.lifetimes.set(42, makeLifetime(42, 2));
 
       expect(sender.lifetime.isCurrent()).toBe(false);
     }),

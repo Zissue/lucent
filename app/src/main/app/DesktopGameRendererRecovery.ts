@@ -353,6 +353,8 @@ export const makeDesktopGameRendererRecovery = (
             lifetime.generation !== event.generation
           )
             return;
+          // Unresponsive recovery deliberately kills the renderer before
+          // reloading it, so that event must not open another recovery prompt.
           if (
             intentionalRendererCrashes.delete(lifetime) ||
             appIsQuitting ||

@@ -1,4 +1,3 @@
-import * as Scope from "effect/Scope";
 import { describe, expect, it } from "@effect/vitest";
 import type { IpcMainInvokeEvent } from "electron";
 import * as Cause from "effect/Cause";
@@ -6,6 +5,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
 
+import { makeLifetime } from "../window/RendererLifetimeTesting";
 import { defineEvent, defineInvoke } from "../../shared/ipc";
 import {
   DesktopIpcRegistrationError,
@@ -46,12 +46,7 @@ const senders = DesktopIpcSenders.of({
       return {
         rendererId: 42,
         kind: "game" as const,
-        lifetime: {
-          rendererId: 42,
-          generation: 1,
-          scope: Scope.makeUnsafe(),
-          isCurrent: () => true,
-        },
+        lifetime: makeLifetime(42, 1),
       };
     }),
 } satisfies DesktopIpcSendersShape);

@@ -107,6 +107,10 @@ export interface RendererLifetime {
   readonly isCurrent: () => boolean;
 }
 
+export interface CloseableRendererLifetime extends RendererLifetime {
+  readonly scope: Scope.Closeable;
+}
+
 export interface DesktopRendererInfo {
   readonly rendererId: number;
   readonly kind: DesktopRendererKind;
@@ -115,6 +119,13 @@ export interface DesktopRendererInfo {
   readonly generation: number;
   readonly ready: boolean;
 }
+
+export type DesktopRendererIdentity = Pick<
+  DesktopRendererInfo,
+  "rendererId" | "kind"
+> & {
+  readonly lifetime: RendererLifetime;
+};
 
 export interface DesktopWindowsShape {
   readonly updateGameViewHost: (
@@ -128,6 +139,9 @@ export interface DesktopWindowsShape {
   readonly describe: (
     rendererId: number,
   ) => Effect.Effect<DesktopRendererInfo | undefined>;
+  readonly identify: (
+    rendererId: number,
+  ) => Effect.Effect<DesktopRendererIdentity | undefined>;
   readonly lifetime: (
     rendererId: number,
   ) => Effect.Effect<RendererLifetime | undefined>;
@@ -345,7 +359,7 @@ const createGameViewOptions = (
 interface DesktopBrowserWindowRecord {
   readonly scope: Scope.Closeable;
   readonly rendererId: number;
-  lifetime: RendererLifetime & { readonly scope: Scope.Closeable };
+  lifetime: CloseableRendererLifetime;
   readonly kind: DesktopWindowKind;
   // ownerId is logical ownership only; Electron parent windows are intentionally not used.
   readonly ownerId?: number;
@@ -361,7 +375,7 @@ type DesktopWindowRecord = DesktopBrowserWindowRecord | DesktopGameViewRecord;
 interface DesktopChromeRendererRecord {
   readonly rendererId: number;
   readonly scope: Scope.Closeable;
-  lifetime: RendererLifetime & { readonly scope: Scope.Closeable };
+  lifetime: CloseableRendererLifetime;
   readonly kind: "game-host" | "game-group-controls";
   readonly host: DesktopGameHostRecord;
 }
@@ -763,6 +777,18 @@ const makeDesktopWindows = Effect.gen(function* () {
       };
     });
 
+  const identify: DesktopWindowsShape["identify"] = (rendererId) =>
+    Effect.sync(() => {
+      const record = renderers.get(rendererId);
+      return record === undefined
+        ? undefined
+        : {
+            rendererId,
+            kind: record.kind,
+            lifetime: record.lifetime,
+          };
+    });
+
   const lifetime: DesktopWindowsShape["lifetime"] = (rendererId) =>
     Effect.sync(() => renderers.get(rendererId)?.lifetime);
 
@@ -772,7 +798,7 @@ const makeDesktopWindows = Effect.gen(function* () {
     parent: Scope.Scope,
   ) => {
     const scope = Scope.forkUnsafe(parent);
-    const lifetime: RendererLifetime & { readonly scope: Scope.Closeable } = {
+    const lifetime: CloseableRendererLifetime = {
       rendererId,
       generation,
       scope,
@@ -2081,6 +2107,7 @@ const makeDesktopWindows = Effect.gen(function* () {
     closeGameView,
     getRendererIds,
     describe,
+    identify,
     lifetime,
     getGameViewHostState,
     getGameViewPresentation,

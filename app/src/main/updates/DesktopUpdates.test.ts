@@ -1,4 +1,3 @@
-import * as Scope from "effect/Scope";
 import { mkdtemp, readFile, rm, writeFile } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -15,6 +14,7 @@ import * as Logger from "effect/Logger";
 import { TestClock } from "effect/testing";
 
 import { DEFAULT_APP_SETTINGS, type AppSettings } from "@lucent/core/settings";
+import { makeLifetime } from "../window/RendererLifetimeTesting";
 import { DesktopEnvironment } from "../app/DesktopEnvironment";
 import { layer as desktopFileSystemLayer } from "@effect/platform-node/NodeFileSystem";
 import { ElectronApp } from "../electron/ElectronApp";
@@ -238,12 +238,7 @@ describe("DesktopUpdates", () => {
         const sender: DesktopIpcSender = {
           rendererId: 1,
           kind: "settings",
-          lifetime: {
-            rendererId: 1,
-            generation: 1,
-            scope: Scope.makeUnsafe(),
-            isCurrent: () => true,
-          },
+          lifetime: makeLifetime(1),
         };
 
         const { pending, state } = yield* Effect.gen(function* () {

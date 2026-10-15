@@ -648,83 +648,83 @@ describe("DesktopWindows document commits", () => {
       },
     );
   }
-});
 
-it.effect("gives chrome IPC senders a document lifetime", () => {
-  const harness = makeHarness(true);
-  return Effect.gen(function* () {
-    const windows = yield* DesktopWindows;
-    yield* windows.open("game");
-    for (const [id, kind] of [
-      [101, "game-group-controls"],
-      [102, "game-host"],
-    ] as const) {
-      const contents = harness.created.get(id)!.webContents;
-      contents.emit("did-navigate");
-      const sender = yield* makeDesktopIpcSenders(windows).require(
-        { sender: contents },
-        [kind],
-      );
-      expect(sender.kind).toBe(kind);
-      expect(sender.lifetime.isCurrent()).toBe(true);
-      contents.emit("did-start-loading");
-      expect(sender.lifetime.isCurrent()).toBe(true);
-      contents.emit("did-navigate");
-      expect(sender.lifetime.scope.state._tag).toBe("Closed");
-      expect(sender.lifetime.isCurrent()).toBe(false);
-      expect((yield* windows.lifetime(id))?.generation).toBe(1);
-    }
-  }).pipe(Effect.provide(harness.layer));
-});
-
-it.effect(
-  "interrupts recovery when DesktopWindows commits the next document",
-  () => {
-    const harness = makeHarness();
+  it.effect("gives chrome IPC senders a document lifetime", () => {
+    const harness = makeHarness(true);
     return Effect.gen(function* () {
       const windows = yield* DesktopWindows;
-      const id = yield* windows.open("game");
-      const contents = harness.created.get(id)!.webContents;
-      contents.emit("did-navigate");
-      const signals: AbortSignal[] = [];
-      const recovery = makeDesktopGameRendererRecovery({
-        allWebContents: () => [
-          contents as unknown as RecoverableGameWebContents,
-        ],
-        describe: windows.describe,
-        lifetime: windows.lifetime,
-        observe: windows.observe,
-        onWebContentsCreated: () => () => {},
-        onBeforeQuit: () => () => {},
-        showRecoveryPrompt: () =>
-          Effect.promise((signal) => {
-            signals.push(signal);
-            return Promise.withResolvers<number>().promise;
-          }),
-        showRendererRecoveryPrompt: () => Effect.succeed(1),
-        suppressLaunchScript: () => Effect.void,
-        warn: () => Effect.void,
-        error: () => Effect.void,
-        info: () => Effect.void,
-      });
-      yield* recovery.install;
-      const sender = yield* makeDesktopIpcSenders(windows).require(
-        { sender: contents },
-        ["game"],
-      );
-      yield* recovery.beginScriptExecution(sender.lifetime);
-      contents.emit("unresponsive");
-      yield* Effect.yieldNow.pipe(Effect.repeat({ times: 4 }));
-      expect(signals.map((signal) => signal.aborted)).toEqual([false]);
-      contents.emit("did-start-loading");
-      expect(signals.map((signal) => signal.aborted)).toEqual([false]);
-      contents.emit("did-navigate");
-      yield* Effect.yieldNow.pipe(Effect.repeat({ times: 4 }));
-      expect(signals.map((signal) => signal.aborted)).toEqual([true]);
-      expect(sender.lifetime.isCurrent()).toBe(false);
-      const next = (yield* windows.lifetime(id))!;
-      expect(next.generation).toBe(2);
-      expect(next.isCurrent()).toBe(true);
+      yield* windows.open("game");
+      for (const [id, kind] of [
+        [101, "game-group-controls"],
+        [102, "game-host"],
+      ] as const) {
+        const contents = harness.created.get(id)!.webContents;
+        contents.emit("did-navigate");
+        const sender = yield* makeDesktopIpcSenders(windows).require(
+          { sender: contents },
+          [kind],
+        );
+        expect(sender.kind).toBe(kind);
+        expect(sender.lifetime.isCurrent()).toBe(true);
+        contents.emit("did-start-loading");
+        expect(sender.lifetime.isCurrent()).toBe(true);
+        contents.emit("did-navigate");
+        expect(sender.lifetime.scope.state._tag).toBe("Closed");
+        expect(sender.lifetime.isCurrent()).toBe(false);
+        expect((yield* windows.lifetime(id))?.generation).toBe(1);
+      }
     }).pipe(Effect.provide(harness.layer));
-  },
-);
+  });
+
+  it.effect(
+    "interrupts recovery when DesktopWindows commits the next document",
+    () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const windows = yield* DesktopWindows;
+        const id = yield* windows.open("game");
+        const contents = harness.created.get(id)!.webContents;
+        contents.emit("did-navigate");
+        const signals: AbortSignal[] = [];
+        const recovery = makeDesktopGameRendererRecovery({
+          allWebContents: () => [
+            contents as unknown as RecoverableGameWebContents,
+          ],
+          describe: windows.describe,
+          lifetime: windows.lifetime,
+          observe: windows.observe,
+          onWebContentsCreated: () => () => {},
+          onBeforeQuit: () => () => {},
+          showRecoveryPrompt: () =>
+            Effect.promise((signal) => {
+              signals.push(signal);
+              return Promise.withResolvers<number>().promise;
+            }),
+          showRendererRecoveryPrompt: () => Effect.succeed(1),
+          suppressLaunchScript: () => Effect.void,
+          warn: () => Effect.void,
+          error: () => Effect.void,
+          info: () => Effect.void,
+        });
+        yield* recovery.install;
+        const sender = yield* makeDesktopIpcSenders(windows).require(
+          { sender: contents },
+          ["game"],
+        );
+        yield* recovery.beginScriptExecution(sender.lifetime);
+        contents.emit("unresponsive");
+        yield* Effect.yieldNow.pipe(Effect.repeat({ times: 4 }));
+        expect(signals.map((signal) => signal.aborted)).toEqual([false]);
+        contents.emit("did-start-loading");
+        expect(signals.map((signal) => signal.aborted)).toEqual([false]);
+        contents.emit("did-navigate");
+        yield* Effect.yieldNow.pipe(Effect.repeat({ times: 4 }));
+        expect(signals.map((signal) => signal.aborted)).toEqual([true]);
+        expect(sender.lifetime.isCurrent()).toBe(false);
+        const next = (yield* windows.lifetime(id))!;
+        expect(next.generation).toBe(2);
+        expect(next.isCurrent()).toBe(true);
+      }).pipe(Effect.provide(harness.layer));
+    },
+  );
+});
