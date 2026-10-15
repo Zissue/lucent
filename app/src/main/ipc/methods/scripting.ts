@@ -11,6 +11,17 @@ import { DesktopIpc, makeDesktopIpcMethod } from "../DesktopIpc";
 
 const scriptingSenders = ["account-manager", "game"] as const;
 
+export const listPackageLeftovers = makeDesktopIpcMethod({
+  descriptor: ScriptingIpc.listPackageLeftovers,
+  allowedSenders: scriptingSenders,
+  handler: Effect.fn("desktop.ipc.scripting.listPackageLeftovers")(
+    function* () {
+      const packages = yield* ScriptPackageManager;
+      return yield* packages.listLeftovers;
+    },
+  ),
+});
+
 export const listCredentials = makeDesktopIpcMethod({
   descriptor: ScriptingIpc.listCredentials,
   allowedSenders: scriptingSenders,
@@ -238,6 +249,7 @@ export const credentialMethods = [
 ] as const;
 
 export const packageMethods = [
+  listPackageLeftovers,
   installPackage,
   updatePackage,
   removePackage,

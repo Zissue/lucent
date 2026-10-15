@@ -277,9 +277,11 @@ const scriptingBridge: DesktopScriptingBridge = {
   getCatalogPage: (request) => invoke(ScriptingIpc.getCatalogPage, request),
   getInputValues: (definition) =>
     invoke(ScriptingIpc.getInputValues, definition),
-  loadReference: (reference) => invoke(ScriptingIpc.loadReference, reference),
   installPackage: (input) => invoke(ScriptingIpc.installPackage, input),
   listCredentials: () => invoke(ScriptingIpc.listCredentials, undefined),
+  listPackageLeftovers: () =>
+    invoke(ScriptingIpc.listPackageLeftovers, undefined),
+  loadReference: (reference) => invoke(ScriptingIpc.loadReference, reference),
   onCatalogChanged: (listener) =>
     subscribe(ScriptingIpc.catalogChanged, listener),
   openFile: () => invoke(ScriptingIpc.openFile, undefined),

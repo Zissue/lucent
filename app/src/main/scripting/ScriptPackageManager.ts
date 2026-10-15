@@ -14,6 +14,7 @@ import type {
   ScriptCatalogOverview,
   ScriptPackageMutationResult,
   ScriptPackageIntegrity,
+  ScriptPackageLeftoverCopy,
   ScriptPackageRevision,
 } from "@lucent/core/scriptPackages";
 import {
@@ -33,6 +34,11 @@ import {
   ScriptPackageCatalog,
   type ScriptPackageCatalogReplacement,
 } from "./ScriptPackageCatalog";
+import {
+  findLeftoverPackageCopies,
+  SCRIPT_PACKAGE_BACKUP_PREFIX,
+  SCRIPT_PACKAGE_REMOVE_PREFIX,
+} from "./ScriptPackageLeftovers";
 import { hashDirectory } from "./ScriptPackageFileSystem";
 import {
   allocatePackageDirectory,
@@ -63,6 +69,7 @@ const packageManagerOperationSchema = Schema.Literals([
   "check-update",
   "extract",
   "install",
+  "list-leftovers",
   "remove",
   "replace",
   "update",
@@ -83,6 +90,10 @@ export class ScriptPackageManagerError extends Schema.TaggedError<ScriptPackageM
 }
 
 export interface ScriptPackageManagerShape {
+  readonly listLeftovers: Effect.Effect<
+    readonly ScriptPackageLeftoverCopy[],
+    ScriptPackageManagerError
+  >;
   readonly checkUpdate: (input: {
     readonly packageName: string;
   }) => Effect.Effect<ScriptCatalogOverview, ScriptPackageManagerError>;
@@ -568,7 +579,7 @@ export const layer = Layer.effect(
 
         const backupRoot = yield* Effect.tryPromise({
           try: () =>
-            fs.mkdtemp(join(env.workspaceDir, ".lucent-package-backup-")),
+            fs.mkdtemp(join(env.workspaceDir, SCRIPT_PACKAGE_BACKUP_PREFIX)),
           catch: (cause) =>
             managerError(
               "replace",
@@ -1145,7 +1156,9 @@ export const layer = Layer.effect(
           return yield* Effect.gen(function* () {
             const temporaryRoot = yield* Effect.tryPromise({
               try: () =>
-                fs.mkdtemp(join(env.workspaceDir, ".lucent-package-remove-")),
+                fs.mkdtemp(
+                  join(env.workspaceDir, SCRIPT_PACKAGE_REMOVE_PREFIX),
+                ),
               catch: (cause) =>
                 managerError(
                   "remove",
@@ -1353,6 +1366,17 @@ export const layer = Layer.effect(
 
     return ScriptPackageManager.of({
       checkUpdate,
+      listLeftovers: mutationGate.withPermits(1)(
+        Effect.tryPromise({
+          try: () => findLeftoverPackageCopies(env.workspaceDir),
+          catch: (cause) =>
+            managerError(
+              "list-leftovers",
+              "Failed to find saved package folders.",
+              cause,
+            ),
+        }),
+      ),
       install,
       remove,
       update,
