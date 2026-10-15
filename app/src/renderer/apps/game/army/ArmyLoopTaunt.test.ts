@@ -1,5 +1,10 @@
 import { describe, expect, it } from "@effect/vitest";
+import * as Cause from "effect/Cause";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
+import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Scope from "effect/Scope";
 
@@ -12,7 +17,9 @@ import { EntityState, LiveMonster, type PlayerSnapshot } from "@lucent/game";
 import type { DesktopArmyBridge } from "../../../../shared/desktopBridge";
 import type { ApiService } from "../flash/api/Api";
 import type { Event } from "../flash/contract/Event";
+import { makeWait } from "../flash/protocol/Wait";
 import {
+  type ArmyLoopTauntRuntime,
   type ArmyLoopTauntRuntimePlan,
   makeArmyLoopTauntRuntime,
 } from "./ArmyLoopTaunt";
@@ -69,10 +76,20 @@ interface Harness {
   >;
 }
 
-const makeHarness = Effect.fn("ArmyLoopTaunt.test.makeHarness")(function* (
-  plan: ArmyLoopTauntRuntimePlan,
+interface RuntimeHarness extends Harness {
+  readonly exitMap: Effect.Effect<void>;
+  readonly runtime: ArmyLoopTauntRuntime;
+}
+
+const makeRuntime = Effect.fn("ArmyLoopTaunt.test.makeRuntime")(function* (
   initialAlive: Readonly<Record<number, boolean>> = {},
-): Effect.fn.Return<Harness, unknown, Scope.Scope> {
+  bridgeOverrides: Partial<DesktopArmyBridge> = {},
+  subscribeEvents?: Effect.Effect<
+    PubSub.Subscription<Event>,
+    never,
+    Scope.Scope
+  >,
+): Effect.fn.Return<RuntimeHarness, never, Scope.Scope> {
   const players = ["Alice", "Bob"];
   const casts: number[] = [];
   const reports: ArmyLoopTauntReport[] = [];
@@ -90,6 +107,11 @@ const makeHarness = Effect.fn("ArmyLoopTaunt.test.makeHarness")(function* (
       Extract<ArmyLoopTauntReport, { readonly type: "command-result" }>
     >();
   const runFork = Effect.runForkWith(yield* Effect.context<never>());
+  const events = yield* PubSub.unbounded<Event>();
+  const wait = makeWait({
+    subscribeEvents: subscribeEvents ?? PubSub.subscribe(events),
+    subscribePackets: Effect.die("Loop Taunt does not wait for packets"),
+  });
   let commandListener:
     | ((payload: ArmyLoopTauntCommandPayload) => void)
     | undefined;
@@ -115,6 +137,7 @@ const makeHarness = Effect.fn("ArmyLoopTaunt.test.makeHarness")(function* (
         commandListener = undefined;
       };
     },
+    ...bridgeOverrides,
   } as unknown as DesktopArmyBridge;
 
   const api = {
@@ -142,15 +165,7 @@ const makeHarness = Effect.fn("ArmyLoopTaunt.test.makeHarness")(function* (
             eventListener = undefined;
           };
         }),
-      once: (
-        _selector: unknown,
-        waitOptions?: { readonly trigger?: Effect.Effect<boolean, unknown> },
-      ) =>
-        (waitOptions?.trigger ?? Effect.succeed(true)).pipe(
-          Effect.flatMap((expected) =>
-            expected ? Effect.never : Effect.succeed(null),
-          ),
-        ),
+      once: wait.forEvent,
     },
     map: {
       getId: () => Effect.succeed(100),
@@ -185,13 +200,15 @@ const makeHarness = Effect.fn("ArmyLoopTaunt.test.makeHarness")(function* (
       sessionId: "session-1",
     }),
   );
-  const handle = yield* runtime.loopTaunt(plan, () => Effect.void);
-  yield* Effect.addFinalizer(() => handle.stop());
-
   return {
     casts,
+    exitMap: PubSub.publish(events, {
+      map: { id: 101, name: "battleon", roomNumber: 1 },
+      type: "join-map",
+    }).pipe(Effect.asVoid),
     monster,
     reports,
+    runtime,
     emitEvent: (event) =>
       eventListener === undefined
         ? Effect.die("Loop Taunt event listener was not registered")
@@ -216,6 +233,38 @@ const makeHarness = Effect.fn("ArmyLoopTaunt.test.makeHarness")(function* (
     nextCommandResult: Queue.take(commandResults),
   };
 });
+
+const makeHarness = Effect.fn("ArmyLoopTaunt.test.makeHarness")(function* (
+  plan: ArmyLoopTauntRuntimePlan,
+  initialAlive: Readonly<Record<number, boolean>> = {},
+): Effect.fn.Return<Harness, unknown, Scope.Scope> {
+  const { runtime, ...harness } = yield* makeRuntime(initialAlive);
+  const handle = yield* runtime.loopTaunt(plan, () => Effect.void);
+  yield* Effect.addFinalizer(() => handle.stop());
+  return harness;
+});
+
+const startLoopTaunt = (
+  runtime: ArmyLoopTauntRuntime,
+  onFailure: (cause: Cause.Cause<unknown>) => Effect.Effect<void> = () =>
+    Effect.void,
+) =>
+  runtime
+    .loopTaunt(
+      [
+        {
+          assignments: [
+            { players: [1, 2], strategy: { type: "focus" }, target: 42 },
+          ],
+        },
+      ],
+      onFailure,
+    )
+    .pipe(
+      Effect.tap((handle) => Effect.addFinalizer(() => handle.stop())),
+      Effect.result,
+      Effect.forkChild,
+    );
 
 describe("Army Loop Taunt renderer", () => {
   it.effect(
@@ -409,6 +458,181 @@ describe("Army Loop Taunt renderer", () => {
           type: "command-result",
         });
         expect(harness.casts).toHaveLength(0);
+      }),
+  );
+
+  it.effect(
+    "sends leave last when the map changes as Loop Taunt startup completes",
+    () =>
+      Effect.gen(function* () {
+        const calls: string[] = [];
+        const leaveResponded = yield* Deferred.make<void>();
+        const context = yield* Effect.context();
+        const runFork = Effect.runForkWith(context);
+        const runPromise = Effect.runPromiseWith(context);
+        let exitMap: Effect.Effect<void> = Effect.void;
+        const harness = yield* makeRuntime(
+          {},
+          {
+            loopTauntAwait: () => {
+              calls.push("await");
+              return runPromise(Effect.never);
+            },
+            loopTauntLeave: () => {
+              calls.push("leave");
+              return runPromise(Deferred.await(leaveResponded));
+            },
+            loopTauntReady: () => {
+              calls.push("ready");
+              runFork(exitMap);
+              return Promise.resolve();
+            },
+            loopTauntRegister: () => {
+              calls.push("register");
+              return Promise.resolve({ runId: "run-1" });
+            },
+          },
+        );
+        exitMap = harness.exitMap;
+
+        const startup = yield* startLoopTaunt(harness.runtime);
+        for (let turn = 0; turn < 100 && !calls.includes("await"); turn++) {
+          yield* Effect.yieldNow;
+        }
+        yield* Deferred.succeed(leaveResponded, undefined);
+
+        const result = yield* Fiber.join(startup);
+        expect(calls).toEqual(["register", "ready", "leave"]);
+        expect(result).toMatchObject({
+          _tag: "Failure",
+          failure: { message: "The map changed while Loop Taunt was starting" },
+        });
+      }),
+  );
+
+  for (const { calls, closeOn, failure, outcome, subscribe } of [
+    {
+      calls: [],
+      closeOn: undefined,
+      failure: {
+        cause: { message: "Event subscription failed" },
+        message: "Failed to start Loop Taunt",
+      },
+      outcome: "fails before it arms",
+      subscribe: () => Effect.die(new Error("Event subscription failed")),
+    },
+    {
+      calls: [],
+      closeOn: undefined,
+      failure: { message: "Failed to start Loop Taunt" },
+      outcome: "is interrupted before it arms",
+      subscribe: () => Effect.interrupt,
+    },
+    {
+      calls: ["register", "ready", "leave"],
+      closeOn: undefined,
+      failure: { message: "Failed to start Loop Taunt" },
+      outcome: "is already closed",
+      subscribe: (events: PubSub.PubSub<Event>) =>
+        PubSub.shutdown(events).pipe(Effect.andThen(PubSub.subscribe(events))),
+    },
+    {
+      calls: ["register", "ready", "leave"],
+      closeOn: "ready",
+      failure: { message: "Failed to start Loop Taunt" },
+      outcome: "closes while startup waits for the roster",
+      subscribe: (events: PubSub.PubSub<Event>) => PubSub.subscribe(events),
+    },
+    {
+      calls: ["register", "ready", "leave"],
+      closeOn: "report",
+      failure: { message: "Failed to start Loop Taunt" },
+      outcome: "closes after setup returns",
+      subscribe: (events: PubSub.PubSub<Event>) => PubSub.subscribe(events),
+    },
+  ] as const) {
+    it.effect(`fails startup when the map-exit subscription ${outcome}`, () =>
+      Effect.gen(function* () {
+        const recorded: string[] = [];
+        const events = yield* PubSub.unbounded<Event>();
+        const context = yield* Effect.context();
+        const runFork = Effect.runForkWith(context);
+        const runPromise = Effect.runPromiseWith(context);
+        const record =
+          <A>(call: string, response: A) =>
+          () => {
+            recorded.push(call);
+            return Promise.resolve(response);
+          };
+        const harness = yield* makeRuntime(
+          {},
+          {
+            loopTauntAwait: () => {
+              recorded.push("await");
+              return runPromise(Effect.never);
+            },
+            loopTauntLeave: record("leave", undefined),
+            loopTauntReady: () => {
+              recorded.push("ready");
+              if (closeOn !== "ready") return Promise.resolve();
+              runFork(PubSub.shutdown(events));
+              return runPromise(Effect.never);
+            },
+            loopTauntRegister: record("register", { runId: "run-1" }),
+            loopTauntReport: () => {
+              if (closeOn === "report") runFork(PubSub.shutdown(events));
+              return Promise.resolve();
+            },
+          },
+          subscribe(events),
+        );
+
+        const startup = yield* startLoopTaunt(harness.runtime);
+        for (
+          let turn = 0;
+          turn < 100 && startup.pollUnsafe() === undefined;
+          turn++
+        ) {
+          yield* Effect.yieldNow;
+        }
+        const settled = startup.pollUnsafe();
+        if (settled === undefined) yield* Fiber.interrupt(startup);
+
+        expect(
+          settled !== undefined && Exit.isSuccess(settled)
+            ? settled.value
+            : settled,
+        ).toMatchObject({ _tag: "Failure", failure });
+        expect(recorded).toEqual(calls);
+      }),
+    );
+  }
+
+  it.effect(
+    "keeps running when the map-exit subscription closes after startup",
+    () =>
+      Effect.gen(function* () {
+        const failures: unknown[] = [];
+        const events = yield* PubSub.unbounded<Event>();
+        const harness = yield* makeRuntime({}, {}, PubSub.subscribe(events));
+        const startup = yield* startLoopTaunt(harness.runtime, (cause) =>
+          Effect.sync(() => {
+            failures.push(cause);
+          }),
+        );
+        expect(yield* Fiber.join(startup)).toMatchObject({ _tag: "Success" });
+
+        yield* PubSub.shutdown(events);
+        for (let turn = 0; turn < 20; turn++) yield* Effect.yieldNow;
+        harness.emitTaunt();
+
+        expect(yield* harness.nextCommandResult).toEqual({
+          commandId: 1,
+          cooldownMs: 0,
+          outcome: "confirmed",
+          type: "command-result",
+        });
+        expect(failures).toEqual([]);
       }),
   );
 });

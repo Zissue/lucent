@@ -1,4 +1,5 @@
 import * as Effect from "effect/Effect";
+import type * as Layer from "effect/Layer";
 
 import { createAppearanceSnapshot } from "@lucent/core/appearance";
 import type { AppSettings } from "@lucent/core/settings";
@@ -6,7 +7,7 @@ import type { CliOptions } from "../cli";
 import { installDesktopDevRendererReload } from "./DesktopDevRendererReload";
 import { DesktopGameRendererRecovery } from "./DesktopGameRendererRecovery";
 import { DesktopEnvironment } from "./DesktopEnvironment";
-import { DesktopLifecycle } from "./DesktopLifecycle";
+import { DesktopLifecycle, provideInsideQuitGuard } from "./DesktopLifecycle";
 import { DesktopObservability } from "./observability/DesktopObservability";
 import { installDesktopRendererObservability } from "./observability/DesktopRendererObservability";
 import { ElectronApp } from "../electron/ElectronApp";
@@ -52,26 +53,53 @@ export const installDesktopNativeAppearanceSync = (
     yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
   });
 
-export const makeDesktopRuntime = (cliOptions: CliOptions) =>
-  Effect.scoped(
-    Effect.gen(function* () {
+const checkForUpdatesAtStartup = Effect.gen(function* () {
+  const dialog = yield* ElectronDialog;
+  const updates = yield* DesktopUpdates;
+  const updateState = yield* updates.checkNow();
+  yield* Effect.logInfo("Startup update check completed").pipe(
+    Effect.annotateLogs({
+      component: "updates",
+      data: {
+        status: updateState.status,
+      },
+    }),
+  );
+  yield* showUpdateCheckDialog(updateState, {
+    mode: "automatic",
+    dialog,
+    updates,
+  }).pipe(
+    Effect.catch((cause) =>
+      Effect.logWarning("Failed to show startup update dialog").pipe(
+        Effect.annotateLogs({ component: "updates", data: { cause } }),
+      ),
+    ),
+  );
+});
+
+export const makeDesktopRuntime = <ROut, E>(
+  cliOptions: CliOptions,
+  layer: Layer.Layer<ROut, E>,
+) =>
+  Effect.gen(function* () {
+    const lifecycle = yield* DesktopLifecycle;
+    const observability = yield* DesktopObservability;
+    yield* observability.installProcessHooks;
+    yield* lifecycle.register;
+
+    yield* Effect.gen(function* () {
       const app = yield* ElectronApp;
       const applicationMenu = yield* DesktopApplicationMenu;
-      const dialog = yield* ElectronDialog;
       const env = yield* DesktopEnvironment;
       const gameRendererRecovery = yield* DesktopGameRendererRecovery;
-      const lifecycle = yield* DesktopLifecycle;
-      const observability = yield* DesktopObservability;
       const settingsService = yield* DesktopSettings;
       const scriptWorkspace = yield* ScriptWorkspace;
-      const updates = yield* DesktopUpdates;
       const windows = yield* DesktopWindows;
 
-      yield* observability.installProcessHooks;
       if (env.debug === true) {
         yield* installDesktopRendererObservability;
       }
-      yield* lifecycle.register;
       yield* Effect.logInfo("Lucent desktop runtime starting").pipe(
         Effect.annotateLogs({
           component: "startup",
@@ -101,31 +129,12 @@ export const makeDesktopRuntime = (cliOptions: CliOptions) =>
       yield* installDesktopDevRendererReload;
 
       if (settings.preferences.checkForUpdates) {
-        const updateState = yield* updates.checkNow();
-        yield* Effect.logInfo("Startup update check completed").pipe(
-          Effect.annotateLogs({
-            component: "updates",
-            data: {
-              status: updateState.status,
-            },
-          }),
-        );
-        yield* showUpdateCheckDialog(updateState, {
-          mode: "automatic",
-          dialog,
-          updates,
-        }).pipe(
-          Effect.catch((cause) =>
-            Effect.logWarning("Failed to show startup update dialog").pipe(
-              Effect.annotateLogs({ component: "updates", data: { cause } }),
-            ),
-          ),
-        );
+        yield* Effect.raceFirst(lifecycle.awaitQuit, checkForUpdatesAtStartup);
       }
 
       yield* lifecycle.awaitQuit;
-    }),
-  ).pipe(
+    }).pipe(Effect.scoped);
+  }).pipe(
     Effect.catchCause((cause) =>
       Effect.gen(function* () {
         yield* Effect.logError("Lucent desktop runtime failed", cause).pipe(
@@ -134,4 +143,5 @@ export const makeDesktopRuntime = (cliOptions: CliOptions) =>
         return yield* Effect.failCause(cause);
       }),
     ),
+    provideInsideQuitGuard(layer),
   );
