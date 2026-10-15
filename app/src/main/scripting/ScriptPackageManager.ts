@@ -28,11 +28,12 @@ import {
 } from "./GitHubScriptPackageClient";
 import {
   inspectScriptPackageDirectory,
+  inspectManagedPackageFolder,
   integrityFor,
   ScriptPackageCatalog,
   type ScriptPackageCatalogReplacement,
 } from "./ScriptPackageCatalog";
-import { hashDirectory, isPathInside } from "./ScriptPackageFileSystem";
+import { hashDirectory } from "./ScriptPackageFileSystem";
 import {
   allocatePackageDirectory,
   packageDirectoryPath,
@@ -371,29 +372,9 @@ export const layer = Layer.effect(
     ) {
       const managed = yield* state.get(name);
       if (managed === undefined) return yield* catalog.refresh;
-      const inspected = yield* Effect.tryPromise(async () => {
-        const directory = await fs.lstat(rootPath);
-        if (!directory.isDirectory() || directory.isSymbolicLink()) {
-          throw new Error("The package folder is not a regular directory.");
-        }
-        const inspected = await inspectScriptPackageDirectory(rootPath);
-        if (inspected.manifest.name !== managed.name) {
-          throw new Error(
-            "The package manifest name differs from its saved name.",
-          );
-        }
-        if (
-          !isPathInside(
-            await fs.realpath(packagesDir),
-            await fs.realpath(rootPath),
-          )
-        ) {
-          throw new Error(
-            "The package points outside Lucent's packages folder.",
-          );
-        }
-        return inspected;
-      }).pipe(Effect.orElseSucceed(() => undefined));
+      const inspected = yield* Effect.tryPromise(() =>
+        inspectManagedPackageFolder(packagesDir, rootPath, managed),
+      ).pipe(Effect.orElseSucceed(() => undefined));
       if (inspected === undefined) return yield* catalog.refresh;
       return yield* catalog.replacePackage({
         inspected,

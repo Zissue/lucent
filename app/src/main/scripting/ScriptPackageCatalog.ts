@@ -427,6 +427,28 @@ const hashesMatch = (
   );
 };
 
+export const inspectManagedPackageFolder = async (
+  packagesDir: string,
+  rootPath: string,
+  managed: ManagedScriptPackage | undefined,
+): Promise<InspectedScriptPackageDirectory> => {
+  if (!(await fs.lstat(rootPath)).isDirectory()) {
+    throw new Error("The package folder is not a regular directory.");
+  }
+  const inspected = await inspectScriptPackageDirectory(rootPath);
+  if (managed !== undefined && managed.name !== inspected.manifest.name) {
+    throw new Error(
+      `The installed package name is ${JSON.stringify(managed.name)}, but package.json declares ${JSON.stringify(inspected.manifest.name)}.`,
+    );
+  }
+  if (
+    !isPathInside(await fs.realpath(packagesDir), await fs.realpath(rootPath))
+  ) {
+    throw new Error("The package points outside Lucent's packages folder.");
+  }
+  return inspected;
+};
+
 export const integrityFor = async (
   rootPath: string,
   managed: ManagedScriptPackage | undefined,
@@ -728,7 +750,7 @@ export const discoverScriptCatalog = async (
 
   const scannedPackages: ScannedPackage[] = [];
   for (const entry of packageDirectories) {
-    if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+    if (!entry.isDirectory()) continue;
     const directory = join(options.packagesDir, entry.name);
     let parsedName: string | undefined;
     let validatedName: string | undefined;
@@ -738,20 +760,13 @@ export const discoverScriptCatalog = async (
         await readScriptPackageManifest(join(directory, "package.json"))
       ).name;
       validatedName = decodePackageName(parsedName);
-      const inspected = await inspectScriptPackageDirectory(directory);
-      const { mainPath, manifest } = inspected;
       const managed = managedPackages.get(directoryName);
-      if (managed !== undefined && managed.name !== manifest.name) {
-        throw new Error(
-          `The installed package name is ${JSON.stringify(managed.name)}, but package.json declares ${JSON.stringify(manifest.name)}.`,
-        );
-      }
-
-      const packageRealPath = await fs.realpath(directory);
-      const packagesRealPath = await fs.realpath(options.packagesDir);
-      if (!isPathInside(packagesRealPath, packageRealPath)) {
-        throw new Error("The package points outside Lucent's packages folder.");
-      }
+      const inspected = await inspectManagedPackageFolder(
+        options.packagesDir,
+        directory,
+        managed,
+      );
+      const { mainPath, manifest } = inspected;
       const compatibility = compatibilityFor(
         options.currentVersion,
         manifest.lucentVersion,
@@ -872,8 +887,18 @@ const replaceDiscoveredPackage = (
   current: DiscoveredScriptCatalog,
   replacement: ScriptPackageCatalogReplacement,
   currentVersion: string,
-): DiscoveredScriptCatalog => {
+): DiscoveredScriptCatalog | undefined => {
   const { inspected, managed, rootPath, sourceRoot } = replacement;
+  const normalizedRoot = resolve(rootPath);
+  if (
+    current.catalog.packages.some(
+      (entry) =>
+        entry.status === "valid" &&
+        entry.name === managed.name &&
+        resolve(entry.path) !== normalizedRoot,
+    )
+  )
+    return undefined;
   const remapPath = (path: string): string =>
     resolve(rootPath, relative(sourceRoot, path));
   const files = inspected.files.map(remapPath);
@@ -941,7 +966,6 @@ const replaceDiscoveredPackage = (
     });
   }
 
-  const normalizedRoot = resolve(rootPath);
   const packages = current.catalog.packages.filter(
     (entry) =>
       resolve(entry.path) !== normalizedRoot &&
@@ -1045,19 +1069,24 @@ export const layer = Layer.effect(
       function* (
         transform: (
           current: DiscoveredScriptCatalog,
-        ) => DiscoveredScriptCatalog,
+        ) => DiscoveredScriptCatalog | undefined,
       ) {
         const next = yield* SynchronizedRef.modifyEffect(
           discoveryRef,
           (current) =>
             (current === null ? scan : Effect.succeed(current)).pipe(
               Effect.flatMap((previous) => {
-                const next = transform(previous);
+                const transformed = transform(previous);
                 return (
-                  previous === next
-                    ? Effect.void
-                    : changes.publish({ revision: next.catalog.revision })
-                ).pipe(Effect.as([next, next] as const));
+                  transformed === undefined ? scan : Effect.succeed(transformed)
+                ).pipe(
+                  Effect.flatMap((next) =>
+                    (previous === next
+                      ? Effect.void
+                      : changes.publish({ revision: next.catalog.revision })
+                    ).pipe(Effect.as([next, next] as const)),
+                  ),
+                );
               }),
             ),
         );
