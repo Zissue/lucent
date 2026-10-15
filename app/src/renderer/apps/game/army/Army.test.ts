@@ -1,9 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "@effect/vitest";
+import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Ref from "effect/Ref";
+import * as References from "effect/References";
 import * as TestClock from "effect/testing/TestClock";
 
 import type { ArmySessionPayload } from "@lucent/core/army";
@@ -291,6 +294,57 @@ describe("Army API", () => {
         complete: true,
         label: "map:ultra-1234",
       });
+    }),
+  );
+
+  it.effect("logs each failed equipment action once and keeps its cause", () =>
+    Effect.gen(function* () {
+      const records: {
+        readonly cause: Cause.Cause<unknown>;
+        readonly message: unknown;
+        readonly data: unknown;
+      }[] = [];
+      const logger = Logger.make((options) => {
+        records.push({
+          cause: options.cause,
+          message: options.message,
+          data: options.fiber.getRef(References.CurrentLogAnnotations)["data"],
+        });
+      });
+      const session = makeSession({
+        boss: {
+          default: { armor: "Broken Armor", cape: "Missing Cape" },
+          players: {},
+        },
+      });
+      yield* withArmy(
+        makeApi({
+          inventory: {
+            equip: (item: string) =>
+              item === "Broken Armor"
+                ? Effect.fail("equip failed")
+                : Effect.succeed(false),
+          },
+        }),
+        makeBridge({ start: () => Promise.resolve(session) }).bridge,
+        (army) =>
+          Effect.gen(function* () {
+            yield* army.start("test");
+            yield* army.equipSet("boss");
+          }),
+      ).pipe(Effect.provideService(Logger.CurrentLoggers, new Set([logger])));
+
+      expect(records.map(({ message, data }) => ({ message, data }))).toEqual([
+        {
+          message: ["Army equipSet skipped item"],
+          data: { field: "cape", item: "Missing Cape", setName: "boss" },
+        },
+        {
+          message: ["Army equipSet skipped item"],
+          data: { field: "armor", item: "Broken Armor", setName: "boss" },
+        },
+      ]);
+      expect(records[1]?.cause).toEqual(Cause.fail("equip failed"));
     }),
   );
 

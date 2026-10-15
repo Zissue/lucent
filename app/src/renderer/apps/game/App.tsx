@@ -2593,9 +2593,6 @@ export function App(props: {
         replaceRunning,
         start: false,
       });
-    } catch (error) {
-      console.error("[game:script]", "load failed", error);
-      throw error;
     } finally {
       setScriptBusy(false);
     }
@@ -2626,7 +2623,6 @@ export function App(props: {
       completeScriptTiming(timing, "completed");
     } catch (error) {
       completeScriptTiming(timing, "failed", error);
-      console.error("[game:script]", "catalog selection failed", error);
       throw error;
     } finally {
       setScriptBusy(false);

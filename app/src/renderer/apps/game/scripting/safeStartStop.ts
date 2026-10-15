@@ -44,16 +44,15 @@ const safeMoveRetrySchedule = Schedule.exponential("1 second").pipe(
 
 const warnFailure = (phase: SafeStartStopPhase) =>
   Effect.catchCause((cause: Cause.Cause<unknown>) =>
-    Effect.logWarning({
-      cause,
-      message: `script safeStartStop ${phase}-run safe move failed`,
-    }),
+    Effect.logWarning("script safeStartStop safe move failed", cause).pipe(
+      Effect.annotateLogs({ component: "scripting", data: { phase } }),
+    ),
   );
 
 const abortDisconnected = (phase: SafeStartStopPhase) =>
-  Effect.logInfo({
-    message: `script safeStartStop ${phase}-run aborted; connection is unavailable`,
-  });
+  Effect.logInfo(
+    "script safeStartStop safe move aborted; connection is unavailable",
+  ).pipe(Effect.annotateLogs({ component: "scripting", data: { phase } }));
 
 export const retrySafeMove = <R>(
   attempt: Effect.Effect<SafeMoveAttemptResult, never, R>,
@@ -115,9 +114,11 @@ export const makeMoveToSafeDestination = (services: SafeStartStopServices) => {
 
       const username = (yield* auth.getUsername()).trim();
       if (username === "") {
-        yield* Effect.logWarning({
-          message: `script safeStartStop ${phase}-run skipped; username is unavailable`,
-        });
+        yield* Effect.logWarning(
+          "script safeStartStop safe move skipped; username is unavailable",
+        ).pipe(
+          Effect.annotateLogs({ component: "scripting", data: { phase } }),
+        );
         return;
       }
 
@@ -156,9 +157,11 @@ export const makeMoveToSafeDestination = (services: SafeStartStopServices) => {
         return yield* abortDisconnected(phase);
       }
       if (!alive) {
-        yield* Effect.logInfo({
-          message: `script safeStartStop ${phase}-run waiting for automatic respawn`,
-        });
+        yield* Effect.logInfo(
+          "script safeStartStop safe move waiting for automatic respawn",
+        ).pipe(
+          Effect.annotateLogs({ component: "scripting", data: { phase } }),
+        );
         const respawn = yield* wait.untilSome(
           Effect.all([auth.isLoggedIn(), player.isAlive()]).pipe(
             Effect.map(([loggedIn, alive]) =>
@@ -175,9 +178,11 @@ export const makeMoveToSafeDestination = (services: SafeStartStopServices) => {
           return yield* abortDisconnected(phase);
         }
         if (respawn !== "ready") {
-          yield* Effect.logWarning({
-            message: `script safeStartStop ${phase}-run skipped; automatic respawn timed out`,
-          });
+          yield* Effect.logWarning(
+            "script safeStartStop safe move skipped; automatic respawn timed out",
+          ).pipe(
+            Effect.annotateLogs({ component: "scripting", data: { phase } }),
+          );
           return;
         }
       }
@@ -187,9 +192,11 @@ export const makeMoveToSafeDestination = (services: SafeStartStopServices) => {
         return yield* abortDisconnected(phase);
       }
       if (!exitedCombat) {
-        yield* Effect.logWarning({
-          message: `script safeStartStop ${phase}-run skipped; failed to exit combat`,
-        });
+        yield* Effect.logWarning(
+          "script safeStartStop safe move skipped; failed to exit combat",
+        ).pipe(
+          Effect.annotateLogs({ component: "scripting", data: { phase } }),
+        );
         return;
       }
 
@@ -250,9 +257,14 @@ export const makeMoveToSafeDestination = (services: SafeStartStopServices) => {
         if (result === "aborted") {
           yield* abortDisconnected(phase);
         } else if (result === "timed-out") {
-          yield* Effect.logWarning({
-            message: `script safeStartStop ${phase}-run ${destination.kind} move timed out`,
-          });
+          yield* Effect.logWarning(
+            "script safeStartStop safe move timed out",
+          ).pipe(
+            Effect.annotateLogs({
+              component: "scripting",
+              data: { phase, destination: destination.kind },
+            }),
+          );
         }
       });
 
@@ -270,9 +282,11 @@ export const makeMoveToSafeDestination = (services: SafeStartStopServices) => {
         Schema.Unknown,
       );
       if (Option.isNone(returnInfo) || !(yield* setReturnInfo(null))) {
-        yield* Effect.logWarning({
-          message: `script safeStartStop ${phase}-run skipped; world.returnInfo could not be cleared`,
-        });
+        yield* Effect.logWarning(
+          "script safeStartStop safe move skipped; world.returnInfo could not be cleared",
+        ).pipe(
+          Effect.annotateLogs({ component: "scripting", data: { phase } }),
+        );
         return;
       }
 
