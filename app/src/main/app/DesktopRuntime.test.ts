@@ -327,6 +327,54 @@ afterEach(() => {
 });
 
 describe("makeDesktopRuntime", () => {
+  it.live("guards quit while the desktop layer is still building", () =>
+    Effect.gen(function* () {
+      const building = yield* Deferred.make<void>();
+      let buildCleanedUp = false;
+      const startup = makeStartup({
+        build: Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            buildCleanedUp = true;
+          }),
+        ).pipe(
+          Effect.andThen(Deferred.succeed(building, undefined)),
+          Effect.andThen(Effect.never),
+        ),
+        checkNow: Effect.never,
+        showMessageBox: Effect.never,
+      });
+
+      const events = yield* startup.quitDuringStartup(building);
+
+      expect(events).toEqual(["cleanup", "runtime-settled"]);
+      expect(buildCleanedUp).toBe(true);
+    }),
+  );
+
+  it.live("interrupts a pending workspace initialization on quit", () =>
+    Effect.gen(function* () {
+      const initializing = yield* Deferred.make<void>();
+      let initializeCleanedUp = false;
+      const startup = makeStartup({
+        initialize: Deferred.succeed(initializing, undefined).pipe(
+          Effect.andThen(Effect.never),
+          Effect.ensuring(
+            Effect.sync(() => {
+              initializeCleanedUp = true;
+            }),
+          ),
+        ),
+        checkNow: Effect.never,
+        showMessageBox: Effect.never,
+      });
+
+      const events = yield* startup.quitDuringStartup(initializing);
+
+      expect(events).toEqual(["cleanup", "runtime-settled"]);
+      expect(initializeCleanedUp).toBe(true);
+    }),
+  );
+
   it.live("captures a second launch while the desktop layer builds", () =>
     Effect.gen(function* () {
       const building = yield* Deferred.make<void>();
