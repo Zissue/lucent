@@ -1,5 +1,6 @@
 import type { Event as ElectronEvent, Input } from "electron";
 import type * as Scope from "effect/Scope";
+import type { CloseableRendererLifetime } from "./DesktopWindows";
 
 import {
   MAX_GAME_VIEWS_PER_WINDOW,
@@ -36,7 +37,7 @@ export interface DesktopGameViewRecord {
   gameViewError?: string;
   gameViewName?: string;
   gameViewPhase: GameViewSession["phase"];
-  generation: number;
+  lifetime: CloseableRendererLifetime;
   readonly hostWindow: ElectronNativeWindowHandle;
   readonly kind: "game";
   loggedInUsername?: string;
@@ -44,9 +45,6 @@ export interface DesktopGameViewRecord {
   publishedPresentation?: GameViewPresentation;
   readonly rendererId: number;
   rendererReady: boolean;
-  /** Rejects delayed readiness from a failed generation until navigation advances it. */
-  /** Rejects delayed readiness from a failed generation until navigation advances it. */
-  unavailableGeneration?: number;
 }
 
 export interface DesktopGameHostRecord {

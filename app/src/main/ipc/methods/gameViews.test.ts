@@ -2,6 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
+import { makeLifetime } from "../../window/RendererLifetimeTesting";
 import type { GameViewHostState } from "../../../shared/gameViews";
 import { ElectronDialog } from "../../electron/ElectronDialog";
 import { Accounts } from "../../internal/accounts/Accounts";
@@ -40,7 +41,7 @@ const hostState: GameViewHostState = {
 const sender = {
   kind: "game-host",
   rendererId: 100,
-  isCurrent: () => true,
+  lifetime: makeLifetime(100, 1),
 } as const;
 
 describe("game view lifecycle IPC", () => {
@@ -137,7 +138,7 @@ describe("game view lifecycle IPC", () => {
           .handler(undefined, {
             kind: "game",
             rendererId: 42,
-            isCurrent: () => true,
+            lifetime: makeLifetime(42, 1),
           })
           .pipe(Effect.provide(dependencies));
         expect(
@@ -233,7 +234,7 @@ describe("game view host command IPC", () => {
               {
                 kind: "game-group-controls",
                 rendererId: 101,
-                isCurrent: () => true,
+                lifetime: makeLifetime(101, 1),
               },
             ),
           ),
@@ -294,7 +295,11 @@ describe("game view host command IPC", () => {
         yield* dispatchGroupOptionHotkey
           .handler(
             { commandId: "toggleInfiniteRange" },
-            { kind: "game", rendererId: 42, isCurrent: () => true },
+            {
+              kind: "game",
+              rendererId: 42,
+              lifetime: makeLifetime(42, 1),
+            },
           )
           .pipe(Effect.provide(dependencies)),
       ).toEqual({ recipientCount: 0, skippedCount: 0, status: "sent" });

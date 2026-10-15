@@ -1,6 +1,9 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Scope from "effect/Scope";
+import * as Exit from "effect/Exit";
+import { makeLifetime } from "../window/RendererLifetimeTesting";
 
 import type { DesktopRendererKind } from "../window/DesktopWindowCatalog";
 import { DesktopWindows } from "../window/DesktopWindows";
@@ -12,25 +15,16 @@ import {
 
 const event = { sender: { id: 42 } };
 const makeWindows = (kind: DesktopRendererKind | null) => {
-  const generations = new Map(kind === null ? [] : [[42, 1]]);
+  const lifetimes = new Map(kind === null ? [] : [[42, makeLifetime(42)]]);
   return {
-    generations,
-    describe: (rendererId: number) =>
+    lifetimes,
+    identify: (rendererId: number) =>
       Effect.sync(() => {
-        const generation = generations.get(rendererId);
-        return kind === null || generation === undefined
+        const lifetime = lifetimes.get(rendererId);
+        return kind === null || lifetime === undefined
           ? undefined
-          : {
-              rendererId,
-              kind,
-              windowId: 1,
-              ownerId: undefined,
-              generation,
-              ready: false,
-            };
+          : { rendererId, kind, lifetime };
       }),
-    generationGuard: (rendererId: number, generation: number) =>
-      Effect.succeed(() => generations.get(rendererId) === generation),
   };
 };
 
@@ -44,11 +38,12 @@ describe("DesktopIpcSenders", () => {
 
       expect(sender.rendererId).toBe(42);
       expect(sender.kind).toBe("game");
-      expect(sender.isCurrent()).toBe(true);
+      expect(sender.lifetime.isCurrent()).toBe(true);
 
-      windows.generations.set(42, 2);
+      yield* Scope.close(windows.lifetimes.get(42)!.scope, Exit.void);
+      windows.lifetimes.set(42, makeLifetime(42, 2));
 
-      expect(sender.isCurrent()).toBe(false);
+      expect(sender.lifetime.isCurrent()).toBe(false);
     }),
   );
 

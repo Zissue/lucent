@@ -100,6 +100,17 @@ export type GameViewHostChange =
   | { readonly type: "group-targets"; readonly ids: readonly number[] }
   | { readonly type: "tab-bar-layout" };
 
+export interface RendererLifetime {
+  readonly rendererId: number;
+  readonly generation: number;
+  readonly scope: Scope.Scope;
+  readonly isCurrent: () => boolean;
+}
+
+export interface CloseableRendererLifetime extends RendererLifetime {
+  readonly scope: Scope.Closeable;
+}
+
 export interface DesktopRendererInfo {
   readonly rendererId: number;
   readonly kind: DesktopRendererKind;
@@ -108,6 +119,13 @@ export interface DesktopRendererInfo {
   readonly generation: number;
   readonly ready: boolean;
 }
+
+export type DesktopRendererIdentity = Pick<
+  DesktopRendererInfo,
+  "rendererId" | "kind"
+> & {
+  readonly lifetime: RendererLifetime;
+};
 
 export interface DesktopWindowsShape {
   readonly updateGameViewHost: (
@@ -123,10 +141,12 @@ export interface DesktopWindowsShape {
   ) => Effect.Effect<DesktopRendererInfo | undefined>;
   readonly getVisibleParentWindowId: Effect.Effect<number | undefined>;
   readonly isVisibleParentWindow: (windowId: number) => Effect.Effect<boolean>;
-  readonly generationGuard: (
+  readonly identify: (
     rendererId: number,
-    generation: number,
-  ) => Effect.Effect<() => boolean>;
+  ) => Effect.Effect<DesktopRendererIdentity | undefined>;
+  readonly lifetime: (
+    rendererId: number,
+  ) => Effect.Effect<RendererLifetime | undefined>;
   readonly getOwnedRendererIds: (
     ownerRendererId: number,
     kind?: DesktopWindowKind,
@@ -341,13 +361,11 @@ const createGameViewOptions = (
 interface DesktopBrowserWindowRecord {
   readonly scope: Scope.Closeable;
   readonly rendererId: number;
-  generation: number;
+  lifetime: CloseableRendererLifetime;
   readonly kind: DesktopWindowKind;
   // ownerId is logical ownership only; Electron parent windows are intentionally not used.
   readonly ownerId?: number;
   rendererReady: boolean;
-  /** Rejects delayed readiness from a failed generation until navigation advances it. */
-  unavailableGeneration?: number;
   hidden: boolean;
   loggedInUsername?: string;
   publishedPresentation?: GameViewPresentation;
@@ -358,6 +376,8 @@ type DesktopWindowRecord = DesktopBrowserWindowRecord | DesktopGameViewRecord;
 
 interface DesktopChromeRendererRecord {
   readonly rendererId: number;
+  readonly scope: Scope.Closeable;
+  lifetime: CloseableRendererLifetime;
   readonly kind: "game-host" | "game-group-controls";
   readonly host: DesktopGameHostRecord;
 }
@@ -373,10 +393,10 @@ export interface DesktopWindowCreatedEvent {
 export type DesktopRendererEvent = {
   readonly rendererId: number;
   readonly kind: DesktopRendererKind;
+  readonly generation: number;
 } & (
   | {
       readonly type: "created" | "ready" | "reloaded";
-      readonly generation: number;
     }
   | {
       readonly type: "crashed";
@@ -797,25 +817,48 @@ const makeDesktopWindows = Effect.gen(function* () {
           ? record.host.window.id
           : nativeWindowForRenderer(record).id,
         ownerId: chrome ? undefined : record.ownerId,
-        generation: chrome ? 0 : record.generation,
+        generation: record.lifetime.generation,
         ready: chrome ? false : record.rendererReady,
       };
     });
 
-  const generationGuard: DesktopWindowsShape["generationGuard"] = (
-    rendererId,
-    generation,
-  ) =>
-    Effect.succeed(() => {
+  const identify: DesktopWindowsShape["identify"] = (rendererId) =>
+    Effect.sync(() => {
       const record = renderers.get(rendererId);
-      if (record === undefined) return false;
-      if ("host" in record) return generation === 0;
-      return (
-        record.scope.state._tag !== "Closed" &&
-        record.generation === generation &&
-        record.unavailableGeneration !== generation
-      );
+      return record === undefined
+        ? undefined
+        : {
+            rendererId,
+            kind: record.kind,
+            lifetime: record.lifetime,
+          };
     });
+
+  const lifetime: DesktopWindowsShape["lifetime"] = (rendererId) =>
+    Effect.sync(() => renderers.get(rendererId)?.lifetime);
+
+  const makeLifetime = (
+    rendererId: number,
+    generation: number,
+    parent: Scope.Scope,
+  ) => {
+    const scope = Scope.forkUnsafe(parent);
+    const lifetime: CloseableRendererLifetime = {
+      rendererId,
+      generation,
+      scope,
+      isCurrent: () =>
+        renderers.get(rendererId)?.lifetime === lifetime &&
+        parent.state._tag !== "Closed" &&
+        scope.state._tag !== "Closed",
+    };
+    return lifetime;
+  };
+
+  const endLifetime = (record: DesktopRendererRecord): void => {
+    const cleanup = Scope.closeUnsafe(record.lifetime.scope, Exit.void);
+    if (cleanup !== undefined) run(Effect.uninterruptible(cleanup));
+  };
 
   const getRendererIds: DesktopWindowsShape["getRendererIds"] = (kind) =>
     Effect.sync(() =>
@@ -836,12 +879,12 @@ const makeDesktopWindows = Effect.gen(function* () {
             throw new Error(`Desktop window is not open: ${rendererId}`);
           }
 
-          if (record.generation !== generation) {
+          if (record.lifetime.generation !== generation) {
             throw new Error(
-              `Renderer generation ${generation} is stale; current generation is ${record.generation}.`,
+              `Renderer generation ${generation} is stale; current generation is ${record.lifetime.generation}.`,
             );
           }
-          if (record.unavailableGeneration === generation) {
+          if (!record.lifetime.isCurrent()) {
             throw new Error(
               `Renderer generation ${generation} is unavailable.`,
             );
@@ -862,7 +905,7 @@ const makeDesktopWindows = Effect.gen(function* () {
           return {
             type: "ready",
             rendererId,
-            generation: record.generation,
+            generation: record.lifetime.generation,
             kind: record.kind,
           } satisfies DesktopRendererEvent;
         },
@@ -915,18 +958,25 @@ const makeDesktopWindows = Effect.gen(function* () {
   const publishClosedOnClose = (
     scope: Scope.Scope,
     kind: DesktopWindowKind,
-  ): Effect.Effect<(rendererId: number) => void> => {
-    let rendererId: number | undefined;
+  ): Effect.Effect<(record: DesktopWindowRecord) => void> => {
+    let record: DesktopWindowRecord | undefined;
     return Scope.addFinalizer(
       scope,
       Effect.sync(() => {
-        if (rendererId !== undefined) {
-          run(publish({ type: "closed", rendererId, kind }));
+        if (record !== undefined) {
+          run(
+            publish({
+              type: "closed",
+              rendererId: record.rendererId,
+              generation: record.lifetime.generation,
+              kind,
+            }),
+          );
         }
       }),
     ).pipe(
-      Effect.as((id: number) => {
-        rendererId = id;
+      Effect.as((closed: DesktopWindowRecord) => {
+        record = closed;
       }),
     );
   };
@@ -1056,12 +1106,17 @@ const makeDesktopWindows = Effect.gen(function* () {
   const track = Effect.fn("DesktopWindows.track")(
     function* (
       ...[record, host]:
-        | [record: DesktopBrowserWindowRecord]
+        | [record: DesktopBrowserWindowRecord | DesktopChromeRendererRecord]
         | [record: DesktopGameViewRecord, host: DesktopGameHostRecord]
     ) {
-      const contents = isGameViewRecord(record)
-        ? record.gameView.webContents
-        : record.window.webContents;
+      const contents =
+        "host" in record
+          ? record.kind === "game-host"
+            ? record.host.hostView.webContents
+            : record.host.groupControlsView.webContents
+          : isGameViewRecord(record)
+            ? record.gameView.webContents
+            : record.window.webContents;
       const { rendererId, kind } = record;
       let initialDocumentCommitted = false;
       contents.once("destroyed", () => dispose(record.scope));
@@ -1069,8 +1124,8 @@ const makeDesktopWindows = Effect.gen(function* () {
         contents,
         "render-process-gone",
         (_event: ElectronEvent, details: RenderProcessGoneDetails) => {
-          record.rendererReady = false;
-          record.unavailableGeneration = record.generation;
+          if (!("host" in record)) record.rendererReady = false;
+          endLifetime(record);
           if (host !== undefined) {
             updateGameViewPhase(
               rendererId,
@@ -1083,6 +1138,7 @@ const makeDesktopWindows = Effect.gen(function* () {
               type: "crashed",
               rendererId,
               kind,
+              generation: record.lifetime.generation,
               reason: details.reason,
             }),
           );
@@ -1091,18 +1147,19 @@ const makeDesktopWindows = Effect.gen(function* () {
       const commitDocument = (): void => {
         if (!initialDocumentCommitted) {
           initialDocumentCommitted = true;
-          if (record.unavailableGeneration === undefined) return;
+          if (record.lifetime.isCurrent()) return;
         }
-        record.generation += 1;
-        record.rendererReady = false;
-        delete record.unavailableGeneration;
+        const generation = record.lifetime.generation + 1;
+        endLifetime(record);
+        record.lifetime = makeLifetime(rendererId, generation, record.scope);
+        if (!("host" in record)) record.rendererReady = false;
         if (host !== undefined) updateGameViewPhase(rendererId, "loading");
         run(
           publish({
             type: "reloaded",
             rendererId,
             kind,
-            generation: record.generation,
+            generation: record.lifetime.generation,
           }),
         );
       };
@@ -1120,7 +1177,8 @@ const makeDesktopWindows = Effect.gen(function* () {
           if (isMainFrame) commitDocument();
         },
       );
-      if (host === undefined || !isGameViewRecord(record)) return;
+      if (host === undefined || "host" in record || !isGameViewRecord(record))
+        return;
       yield* listen(
         contents,
         "did-fail-load",
@@ -1212,7 +1270,7 @@ const makeDesktopWindows = Effect.gen(function* () {
         gameView: view,
         ...(gameViewName === undefined ? {} : { gameViewName }),
         gameViewPhase: "preparing",
-        generation: 1,
+        lifetime: makeLifetime(rendererId, 1, scope),
         kind: "game",
         rendererReady: false,
         hostWindow: host.window,
@@ -1221,7 +1279,7 @@ const makeDesktopWindows = Effect.gen(function* () {
       // user-chosen subset.
       const allViewsTargeted = host.groupTargets.size === host.tabs.length;
       renderers.set(rendererId, record);
-      announceClosed(rendererId);
+      announceClosed(record);
       host.tabs.push(record);
       if (allViewsTargeted) {
         host.groupTargets.add(record);
@@ -1381,12 +1439,19 @@ const makeDesktopWindows = Effect.gen(function* () {
     ] as const;
     for (const [kind, view] of chromeViews) {
       const id = view.webContents.id;
-      renderers.set(id, { rendererId: id, kind, host });
+      const record: DesktopChromeRendererRecord = {
+        rendererId: id,
+        kind,
+        host,
+        scope,
+        lifetime: makeLifetime(id, 0, scope),
+      };
+      renderers.set(id, record);
+      yield* track(record);
       yield* Scope.addFinalizer(
         scope,
         Effect.sync(() => renderers.delete(id)),
       );
-      view.webContents.once("destroyed", () => dispose(scope));
     }
     yield* listen(
       hostWebContents,
@@ -1872,7 +1937,7 @@ const makeDesktopWindows = Effect.gen(function* () {
         const rendererId = webContents.id;
         const record: DesktopBrowserWindowRecord = {
           rendererId,
-          generation: 1,
+          lifetime: makeLifetime(rendererId, 1, scope),
           kind,
           scope,
           ...(ownerId === undefined ? {} : { ownerId }),
@@ -1881,7 +1946,7 @@ const makeDesktopWindows = Effect.gen(function* () {
           window,
         };
         renderers.set(rendererId, record);
-        announceClosed(rendererId);
+        announceClosed(record);
         yield* Scope.addFinalizer(
           scope,
           Effect.sync(() => renderers.delete(rendererId)),
@@ -2092,9 +2157,10 @@ const makeDesktopWindows = Effect.gen(function* () {
     closeGameView,
     getRendererIds,
     describe,
+    identify,
+    lifetime,
     getVisibleParentWindowId,
     isVisibleParentWindow,
-    generationGuard,
     getGameViewHostState,
     getGameViewPresentation,
     getOwnedRendererIds,

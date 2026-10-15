@@ -5,13 +5,12 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
 import type { DesktopRendererKind } from "../window/DesktopWindowCatalog";
-import { DesktopWindows } from "../window/DesktopWindows";
+import {
+  DesktopWindows,
+  type DesktopRendererIdentity,
+} from "../window/DesktopWindows";
 
-export interface DesktopIpcSender {
-  readonly rendererId: number;
-  readonly kind: DesktopRendererKind;
-  readonly isCurrent: () => boolean;
-}
+export type DesktopIpcSender = DesktopRendererIdentity;
 
 export type DesktopIpcSenderKinds = readonly [
   DesktopRendererKind,
@@ -42,25 +41,21 @@ export class DesktopIpcSenders extends Context.Service<
 >()("lucent/desktop/ipc/DesktopIpcSenders") {}
 
 export const makeDesktopIpcSenders = (
-  windows: Pick<DesktopWindows["Service"], "describe" | "generationGuard">,
+  windows: Pick<DesktopWindows["Service"], "identify">,
 ): DesktopIpcSenders["Service"] => {
   const requireSender = Effect.fn("DesktopIpcSenders.require")(function* (
     event: { readonly sender: Pick<WebContents, "id"> },
     allowedKinds: DesktopIpcSenderKinds,
   ) {
     const rendererId = event.sender.id;
-    const info = yield* windows.describe(rendererId);
-    if (info === undefined || !allowedKinds.includes(info.kind)) {
+    const identity = yield* windows.identify(rendererId);
+    if (identity === undefined || !allowedKinds.includes(identity.kind)) {
       return yield* new DesktopIpcSenderError({
         detail: `IPC sender must be one of: ${allowedKinds.join(", ")}`,
       });
     }
 
-    return {
-      rendererId,
-      kind: info.kind,
-      isCurrent: yield* windows.generationGuard(rendererId, info.generation),
-    };
+    return identity;
   });
 
   return DesktopIpcSenders.of({

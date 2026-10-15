@@ -5,6 +5,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
 
+import { makeLifetime } from "../window/RendererLifetimeTesting";
 import { defineEvent, defineInvoke } from "../../shared/ipc";
 import {
   DesktopIpcRegistrationError,
@@ -45,7 +46,7 @@ const senders = DesktopIpcSenders.of({
       return {
         rendererId: 42,
         kind: "game" as const,
-        isCurrent: () => true,
+        lifetime: makeLifetime(42, 1),
       };
     }),
 } satisfies DesktopIpcSendersShape);

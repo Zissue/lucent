@@ -10,11 +10,17 @@ import {
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
+import * as FiberSet from "effect/FiberSet";
 import * as Scope from "effect/Scope";
 
 import { Accounts } from "../internal/accounts/Accounts";
 import { ElectronDialog } from "../electron/ElectronDialog";
-import { DesktopWindows } from "../window/DesktopWindows";
+import {
+  DesktopWindows,
+  type RendererLifetime,
+} from "../window/DesktopWindows";
 import { logFailure } from "../../shared/logFailure";
 
 const RECOVERY_MESSAGE =
@@ -24,15 +30,16 @@ const CLIENT_RELOAD_DETAIL =
   "Only that client will reload. Any running script will stop and won't run automatically.";
 
 interface RecoverableGameCrash {
-  readonly generation: number;
   readonly reason: RenderProcessGoneDetails["reason"];
   readonly scriptWasRunning: boolean;
 }
 
 interface RecoveryAttempt {
   readonly target: RecoverableGameWebContents;
-  readonly generation: number;
+  readonly lifetime: RendererLifetime;
   readonly parentWindowId: number;
+  readonly scope: Scope.Closeable;
+  readonly kind: "unresponsive" | "crashed";
 }
 
 const isRecoverableRendererCrash = (
@@ -58,6 +65,8 @@ export type RecoverableGameWebContents = Pick<
 export interface DesktopGameRendererRecoveryDependencies {
   readonly allWebContents: () => readonly RecoverableGameWebContents[];
   readonly describe: DesktopWindows["Service"]["describe"];
+  readonly lifetime: DesktopWindows["Service"]["lifetime"];
+  readonly observe: DesktopWindows["Service"]["observe"];
   readonly onWebContentsCreated: (
     listener: (contents: RecoverableGameWebContents) => void,
   ) => () => void;
@@ -82,9 +91,11 @@ export interface DesktopGameRendererRecoveryDependencies {
 }
 
 export interface DesktopGameRendererRecoveryShape {
-  readonly beginScriptExecution: (rendererId: number) => Effect.Effect<number>;
+  readonly beginScriptExecution: (
+    lifetime: RendererLifetime,
+  ) => Effect.Effect<number>;
   readonly finishScriptExecution: (
-    rendererId: number,
+    lifetime: RendererLifetime,
     token: number,
   ) => Effect.Effect<void>;
   readonly install: Effect.Effect<void, never, Scope.Scope>;
@@ -117,32 +128,24 @@ export const makeDesktopGameRendererRecovery = (
   dependencies: DesktopGameRendererRecoveryDependencies,
 ): DesktopGameRendererRecovery["Service"] => {
   const attempts = new Map<number, RecoveryAttempt>();
-  const executions = new Map<number, Set<number>>();
-  const intentionalRendererCrashes = new Set<number>();
+  const executions = new WeakMap<RendererLifetime, Set<number>>();
+  const intentionalRendererCrashes = new WeakSet<RendererLifetime>();
   const observedContents = new Map<number, () => void>();
-  const recoverableCrashes = new Map<number, RecoverableGameCrash>();
-  const unresponsiveRenderers = new Set<number>();
+  const unresponsiveLifetimes = new WeakSet<RendererLifetime>();
   let appIsQuitting = false;
   let nextToken = 0;
 
-  const hasActiveExecution = (rendererId: number): boolean =>
-    (executions.get(rendererId)?.size ?? 0) > 0;
-
-  const clearRenderer = (rendererId: number): void => {
-    attempts.delete(rendererId);
-    executions.delete(rendererId);
-    recoverableCrashes.delete(rendererId);
-    unresponsiveRenderers.delete(rendererId);
-  };
+  const hasActiveExecution = (lifetime: RendererLifetime): boolean =>
+    (executions.get(lifetime)?.size ?? 0) > 0;
 
   const isCurrent = (attempt: RecoveryAttempt): Effect.Effect<boolean> =>
     Effect.map(
-      dependencies.describe(attempt.target.id),
-      (info) =>
+      dependencies.lifetime(attempt.target.id),
+      (lifetime) =>
         !appIsQuitting &&
         !attempt.target.isDestroyed() &&
         attempts.get(attempt.target.id) === attempt &&
-        info?.generation === attempt.generation,
+        lifetime === attempt.lifetime,
     );
 
   const canRecoverUnresponsive = (
@@ -152,27 +155,30 @@ export const makeDesktopGameRendererRecovery = (
       isCurrent(attempt),
       (current) =>
         current &&
-        unresponsiveRenderers.has(attempt.target.id) &&
-        hasActiveExecution(attempt.target.id) &&
+        attempt.lifetime.isCurrent() &&
+        unresponsiveLifetimes.has(attempt.lifetime) &&
+        hasActiveExecution(attempt.lifetime) &&
         isExclusiveRendererProcess(attempt.target, dependencies.allWebContents),
     );
 
   const beginScriptExecution: DesktopGameRendererRecoveryShape["beginScriptExecution"] =
-    (rendererId) =>
+    (lifetime) =>
       Effect.sync(() => {
         nextToken += 1;
-        const active = executions.get(rendererId) ?? new Set<number>();
-        active.add(nextToken);
-        executions.set(rendererId, active);
+        if (lifetime.isCurrent()) {
+          const active = executions.get(lifetime) ?? new Set<number>();
+          active.add(nextToken);
+          executions.set(lifetime, active);
+        }
         return nextToken;
       });
 
   const finishScriptExecution: DesktopGameRendererRecoveryShape["finishScriptExecution"] =
-    (rendererId, token) =>
+    (lifetime, token) =>
       Effect.sync(() => {
-        const active = executions.get(rendererId);
+        const active = executions.get(lifetime);
         active?.delete(token);
-        if (active?.size === 0) executions.delete(rendererId);
+        if (active?.size === 0) executions.delete(lifetime);
       });
 
   const offerUnresponsiveRecovery = (attempt: RecoveryAttempt) =>
@@ -205,8 +211,9 @@ export const makeDesktopGameRendererRecovery = (
           ),
         );
       if (!(yield* canRecoverUnresponsive(attempt))) return;
-      clearRenderer(rendererId);
-      intentionalRendererCrashes.add(rendererId);
+      executions.delete(attempt.lifetime);
+      unresponsiveLifetimes.delete(attempt.lifetime);
+      intentionalRendererCrashes.add(attempt.lifetime);
       target.forcefullyCrashRenderer();
       // Electron documents this immediate reload sequence for recovering an
       // unresponsive renderer after the process has been forcefully ended.
@@ -248,155 +255,182 @@ export const makeDesktopGameRendererRecovery = (
           );
         if (!(yield* isCurrent(attempt))) return;
       }
-      clearRenderer(rendererId);
+      executions.delete(attempt.lifetime);
       target.reload();
       yield* dependencies.info("Recovered a crashed game renderer", {
         reason: crash.reason,
         rendererId,
       });
-    }).pipe(
-      Effect.ensuring(
-        Effect.sync(() => {
-          if (recoverableCrashes.get(attempt.target.id) === crash) {
-            recoverableCrashes.delete(attempt.target.id);
-          }
-        }),
-      ),
-    );
-
-  const install = Effect.gen(function* () {
-    const context = yield* Effect.context<never>();
-    const runPromise = Effect.runPromiseWith(context);
-    const unsubscribeBeforeQuit = dependencies.onBeforeQuit(() => {
-      appIsQuitting = true;
     });
 
+  const install = Effect.gen(function* () {
+    const scope = yield* Effect.scope;
+    const runFork = yield* FiberSet.makeRuntime<never, void>();
+    const run = (effect: Effect.Effect<void>): void => {
+      runFork(effect);
+    };
+    const stopAttempt = (rendererId: number, generation?: number) =>
+      Effect.suspend(() => {
+        const attempt = attempts.get(rendererId);
+        return attempt === undefined ||
+          (generation !== undefined && attempt.lifetime.generation > generation)
+          ? Effect.void
+          : Scope.close(attempt.scope, Exit.void);
+      });
+
+    const startAttempt = Effect.fnUntraced(function* (
+      target: RecoverableGameWebContents,
+      lifetime: RendererLifetime,
+      crash?: RecoverableGameCrash,
+    ) {
+      const info = yield* dependencies.describe(target.id);
+      if (
+        appIsQuitting ||
+        target.isDestroyed() ||
+        info?.kind !== "game" ||
+        (yield* dependencies.lifetime(target.id)) !== lifetime ||
+        (crash === undefined && !lifetime.isCurrent())
+      )
+        return;
+      const pending = attempts.get(target.id);
+      if (
+        pending?.lifetime === lifetime &&
+        (crash === undefined || pending.kind === "crashed")
+      )
+        return;
+      yield* stopAttempt(target.id);
+      if (
+        (yield* dependencies.lifetime(target.id)) !== lifetime ||
+        appIsQuitting ||
+        (crash === undefined && !lifetime.isCurrent()) ||
+        (attempts.get(target.id) !== pending &&
+          attempts.get(target.id)?.lifetime === lifetime)
+      )
+        return;
+      const attempt: RecoveryAttempt = {
+        target,
+        lifetime,
+        parentWindowId: info.windowId,
+        scope: yield* Scope.fork(crash === undefined ? lifetime.scope : scope),
+        kind: crash === undefined ? "unresponsive" : "crashed",
+      };
+      attempts.set(target.id, attempt);
+      const recovery =
+        crash === undefined
+          ? offerUnresponsiveRecovery(attempt)
+          : offerCrashRecovery(attempt, crash);
+      const fiber = yield* recovery.pipe(
+        Effect.catchCause((cause) =>
+          Cause.hasInterrupts(cause)
+            ? Effect.void
+            : dependencies.error("Failed to offer renderer recovery", cause, {
+                rendererId: target.id,
+              }),
+        ),
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (attempts.get(target.id) === attempt) attempts.delete(target.id);
+          }),
+        ),
+        Effect.forkIn(attempt.scope),
+      );
+      yield* Fiber.join(fiber).pipe(
+        Effect.uninterruptible,
+        Effect.ensuring(Scope.close(attempt.scope, Exit.void)),
+      );
+    });
+
+    yield* dependencies.observe({ kind: "game" }, (event) =>
+      Effect.gen(function* () {
+        if (event.type === "reloaded") {
+          yield* stopAttempt(event.rendererId, event.generation - 1);
+        } else if (event.type === "closed") {
+          yield* stopAttempt(event.rendererId, event.generation);
+        } else if (event.type === "crashed") {
+          const lifetime = yield* dependencies.lifetime(event.rendererId);
+          if (
+            lifetime === undefined ||
+            lifetime.generation !== event.generation
+          )
+            return;
+          // Unresponsive recovery deliberately kills the renderer before
+          // reloading it, so that event must not open another recovery prompt.
+          if (
+            intentionalRendererCrashes.delete(lifetime) ||
+            appIsQuitting ||
+            !isRecoverableRendererCrash(event.reason)
+          )
+            return;
+          const target = dependencies
+            .allWebContents()
+            .find((contents) => contents.id === event.rendererId);
+          if (target === undefined) return;
+          run(
+            startAttempt(target, lifetime, {
+              reason: event.reason,
+              scriptWasRunning: hasActiveExecution(lifetime),
+            }),
+          );
+        }
+      }),
+    );
+
+    const unsubscribeBeforeQuit = dependencies.onBeforeQuit(() => {
+      appIsQuitting = true;
+      for (const rendererId of attempts.keys()) run(stopAttempt(rendererId));
+    });
     const observe = (contents: RecoverableGameWebContents): void => {
       if (observedContents.has(contents.id)) return;
-
-      const startAttempt = (
-        failure: string,
-        offer: (
-          attempt: RecoveryAttempt,
-        ) => Effect.Effect<void, unknown> | undefined,
-      ): void => {
-        void runPromise(
+      const handleResponsive = (): void =>
+        run(
           Effect.gen(function* () {
-            const info = yield* dependencies.describe(contents.id);
+            const lifetime = yield* dependencies.lifetime(contents.id);
+            if (lifetime !== undefined) unresponsiveLifetimes.delete(lifetime);
+          }),
+        );
+      const handleUnresponsive = (): void =>
+        run(
+          Effect.gen(function* () {
+            const lifetime = yield* dependencies.lifetime(contents.id);
             if (
               appIsQuitting ||
-              contents.isDestroyed() ||
-              info?.kind !== "game" ||
-              attempts.get(contents.id)?.generation === info.generation
-            ) {
+              lifetime === undefined ||
+              !lifetime.isCurrent()
+            )
               return;
-            }
-            const attempt: RecoveryAttempt = {
-              target: contents,
-              generation: info.generation,
-              parentWindowId: info.windowId,
-            };
-            const recovery = offer(attempt);
-            if (recovery === undefined) return;
-            attempts.set(contents.id, attempt);
-            yield* recovery.pipe(
-              Effect.catchCause((cause) =>
-                dependencies.error(failure, cause, { rendererId: contents.id }),
-              ),
-              Effect.ensuring(
-                Effect.sync(() => {
-                  if (attempts.get(contents.id) === attempt) {
-                    attempts.delete(contents.id);
-                  }
-                }),
-              ),
-            );
-            startCrashRecovery();
+            unresponsiveLifetimes.add(lifetime);
+            if (hasActiveExecution(lifetime))
+              run(startAttempt(contents, lifetime));
           }),
-        ).catch(() => undefined);
-      };
-      const startCrashRecovery = (): void => {
-        if (!recoverableCrashes.has(contents.id)) return;
-        startAttempt("Failed to offer renderer crash recovery", (attempt) => {
-          const crash = recoverableCrashes.get(contents.id);
-          return crash?.generation === attempt.generation
-            ? offerCrashRecovery(attempt, crash)
-            : undefined;
-        });
-      };
-      const handleResponsive = (): void => {
-        unresponsiveRenderers.delete(contents.id);
-      };
-      const handleUnresponsive = (): void => {
-        if (appIsQuitting) return;
-        unresponsiveRenderers.add(contents.id);
-        if (!hasActiveExecution(contents.id)) return;
-        startAttempt(
-          "Failed to offer game renderer recovery",
-          offerUnresponsiveRecovery,
         );
-      };
-      const handleRenderProcessGone = (
-        _event: ElectronEvent,
-        details: RenderProcessGoneDetails,
-      ): void => {
-        // Unresponsive recovery deliberately kills the renderer before
-        // reloading it, so that event must not open another recovery prompt.
-        if (intentionalRendererCrashes.delete(contents.id)) return;
-        if (appIsQuitting || !isRecoverableRendererCrash(details.reason)) {
-          return;
-        }
-
-        const scriptWasRunning = hasActiveExecution(contents.id);
-        void runPromise(
-          Effect.map(dependencies.describe(contents.id), (info) => {
-            if (info?.kind !== "game") return;
-            if (
-              recoverableCrashes.get(contents.id)?.generation !==
-              info.generation
-            ) {
-              recoverableCrashes.set(contents.id, {
-                generation: info.generation,
-                reason: details.reason,
-                scriptWasRunning,
-              });
-            }
-            startCrashRecovery();
-          }),
-        ).catch(() => undefined);
-      };
-      const handleDidStartLoading = (): void => {
-        clearRenderer(contents.id);
-      };
-      let cleanedUp = false;
       const cleanup = (): void => {
-        if (cleanedUp) return;
-        cleanedUp = true;
-        clearRenderer(contents.id);
-        intentionalRendererCrashes.delete(contents.id);
         contents.removeListener("responsive", handleResponsive);
         contents.removeListener("unresponsive", handleUnresponsive);
-        contents.removeListener("render-process-gone", handleRenderProcessGone);
-        contents.removeListener("did-start-loading", handleDidStartLoading);
-        contents.removeListener("destroyed", cleanup);
+        contents.removeListener("destroyed", handleDestroyed);
         observedContents.delete(contents.id);
       };
-
+      const handleDestroyed = (): void => {
+        cleanup();
+        run(stopAttempt(contents.id));
+      };
       contents.on("responsive", handleResponsive);
       contents.on("unresponsive", handleUnresponsive);
-      contents.on("render-process-gone", handleRenderProcessGone);
-      contents.on("did-start-loading", handleDidStartLoading);
-      contents.once("destroyed", cleanup);
+      contents.once("destroyed", handleDestroyed);
       observedContents.set(contents.id, cleanup);
     };
-
     for (const contents of dependencies.allWebContents()) observe(contents);
     const unsubscribeCreated = dependencies.onWebContentsCreated(observe);
     yield* Effect.addFinalizer(() =>
-      Effect.sync(() => {
+      Effect.gen(function* () {
+        appIsQuitting = true;
         unsubscribeBeforeQuit();
         unsubscribeCreated();
         for (const cleanup of observedContents.values()) cleanup();
+        yield* Effect.forEach(
+          [...attempts.values()],
+          (attempt) => Scope.close(attempt.scope, Exit.void),
+          { discard: true },
+        );
       }),
     );
   });
@@ -416,6 +450,8 @@ const makeLiveDesktopGameRendererRecovery = Effect.gen(function* () {
   return makeDesktopGameRendererRecovery({
     allWebContents: () => webContents.getAllWebContents(),
     describe: windows.describe,
+    lifetime: windows.lifetime,
+    observe: windows.observe,
     onWebContentsCreated: (listener) => {
       const handleCreated = (
         _event: ElectronEvent,

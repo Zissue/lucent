@@ -4,7 +4,9 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
-import type * as Scope from "effect/Scope";
+import * as Scope from "effect/Scope";
+import * as Exit from "effect/Exit";
+import { makeLifetime } from "../../window/RendererLifetimeTesting";
 
 import type { ArmyConfigPayload } from "@lucent/core/army";
 import { ArmyIpc } from "../../../shared/ipc";
@@ -35,35 +37,30 @@ const soloConfig: ArmyConfigPayload = {
 };
 
 const makeGameWindows = () => {
-  const generations = new Map<
-    number,
-    { generation: number; unavailableGeneration?: number }
-  >([[rendererId, { generation: 1 }]]);
+  const lifetimes = new Map([[rendererId, makeLifetime(rendererId)]]);
   const events = makeListenerRegistry<DesktopRendererEvent>();
   const describe: DesktopWindows["Service"]["describe"] = (id) =>
     Effect.sync(() => {
-      const record = generations.get(id);
-      return record === undefined
+      const lifetime = lifetimes.get(id);
+      return lifetime === undefined
         ? undefined
         : {
             rendererId: id,
             kind: "game",
             windowId: id,
             ownerId: undefined,
-            generation: record.generation,
+            generation: lifetime.generation,
             ready: true,
           };
     });
-  const generationGuard: DesktopWindows["Service"]["generationGuard"] = (
-    id,
-    generation,
-  ) =>
-    Effect.succeed(() => {
-      const record = generations.get(id);
-      return (
-        record?.generation === generation &&
-        record.unavailableGeneration !== generation
-      );
+  const lifetime: DesktopWindows["Service"]["lifetime"] = (id) =>
+    Effect.sync(() => lifetimes.get(id));
+  const identify: DesktopWindows["Service"]["identify"] = (id) =>
+    Effect.sync(() => {
+      const lifetime = lifetimes.get(id);
+      return lifetime === undefined
+        ? undefined
+        : { rendererId: id, kind: "game", lifetime };
     });
   const observe: DesktopWindows["Service"]["observe"] = (filter, listener) =>
     Effect.acquireRelease(
@@ -75,30 +72,42 @@ const makeGameWindows = () => {
       (unsubscribe) => Effect.sync(unsubscribe),
     ).pipe(Effect.asVoid);
   const end = (lifecycle: "closed" | "reloaded" | "crashed") =>
-    Effect.suspend(() => {
+    Effect.gen(function* () {
+      const current = lifetimes.get(rendererId)!;
+      yield* Scope.close(current.scope, Exit.void);
+      const generation = current.generation;
       if (lifecycle === "closed") {
-        generations.delete(rendererId);
-        return events.publish(
-          { type: "closed", rendererId, kind: "game" },
+        lifetimes.delete(rendererId);
+        yield* events.publish(
+          { type: "closed", rendererId, kind: "game", generation },
+          "unbounded",
+        );
+      } else if (lifecycle === "crashed") {
+        yield* events.publish(
+          {
+            type: "crashed",
+            rendererId,
+            kind: "game",
+            generation,
+            reason: "crashed",
+          },
+          "unbounded",
+        );
+      } else {
+        const next = makeLifetime(rendererId, generation + 1);
+        lifetimes.set(rendererId, next);
+        yield* events.publish(
+          {
+            type: "reloaded",
+            rendererId,
+            kind: "game",
+            generation: next.generation,
+          },
           "unbounded",
         );
       }
-      const record = generations.get(rendererId)!;
-      if (lifecycle === "crashed") {
-        record.unavailableGeneration = record.generation;
-        return events.publish(
-          { type: "crashed", rendererId, kind: "game", reason: "crashed" },
-          "unbounded",
-        );
-      }
-      const generation = record.generation + 1;
-      generations.set(rendererId, { generation });
-      return events.publish(
-        { type: "reloaded", rendererId, kind: "game", generation },
-        "unbounded",
-      );
     });
-  return { describe, end, generationGuard, observe };
+  return { describe, end, identify, lifetime, observe };
 };
 
 const runStartIpc = <A, E>(
@@ -140,7 +149,8 @@ const runStartIpc = <A, E>(
         Layer.succeed(DesktopIpc, ipc),
         Layer.mock(DesktopWindows, {
           describe: windows.describe,
-          generationGuard: windows.generationGuard,
+          lifetime: windows.lifetime,
+          identify: windows.identify,
           observe: windows.observe,
         }),
         Layer.succeed(DesktopIpcSenders, makeDesktopIpcSenders(windows)),
