@@ -1592,9 +1592,13 @@ const storeRun = (
   run: RunState,
 ): OrchestratorState => {
   const activeRunBySession = new Map(state.activeRunBySession);
+  const runs = new Map(state.runs).set(run.runId, run);
   if (run.status === "terminal") {
     if (activeRunBySession.get(run.sessionId) === run.runId) {
       activeRunBySession.delete(run.sessionId);
+    }
+    if (run.participants.size === 0) {
+      runs.delete(run.runId);
     }
   } else {
     activeRunBySession.set(run.sessionId, run.runId);
@@ -1602,7 +1606,7 @@ const storeRun = (
   return {
     ...state,
     activeRunBySession,
-    runs: new Map(state.runs).set(run.runId, run),
+    runs,
   };
 };
 
@@ -2135,17 +2139,18 @@ export const makeArmyLoopTauntOrchestrator = (): Effect.Effect<
             stateRef,
             (state): readonly [MutationEffects, OrchestratorState] => {
               const run = state.runs.get(outcome.result.runId);
-              if (
-                run === undefined ||
-                run.status === "terminal" ||
-                !run.participants.has(senderId)
-              ) {
+              if (run === undefined || !run.participants.has(senderId)) {
                 return [noEffects(), state];
               }
-              const mutation = terminalize(run, {
-                reason: "Army session ended during Loop Taunt registration",
-                status: "failed",
-              });
+              const participants = new Map(run.participants);
+              participants.delete(senderId);
+              const mutation = terminalize(
+                { ...run, participants },
+                {
+                  reason: "Army session ended during Loop Taunt registration",
+                  status: "failed",
+                },
+              );
               return [mutation, storeRun(state, mutation.run)];
             },
           );
@@ -2233,7 +2238,6 @@ export const makeArmyLoopTauntOrchestrator = (): Effect.Effect<
             if (
               run === undefined ||
               run.sessionId !== payload.sessionId ||
-              run.status === "terminal" ||
               !run.participants.has(senderId)
             ) {
               return [noEffects(), state];
@@ -2243,6 +2247,9 @@ export const makeArmyLoopTauntOrchestrator = (): Effect.Effect<
             participants.delete(senderId);
             let updated: RunState = { ...run, participants };
 
+            if (run.status === "terminal") {
+              return [noEffects(), storeRun(state, updated)];
+            }
             if (run.status === "collecting") {
               const reason =
                 payload.reason?.trim() ||

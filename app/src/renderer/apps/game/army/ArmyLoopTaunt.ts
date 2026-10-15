@@ -451,12 +451,17 @@ export const makeArmyLoopTauntRuntime = (
 
           const run = Effect.scoped(
             Effect.gen(function* () {
-              const runScope = yield* Effect.scope;
-              const startup = yield* Deferred.make<
-                LoopTauntRun,
-                ArmyLoopTauntError
-              >();
               const mapExited = yield* Deferred.make<void>();
+              const mapArmed = yield* Deferred.make<void>();
+              const mapChangedDuringStartup = Deferred.await(mapExited).pipe(
+                Effect.andThen(
+                  Effect.fail(
+                    new ArmyLoopTauntError(
+                      "The map changed while Loop Taunt was starting",
+                    ),
+                  ),
+                ),
+              );
 
               const setup = Effect.gen(function* () {
                 const mapIdentity: ArmyLoopTauntMapIdentity = yield* Effect.all(
@@ -589,15 +594,7 @@ export const makeArmyLoopTauntRuntime = (
                   () => bridge.loopTauntReady(loopRun),
                 );
                 const startupInterrupted = Effect.raceFirst(
-                  Deferred.await(mapExited).pipe(
-                    Effect.flatMap(() =>
-                      Effect.fail(
-                        new ArmyLoopTauntError(
-                          "The map changed while Loop Taunt was starting",
-                        ),
-                      ),
-                    ),
-                  ),
+                  mapChangedDuringStartup,
                   Effect.raceFirst(
                     Deferred.await(stopRequested).pipe(
                       Effect.flatMap((reason) =>
@@ -1300,50 +1297,29 @@ export const makeArmyLoopTauntRuntime = (
 
               // Arm map exit before setup so a transition during target
               // resolution or registration cannot expose a stale run handle.
-              const mapWatcher = api.events
+              yield* api.events
                 .once(
                   { type: "join-map" },
                   {
-                    trigger: setup.pipe(
-                      Effect.matchCauseEffect({
-                        onFailure: (cause) =>
-                          Deferred.failCause(startup, cause).pipe(
-                            Effect.asVoid,
-                          ),
-                        onSuccess: (loopRun) =>
-                          Deferred.succeed(startup, loopRun).pipe(
-                            Effect.asVoid,
-                          ),
-                      }),
-                      Effect.forkIn(runScope, {
-                        startImmediately: true,
-                      }),
+                    trigger: Deferred.succeed(mapArmed, undefined).pipe(
                       Effect.as(true),
                     ),
                   },
                 )
                 .pipe(
-                  Effect.matchCauseEffect({
-                    onFailure: (cause) =>
-                      Deferred.failCause(startup, cause).pipe(Effect.asVoid),
-                    onSuccess: () =>
-                      Deferred.succeed(mapExited, undefined).pipe(
-                        Effect.asVoid,
-                      ),
-                  }),
+                  Effect.asVoid,
+                  Deferred.into(mapExited),
                   Effect.forkScoped,
                 );
-              yield* mapWatcher;
+              yield* Deferred.await(mapArmed).pipe(
+                Effect.raceFirst(mapChangedDuringStartup),
+              );
 
-              const loopRun = yield* Deferred.await(startup);
+              const loopRun = yield* setup;
               // Let an exit published with startup win before exposing the run.
               yield* Effect.yieldNow;
               if (yield* Deferred.isDone(mapExited)) {
-                return yield* Effect.fail(
-                  new ArmyLoopTauntError(
-                    "The map changed while Loop Taunt was starting",
-                  ),
-                );
+                return yield* mapChangedDuringStartup;
               }
 
               yield* Ref.set(startedRef, true);
@@ -1360,7 +1336,9 @@ export const makeArmyLoopTauntRuntime = (
                 ),
               );
               yield* Effect.raceFirst(
-                Deferred.await(mapExited),
+                Deferred.await(mapExited).pipe(
+                  Effect.catchCause(() => Effect.never),
+                ),
                 Effect.raceFirst(
                   Deferred.await(stopRequested),
                   Effect.raceFirst(Deferred.await(ended), terminal),

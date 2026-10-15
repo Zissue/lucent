@@ -1,7 +1,8 @@
-import { randomBytes } from "crypto";
 import { promises as fs } from "fs";
 import { basename, dirname, join, resolve } from "path";
+import { isDeepStrictEqual } from "util";
 
+import type * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -26,7 +27,9 @@ import {
 } from "./GitHubScriptPackageClient";
 import {
   inspectScriptPackageDirectory,
+  integrityFor,
   ScriptPackageCatalog,
+  type ScriptPackageCatalogReplacement,
 } from "./ScriptPackageCatalog";
 import { hashDirectory } from "./ScriptPackageFileSystem";
 import {
@@ -70,18 +73,6 @@ export class ScriptPackageManagerError extends Schema.TaggedError<ScriptPackageM
     operation: packageManagerOperationSchema,
     detail: Schema.String,
     cause: Schema.optionalKey(Schema.Defect()),
-  },
-) {
-  override get message(): string {
-    return this.detail;
-  }
-}
-
-class PackageDirectoryReplacementError extends Schema.TaggedError<PackageDirectoryReplacementError>()(
-  "PackageDirectoryReplacementError",
-  {
-    detail: Schema.String,
-    cause: Schema.Defect(),
   },
 ) {
   override get message(): string {
@@ -133,6 +124,12 @@ interface ResolvedInstallSource extends ResolvedPackageRevision {
   readonly commit: string;
 }
 
+interface ManagedPackageUpdate {
+  readonly installed: ManagedScriptPackage;
+  readonly source: ResolvedInstallSource;
+  readonly replaceModified: boolean;
+}
+
 const installedRevision = (
   managed: ManagedScriptPackage,
 ): ScriptPackageRevision =>
@@ -175,6 +172,17 @@ const managerError = (
     detail,
     ...(cause === undefined ? {} : { cause }),
   });
+
+const localModifications = (
+  packageName: string,
+): ScriptPackageMutationResult => ({
+  status: "confirmation-required",
+  packageName,
+  reason: "local-modifications",
+});
+
+const movePath = (from: string, to: string) =>
+  Effect.tryPromise(() => fs.rename(from, to));
 
 const archivePath = (rawPath: string): readonly string[] => {
   if (
@@ -459,14 +467,26 @@ export const layer = Layer.effect(
 
     const replacePackage = Effect.fn("ScriptPackageManager.replacePackage")(
       function* (
-        stagingPath: string,
-        destination: string,
-        managed: ManagedScriptPackage,
-        temporaryRoot: string,
-      ) {
-        const backupPath = join(
-          temporaryRoot,
-          `previous-${randomBytes(8).toString("hex")}`,
+        replacement: ScriptPackageCatalogReplacement,
+        expected?: ManagedScriptPackage,
+      ): Effect.fn.Return<
+        ScriptPackageMutationResult,
+        ScriptPackageManagerError
+      > {
+        const {
+          managed,
+          rootPath: destination,
+          sourceRoot: staging,
+        } = replacement;
+        const publish = catalog.replacePackage(replacement).pipe(
+          Effect.mapError(mapCatalogError),
+          Effect.map(
+            (nextCatalog): ScriptPackageMutationResult => ({
+              status: "completed",
+              catalog: nextCatalog,
+              packageName: managed.name,
+            }),
+          ),
         );
         const destinationExists = yield* Effect.tryPromise({
           try: () => pathExists(destination),
@@ -478,82 +498,161 @@ export const layer = Layer.effect(
             ),
         });
         yield* Effect.tryPromise({
-          try: async () => {
-            await fs.mkdir(dirname(destination), { recursive: true });
-            if (destinationExists) await fs.rename(destination, backupPath);
-            try {
-              await fs.rename(stagingPath, destination);
-            } catch (replacementCause) {
-              if (destinationExists && (await pathExists(backupPath))) {
-                try {
-                  await fs.rename(backupPath, destination);
-                } catch (restoreCause) {
-                  throw new PackageDirectoryReplacementError({
-                    detail:
-                      "Failed to replace the package directory and could not restore the previous package.",
-                    cause: { replacementCause, restoreCause },
-                  });
-                }
-              }
-              throw new PackageDirectoryReplacementError({
-                detail:
-                  "Failed to replace the package directory; the previous package was restored.",
-                cause: replacementCause,
-              });
-            }
-          },
+          try: () => fs.mkdir(dirname(destination), { recursive: true }),
           catch: (cause) =>
             managerError(
               "replace",
-              cause instanceof PackageDirectoryReplacementError
-                ? cause.detail
-                : "Failed to replace the package directory.",
+              "Failed to replace the package directory.",
               cause,
             ),
         });
 
-        yield* state.save(managed).pipe(
-          Effect.mapError((cause) =>
+        if (!destinationExists) {
+          yield* movePath(staging, destination).pipe(
+            Effect.mapError(({ cause }) =>
+              managerError(
+                "replace",
+                "Failed to replace the package directory.",
+                cause,
+              ),
+            ),
+          );
+          yield* state.save(managed).pipe(
+            Effect.catch((cause) =>
+              movePath(destination, staging).pipe(
+                Effect.matchEffect({
+                  onFailure: ({ cause: undoCause }) =>
+                    Effect.fail(
+                      managerError(
+                        "replace",
+                        `Failed to save package installation state. The new package was left at ${destination}.`,
+                        { cause, undoCause },
+                      ),
+                    ),
+                  onSuccess: () =>
+                    Effect.fail(
+                      managerError(
+                        "replace",
+                        "Failed to save package installation state.",
+                        cause,
+                      ),
+                    ),
+                }),
+              ),
+            ),
+          );
+          return yield* publish;
+        }
+
+        const backupRoot = yield* Effect.tryPromise({
+          try: () =>
+            fs.mkdtemp(join(env.workspaceDir, ".lucent-package-backup-")),
+          catch: (cause) =>
             managerError(
               "replace",
-              "Failed to save package installation state.",
+              "Failed to prepare the package backup.",
               cause,
             ),
-          ),
-          Effect.catch((error) =>
-            Effect.tryPromise({
-              try: async () => {
-                if (await pathExists(destination)) {
-                  await fs.rename(destination, stagingPath);
-                }
-                if (destinationExists && (await pathExists(backupPath))) {
-                  await fs.rename(backupPath, destination);
-                }
-              },
-              catch: (cause) =>
-                managerError(
-                  "replace",
-                  "Package state failed and the previous package could not be restored.",
-                  cause,
-                ),
-            }).pipe(Effect.flatMap(() => error)),
+        });
+        const backup = join(backupRoot, basename(destination));
+        const discardBackup = Effect.tryPromise(() =>
+          fs.rm(backupRoot, { recursive: true, force: true }),
+        ).pipe(Effect.ignore);
+        const removeEmptyBackup = Effect.tryPromise(() =>
+          fs.rmdir(backupRoot),
+        ).pipe(Effect.ignore);
+        const failReplacement = Effect.fnUntraced(function* (
+          cause: unknown,
+          restoredDetail: string,
+          unrestoredDetail = restoredDetail,
+        ): Effect.fn.Return<never, ScriptPackageManagerError> {
+          const backupExists = yield* Effect.tryPromise(() =>
+            pathExists(backup),
+          ).pipe(Effect.orElseSucceed(() => true));
+          if (!backupExists) yield* removeEmptyBackup;
+          return yield* managerError(
+            "replace",
+            backupExists
+              ? `${unrestoredDetail} The previous package is saved at ${backup}.`
+              : restoredDetail,
+            cause,
+          );
+        });
+        const rollBack = (
+          undo: Effect.Effect<void, Cause.UnknownError>,
+          cause: unknown,
+          restoredDetail: string,
+          unrestoredDetail: string,
+        ) =>
+          undo.pipe(
+            Effect.match({
+              onFailure: ({ cause: restoreCause }) => ({
+                cause,
+                restoreCause,
+              }),
+              onSuccess: () => cause,
+            }),
+            Effect.flatMap((failureCause) =>
+              failReplacement(failureCause, restoredDetail, unrestoredDetail),
+            ),
+          );
+
+        yield* movePath(destination, backup).pipe(
+          Effect.catch(({ cause }) =>
+            failReplacement(cause, "Failed to replace the package directory."),
           ),
         );
-        if (destinationExists) {
-          yield* Effect.tryPromise({
-            try: () => fs.rm(backupPath, { recursive: true }),
-            catch: (cause) =>
-              managerError("replace", "Failed to clean package backup.", cause),
-          }).pipe(Effect.catch(() => Effect.void));
+        if (
+          expected !== undefined &&
+          (yield* Effect.promise(() => integrityFor(backup, expected))) !==
+            "verified"
+        ) {
+          yield* movePath(backup, destination).pipe(
+            Effect.catch(({ cause }) =>
+              failReplacement(
+                cause,
+                "Failed to restore the locally modified package.",
+              ),
+            ),
+          );
+          yield* removeEmptyBackup;
+          yield* catalog.refresh.pipe(Effect.mapError(mapCatalogError));
+          return localModifications(expected.name);
         }
+        yield* movePath(staging, destination).pipe(
+          Effect.catch(({ cause }) =>
+            rollBack(
+              movePath(backup, destination),
+              cause,
+              "Failed to replace the package directory; the previous package was restored.",
+              "Failed to replace the package directory and could not restore the previous package.",
+            ),
+          ),
+        );
+        yield* state
+          .save(managed)
+          .pipe(
+            Effect.catch((cause) =>
+              rollBack(
+                movePath(destination, staging).pipe(
+                  Effect.andThen(movePath(backup, destination)),
+                ),
+                cause,
+                "Failed to save package installation state.",
+                "Package state failed and the previous package could not be restored.",
+              ),
+            ),
+          );
+        yield* discardBackup;
+        return yield* publish;
       },
+      Effect.uninterruptible,
     );
 
     const installInternal = Effect.fn("ScriptPackageManager.installInternal")(
       function* (
         input: Parameters<ScriptPackageManagerShape["install"]>[0],
-        expectedPackage?: ManagedScriptPackage,
-        knownSource?: ResolvedInstallSource,
+        update?: ManagedPackageUpdate,
       ) {
         const repository = yield* Effect.try({
           try: () => normalizeGitHubRepositoryUrl(input.repositoryUrl),
@@ -577,7 +676,7 @@ export const layer = Layer.effect(
                   ),
               });
         const resolvedSource: ResolvedInstallSource =
-          knownSource ??
+          update?.source ??
           (yield* Effect.gen(function* () {
             const commit = yield* client
               .resolveCommit({
@@ -701,12 +800,12 @@ export const layer = Layer.effect(
               });
               const packageName = inspected.manifest.name;
               if (
-                expectedPackage !== undefined &&
-                packageName !== expectedPackage.name
+                update !== undefined &&
+                packageName !== update.installed.name
               ) {
                 return yield* managerError(
                   "update",
-                  `The update declares package ${JSON.stringify(packageName)} instead of ${JSON.stringify(expectedPackage.name)}.`,
+                  `The update declares package ${JSON.stringify(packageName)} instead of ${JSON.stringify(update.installed.name)}.`,
                 );
               }
 
@@ -730,7 +829,7 @@ export const layer = Layer.effect(
               }
               const matchingPackage = matchingPackages[0];
               const savedPackage =
-                expectedPackage ?? (yield* state.get(packageName));
+                update?.installed ?? (yield* state.get(packageName));
               const reservedDirectories = new Set(
                 (yield* state.getAll).map((entry) => entry.directory),
               );
@@ -843,25 +942,17 @@ export const layer = Layer.effect(
                   ? {}
                   : { etag: resolvedSource.etag }),
               };
-              yield* replacePackage(
-                staging,
-                destination,
-                managed,
-                temporaryRoot,
-              );
-              const nextCatalog = yield* catalog
-                .replacePackage({
+              return yield* replacePackage(
+                {
                   inspected,
                   managed,
                   rootPath: destination,
                   sourceRoot: staging,
-                })
-                .pipe(Effect.mapError(mapCatalogError));
-              return {
-                status: "completed",
-                catalog: nextCatalog,
-                packageName,
-              } satisfies ScriptPackageMutationResult;
+                },
+                update !== undefined && !update.replaceModified
+                  ? update.installed
+                  : undefined,
+              );
             }),
           () =>
             Effect.tryPromise({
@@ -937,26 +1028,21 @@ export const layer = Layer.effect(
                 ),
               ),
             );
-          if (
-            summary.integrity !== "verified" &&
-            input.replaceModified !== true
-          ) {
-            yield* catalog
-              .updateManagedPackage(observed)
-              .pipe(Effect.mapError(mapCatalogError));
-            return {
-              status: "confirmation-required",
-              packageName: input.packageName,
-              reason: "local-modifications",
-            } satisfies ScriptPackageMutationResult;
+          const integrity = yield* Effect.promise(() =>
+            integrityFor(savedRoot, managed),
+          );
+          const nextCatalog = yield* (
+            integrity === summary.integrity
+              ? catalog.updateManagedPackage(observed)
+              : catalog.refresh
+          ).pipe(Effect.mapError(mapCatalogError));
+          if (integrity !== "verified" && input.replaceModified !== true) {
+            return localModifications(input.packageName);
           }
           if (
-            summary.integrity === "verified" &&
+            integrity === "verified" &&
             revisionsMatch(resolution.revision, installedRevision(managed))
           ) {
-            const nextCatalog = yield* catalog
-              .updateManagedPackage(observed)
-              .pipe(Effect.mapError(mapCatalogError));
             return {
               status: "unchanged",
               catalog: nextCatalog,
@@ -977,8 +1063,11 @@ export const layer = Layer.effect(
                 ? {}
                 : { subdirectory: managed.source.subdirectory }),
             },
-            managed,
-            resolution,
+            {
+              installed: managed,
+              source: resolution,
+              replaceModified: input.replaceModified === true,
+            },
           );
         }),
       );
@@ -1005,17 +1094,6 @@ export const layer = Layer.effect(
               `Package ${JSON.stringify(input.packageName)} is not installed.`,
             );
           }
-          if (
-            summary.integrity !== "verified" &&
-            input.confirmModified !== true
-          ) {
-            return {
-              status: "confirmation-required",
-              packageName: input.packageName,
-              reason: "local-modifications",
-            } satisfies ScriptPackageMutationResult;
-          }
-
           const managed = yield* state.get(input.packageName);
           const directory = yield* Effect.try({
             try: () =>
@@ -1035,6 +1113,9 @@ export const layer = Layer.effect(
               `Package ${JSON.stringify(input.packageName)} is not in its saved folder.`,
             );
           }
+          if (input.confirmModified !== true && managed === undefined) {
+            return localModifications(input.packageName);
+          }
           const temporaryRoot = yield* Effect.tryPromise({
             try: () =>
               fs.mkdtemp(join(env.workspaceDir, ".lucent-package-remove-")),
@@ -1046,44 +1127,75 @@ export const layer = Layer.effect(
               ),
           });
           const removedPath = join(temporaryRoot, basename(root));
-          yield* Effect.tryPromise({
-            try: () => fs.rename(root, removedPath),
-            catch: (cause) =>
-              managerError(
-                "remove",
-                "Failed to stage the package for removal.",
-                cause,
-              ),
-          });
-          yield* state.remove(input.packageName).pipe(
-            Effect.mapError((cause) =>
-              managerError("remove", "Failed to update package state.", cause),
-            ),
-            Effect.catch((error) =>
-              Effect.tryPromise({
+          return yield* Effect.gen(function* () {
+            yield* Effect.tryPromise({
+              try: () => fs.rename(root, removedPath),
+              catch: (cause) =>
+                managerError(
+                  "remove",
+                  "Failed to stage the package for removal.",
+                  cause,
+                ),
+            });
+            if (
+              input.confirmModified !== true &&
+              (yield* Effect.promise(() =>
+                integrityFor(removedPath, managed),
+              )) !== "verified"
+            ) {
+              yield* Effect.tryPromise({
                 try: () => fs.rename(removedPath, root),
                 catch: (cause) =>
                   managerError(
                     "remove",
-                    "Package state failed and the package could not be restored.",
+                    `Failed to restore the locally modified package. The package is saved at ${removedPath}.`,
                     cause,
                   ),
-              }).pipe(Effect.flatMap(() => error)),
-            ),
-          );
-          yield* Effect.tryPromise({
-            try: () => fs.rm(temporaryRoot, { recursive: true }),
-            catch: (cause) =>
-              managerError("remove", "Failed to clean removal staging.", cause),
-          }).pipe(Effect.catch(() => Effect.void));
-          const nextCatalog = yield* catalog
-            .removePackage(input.packageName)
-            .pipe(Effect.mapError(mapCatalogError));
-          return {
-            status: "completed",
-            catalog: nextCatalog,
-            packageName: input.packageName,
-          } satisfies ScriptPackageMutationResult;
+              });
+              yield* Effect.tryPromise(() => fs.rmdir(temporaryRoot)).pipe(
+                Effect.ignore,
+              );
+              yield* catalog.refresh.pipe(Effect.mapError(mapCatalogError));
+              return localModifications(input.packageName);
+            }
+            yield* state.remove(input.packageName).pipe(
+              Effect.mapError((cause) =>
+                managerError(
+                  "remove",
+                  "Failed to update package state.",
+                  cause,
+                ),
+              ),
+              Effect.catch((error) =>
+                Effect.tryPromise({
+                  try: () => fs.rename(removedPath, root),
+                  catch: (cause) =>
+                    managerError(
+                      "remove",
+                      "Package state failed and the package could not be restored.",
+                      cause,
+                    ),
+                }).pipe(Effect.flatMap(() => error)),
+              ),
+            );
+            yield* Effect.tryPromise({
+              try: () => fs.rm(temporaryRoot, { recursive: true }),
+              catch: (cause) =>
+                managerError(
+                  "remove",
+                  "Failed to clean removal staging.",
+                  cause,
+                ),
+            }).pipe(Effect.catch(() => Effect.void));
+            const nextCatalog = yield* catalog
+              .removePackage(input.packageName)
+              .pipe(Effect.mapError(mapCatalogError));
+            return {
+              status: "completed",
+              catalog: nextCatalog,
+              packageName: input.packageName,
+            } satisfies ScriptPackageMutationResult;
+          }).pipe(Effect.uninterruptible);
         }),
       );
 
@@ -1131,20 +1243,30 @@ export const layer = Layer.effect(
                           : { checkedAt: lastSuccessfulCheckAt }),
                       },
               };
-        yield* state
-          .save(next)
-          .pipe(
-            Effect.mapError((cause) =>
-              managerError(
-                "check-update",
-                "Failed to save update state.",
-                cause,
-              ),
-            ),
-          );
-        return yield* catalog
-          .updateManagedPackage(next)
-          .pipe(Effect.mapError(mapCatalogError));
+        return yield* mutationGate.withPermits(1)(
+          Effect.gen(function* () {
+            const current = yield* state.get(input.packageName);
+            if (current === undefined || !isDeepStrictEqual(current, managed)) {
+              return yield* catalog.getOverview.pipe(
+                Effect.mapError(mapCatalogError),
+              );
+            }
+            yield* state
+              .save(next)
+              .pipe(
+                Effect.mapError((cause) =>
+                  managerError(
+                    "check-update",
+                    "Failed to save update state.",
+                    cause,
+                  ),
+                ),
+              );
+            return yield* catalog
+              .updateManagedPackage(next)
+              .pipe(Effect.mapError(mapCatalogError));
+          }),
+        );
       });
 
     return ScriptPackageManager.of({

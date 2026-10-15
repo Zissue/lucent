@@ -425,7 +425,7 @@ const hashesMatch = (
   );
 };
 
-const integrityFor = async (
+export const integrityFor = async (
   rootPath: string,
   managed: ManagedScriptPackage | undefined,
 ): Promise<"modified" | "unmanaged" | "verified"> => {
