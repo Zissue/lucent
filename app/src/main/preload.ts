@@ -537,7 +537,7 @@ const bridges = {
       finishScriptExecution: (token) =>
         invoke(GameRendererIpc.finishScriptExecution, { token }),
       getGeneration: () => invoke(GameRendererIpc.getGeneration, undefined),
-      ready: (generation) => invoke(GameRendererIpc.ready, { generation }),
+      ready: () => invoke(GameRendererIpc.ready, undefined),
     },
     gameView: gameViewBridge,
     packets: gamePacketsBridge,

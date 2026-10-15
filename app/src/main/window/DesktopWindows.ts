@@ -152,8 +152,7 @@ export interface DesktopWindowsShape {
     kind?: DesktopWindowKind,
   ) => Effect.Effect<readonly number[], DesktopWindowError>;
   readonly markRendererReady: (
-    rendererId: number,
-    generation: number,
+    lifetime: RendererLifetime,
   ) => Effect.Effect<void, DesktopWindowError>;
   readonly addGameView: (
     hostRendererId: number,
@@ -868,10 +867,10 @@ const makeDesktopWindows = Effect.gen(function* () {
     );
 
   const markRendererReady: DesktopWindowsShape["markRendererReady"] = (
-    rendererId,
-    generation,
+    lifetime,
   ) =>
     Effect.gen(function* () {
+      const { rendererId, generation } = lifetime;
       const readyEvent = yield* Effect.try({
         try: () => {
           const record = getWindowRenderer(rendererId);
@@ -879,12 +878,12 @@ const makeDesktopWindows = Effect.gen(function* () {
             throw new Error(`Desktop window is not open: ${rendererId}`);
           }
 
-          if (record.lifetime.generation !== generation) {
+          if (record.lifetime !== lifetime) {
             throw new Error(
               `Renderer generation ${generation} is stale; current generation is ${record.lifetime.generation}.`,
             );
           }
-          if (!record.lifetime.isCurrent()) {
+          if (!lifetime.isCurrent()) {
             throw new Error(
               `Renderer generation ${generation} is unavailable.`,
             );

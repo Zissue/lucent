@@ -9,9 +9,9 @@ export const ready = makeDesktopIpcMethod({
   descriptor: GameRendererIpc.ready,
   allowedSenders: ["game"],
   handler: Effect.fn("desktop.ipc.gameRenderer.ready")(
-    function* (payload, sender) {
+    function* (_payload, sender) {
       const windows = yield* DesktopWindows;
-      yield* windows.markRendererReady(sender.rendererId, payload.generation);
+      yield* windows.markRendererReady(sender.lifetime);
     },
   ),
 });

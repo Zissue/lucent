@@ -297,8 +297,7 @@ export interface DesktopGameRendererBridge {
   readonly finishScriptExecution: (token: number) => Promise<void>;
   /** Reads the generation assigned to this game document. */
   readonly getGeneration: () => Promise<number>;
-  /** Marks the current game renderer generation ready to receive commands. */
-  readonly ready: (generation: number) => Promise<void>;
+  readonly ready: () => Promise<void>;
 }
 
 export type DesktopFileSystemResult<A> =
