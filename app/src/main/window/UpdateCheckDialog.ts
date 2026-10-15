@@ -15,7 +15,7 @@ interface UpdateCheckDialogPresentation {
 interface ShowUpdateCheckDialogOptions {
   readonly mode: "automatic" | "manual";
   readonly parentWindowId?: number;
-  readonly isQuitting: Effect.Effect<boolean>;
+  readonly dismissedWithoutAnswer: Effect.Effect<boolean>;
   readonly dialog: Pick<ElectronDialogShape, "showMessageBox">;
   readonly updates: Pick<
     DesktopUpdatesShape,
@@ -112,7 +112,7 @@ export const showUpdateCheckDialog = Effect.fn("showUpdateCheckDialog")(
       presentation.options,
       options.parentWindowId,
     );
-    if (yield* options.isQuitting) {
+    if (yield* options.dismissedWithoutAnswer) {
       return;
     }
     if (

@@ -25,7 +25,7 @@ describe("showUpdateCheckDialog", () => {
         const options = {
           mode: "automatic" as const,
           parentWindowId: 42,
-          isQuitting: Effect.sync(() => isQuitting),
+          dismissedWithoutAnswer: Effect.sync(() => isQuitting),
           dialog: {
             showMessageBox: () =>
               Effect.sync(() => {

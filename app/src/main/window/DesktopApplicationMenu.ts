@@ -183,7 +183,7 @@ const makeDesktopApplicationMenu = Effect.gen(function* () {
         Effect.flatMap((state) =>
           showUpdateCheckDialog(state, {
             mode: "manual",
-            isQuitting: lifecycle.isQuitting,
+            dismissedWithoutAnswer: lifecycle.isQuitting,
             dialog,
             updates,
           }),
