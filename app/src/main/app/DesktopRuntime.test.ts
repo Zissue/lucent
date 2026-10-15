@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -339,6 +340,75 @@ describe("makeDesktopRuntime", () => {
         const events = yield* startup.quitDuringStartup(startup.dialogFailed);
         expect(startup.dialogParents).toEqual([42]);
         expect(events).toEqual(["dialog-failed", "cleanup", "runtime-settled"]);
+      }),
+  );
+
+  it.live("does not skip an update when its sheet parent starts closing", () =>
+    Effect.gen(function* () {
+      const parent = new EventEmitter();
+      let parentWindowId: number | undefined = 42;
+      parent.on("close", () => {
+        parentWindowId = undefined;
+      });
+      const answered = yield* Deferred.make<void>();
+      const startup = makeStartup({
+        checkNow: Effect.succeed(availableUpdate),
+        parentWindowId: Effect.sync(() => parentWindowId),
+        showMessageBox: Effect.sync(() => {
+          parent.emit("close");
+          return { response: 1, checkboxChecked: false };
+        }).pipe(Effect.tap(() => Deferred.succeed(answered, undefined))),
+      });
+
+      const events = yield* startup.quitDuringStartup(answered);
+
+      expect(startup.dialogParents).toEqual([42]);
+      expect(events).toEqual(["cleanup", "runtime-settled"]);
+    }),
+  );
+
+  it.live(
+    "does not skip the update when its sheet parent closes and another window remains",
+    () =>
+      Effect.gen(function* () {
+        const parent = new EventEmitter();
+        let parentWindowId = 42;
+        parent.on("close", () => {
+          parentWindowId = 84;
+        });
+        const answered = yield* Deferred.make<void>();
+        const startup = makeStartup({
+          checkNow: Effect.succeed(availableUpdate),
+          parentWindowId: Effect.sync(() => parentWindowId),
+          showMessageBox: Effect.sync(() => {
+            parent.emit("close");
+            return { response: 1, checkboxChecked: false };
+          }).pipe(Effect.tap(() => Deferred.succeed(answered, undefined))),
+        });
+
+        const events = yield* startup.quitDuringStartup(answered);
+
+        expect(startup.dialogParents).toEqual([42]);
+        expect(events).toEqual(["cleanup", "runtime-settled"]);
+      }),
+  );
+
+  it.live(
+    "skips the update when its visible sheet parent receives a cancel response",
+    () =>
+      Effect.gen(function* () {
+        const answered = yield* Deferred.make<void>();
+        const startup = makeStartup({
+          checkNow: Effect.succeed(availableUpdate),
+          showMessageBox: Deferred.succeed(answered, undefined).pipe(
+            Effect.as({ response: 1, checkboxChecked: false }),
+          ),
+        });
+
+        const events = yield* startup.quitDuringStartup(answered);
+
+        expect(startup.dialogParents).toEqual([42]);
+        expect(events).toEqual(["skip:1.1.0", "cleanup", "runtime-settled"]);
       }),
   );
 
