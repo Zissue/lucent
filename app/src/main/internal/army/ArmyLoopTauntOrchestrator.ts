@@ -92,6 +92,8 @@ export const makeArmyLoopTauntOrchestrator = (): Effect.Effect<
     const scope = yield* Effect.scope;
     const commandEvents = makeListenerRegistry<ArmyLoopTauntCommandEvent>();
 
+    // State mutations publish effects after the coordinator commits. A newer
+    // report or teardown can stale an effect before it crosses IPC.
     const currentCommand = (
       event: ArmyLoopTauntCommandEvent,
     ): Effect.Effect<ArmyLoopTauntCommandEvent | undefined> =>
