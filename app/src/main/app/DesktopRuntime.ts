@@ -1,9 +1,10 @@
 import * as Effect from "effect/Effect";
+import * as Queue from "effect/Queue";
 import type * as Layer from "effect/Layer";
 
 import { createAppearanceSnapshot } from "@lucent/core/appearance";
-import type { AppSettings } from "@lucent/core/settings";
-import type { CliOptions } from "../cli";
+import type { AppLaunchMode, AppSettings } from "@lucent/core/settings";
+import { parseCliOptions, type CliOptions } from "../cli";
 import { installDesktopDevRendererReload } from "./DesktopDevRendererReload";
 import { DesktopGameRendererRecovery } from "./DesktopGameRendererRecovery";
 import { DesktopEnvironment } from "./DesktopEnvironment";
@@ -98,68 +99,101 @@ export const makeDesktopRuntime = <ROut, E>(
   layer: Layer.Layer<ROut, E>,
 ) =>
   Effect.gen(function* () {
-    const lifecycle = yield* DesktopLifecycle;
-    const observability = yield* DesktopObservability;
-    yield* observability.installProcessHooks;
-    yield* lifecycle.register;
+    const app = yield* ElectronApp;
+    const pendingLaunches = yield* Effect.acquireRelease(
+      Queue.unbounded<CliOptions>(),
+      Queue.shutdown,
+    );
+    const disposeSecondInstance = yield* app.on(
+      "second-instance",
+      (_, argv) => {
+        Queue.offerUnsafe(pendingLaunches, parseCliOptions(argv));
+      },
+    );
+    yield* Effect.addFinalizer(() => Effect.sync(disposeSecondInstance));
 
     yield* Effect.gen(function* () {
-      const app = yield* ElectronApp;
-      const applicationMenu = yield* DesktopApplicationMenu;
-      const env = yield* DesktopEnvironment;
-      const gameRendererRecovery = yield* DesktopGameRendererRecovery;
-      const settingsService = yield* DesktopSettings;
-      const scriptWorkspace = yield* ScriptWorkspace;
-      const windows = yield* DesktopWindows;
+      const lifecycle = yield* DesktopLifecycle;
+      const observability = yield* DesktopObservability;
+      yield* observability.installProcessHooks;
+      yield* lifecycle.register;
 
-      if (env.debug === true) {
-        yield* installDesktopRendererObservability;
-      }
-      yield* Effect.logInfo("Lucent desktop runtime starting").pipe(
-        Effect.annotateLogs({
-          component: "startup",
-          data: {
-            appDataDir: env.appDataDir,
-            logFilePath: observability.logFilePath,
-            workspaceDir: env.workspaceDir,
-          },
+      yield* Effect.gen(function* () {
+        const app = yield* ElectronApp;
+        const applicationMenu = yield* DesktopApplicationMenu;
+        const env = yield* DesktopEnvironment;
+        const gameRendererRecovery = yield* DesktopGameRendererRecovery;
+        const settingsService = yield* DesktopSettings;
+        const scriptWorkspace = yield* ScriptWorkspace;
+        const windows = yield* DesktopWindows;
+        const openLaunchWindow = (launchMode: AppLaunchMode) =>
+          windows.open(
+            launchMode === "account-manager" ? "account-manager" : "game",
+          );
+
+        if (env.debug === true) {
+          yield* installDesktopRendererObservability;
+        }
+        yield* Effect.logInfo("Lucent desktop runtime starting").pipe(
+          Effect.annotateLogs({
+            component: "startup",
+            data: {
+              appDataDir: env.appDataDir,
+              logFilePath: observability.logFilePath,
+              workspaceDir: env.workspaceDir,
+            },
+          }),
+        );
+
+        const settings = yield* settingsService.load;
+
+        yield* app.whenReady;
+        yield* gameRendererRecovery.install;
+        yield* scriptWorkspace.initialize;
+        yield* initializeBundledScriptPackages;
+        yield* installDesktopNativeAppearanceSync(settings);
+        yield* installDesktopIpcHandlers();
+        yield* applicationMenu.install;
+
+        const requestedLaunchMode =
+          cliOptions.launchMode ?? settings.preferences.launchMode;
+        yield* openLaunchWindow(requestedLaunchMode);
+        yield* installDesktopDevRendererReload;
+        yield* Effect.forever(
+          Effect.gen(function* () {
+            const options = yield* Queue.take(pendingLaunches);
+            const launchMode =
+              options.launchMode ??
+              (yield* settingsService.get).preferences.launchMode;
+            yield* openLaunchWindow(launchMode);
+          }).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning(
+                "Failed to open second-instance window",
+                cause,
+              ).pipe(Effect.annotateLogs({ component: "startup" })),
+            ),
+          ),
+        ).pipe(Effect.forkScoped);
+
+        if (settings.preferences.checkForUpdates) {
+          yield* Effect.raceFirst(
+            lifecycle.awaitQuit,
+            checkForUpdatesAtStartup(),
+          );
+        }
+
+        yield* lifecycle.awaitQuit;
+      }).pipe(Effect.scoped);
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.gen(function* () {
+          yield* Effect.logError("Lucent desktop runtime failed", cause).pipe(
+            Effect.annotateLogs({ component: "startup" }),
+          );
+          return yield* Effect.failCause(cause);
         }),
-      );
-
-      const settings = yield* settingsService.load;
-
-      yield* app.whenReady;
-      yield* gameRendererRecovery.install;
-      yield* scriptWorkspace.initialize;
-      yield* initializeBundledScriptPackages;
-      yield* installDesktopNativeAppearanceSync(settings);
-      yield* installDesktopIpcHandlers();
-      yield* applicationMenu.install;
-
-      const requestedLaunchMode =
-        cliOptions.launchMode ?? settings.preferences.launchMode;
-      yield* windows.open(
-        requestedLaunchMode === "account-manager" ? "account-manager" : "game",
-      );
-      yield* installDesktopDevRendererReload;
-
-      if (settings.preferences.checkForUpdates) {
-        yield* Effect.raceFirst(
-          lifecycle.awaitQuit,
-          checkForUpdatesAtStartup(),
-        );
-      }
-
-      yield* lifecycle.awaitQuit;
-    }).pipe(Effect.scoped);
-  }).pipe(
-    Effect.catchCause((cause) =>
-      Effect.gen(function* () {
-        yield* Effect.logError("Lucent desktop runtime failed", cause).pipe(
-          Effect.annotateLogs({ component: "startup" }),
-        );
-        return yield* Effect.failCause(cause);
-      }),
-    ),
-    provideInsideQuitGuard(layer),
-  );
+      ),
+      provideInsideQuitGuard(layer),
+    );
+  }).pipe(Effect.scoped);

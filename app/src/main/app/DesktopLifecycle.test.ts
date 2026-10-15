@@ -1,3 +1,5 @@
+import { EventEmitter } from "node:events";
+
 import { afterEach, describe, expect, it } from "@effect/vitest";
 import { vi } from "vitest";
 import * as Deferred from "effect/Deferred";
@@ -33,8 +35,7 @@ const makeSignal = () => {
 const makeHarness = (flushCompletes: boolean) => {
   const events: string[] = [];
   const exited = makeSignal();
-  const willQuitListeners = new Set<(event: ElectronWillQuitEvent) => void>();
-  const beforeQuitListeners = new Set<() => void>();
+  const appEvents = new EventEmitter();
   const flushStarted = Effect.sync(() => {
     events.push("flush");
   });
@@ -56,20 +57,9 @@ const makeHarness = (flushCompletes: boolean) => {
     getVersion: Effect.succeed("1.0.0"),
     on: (eventName, listener) =>
       Effect.sync(() => {
-        if (eventName === "before-quit") {
-          const beforeQuit = () =>
-            listener({ preventDefault: () => undefined });
-          beforeQuitListeners.add(beforeQuit);
-          return () => {
-            beforeQuitListeners.delete(beforeQuit);
-          };
-        }
-        if (eventName !== "will-quit") {
-          return () => undefined;
-        }
-        willQuitListeners.add(listener);
+        appEvents.on(eventName, listener);
         return () => {
-          willQuitListeners.delete(listener);
+          appEvents.removeListener(eventName, listener);
         };
       }),
     quit: Effect.void,
@@ -95,16 +85,14 @@ const makeHarness = (flushCompletes: boolean) => {
         defaultPrevented = true;
       },
     };
-    for (const listener of willQuitListeners) {
-      listener(event);
-    }
+    appEvents.emit("will-quit", event);
     if (!defaultPrevented) {
       events.push("electron-terminated");
     }
   };
 
   const emitBeforeQuit = () => {
-    for (const listener of beforeQuitListeners) listener();
+    appEvents.emit("before-quit");
   };
 
   return {
