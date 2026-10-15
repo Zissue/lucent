@@ -23,6 +23,7 @@ const makeHarness = (options: { readonly holdSuppression?: boolean } = {}) =>
     const events = new EventEmitter();
     const timeline: string[] = [];
     const answers: Deferred.Deferred<number>[] = [];
+    const signals: AbortSignal[] = [];
     const suppressions: Deferred.Deferred<void>[] = [];
     let generation = 1;
     let processShared = false;
@@ -50,7 +51,10 @@ const makeHarness = (options: { readonly holdSuppression?: boolean } = {}) =>
         const answer = yield* Deferred.make<number>();
         timeline.push(`${title} prompt for generation ${generation}`);
         answers.push(answer);
-        return yield* Deferred.await(answer);
+        return yield* Effect.promise((signal) => {
+          signals.push(signal);
+          return Effect.runPromise(Deferred.await(answer));
+        });
       });
 
     const recovery = makeDesktopGameRendererRecovery({
@@ -92,6 +96,7 @@ const makeHarness = (options: { readonly holdSuppression?: boolean } = {}) =>
 
     return {
       timeline,
+      signals,
       answer: (index: number, response: number) =>
         Deferred.succeed(answers[index]!, response).pipe(
           Effect.andThen(settle),
@@ -337,34 +342,24 @@ describe("makeDesktopGameRendererRecovery", () => {
       }),
   );
 
-  it.effect(
-    "does not act on a dialog superseded by a same-document navigation",
-    () =>
-      Effect.gen(function* () {
-        const harness = yield* makeHarness();
-        yield* harness.startScript;
-        yield* harness.hang;
-        yield* harness.navigateSameDocument;
-        yield* harness.startScript;
-        yield* harness.hang;
-
-        yield* harness.answer(0, RELOAD);
-
-        expect(harness.timeline).toEqual([
-          "unresponsive prompt for generation 1",
-          "unresponsive prompt for generation 1",
-        ]);
-
-        yield* harness.answer(1, RELOAD);
-
-        expect(harness.timeline).toEqual([
-          "unresponsive prompt for generation 1",
-          "unresponsive prompt for generation 1",
-          "suppress",
-          "crash generation 1",
-          "reload generation 1",
-        ]);
-      }),
+  it.effect("keeps the same prompt through same-document loading", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      yield* harness.startScript;
+      yield* harness.hang;
+      yield* harness.navigateSameDocument;
+      yield* harness.hang;
+      expect(harness.timeline).toEqual([
+        "unresponsive prompt for generation 1",
+      ]);
+      yield* harness.answer(0, RELOAD);
+      expect(harness.timeline).toEqual([
+        "unresponsive prompt for generation 1",
+        "suppress",
+        "crash generation 1",
+        "reload generation 1",
+      ]);
+    }),
   );
 
   it.effect(
@@ -497,3 +492,42 @@ describe("makeDesktopGameRendererRecovery", () => {
       }),
   );
 });
+
+it.effect("keeps script execution through bare loading", () =>
+  Effect.gen(function* () {
+    const harness = yield* makeHarness();
+    yield* harness.startScript;
+    yield* harness.navigateSameDocument;
+    yield* harness.hang;
+    expect(harness.timeline).toEqual(["unresponsive prompt for generation 1"]);
+    yield* harness.answer(0, DECLINE);
+  }),
+);
+
+it.effect("does not carry script execution into a commit without loading", () =>
+  Effect.gen(function* () {
+    const harness = yield* makeHarness();
+    yield* harness.startScript;
+    yield* harness.navigateWhileLoading;
+    yield* harness.hang;
+    expect(harness.timeline).toEqual([]);
+    yield* harness.startScript;
+    yield* harness.hang;
+    expect(harness.timeline).toEqual(["unresponsive prompt for generation 2"]);
+    yield* harness.answer(0, DECLINE);
+  }),
+);
+
+it.effect("aborts an open prompt when its document commits a replacement", () =>
+  Effect.gen(function* () {
+    const harness = yield* makeHarness();
+    yield* harness.startScript;
+    yield* harness.hang;
+    expect(harness.signals[0]?.aborted).toBe(false);
+    yield* harness.navigateWhileLoading;
+    yield* settle;
+    expect(harness.signals[0]?.aborted).toBe(true);
+    yield* harness.answer(0, RELOAD);
+    expect(harness.timeline).toEqual(["unresponsive prompt for generation 1"]);
+  }),
+);
