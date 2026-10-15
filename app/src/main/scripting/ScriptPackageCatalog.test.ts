@@ -568,19 +568,26 @@ describe("ScriptPackageCatalog", () => {
   it.effect("keeps the last catalog after a failed refresh and can retry", () =>
     Effect.gen(function* () {
       const { catalog, workspace } = yield* makeCatalogHarness();
-      const initial = yield* catalog.getOverview;
+      const initial = yield* catalog.refresh;
+      const revisions: string[] = [];
+      yield* catalog.onChanged((change) => {
+        revisions.push(change.revision);
+      });
       yield* Effect.promise(async () => {
         await fs.rm(workspace.packagesDir, { recursive: true });
         await fs.writeFile(workspace.packagesDir, "not a directory");
       });
       const failure = yield* catalog.refresh.pipe(Effect.flip);
       expect(failure.operation).toBe("scan");
+      expect(revisions).toEqual([]);
       expect(yield* catalog.getOverview).toEqual(initial);
       yield* Effect.promise(async () => {
         await fs.unlink(workspace.packagesDir);
         await write(join(workspace.scriptsDir, "second.js"), "");
       });
-      expect((yield* catalog.refresh).scriptCount).toBe(2);
+      const retried = yield* catalog.refresh;
+      expect(retried.scriptCount).toBe(2);
+      expect(revisions).toEqual([retried.revision]);
     }),
   );
 
@@ -798,6 +805,43 @@ describe("ScriptPackageCatalog", () => {
             count: operation === "refresh" ? 2 : 1,
           },
         ]);
+      }),
+  );
+
+  it.effect(
+    "interrupts a scan before commit without repeating the previous event",
+    () =>
+      Effect.gen(function* () {
+        const started = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        let block = false;
+        const { catalog } = yield* makeCatalogHarness(
+          Effect.suspend(() =>
+            block
+              ? Deferred.succeed(started, undefined).pipe(
+                  Effect.andThen(Deferred.await(release)),
+                )
+              : Effect.void,
+          ),
+        );
+        const initial = yield* catalog.refresh;
+        const revisions: string[] = [];
+        yield* catalog.onChanged((change) => {
+          revisions.push(change.revision);
+        });
+        block = true;
+        const scanning = yield* catalog.refresh.pipe(Effect.forkScoped);
+        yield* Deferred.await(started);
+        const stopping = yield* Fiber.interrupt(scanning).pipe(
+          Effect.forkScoped,
+        );
+        yield* Effect.yieldNow;
+        const outcome = scanning.pollUnsafe();
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.join(stopping);
+        expect(outcome).toMatchObject({ _tag: "Failure" });
+        expect(yield* catalog.getOverview).toEqual(initial);
+        expect(revisions).toEqual([]);
       }),
   );
 });
