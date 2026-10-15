@@ -43,10 +43,6 @@ describe("parseCliOptions", () => {
         "--launch-mode=game",
       ]),
     ).toEqual({ debug: true, launchMode: "game" });
-    expect(parseCliOptions(["--trace-projections"])).toEqual({
-      debug: true,
-      traceProjections: true,
-    });
   });
 
   it("ignores missing and invalid values without consuming the next flag", () => {
@@ -57,9 +53,7 @@ describe("parseCliOptions", () => {
     expect(parseCliOptions(["--launchMode=invalid", "--launch-mode="])).toEqual(
       {},
     );
-    expect(
-      parseCliOptions(["--debug=false", "--trace-projections=false"]),
-    ).toEqual({});
+    expect(parseCliOptions(["--debug=false"])).toEqual({});
   });
 
   it("stops parsing options after the argument terminator", () => {

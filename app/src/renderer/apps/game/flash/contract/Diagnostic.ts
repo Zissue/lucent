@@ -5,8 +5,7 @@ export type DiagnosticPhase =
   | "callback-dispatch"
   | "invoke"
   | "packet-decode"
-  | "projection"
-  | "projection-trace";
+  | "projection";
 
 export interface Diagnostic {
   readonly arguments?: readonly unknown[];

@@ -66,10 +66,9 @@ const resolveEnvironmentConfig = (
   return {
     appDataDir: app.getPath("userData"),
     assetsDir: join(app.getAppPath(), "..", "assets"),
-    debug: cliOptions.debug === true || cliOptions.traceProjections === true,
+    debug: cliOptions.debug === true,
     isDev,
     platform,
-    traceProjections: cliOptions.traceProjections === true,
     workspaceDir: resolveWorkspaceHome({
       documentsPath: app.getPath("documents"),
     }),

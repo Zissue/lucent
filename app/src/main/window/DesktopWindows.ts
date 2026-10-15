@@ -39,7 +39,6 @@ import {
   DEBUG_MODE_ARGUMENT,
   GAME_CONSOLE_OBSERVABILITY_ARGUMENT,
   serializeGameViewLayoutArgument,
-  TRACE_PROJECTIONS_ARGUMENT,
 } from "../../shared/rendererBootstrapArguments";
 import { DEFAULT_APP_SETTINGS, type AppSettings } from "@lucent/core/settings";
 import { makeListenerRegistry } from "../app/ListenerRegistry";
@@ -238,9 +237,6 @@ const createRendererWebPreferences = (
     ...(env.debug === true ? [DEBUG_MODE_ARGUMENT] : []),
     ...(bridgeView === "game" && env.debug === true
       ? [GAME_CONSOLE_OBSERVABILITY_ARGUMENT]
-      : []),
-    ...(bridgeView === "game" && env.traceProjections === true
-      ? [TRACE_PROJECTIONS_ARGUMENT]
       : []),
   ],
   ...(options.backgroundThrottling === undefined

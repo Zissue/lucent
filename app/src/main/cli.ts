@@ -5,7 +5,6 @@ import { isAppLaunchMode, type AppLaunchMode } from "@lucent/core/settings";
 export interface CliOptions {
   readonly debug?: boolean;
   readonly launchMode?: AppLaunchMode;
-  readonly traceProjections?: boolean;
 }
 
 export const parseCliOptions = (argv: readonly string[]): CliOptions => {
@@ -18,7 +17,6 @@ export const parseCliOptions = (argv: readonly string[]): CliOptions => {
   const output: {
     debug?: boolean;
     launchMode?: AppLaunchMode;
-    traceProjections?: boolean;
   } = {};
 
   for (const token of tokens) {
@@ -26,12 +24,6 @@ export const parseCliOptions = (argv: readonly string[]): CliOptions => {
 
     if (token.name === "debug" && token.value === undefined) {
       output.debug = true;
-    } else if (
-      token.name === "trace-projections" &&
-      token.value === undefined
-    ) {
-      output.debug = true;
-      output.traceProjections = true;
     } else if (token.name === "launch-mode" || token.name === "launchMode") {
       const value = (token.value ?? argv[token.index + 1])
         ?.trim()

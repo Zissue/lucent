@@ -58,8 +58,6 @@ const makeApiServices = Effect.gen(function* () {
   const shops = makeShops(bridge, store, inventory, wait);
   const tempInventory = makeTempInventory(store);
   const debug = typeof window !== "undefined" && window.desktop.debug;
-  const traceProjections =
-    typeof window !== "undefined" && window.desktop.traceProjections;
   const combat = makeCombat(
     bridge,
     antiCounter,
@@ -82,9 +80,6 @@ const makeApiServices = Effect.gen(function* () {
       handleRuntimeEvent: sessionEvents.handleRuntimeEvent,
       publishEvent: gateway.publishEvent,
       ...(debug ? { reportDiagnostic: gateway.reportDiagnostic } : {}),
-      ...(traceProjections
-        ? { reportProjectionTrace: gateway.reportProjectionTrace }
-        : {}),
     },
     bridge,
   );
