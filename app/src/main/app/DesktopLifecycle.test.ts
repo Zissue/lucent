@@ -286,43 +286,6 @@ describe("DesktopLifecycle", () => {
     }),
   );
 
-  it.live("holds the quit guard while layer finalizers run", () =>
-    Effect.gen(function* () {
-      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-      const harness = makeHarness(true);
-      const registered = yield* Deferred.make<void>();
-      const layerFinalizerStarted = yield* Deferred.make<void>();
-      const releaseLayerFinalizer = yield* Deferred.make<void>();
-      const slowLayer = Layer.effectDiscard(
-        Effect.addFinalizer(() =>
-          Deferred.succeed(layerFinalizerStarted, undefined).pipe(
-            Effect.andThen(Deferred.await(releaseLayerFinalizer)),
-          ),
-        ),
-      );
-
-      const runtime = yield* Effect.forkDetach(
-        Effect.gen(function* () {
-          const lifecycle = yield* DesktopLifecycle;
-          yield* lifecycle.register;
-          yield* lifecycle.attachObservability;
-          yield* Effect.gen(function* () {
-            yield* Deferred.succeed(registered, undefined);
-            yield* lifecycle.awaitQuit;
-          }).pipe(Effect.provide(slowLayer), Effect.scoped);
-        }).pipe(Effect.provide(harness.layer), Effect.scoped),
-      );
-      yield* Deferred.await(registered);
-      harness.emitWillQuit();
-      yield* Deferred.await(layerFinalizerStarted);
-      harness.emitWillQuit();
-      yield* Deferred.succeed(releaseLayerFinalizer, undefined);
-      yield* Fiber.await(runtime);
-
-      expect(harness.events).toEqual([]);
-    }),
-  );
-
   it.live("keeps the first deadline when will-quit follows a signal", () =>
     Effect.gen(function* () {
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });

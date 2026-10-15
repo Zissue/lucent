@@ -128,6 +128,7 @@ const makeStartup = (options: {
   const parentWindowId = options.parentWindowId ?? Effect.succeed(42);
   const appEvents = new EventEmitter();
   const openedWindows: string[] = [];
+  const ipcHandlers = new Set<string>();
 
   const emitWillQuit = (): void => {
     let defaultPrevented = false;
@@ -226,7 +227,14 @@ const makeStartup = (options: {
     Layer.succeed(
       DesktopIpc,
       makeDesktopIpc(
-        { handle: () => undefined, removeHandler: () => undefined },
+        {
+          handle: (channel) => {
+            ipcHandlers.add(channel);
+          },
+          removeHandler: (channel) => {
+            ipcHandlers.delete(channel);
+          },
+        },
         { getAllWebContents: () => [], fromId: () => undefined },
       ),
     ),
@@ -345,6 +353,8 @@ const makeStartup = (options: {
     dialogFailed,
     secondInstance,
     appEvents,
+    emitWillQuit,
+    ipcHandlers,
   };
 };
 
@@ -357,6 +367,44 @@ afterEach(() => {
 });
 
 describe("makeDesktopRuntime", () => {
+  it.live(
+    "releases startup handlers before layer cleanup and guards repeated quit during cleanup",
+    () =>
+      Effect.gen(function* () {
+        const checking = yield* Deferred.make<void>();
+        const cleanupStarted = yield* Deferred.make<void>();
+        const releaseCleanup = yield* Deferred.make<void>();
+        const handlersDuringCleanup: boolean[] = [];
+        const startup = makeStartup({
+          build: Effect.addFinalizer(() =>
+            Effect.gen(function* () {
+              handlersDuringCleanup.push(
+                startup.ipcHandlers.has("desktop:settings:get"),
+              );
+              yield* Deferred.succeed(cleanupStarted, undefined);
+              yield* Deferred.await(releaseCleanup);
+            }),
+          ),
+          checkNow: Deferred.succeed(checking, undefined).pipe(
+            Effect.andThen(Effect.never),
+          ),
+          showMessageBox: Effect.never,
+        });
+        const watchCleanup = Effect.gen(function* () {
+          expect(startup.ipcHandlers.has("desktop:settings:get")).toBe(true);
+          yield* Effect.gen(function* () {
+            yield* Deferred.await(cleanupStarted);
+            startup.emitWillQuit();
+            yield* Deferred.succeed(releaseCleanup, undefined);
+          }).pipe(Effect.forkChild);
+        });
+        const events = yield* startup.quitDuringStartup(checking, watchCleanup);
+        expect(handlersDuringCleanup).toEqual([false]);
+        expect(events).toEqual(["cleanup", "runtime-settled"]);
+        expect(startup.ipcHandlers.size).toBe(0);
+      }),
+  );
+
   it.live(
     "cancels a layer build on a signal without waiting for will-quit",
     () =>
