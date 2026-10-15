@@ -2,9 +2,14 @@ import { promises as fs } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 
-import { afterEach, describe, expect, it } from "@effect/vitest";
+import { afterEach, expect, layer as testLayer } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Fiber from "effect/Fiber";
+import { FileSystem } from "effect/FileSystem";
+import * as PlatformError from "effect/PlatformError";
+import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
+import { vi } from "vitest";
 
 import { DesktopEnvironment } from "../app/DesktopEnvironment";
 import {
@@ -41,16 +46,25 @@ const makeFixture = async () => {
     platform: process.platform,
     workspaceDir,
   });
-  const testLayer = layer.pipe(
-    Layer.provide(Layer.succeed(DesktopEnvironment, environment)),
-  );
-  const initialize = () =>
+  const initializeEffect = (fileSystemLayer = NodeFileSystem.layer) =>
     Effect.gen(function* () {
       const workspace = yield* ScriptWorkspace;
       yield* workspace.initialize;
-    }).pipe(Effect.provide(testLayer), Effect.runPromise);
+    }).pipe(
+      Effect.provide(
+        layer.pipe(
+          Layer.provide(
+            Layer.merge(
+              Layer.succeed(DesktopEnvironment, environment),
+              fileSystemLayer,
+            ),
+          ),
+        ),
+      ),
+    );
   return {
-    initialize,
+    initialize: initializeEffect,
+    initializeEffect,
     paths: resolveScriptWorkspacePaths(workspaceDir),
     workspaceDir,
   };
@@ -64,44 +78,167 @@ afterEach(async () => {
   );
 });
 
-describe("ScriptWorkspace", () => {
-  it("creates the package workspace, editor config, and API types", async () => {
-    const fixture = await makeFixture();
-    await fixture.initialize();
+testLayer(NodeFileSystem.layer)("ScriptWorkspace", (it) => {
+  for (const name of ["jsconfig.json", "script-api.d.ts"]) {
+    it.effect(`recovers after interruption while creating ${name}`, () =>
+      Effect.gen(function* () {
+        const fixture = yield* Effect.promise(makeFixture);
+        const target = join(fixture.workspaceDir, name);
+        const expected =
+          name === "jsconfig.json"
+            ? SCRIPT_WORKSPACE_CONFIG
+            : "declare module 'lucent' {}\n";
+        const started = Promise.withResolvers<void>();
+        const release = Promise.withResolvers<void>();
+        const writeFile = fs.writeFile.bind(fs);
+        const copyFile = fs.copyFile.bind(fs);
+        const partialWrite = async (path: string) => {
+          await writeFile(path, "", "utf8");
+          started.resolve();
+          await release.promise;
+          throw new Error("interrupted write");
+        };
+        const writeSpy = vi
+          .spyOn(fs, "writeFile")
+          .mockImplementation((path, data, options) =>
+            path === target && name === "jsconfig.json"
+              ? partialWrite(target)
+              : writeFile(path, data, options),
+          );
+        const copySpy = vi
+          .spyOn(fs, "copyFile")
+          .mockImplementation((from, to, mode) =>
+            to === target && name === "script-api.d.ts"
+              ? partialWrite(target)
+              : copyFile(from, to, mode),
+          );
+        const fileSystem = yield* FileSystem;
+        const delayed = FileSystem.of({
+          ...fileSystem,
+          writeFile: (path, data, options) =>
+            new TextDecoder().decode(data) === expected
+              ? Effect.tryPromise({
+                  try: () => partialWrite(path),
+                  catch: () =>
+                    PlatformError.systemError({
+                      _tag: "Unknown",
+                      module: "FileSystem",
+                      method: "writeFile",
+                      pathOrDescriptor: path,
+                    }),
+                })
+              : fileSystem.writeFile(path, data, options),
+        });
+        const initializing = yield* Effect.forkChild(
+          fixture.initializeEffect(Layer.succeed(FileSystem, delayed)),
+        );
+        yield* Effect.gen(function* () {
+          yield* Effect.promise(() => started.promise);
+          const interruption = yield* Effect.forkChild(
+            Fiber.interrupt(initializing),
+          );
+          yield* Effect.yieldNow;
+          release.resolve();
+          yield* Fiber.join(interruption);
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              writeSpy.mockRestore();
+              copySpy.mockRestore();
+            }),
+          ),
+        );
 
-    await expect(fs.stat(fixture.paths.scriptsDir)).resolves.toMatchObject({});
-    await expect(fs.stat(fixture.paths.packagesDir)).resolves.toMatchObject({});
-    const dataInfo = await fs.stat(fixture.paths.dataDir);
-    expect(dataInfo.isDirectory()).toBe(true);
-    await expect(
-      fs.readFile(join(fixture.workspaceDir, "jsconfig.json"), "utf8"),
-    ).resolves.toBe(SCRIPT_WORKSPACE_CONFIG);
-    await expect(
-      fs.readFile(join(fixture.workspaceDir, "script-api.d.ts"), "utf8"),
-    ).resolves.toBe("declare module 'lucent' {}\n");
+        yield* fixture.initialize();
 
-    if (process.platform !== "win32") {
-      expect(dataInfo.mode & 0o777).toBe(0o700);
-      await fs.chmod(fixture.paths.dataDir, 0o755);
-      await fixture.initialize();
-      expect((await fs.stat(fixture.paths.dataDir)).mode & 0o777).toBe(0o700);
-    }
-  });
-
-  it("does not overwrite user-owned workspace files", async () => {
-    const fixture = await makeFixture();
-    const configPath = join(fixture.workspaceDir, "jsconfig.json");
-    const typesPath = join(fixture.workspaceDir, "script-api.d.ts");
-    await Promise.all([
-      write(configPath, "user config\n"),
-      write(typesPath, "user types\n"),
-    ]);
-
-    await fixture.initialize();
-
-    await expect(fs.readFile(configPath, "utf8")).resolves.toBe(
-      "user config\n",
+        expect(yield* Effect.promise(() => fs.readFile(target, "utf8"))).toBe(
+          expected,
+        );
+      }),
     );
-    await expect(fs.readFile(typesPath, "utf8")).resolves.toBe("user types\n");
-  });
+  }
+
+  it.effect("creates the package workspace, editor config, and API types", () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(makeFixture);
+      yield* fixture.initialize();
+
+      expect(
+        (yield* Effect.promise(() =>
+          fs.stat(fixture.paths.scriptsDir),
+        )).isDirectory(),
+      ).toBe(true);
+      expect(
+        (yield* Effect.promise(() =>
+          fs.stat(fixture.paths.packagesDir),
+        )).isDirectory(),
+      ).toBe(true);
+      const dataInfo = yield* Effect.promise(() =>
+        fs.stat(fixture.paths.dataDir),
+      );
+      expect(dataInfo.isDirectory()).toBe(true);
+      expect(
+        yield* Effect.promise(() =>
+          fs.readFile(join(fixture.workspaceDir, "jsconfig.json"), "utf8"),
+        ),
+      ).toBe(SCRIPT_WORKSPACE_CONFIG);
+      expect(
+        yield* Effect.promise(() =>
+          fs.readFile(join(fixture.workspaceDir, "script-api.d.ts"), "utf8"),
+        ),
+      ).toBe("declare module 'lucent' {}\n");
+
+      if (process.platform !== "win32") {
+        expect(dataInfo.mode & 0o777).toBe(0o700);
+        yield* Effect.promise(() => fs.chmod(fixture.paths.dataDir, 0o755));
+        yield* fixture.initialize();
+        expect(
+          (yield* Effect.promise(() => fs.stat(fixture.paths.dataDir))).mode &
+            0o777,
+        ).toBe(0o700);
+      }
+    }),
+  );
+
+  it.effect("refreshes existing generated API types", () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(makeFixture);
+      const typesPath = join(fixture.workspaceDir, "script-api.d.ts");
+      yield* Effect.promise(() =>
+        write(
+          typesPath,
+          "// Generated by pnpm run types:scripting. Do not edit directly.\nold types\n",
+        ),
+      );
+
+      yield* fixture.initialize();
+
+      expect(yield* Effect.promise(() => fs.readFile(typesPath, "utf8"))).toBe(
+        "declare module 'lucent' {}\n",
+      );
+    }),
+  );
+
+  it.effect("does not overwrite user-owned workspace files", () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(makeFixture);
+      const configPath = join(fixture.workspaceDir, "jsconfig.json");
+      const typesPath = join(fixture.workspaceDir, "script-api.d.ts");
+      yield* Effect.promise(() =>
+        Promise.all([
+          write(configPath, "user config\n"),
+          write(typesPath, "user types\n"),
+        ]),
+      );
+
+      yield* fixture.initialize();
+
+      expect(yield* Effect.promise(() => fs.readFile(configPath, "utf8"))).toBe(
+        "user config\n",
+      );
+      expect(yield* Effect.promise(() => fs.readFile(typesPath, "utf8"))).toBe(
+        "user types\n",
+      );
+    }),
+  );
 });
