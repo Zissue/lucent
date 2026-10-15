@@ -141,19 +141,6 @@ const resolveSetItem = (
 ): string | undefined =>
   resolveItems ? resolveArmyItemAlias(session, item) : item;
 
-const warnEquip = (
-  setName: string,
-  field: string,
-  item: string,
-  cause?: Cause.Cause<unknown>,
-) =>
-  Effect.logWarning(
-    "Army equipSet skipped item",
-    ...(cause === undefined ? [] : [cause]),
-  ).pipe(
-    Effect.annotateLogs({ component: "army", data: { field, item, setName } }),
-  );
-
 const getNestedConfigValue = (
   obj: Record<string, unknown>,
   path: string,
@@ -665,8 +652,6 @@ const makeArmyApi = (
 
     const equipItem = (
       session: ArmySession,
-      setName: string,
-      field: string,
       item: string | undefined,
       resolveItems: boolean,
     ) =>
@@ -676,14 +661,9 @@ const makeArmyApi = (
           return;
         }
 
-        const equipped = yield* inventory.equip(resolved).pipe(
-          Effect.tap((equipped) =>
-            equipped ? Effect.void : warnEquip(setName, field, resolved),
-          ),
-          Effect.catchCause((cause) =>
-            warnEquip(setName, field, resolved, cause).pipe(Effect.as(false)),
-          ),
-        );
+        const equipped = yield* inventory
+          .equip(resolved)
+          .pipe(Effect.catchCause(() => Effect.succeed(false)));
         if (!equipped) {
           return;
         }
@@ -693,7 +673,6 @@ const makeArmyApi = (
 
     const drinkConsumable = Effect.fn("Army.drinkConsumable")(function* (
       session: ArmySession,
-      setName: string,
       item: string,
       resolveItems: boolean,
     ) {
@@ -702,27 +681,17 @@ const makeArmyApi = (
         return;
       }
 
-      const inventoryItem = yield* inventory.get(resolved).pipe(
-        Effect.tap((item) =>
-          item === null ? warnEquip(setName, "pots", resolved) : Effect.void,
-        ),
-        Effect.catchCause((cause) =>
-          warnEquip(setName, "pots", resolved, cause).pipe(Effect.as(null)),
-        ),
-      );
+      const inventoryItem = yield* inventory
+        .get(resolved)
+        .pipe(Effect.catchCause(() => Effect.succeed(null)));
       if (inventoryItem === null) {
         return;
       }
 
       if (isDirectInventoryConsumable(inventoryItem.link)) {
-        const used = yield* inventory.use(inventoryItem.itemId).pipe(
-          Effect.tap((used) =>
-            used ? Effect.void : warnEquip(setName, "pots", resolved),
-          ),
-          Effect.catchCause((cause) =>
-            warnEquip(setName, "pots", resolved, cause).pipe(Effect.as(false)),
-          ),
-        );
+        const used = yield* inventory
+          .use(inventoryItem.itemId)
+          .pipe(Effect.catchCause(() => Effect.succeed(false)));
         if (!used) {
           return;
         }
@@ -733,14 +702,9 @@ const makeArmyApi = (
 
       const startingQuantity = inventoryItem.quantity;
 
-      const equipped = yield* inventory.equip(resolved).pipe(
-        Effect.tap((succeeded) =>
-          succeeded ? Effect.void : warnEquip(setName, "pots", resolved),
-        ),
-        Effect.catchCause((cause) =>
-          warnEquip(setName, "pots", resolved, cause).pipe(Effect.as(false)),
-        ),
-      );
+      const equipped = yield* inventory
+        .equip(resolved)
+        .pipe(Effect.catchCause(() => Effect.succeed(false)));
       if (!equipped) {
         return;
       }
@@ -756,7 +720,6 @@ const makeArmyApi = (
         { timeout: "5 seconds" },
       );
       if (!slotReady) {
-        yield* warnEquip(setName, "pots", resolved);
         return;
       }
 
@@ -765,14 +728,7 @@ const makeArmyApi = (
           force: true,
           waitUntilReady: true,
         })
-        .pipe(
-          Effect.tap((succeeded) =>
-            succeeded ? Effect.void : warnEquip(setName, "pots", resolved),
-          ),
-          Effect.catchCause((cause) =>
-            warnEquip(setName, "pots", resolved, cause).pipe(Effect.as(false)),
-          ),
-        );
+        .pipe(Effect.catchCause(() => Effect.succeed(false)));
       if (!used) {
         return;
       }
@@ -788,7 +744,6 @@ const makeArmyApi = (
         { timeout: "5 seconds" },
       );
       if (!consumed) {
-        yield* warnEquip(setName, "pots", resolved);
         return;
       }
 
@@ -809,21 +764,15 @@ const makeArmyApi = (
           for (const field of armyEquipOrder) {
             const item = set[field];
             if (typeof item === "string") {
-              yield* equipItem(session, setName, field, item, resolveItems);
+              yield* equipItem(session, item, resolveItems);
             }
           }
 
           for (const pot of set.pots ?? []) {
-            yield* drinkConsumable(session, setName, pot, resolveItems);
+            yield* drinkConsumable(session, pot, resolveItems);
           }
 
-          yield* equipItem(
-            session,
-            setName,
-            "scroll",
-            set.scroll,
-            resolveItems,
-          );
+          yield* equipItem(session, set.scroll, resolveItems);
         }),
       );
 
