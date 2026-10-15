@@ -110,6 +110,7 @@ const servicesStartupNeverCalls = Layer.mergeAll(
 );
 
 const makeStartup = (options: {
+  readonly captureSignals?: boolean;
   readonly launchMode?: "game" | "account-manager";
   readonly initialize?: Effect.Effect<void>;
   readonly build?: Effect.Effect<void, never, Scope.Scope>;
@@ -154,6 +155,7 @@ const makeStartup = (options: {
         };
       }),
     whenReady: Effect.void,
+    quit: Effect.void,
   });
   const diagnostics = Layer.effectDiscard(
     Effect.flatMap(
@@ -170,6 +172,12 @@ const makeStartup = (options: {
             ) {
               events.push("dialog-failed");
               Deferred.doneUnsafe(dialogFailed, Exit.void);
+            }
+            if (
+              options.captureSignals &&
+              String(log.message) === "Received termination signal"
+            ) {
+              events.push("termination-signal");
             }
             if (log.logLevel === "Error") {
               events.push(`error:${String(log.message)}`);
@@ -287,6 +295,7 @@ const makeStartup = (options: {
     waitingOn: Deferred.Deferred<void>,
     onReady: Effect.Effect<void> = Effect.void,
     afterDeadline?: Effect.Effect<void>,
+    requestQuit: () => void = emitWillQuit,
   ) =>
     Effect.gen(function* () {
       const runtime = yield* Effect.forkDetach(
@@ -303,7 +312,7 @@ const makeStartup = (options: {
         yield* Deferred.await(waitingOn);
         yield* Effect.promise(() => yieldToEventLoop());
         yield* onReady;
-        emitWillQuit();
+        requestQuit();
         yield* Effect.promise(() =>
           vi
             .waitUntil(() => events.includes("runtime-settled"), {
@@ -348,6 +357,45 @@ afterEach(() => {
 });
 
 describe("makeDesktopRuntime", () => {
+  it.live(
+    "cancels a layer build on a signal without waiting for will-quit",
+    () =>
+      Effect.gen(function* () {
+        const previous = new Set(process.listeners("SIGTERM"));
+        const building = yield* Deferred.make<void>();
+        const startup = makeStartup({
+          captureSignals: true,
+          build: Deferred.succeed(building, undefined).pipe(
+            Effect.andThen(Effect.never),
+          ),
+          checkNow: Effect.never,
+          showMessageBox: Effect.never,
+        });
+        const signal = () => {
+          const listener = process
+            .listeners("SIGTERM")
+            .find((entry) => !previous.has(entry));
+          if (listener === undefined)
+            throw new Error("SIGTERM listener is missing");
+          listener("SIGTERM");
+        };
+
+        const events = yield* startup.quitDuringStartup(
+          building,
+          Effect.void,
+          undefined,
+          signal,
+        );
+
+        expect(events).toEqual([
+          "termination-signal",
+          "cleanup",
+          "runtime-settled",
+        ]);
+        expect(startup.appEvents.listenerCount("will-quit")).toBe(0);
+      }),
+  );
+
   it.live("logs and flushes the deadline during unfinished layer cleanup", () =>
     Effect.gen(function* () {
       const building = yield* Deferred.make<void>();

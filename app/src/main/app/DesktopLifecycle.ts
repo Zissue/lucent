@@ -123,7 +123,6 @@ export const layer = Layer.effect(
           if (!beginShutdown(signal)) {
             return;
           }
-          Deferred.doneUnsafe(quitRequested, Effect.void);
           runFork(
             Effect.logWarning("Received termination signal").pipe(
               Effect.annotateLogs({ component: "lifecycle", data: { signal } }),
@@ -131,6 +130,7 @@ export const layer = Layer.effect(
             ),
           );
           runFork(app.quit);
+          Deferred.doneUnsafe(quitRequested, Effect.void);
         });
       }
     });

@@ -130,7 +130,6 @@ export const makeDesktopRuntime = <ROut, E>(
       lifecycle.awaitQuit,
       Effect.gen(function* () {
         const observability = yield* DesktopObservability;
-        yield* lifecycle.attachObservability;
         yield* observability.installProcessHooks;
         const applicationMenu = yield* DesktopApplicationMenu;
         const env = yield* DesktopEnvironment;
