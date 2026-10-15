@@ -818,10 +818,10 @@ export const makeFollower = Effect.fnUntraced(function* (
                   failure.message || "Message trigger failed",
                 ).pipe(
                   Effect.andThen(
-                    Effect.logError({
-                      cause: failure.failureCause,
-                      message: "Follower message trigger failed",
-                    }),
+                    Effect.logError(
+                      "Follower message trigger failed",
+                      failure.failureCause,
+                    ).pipe(Effect.annotateLogs({ component: "follower" })),
                   ),
                 ),
               profile,
@@ -1076,10 +1076,9 @@ export const makeFollower = Effect.fnUntraced(function* (
         );
       },
       Effect.catchCause((cause) =>
-        Effect.logWarning({
-          cause,
-          message: "Failed to publish follower players",
-        }),
+        Effect.logWarning("Failed to publish follower players", cause).pipe(
+          Effect.annotateLogs({ component: "follower" }),
+        ),
       ),
     );
     const disposePlayers = yield* api.events.on(undefined, (event) =>
@@ -1093,10 +1092,9 @@ export const makeFollower = Effect.fnUntraced(function* (
       Stream.runForEach((next) =>
         Effect.tryPromise(() => port.publishState(next)).pipe(
           Effect.catchCause((cause) =>
-            Effect.logWarning({
-              cause,
-              message: "Failed to publish follower state",
-            }),
+            Effect.logWarning("Failed to publish follower state", cause).pipe(
+              Effect.annotateLogs({ component: "follower" }),
+            ),
           ),
         ),
       ),

@@ -1,6 +1,6 @@
 import * as Effect from "effect/Effect";
 
-import { logFailure } from "./observability/logFailure";
+import { logFailure } from "../../shared/logFailure";
 
 export type Listener<Value> = (
   value: Value,

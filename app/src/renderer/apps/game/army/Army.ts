@@ -145,15 +145,14 @@ const warnEquip = (
   setName: string,
   field: string,
   item: string,
-  cause?: unknown,
+  cause?: Cause.Cause<unknown>,
 ) =>
-  Effect.logWarning({
-    ...(cause === undefined ? {} : { cause }),
-    field,
-    item,
-    message: `Army equipSet skipped ${field}`,
-    setName,
-  });
+  Effect.logWarning(
+    "Army equipSet skipped item",
+    ...(cause === undefined ? [] : [cause]),
+  ).pipe(
+    Effect.annotateLogs({ component: "army", data: { field, item, setName } }),
+  );
 
 const getNestedConfigValue = (
   obj: Record<string, unknown>,
@@ -677,15 +676,15 @@ const makeArmyApi = (
           return;
         }
 
-        const equipped = yield* inventory
-          .equip(resolved)
-          .pipe(
-            Effect.catchCause((cause) =>
-              warnEquip(setName, field, resolved, cause).pipe(Effect.as(false)),
-            ),
-          );
+        const equipped = yield* inventory.equip(resolved).pipe(
+          Effect.tap((equipped) =>
+            equipped ? Effect.void : warnEquip(setName, field, resolved),
+          ),
+          Effect.catchCause((cause) =>
+            warnEquip(setName, field, resolved, cause).pipe(Effect.as(false)),
+          ),
+        );
         if (!equipped) {
-          yield* warnEquip(setName, field, resolved);
           return;
         }
 
@@ -703,30 +702,28 @@ const makeArmyApi = (
         return;
       }
 
-      const inventoryItem = yield* inventory
-        .get(resolved)
-        .pipe(
-          Effect.catchCause((cause) =>
-            warnEquip(setName, "pots", resolved, cause).pipe(Effect.as(null)),
-          ),
-        );
+      const inventoryItem = yield* inventory.get(resolved).pipe(
+        Effect.tap((item) =>
+          item === null ? warnEquip(setName, "pots", resolved) : Effect.void,
+        ),
+        Effect.catchCause((cause) =>
+          warnEquip(setName, "pots", resolved, cause).pipe(Effect.as(null)),
+        ),
+      );
       if (inventoryItem === null) {
-        yield* warnEquip(setName, "pots", resolved);
         return;
       }
 
       if (isDirectInventoryConsumable(inventoryItem.link)) {
-        const used = yield* inventory
-          .use(inventoryItem.itemId)
-          .pipe(
-            Effect.catchCause((cause) =>
-              warnEquip(setName, "pots", resolved, cause).pipe(
-                Effect.as(false),
-              ),
-            ),
-          );
+        const used = yield* inventory.use(inventoryItem.itemId).pipe(
+          Effect.tap((used) =>
+            used ? Effect.void : warnEquip(setName, "pots", resolved),
+          ),
+          Effect.catchCause((cause) =>
+            warnEquip(setName, "pots", resolved, cause).pipe(Effect.as(false)),
+          ),
+        );
         if (!used) {
-          yield* warnEquip(setName, "pots", resolved);
           return;
         }
 
@@ -736,15 +733,15 @@ const makeArmyApi = (
 
       const startingQuantity = inventoryItem.quantity;
 
-      const equipped = yield* inventory
-        .equip(resolved)
-        .pipe(
-          Effect.catchCause((cause) =>
-            warnEquip(setName, "pots", resolved, cause).pipe(Effect.as(false)),
-          ),
-        );
+      const equipped = yield* inventory.equip(resolved).pipe(
+        Effect.tap((succeeded) =>
+          succeeded ? Effect.void : warnEquip(setName, "pots", resolved),
+        ),
+        Effect.catchCause((cause) =>
+          warnEquip(setName, "pots", resolved, cause).pipe(Effect.as(false)),
+        ),
+      );
       if (!equipped) {
-        yield* warnEquip(setName, "pots", resolved);
         return;
       }
 
@@ -769,12 +766,14 @@ const makeArmyApi = (
           waitUntilReady: true,
         })
         .pipe(
+          Effect.tap((succeeded) =>
+            succeeded ? Effect.void : warnEquip(setName, "pots", resolved),
+          ),
           Effect.catchCause((cause) =>
             warnEquip(setName, "pots", resolved, cause).pipe(Effect.as(false)),
           ),
         );
       if (!used) {
-        yield* warnEquip(setName, "pots", resolved);
         return;
       }
 
