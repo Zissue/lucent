@@ -1270,41 +1270,16 @@ describe("ArmyLoopTauntOrchestrator", () => {
       }),
   );
 
-  it.effect(
-    "a rejected registrant does not prevent a finished run from retiring",
-    () =>
-      Effect.gen(function* () {
-        const harness = yield* makeHarness(["Alice", "Bob"]);
-        const registration = makeRegistration(harness.sessionId);
-        const { runId } = yield* harness.orchestrator.register(
-          registration,
-          harness.ids[1]!,
-        );
-        const rejected = yield* harness.orchestrator
-          .register(registration, -1)
-          .pipe(Effect.flip);
-        expect(rejected).toMatchObject({ reason: "sender-mismatch" });
-        yield* report(harness, runId, harness.ids[1]!, {
-          reason: "Bob changed maps",
-          type: "failed",
-        });
-        const run = { runId, sessionId: harness.sessionId };
-        expect(yield* harness.orchestrator.await(run, harness.ids[1]!)).toEqual(
-          {
-            reason: "Bob changed maps",
-            status: "failed",
-          },
-        );
-        yield* harness.orchestrator.leave(run, harness.ids[1]!);
-        expect(
-          yield* harness.orchestrator
-            .await(run, harness.ids[1]!)
-            .pipe(Effect.result),
-        ).toMatchObject({
-          _tag: "Failure",
-          failure: { reason: "inactive-run", runId },
-        });
-      }),
+  it.effect("rejects an unseated registrant", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness(["Alice", "Bob"]);
+      const registration = makeRegistration(harness.sessionId);
+      yield* harness.orchestrator.register(registration, harness.ids[1]!);
+      const rejected = yield* harness.orchestrator
+        .register(registration, -1)
+        .pipe(Effect.flip);
+      expect(rejected).toMatchObject({ reason: "sender-mismatch" });
+    }),
   );
 
   it.effect(

@@ -26,7 +26,6 @@ import {
   commandForPublication,
   isReadinessCurrent,
   leaveRun,
-  loopError,
   type MutationEffects,
   noEffects,
   onTimer as advanceTimer,
@@ -35,6 +34,7 @@ import {
   reportRun,
   runForPayload,
   type ScheduledTimer,
+  terminalReadinessError,
 } from "./ArmyLoopTauntState";
 
 export type { ArmyLoopTauntCommandEvent } from "./ArmyLoopTauntState";
@@ -96,18 +96,8 @@ export const makeArmyLoopTauntOrchestrator = (): Effect.Effect<
       event: ArmyLoopTauntCommandEvent,
     ): Effect.Effect<ArmyLoopTauntCommandEvent | undefined> =>
       coordinator
-        .loopTauntTimer(event.command.sessionId, (slot) => {
-          const current = commandForPublication(slot, event);
-          return {
-            effects: {
-              ...noEffects(),
-              commands: current === undefined ? [] : [current],
-            },
-            result: Result.succeed(undefined),
-            slot,
-          };
-        })
-        .pipe(Effect.map((effects) => effects.commands[0]));
+        .getLoopTauntSlot(event.command.sessionId)
+        .pipe(Effect.map((slot) => commandForPublication(slot, event)));
 
     const publishCommands = (commands: readonly ArmyLoopTauntCommandEvent[]) =>
       Effect.forEach(
@@ -125,7 +115,7 @@ export const makeArmyLoopTauntOrchestrator = (): Effect.Effect<
 
     const onTimer = (timer: ScheduledTimer) =>
       Effect.gen(function* () {
-        const effects = yield* coordinator.loopTauntTimer(
+        const effects = yield* coordinator.updateLoopTaunt(
           timer.sessionId,
           (slot, now) => advanceTimer(slot, timer, now),
         );
@@ -168,23 +158,14 @@ export const makeArmyLoopTauntOrchestrator = (): Effect.Effect<
               );
             }
             return coordinator
-              .loopTauntTimer(readiness.sessionId, (slot) => ({
-                effects: {
-                  ...noEffects(),
-                  readiness: isReadinessCurrent(slot, readiness)
-                    ? [readiness]
-                    : [],
-                },
-                result: Result.succeed(undefined),
-                slot,
-              }))
+              .getLoopTauntSlot(readiness.sessionId)
               .pipe(
-                Effect.flatMap((current) =>
-                  current.readiness.length === 0
-                    ? Effect.void
-                    : Deferred.succeed(readiness.gate, readiness.result).pipe(
+                Effect.flatMap((slot) =>
+                  isReadinessCurrent(slot, readiness)
+                    ? Deferred.succeed(readiness.gate, readiness.result).pipe(
                         Effect.asVoid,
-                      ),
+                      )
+                    : Effect.void,
                 ),
               );
           },
@@ -248,14 +229,7 @@ export const makeArmyLoopTauntOrchestrator = (): Effect.Effect<
       Effect.gen(function* () {
         const run = yield* requireRun(payload, senderId);
         if (run.status === "terminal") {
-          return yield* loopError(
-            "registration-failed",
-            run.terminal?.status === "failed"
-              ? run.terminal.reason
-              : "Loop taunt registration was superseded",
-            run.sessionId,
-            run.runId,
-          );
+          return yield* terminalReadinessError(run, run.terminal);
         }
         yield* Deferred.await(run.readinessGate);
       });
@@ -287,7 +261,7 @@ export const makeArmyLoopTauntOrchestrator = (): Effect.Effect<
       senderId,
     ) =>
       Effect.gen(function* () {
-        const effects = yield* coordinator.loopTauntTimer(
+        const effects = yield* coordinator.updateLoopTaunt(
           payload.sessionId,
           (slot, now) => leaveRun(slot, payload, senderId, now),
         );

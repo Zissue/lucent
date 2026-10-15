@@ -230,7 +230,7 @@ const mergeMutationEffects = (
   timers: [...left.timers, ...right.timers],
 });
 
-export const loopError = (
+const loopError = (
   reason: typeof LoopTauntReasons.Type,
   detail: string,
   sessionId: string,
@@ -1081,6 +1081,44 @@ const matchesMessage = (actual: string, configured: string): boolean => {
   return expected !== "" && normalizeMessage(actual).includes(expected);
 };
 
+export const terminalReadinessError = (
+  run: Pick<RunState, "sessionId" | "runId">,
+  result: ArmyLoopTauntTerminalResult | undefined,
+): ArmyLoopTauntError =>
+  loopError(
+    "registration-failed",
+    result?.status === "failed"
+      ? result.reason
+      : "Loop taunt registration was superseded",
+    run.sessionId,
+    run.runId,
+  );
+
+interface RunGateSettlement {
+  readonly readiness: Extract<ReadinessEffect, { readonly type: "fail" }>;
+  readonly terminal: MutationEffects["terminals"][number];
+}
+
+const runGateSettlement = (
+  run: RunState,
+  result: ArmyLoopTauntTerminalResult,
+): RunGateSettlement => ({
+  readiness: {
+    error: terminalReadinessError(run, result),
+    gate: run.readinessGate,
+    type: "fail",
+  },
+  terminal: { gate: run.terminalGate, result },
+});
+
+export const endLoopTaunt = (
+  slot: LoopTauntSlot,
+  reason: string,
+): readonly RunGateSettlement[] =>
+  [...slot.runs.values()].map((run) =>
+    runGateSettlement(run, run.terminal ?? { reason, status: "failed" }),
+  );
+
 const terminalize = (
   run: RunState,
   result: ArmyLoopTauntTerminalResult,
@@ -1094,30 +1132,17 @@ const terminalize = (
       { ...assignment, turn: undefined },
     ]),
   );
-  const readiness: ReadinessEffect[] = [
-    {
-      error: loopError(
-        "registration-failed",
-        result.status === "failed"
-          ? result.reason
-          : "Loop taunt registration was superseded",
-        run.sessionId,
-        run.runId,
-      ),
-      gate: run.readinessGate,
-      type: "fail",
-    },
-  ];
+  const settlement = runGateSettlement(run, result);
   return {
     commands: [],
-    readiness,
+    readiness: [settlement.readiness],
     run: {
       ...run,
       assignments,
       status: "terminal",
       terminal: result,
     },
-    terminals: [{ gate: run.terminalGate, result }],
+    terminals: [settlement.terminal],
     timers: [],
   };
 };
@@ -2001,10 +2026,10 @@ export const onTimer = (
 };
 
 export const commandForPublication = (
-  slot: LoopTauntSlot,
+  slot: LoopTauntSlot | undefined,
   event: ArmyLoopTauntCommandEvent,
 ): ArmyLoopTauntCommandEvent | undefined => {
-  const run = slot.runs.get(event.command.runId);
+  const run = slot?.runs.get(event.command.runId);
   if (run?.status !== "active") return undefined;
   const participantIds = event.participantIds.filter((participantId) =>
     run.participants.has(participantId),
@@ -2030,9 +2055,9 @@ export const commandForPublication = (
 };
 
 export const isReadinessCurrent = (
-  slot: LoopTauntSlot,
+  slot: LoopTauntSlot | undefined,
   readiness: Extract<ReadinessEffect, { readonly type: "succeed" }>,
 ): boolean => {
-  const run = slot.runs.get(readiness.result.runId);
+  const run = slot?.runs.get(readiness.result.runId);
   return run?.status === "active" && run.readinessGate === readiness.gate;
 };

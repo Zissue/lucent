@@ -18,7 +18,8 @@ import {
 } from "@lucent/core/army";
 
 import {
-  ArmyLoopTauntError,
+  type ArmyLoopTauntError,
+  endLoopTaunt,
   initialLoopTauntSlot,
   type LoopTauntSlot,
   type LoopTauntStep,
@@ -842,6 +843,9 @@ export interface ArmyCoordinatorShape {
     reason: string,
   ) => Effect.Effect<void, ArmyCoordinatorError>;
   readonly getSessions: () => Effect.Effect<readonly ArmySessionSnapshot[]>;
+  readonly getLoopTauntSlot: (
+    sessionId: string,
+  ) => Effect.Effect<LoopTauntSlot | undefined>;
   readonly join: (
     config: ArmyConfigPayload,
     playerName: string,
@@ -873,7 +877,7 @@ export interface ArmyCoordinatorShape {
     readonly [A, MutationEffects],
     ArmyCoordinatorError | ArmyLoopTauntError
   >;
-  readonly loopTauntTimer: (
+  readonly updateLoopTaunt: (
     sessionId: string,
     step: (slot: LoopTauntSlot, nowMs: number) => LoopTauntStep<void>,
   ) => Effect.Effect<MutationEffects>;
@@ -951,30 +955,11 @@ export const makeArmyCoordinator = (): Effect.Effect<
         }
         if (session.phase === "active") {
           yield* Effect.forEach(
-            session.loopTaunt.runs.values(),
-            (run) =>
-              Deferred.fail(
-                run.readinessGate,
-                new ArmyLoopTauntError({
-                  detail:
-                    run.terminal === undefined
-                      ? cause.reason
-                      : run.terminal.status === "failed"
-                        ? run.terminal.reason
-                        : "Loop taunt registration was superseded",
-                  reason: "registration-failed",
-                  runId: run.runId,
-                  sessionId: session.sessionId,
-                }),
-              ).pipe(
+            endLoopTaunt(session.loopTaunt, cause.reason),
+            ({ readiness, terminal }) =>
+              Deferred.fail(readiness.gate, readiness.error).pipe(
                 Effect.andThen(
-                  Deferred.succeed(
-                    run.terminalGate,
-                    run.terminal ?? {
-                      reason: cause.reason,
-                      status: "failed" as const,
-                    },
-                  ),
+                  Deferred.succeed(terminal.gate, terminal.result),
                 ),
               ),
             { discard: true },
@@ -1211,7 +1196,7 @@ export const makeArmyCoordinator = (): Effect.Effect<
         return yield* Effect.fromResult(result);
       });
 
-    const loopTauntTimer: ArmyCoordinatorShape["loopTauntTimer"] = (
+    const updateLoopTaunt: ArmyCoordinatorShape["updateLoopTaunt"] = (
       sessionId,
       step,
     ) =>
@@ -1229,6 +1214,16 @@ export const makeArmyCoordinator = (): Effect.Effect<
           ] as const;
         });
       });
+
+    const getLoopTauntSlot: ArmyCoordinatorShape["getLoopTauntSlot"] = (
+      sessionId,
+    ) =>
+      Ref.get(stateRef).pipe(
+        Effect.map((state) => {
+          const session = state.sessions.get(sessionId);
+          return session?.phase === "active" ? session.loopTaunt : undefined;
+        }),
+      );
 
     const abortSession: ArmyCoordinatorShape["abortSession"] = (
       sessionId,
@@ -1256,6 +1251,7 @@ export const makeArmyCoordinator = (): Effect.Effect<
         dispatch((state, nowMs) =>
           failSession(state, { nowMs, participantId, reason, sessionId }),
         ).pipe(Effect.flatMap(Effect.fromResult)),
+      getLoopTauntSlot,
       getSessions,
       join,
       leave: (participantId) =>
@@ -1263,7 +1259,7 @@ export const makeArmyCoordinator = (): Effect.Effect<
       onSessionEnded: sessionEndedEvents.subscribe,
       progress,
       loopTaunt,
-      loopTauntTimer,
+      updateLoopTaunt,
       sync,
     };
 
