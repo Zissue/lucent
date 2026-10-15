@@ -34,6 +34,7 @@ const makeHarness = (flushCompletes: boolean) => {
   const events: string[] = [];
   const exited = makeSignal();
   const willQuitListeners = new Set<(event: ElectronWillQuitEvent) => void>();
+  const beforeQuitListeners = new Set<() => void>();
   const flushStarted = Effect.sync(() => {
     events.push("flush");
   });
@@ -55,6 +56,14 @@ const makeHarness = (flushCompletes: boolean) => {
     getVersion: Effect.succeed("1.0.0"),
     on: (eventName, listener) =>
       Effect.sync(() => {
+        if (eventName === "before-quit") {
+          const beforeQuit = () =>
+            listener({ preventDefault: () => undefined });
+          beforeQuitListeners.add(beforeQuit);
+          return () => {
+            beforeQuitListeners.delete(beforeQuit);
+          };
+        }
         if (eventName !== "will-quit") {
           return () => undefined;
         }
@@ -94,7 +103,17 @@ const makeHarness = (flushCompletes: boolean) => {
     }
   };
 
-  return { emitWillQuit, events, exited: exited.promise, layer };
+  const emitBeforeQuit = () => {
+    for (const listener of beforeQuitListeners) listener();
+  };
+
+  return {
+    emitBeforeQuit,
+    emitWillQuit,
+    events,
+    exited: exited.promise,
+    layer,
+  };
 };
 
 const findInstalledSignalListener = (
@@ -114,6 +133,17 @@ afterEach(() => {
 });
 
 describe("DesktopLifecycle", () => {
+  it.effect("marks quit on before-quit", () => {
+    const harness = makeHarness(true);
+    return Effect.gen(function* () {
+      const lifecycle = yield* DesktopLifecycle;
+      yield* lifecycle.register;
+      expect(yield* lifecycle.isQuitting).toBe(false);
+      harness.emitBeforeQuit();
+      expect(yield* lifecycle.isQuitting).toBe(true);
+    }).pipe(Effect.provide(harness.layer), Effect.scoped);
+  });
+
   it.live("keeps the process alive until cleanup after quit finishes", () =>
     Effect.gen(function* () {
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });

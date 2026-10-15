@@ -46,7 +46,10 @@ import { ScriptWorkspace } from "../scripting/ScriptWorkspace";
 import { DesktopSettings } from "../settings/DesktopSettings";
 import { DesktopUpdates } from "../updates/DesktopUpdates";
 import { DesktopApplicationMenu } from "../window/DesktopApplicationMenu";
-import { DesktopWindows } from "../window/DesktopWindows";
+import {
+  DesktopWindows,
+  type DesktopRendererInfo,
+} from "../window/DesktopWindows";
 import { DesktopEnvironment } from "./DesktopEnvironment";
 import { DesktopGameRendererRecovery } from "./DesktopGameRendererRecovery";
 import { layer as desktopLifecycleLayer } from "./DesktopLifecycle";
@@ -90,9 +93,11 @@ const servicesStartupNeverCalls = Layer.mergeAll(
 
 const makeStartup = (options: {
   readonly checkNow: Effect.Effect<UpdateCheckState>;
+  readonly describe?: Effect.Effect<DesktopRendererInfo | undefined>;
   readonly showMessageBox: Effect.Effect<MessageBoxReturnValue>;
 }) => {
   const events: string[] = [];
+  const dialogParents: (number | undefined)[] = [];
   const directory = mkdtempSync(join(tmpdir(), "lucent-runtime-"));
   const willQuitListeners = new Set<(event: ElectronWillQuitEvent) => void>();
 
@@ -185,7 +190,10 @@ const makeStartup = (options: {
       shouldPromptForAvailableRelease: () => Effect.succeed(true),
     }),
     Layer.mock(ElectronDialog, {
-      showMessageBox: () => options.showMessageBox,
+      showMessageBox: (_, parentWindowId) => {
+        dialogParents.push(parentWindowId);
+        return options.showMessageBox;
+      },
     }),
     Layer.mock(ElectronTheme, {
       setThemeMode: () => Effect.void,
@@ -194,6 +202,16 @@ const makeStartup = (options: {
     Layer.mock(DesktopWindows, {
       observe: () => Effect.void,
       open: () => Effect.succeed(1),
+      describe: () =>
+        options.describe ??
+        Effect.succeed({
+          rendererId: 1,
+          windowId: 42,
+          kind: "game",
+          ownerId: undefined,
+          generation: 0,
+          ready: true,
+        }),
       setBackgroundColor: () => Effect.void,
     }),
     Layer.mock(DesktopApplicationMenu, { install: Effect.void }),
@@ -242,7 +260,7 @@ const makeStartup = (options: {
       ),
     );
 
-  return { quitDuringStartup };
+  return { quitDuringStartup, dialogParents };
 };
 
 beforeEach(() => {
@@ -254,6 +272,26 @@ afterEach(() => {
 });
 
 describe("makeDesktopRuntime", () => {
+  it.live(
+    "skips the automatic prompt when its parent closed during the check",
+    () =>
+      Effect.gen(function* () {
+        const resolved = yield* Deferred.make<void>();
+        const startup = makeStartup({
+          checkNow: Deferred.succeed(resolved, undefined).pipe(
+            Effect.as(availableUpdate),
+          ),
+          describe: Effect.succeed(undefined),
+          showMessageBox: Effect.never,
+        });
+
+        const events = yield* startup.quitDuringStartup(resolved);
+
+        expect(events).toEqual(["cleanup", "runtime-settled"]);
+        expect(startup.dialogParents).toEqual([]);
+      }),
+  );
+
   it.live("cleans up when quit arrives during the startup update check", () =>
     Effect.gen(function* () {
       const checking = yield* Deferred.make<void>();
@@ -283,6 +321,7 @@ describe("makeDesktopRuntime", () => {
       const events = yield* startup.quitDuringStartup(dialogOpen);
 
       expect(events).toEqual(["cleanup", "runtime-settled"]);
+      expect(startup.dialogParents).toEqual([42]);
     }),
   );
 });
