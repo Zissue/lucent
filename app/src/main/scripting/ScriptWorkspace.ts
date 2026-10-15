@@ -107,25 +107,31 @@ export const layer = Layer.effect(
         catch: (cause) => makeError("create-directory", path, cause),
       });
 
-    const createConfig = atomicFile
-      .createIfMissing(configPath, SCRIPT_WORKSPACE_CONFIG)
-      .pipe(
-        Effect.mapError((cause) =>
-          makeError("create-config", configPath, cause),
-        ),
-        Effect.asVoid,
-      );
+    const createConfig = Effect.gen(function* () {
+      const current = yield* fileSystem
+        .stat(configPath)
+        .pipe(
+          Effect.catchReason("PlatformError", "NotFound", () => Effect.void),
+        );
+      if (current?.size === 0n) {
+        yield* atomicFile.write(configPath, SCRIPT_WORKSPACE_CONFIG);
+      } else if (current === undefined) {
+        yield* atomicFile.createIfMissing(configPath, SCRIPT_WORKSPACE_CONFIG);
+      }
+    }).pipe(
+      Effect.mapError((cause) => makeError("create-config", configPath, cause)),
+      Effect.asVoid,
+    );
 
     const copyTypes = Effect.gen(function* () {
       const current = yield* fileSystem
         .readFileString(typesPath)
         .pipe(
-          Effect.catch((error) =>
-            error.reason._tag === "NotFound" ? Effect.void : Effect.fail(error),
-          ),
+          Effect.catchReason("PlatformError", "NotFound", () => Effect.void),
         );
       if (
         current !== undefined &&
+        !GENERATED_TYPES_PREFIX.startsWith(current) &&
         !current.startsWith(GENERATED_TYPES_PREFIX)
       ) {
         return;

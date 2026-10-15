@@ -9,7 +9,6 @@ import * as Fiber from "effect/Fiber";
 import { FileSystem } from "effect/FileSystem";
 import * as PlatformError from "effect/PlatformError";
 import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
-import { vi } from "vitest";
 
 import { DesktopEnvironment } from "../app/DesktopEnvironment";
 import {
@@ -46,7 +45,7 @@ const makeFixture = async () => {
     platform: process.platform,
     workspaceDir,
   });
-  const initializeEffect = (fileSystemLayer = NodeFileSystem.layer) =>
+  const initialize = (fileSystemLayer = NodeFileSystem.layer) =>
     Effect.gen(function* () {
       const workspace = yield* ScriptWorkspace;
       yield* workspace.initialize;
@@ -63,8 +62,7 @@ const makeFixture = async () => {
       ),
     );
   return {
-    initialize: initializeEffect,
-    initializeEffect,
+    initialize,
     paths: resolveScriptWorkspacePaths(workspaceDir),
     workspaceDir,
   };
@@ -118,28 +116,12 @@ testLayer(NodeFileSystem.layer)("ScriptWorkspace", (it) => {
             : "declare module 'lucent' {}\n";
         const started = Promise.withResolvers<void>();
         const release = Promise.withResolvers<void>();
-        const writeFile = fs.writeFile.bind(fs);
-        const copyFile = fs.copyFile.bind(fs);
         const partialWrite = async (path: string) => {
-          await writeFile(path, "", "utf8");
+          await fs.writeFile(path, "", "utf8");
           started.resolve();
           await release.promise;
           throw new Error("interrupted write");
         };
-        const writeSpy = vi
-          .spyOn(fs, "writeFile")
-          .mockImplementation((path, data, options) =>
-            path === target && name === "jsconfig.json"
-              ? partialWrite(target)
-              : writeFile(path, data, options),
-          );
-        const copySpy = vi
-          .spyOn(fs, "copyFile")
-          .mockImplementation((from, to, mode) =>
-            to === target && name === "script-api.d.ts"
-              ? partialWrite(target)
-              : copyFile(from, to, mode),
-          );
         const fileSystem = yield* FileSystem;
         const delayed = FileSystem.of({
           ...fileSystem,
@@ -158,24 +140,15 @@ testLayer(NodeFileSystem.layer)("ScriptWorkspace", (it) => {
               : fileSystem.writeFile(path, data, options),
         });
         const initializing = yield* Effect.forkChild(
-          fixture.initializeEffect(Layer.succeed(FileSystem, delayed)),
+          fixture.initialize(Layer.succeed(FileSystem, delayed)),
         );
-        yield* Effect.gen(function* () {
-          yield* Effect.promise(() => started.promise);
-          const interruption = yield* Effect.forkChild(
-            Fiber.interrupt(initializing),
-          );
-          yield* Effect.yieldNow;
-          release.resolve();
-          yield* Fiber.join(interruption);
-        }).pipe(
-          Effect.ensuring(
-            Effect.sync(() => {
-              writeSpy.mockRestore();
-              copySpy.mockRestore();
-            }),
-          ),
+        yield* Effect.promise(() => started.promise);
+        const interruption = yield* Effect.forkChild(
+          Fiber.interrupt(initializing),
         );
+        yield* Effect.yieldNow;
+        release.resolve();
+        yield* Fiber.join(interruption);
 
         yield* fixture.initialize();
 
