@@ -444,11 +444,6 @@ describe("DesktopWindows renderer generations", () => {
             windows.markRendererReady(firstLifetime),
           );
           expect(error.detail).toBe("Failed to mark renderer ready: 101");
-          const latest = yield* windows.lifetime(rendererId);
-          if (latest?.isCurrent()) {
-            yield* windows.markRendererReady(latest);
-            expect((yield* windows.describe(rendererId))?.ready).toBe(true);
-          }
         }).pipe(Effect.provide(harness.layer));
       },
     );
@@ -515,6 +510,10 @@ describe("DesktopWindows document commits", () => {
         contents.emit("did-navigate");
         expect(sender.lifetime.isCurrent()).toBe(false);
         expect((yield* windows.describe(id))?.generation).toBe(2);
+        const latest = yield* windows.lifetime(id);
+        expect(latest?.isCurrent()).toBe(true);
+        yield* windows.markRendererReady(latest!);
+        expect((yield* windows.describe(id))?.ready).toBe(true);
       }).pipe(Effect.provide(harness.layer));
     },
   );
