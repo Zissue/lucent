@@ -17,6 +17,7 @@ import { DesktopEnvironment } from "../app/DesktopEnvironment";
 import { ElectronApp } from "../electron/ElectronApp";
 import {
   GitHubScriptPackageClient,
+  GitHubScriptPackageClientError,
   type GitHubCommitResolution,
   type GitHubScriptPackageClientShape,
 } from "./GitHubScriptPackageClient";
@@ -95,7 +96,8 @@ const refuseRenamesInto = (
 };
 
 const makeManagerHarness = (options: {
-  readonly archivePath?: string;
+  readonly archivePath?: string | ((ref: string | undefined) => string);
+  readonly downloadError?: GitHubScriptPackageClientError;
   readonly directoryTree?: string | Effect.Effect<string>;
   readonly onRemove?: (
     name: string,
@@ -111,6 +113,7 @@ const makeManagerHarness = (options: {
   readonly workspaceDir: string;
 }) => {
   let downloadCount = 0;
+  const archiveRequests: (string | undefined)[] = [];
   const requests: Parameters<
     GitHubScriptPackageClientShape["resolveCommit"]
   >[0][] = [];
@@ -119,14 +122,22 @@ const makeManagerHarness = (options: {
   >[0][] = [];
 
   const client = GitHubScriptPackageClient.of({
-    downloadArchive: ({ targetPath }) =>
-      Effect.promise(async () => {
-        downloadCount += 1;
-        if (options.archivePath !== undefined) {
-          await fs.copyFile(options.archivePath, targetPath);
-        }
-        await options.onDownload?.();
-      }),
+    downloadArchive: ({ ref, targetPath }) =>
+      options.downloadError !== undefined
+        ? Effect.fail(options.downloadError)
+        : Effect.promise(async () => {
+            archiveRequests.push(ref);
+            downloadCount += 1;
+            if (options.archivePath !== undefined) {
+              await fs.copyFile(
+                typeof options.archivePath === "string"
+                  ? options.archivePath
+                  : options.archivePath(ref),
+                targetPath,
+              );
+            }
+            await options.onDownload?.();
+          }),
     resolveCommit: (input) =>
       Effect.suspend(() => {
         requests.push(input);
@@ -208,6 +219,7 @@ const makeManagerHarness = (options: {
   );
 
   return {
+    archiveRequests,
     downloadCount: () => downloadCount,
     directoryRequests,
     layer,
@@ -2225,3 +2237,196 @@ describe("script package leftovers", () => {
       }),
   );
 });
+
+it.effect("restores the installed commit after the tracked branch moves", () =>
+  Effect.gen(function* () {
+    const { archivePath, destination, workspaceDir } = yield* installedPackage;
+    const initialArchive = join(dirname(workspaceDir), "initial.tgz");
+    const initialSource = join(dirname(workspaceDir), "initial-source");
+    yield* Effect.promise(() =>
+      Promise.all([
+        write(
+          join(initialSource, "repository-commit", "package.json"),
+          '{"name":"example"}',
+        ),
+        write(join(initialSource, "repository-commit", "index.js"), OLD_SOURCE),
+        fs.rm(destination, { recursive: true }),
+      ]),
+    );
+    yield* Effect.promise(() =>
+      createTar({ cwd: initialSource, file: initialArchive, gzip: true }, [
+        "repository-commit",
+      ]),
+    );
+    let remoteCommit = INSTALLED_COMMIT;
+    const harness = makeManagerHarness({
+      workspaceDir,
+      archivePath: (ref) =>
+        ref === INSTALLED_COMMIT ? initialArchive : archivePath,
+      resolution: Effect.sync(() => ({
+        status: "modified",
+        commit: remoteCommit,
+      })),
+    });
+    const { manager, catalog, state } = yield* harness.services;
+    const installed = yield* manager.install({
+      repositoryUrl: "https://github.com/example/package",
+      ref: "main",
+    });
+    expect(installed.status).toBe("completed");
+    remoteCommit = REMOTE_COMMIT;
+    yield* manager.checkUpdate({ packageName: PACKAGE_NAME });
+    yield* Effect.promise(() =>
+      write(join(destination, "index.js"), "local edit"),
+    );
+    const restored = yield* manager.restore({ packageName: PACKAGE_NAME });
+    expect(restored.status).toBe("completed");
+    expect(
+      yield* Effect.promise(() =>
+        fs.readFile(join(destination, "index.js"), "utf8"),
+      ),
+    ).toBe(OLD_SOURCE);
+    expect(harness.archiveRequests).toEqual([
+      INSTALLED_COMMIT,
+      INSTALLED_COMMIT,
+    ]);
+    expect((yield* catalog.getOverview).packages[0]).toMatchObject({
+      integrity: "verified",
+      source: { resolvedCommit: INSTALLED_COMMIT, requestedRef: "main" },
+      update: {
+        status: "available",
+        revision: { kind: "commit", sha: REMOTE_COMMIT },
+      },
+    });
+    expect(yield* state.get(PACKAGE_NAME)).toMatchObject({
+      source: { resolvedCommit: INSTALLED_COMMIT, requestedRef: "main" },
+    });
+  }),
+);
+
+it.effect(
+  "points to Update when the installed commit cannot be downloaded",
+  () =>
+    Effect.gen(function* () {
+      const { managed, workspaceDir, destination } = yield* installedPackage;
+      const harness = makeManagerHarness({
+        workspaceDir,
+        managed,
+        downloadError: new GitHubScriptPackageClientError({
+          kind: "not-found",
+          detail: "Not found",
+        }),
+        resolution: { status: "modified", commit: REMOTE_COMMIT },
+      });
+      const { manager, state } = yield* harness.services;
+      const error = yield* manager
+        .restore({ packageName: PACKAGE_NAME })
+        .pipe(Effect.flip);
+      expect(error.message).toContain("use Update");
+      expect(yield* state.get(PACKAGE_NAME)).toEqual(managed);
+      expect(
+        yield* Effect.promise(() =>
+          fs.readFile(join(destination, "index.js"), "utf8"),
+        ),
+      ).toBe(OLD_SOURCE);
+    }),
+);
+
+it.effect(
+  "refuses to follow a branch when a bundled copy has only an installed tree",
+  () =>
+    Effect.gen(function* () {
+      const { managed, workspaceDir } = yield* installedPackage;
+      const harness = makeManagerHarness({
+        workspaceDir,
+        managed: {
+          ...managed,
+          source: {
+            kind: "directory",
+            repositoryUrl: "https://github.com/example/package",
+            requestedRef: "main",
+            subdirectory: PACKAGE_SUBDIRECTORY,
+            resolvedTree: INSTALLED_TREE,
+          },
+        },
+        resolution: { status: "modified", commit: REMOTE_COMMIT },
+      });
+      const { manager, state } = yield* harness.services;
+      const error = yield* manager
+        .restore({ packageName: PACKAGE_NAME })
+        .pipe(Effect.flip);
+      expect(error.message).toContain("Use Update");
+      expect(harness.requests).toEqual([]);
+      expect(harness.downloadCount()).toBe(0);
+      expect(yield* state.get(PACKAGE_NAME)).toMatchObject({
+        source: { resolvedTree: INSTALLED_TREE, requestedRef: "main" },
+      });
+    }),
+);
+
+it.effect(
+  "restores a directory package from its installed repository commit and tree",
+  () =>
+    Effect.gen(function* () {
+      const { destination, managed, workspaceDir } = yield* installedPackage;
+      const root = dirname(workspaceDir);
+      const source = join(root, "directory-source");
+      yield* Effect.promise(() =>
+        Promise.all([
+          write(
+            join(
+              source,
+              "repository-commit",
+              PACKAGE_SUBDIRECTORY,
+              "package.json",
+            ),
+            '{"name":"example"}',
+          ),
+          write(
+            join(source, "repository-commit", PACKAGE_SUBDIRECTORY, "index.js"),
+            OLD_SOURCE,
+          ),
+        ]),
+      );
+      const archivePath = join(root, "directory.tgz");
+      yield* Effect.promise(() =>
+        createTar({ cwd: source, file: archivePath, gzip: true }, [
+          "repository-commit",
+        ]),
+      );
+      const sourceRecord = {
+        kind: "directory",
+        repositoryUrl: "https://github.com/example/package",
+        requestedRef: "main",
+        subdirectory: PACKAGE_SUBDIRECTORY,
+        resolvedCommit: INSTALLED_COMMIT,
+        resolvedTree: INSTALLED_TREE,
+      } as const;
+      const harness = makeManagerHarness({
+        archivePath,
+        workspaceDir,
+        managed: { ...managed, source: sourceRecord },
+        resolution: { status: "modified", commit: REMOTE_COMMIT },
+        directoryTree: REMOTE_TREE,
+      });
+      const { manager, state, catalog } = yield* harness.services;
+      yield* Effect.promise(() =>
+        write(join(destination, "index.js"), "edited"),
+      );
+      const result = yield* manager.restore({ packageName: PACKAGE_NAME });
+      expect(result.status).toBe("completed");
+      expect(harness.archiveRequests).toEqual([INSTALLED_COMMIT]);
+      expect(harness.requests).toEqual([]);
+      expect(harness.directoryRequests).toEqual([]);
+      expect((yield* state.get(PACKAGE_NAME))?.source).toEqual(sourceRecord);
+      expect((yield* catalog.getOverview).packages[0]).toMatchObject({
+        integrity: "verified",
+        update: { status: "unchecked" },
+      });
+      expect(
+        yield* Effect.promise(() =>
+          fs.readFile(join(destination, "index.js"), "utf8"),
+        ),
+      ).toBe(OLD_SOURCE);
+    }),
+);

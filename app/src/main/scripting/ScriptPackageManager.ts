@@ -108,6 +108,9 @@ export interface ScriptPackageManagerShape {
     readonly confirmModified?: boolean;
     readonly packageName: string;
   }) => Effect.Effect<ScriptPackageMutationResult, ScriptPackageManagerError>;
+  readonly restore: (input: {
+    readonly packageName: string;
+  }) => Effect.Effect<ScriptPackageMutationResult, ScriptPackageManagerError>;
   readonly update: (input: {
     readonly packageName: string;
     readonly replaceModified?: boolean;
@@ -1379,6 +1382,7 @@ export const layer = Layer.effect(
       ),
       install,
       remove,
+      restore: (input) => update({ ...input, replaceModified: true }),
       update,
     });
   }),
