@@ -2136,3 +2136,51 @@ describe("script package integrity rows", () => {
     }),
   );
 });
+
+it.effect("lists another manager's saved package copy during an update", () =>
+  Effect.gen(function* () {
+    const { archivePath, destination, managed, workspaceDir } =
+      yield* installedPackage;
+    const first = makeManagerHarness({
+      archivePath,
+      managed,
+      workspaceDir,
+      resolution: { status: "modified", commit: REMOTE_COMMIT },
+    });
+    const { manager } = yield* first.services;
+    const moved = Promise.withResolvers<string>();
+    const finishMove = Promise.withResolvers<void>();
+    const rename = fs.rename;
+    vi.spyOn(fs, "rename").mockImplementation((from, to) =>
+      rename(from, to).then(() => {
+        if (
+          resolve(String(from)) === destination &&
+          String(to).includes(".lucent-package-backup-")
+        ) {
+          moved.resolve(String(to));
+          return finishMove.promise;
+        }
+      }),
+    );
+    const updating = yield* manager
+      .update({ packageName: PACKAGE_NAME })
+      .pipe(Effect.forkScoped);
+    const savedPath = yield* Effect.promise(() => moved.promise);
+    const second = makeManagerHarness({
+      workspaceDir,
+      resolution: { status: "modified", commit: REMOTE_COMMIT },
+    });
+    const { manager: other } = yield* second.services;
+    const copies = yield* other.listLeftovers;
+    const contents = yield* Effect.promise(() =>
+      fs.readFile(join(savedPath, "index.js"), "utf8"),
+    );
+    finishMove.resolve();
+    const updated = yield* Fiber.join(updating);
+    expect(updated.status).toBe("completed");
+    expect(contents).toBe(OLD_SOURCE);
+    expect(copies).toEqual([
+      { path: dirname(savedPath), packageName: PACKAGE_NAME },
+    ]);
+  }),
+);

@@ -83,6 +83,10 @@ export class ScriptPackageManagerError extends Schema.TaggedError<ScriptPackageM
 }
 
 export interface ScriptPackageManagerShape {
+  readonly listLeftovers: Effect.Effect<
+    readonly { readonly path: string; readonly packageName?: string }[],
+    ScriptPackageManagerError
+  >;
   readonly checkUpdate: (input: {
     readonly packageName: string;
   }) => Effect.Effect<ScriptCatalogOverview, ScriptPackageManagerError>;
@@ -1353,6 +1357,7 @@ export const layer = Layer.effect(
 
     return ScriptPackageManager.of({
       checkUpdate,
+      listLeftovers: Effect.succeed([]),
       install,
       remove,
       update,
