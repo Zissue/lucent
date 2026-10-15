@@ -54,7 +54,7 @@ export const installDesktopNativeAppearanceSync = (
   });
 
 const checkForUpdatesAtStartup = Effect.fn("checkForUpdatesAtStartup")(
-  function* (rendererId: number) {
+  function* () {
     const dialog = yield* ElectronDialog;
     const lifecycle = yield* DesktopLifecycle;
     const updates = yield* DesktopUpdates;
@@ -68,13 +68,13 @@ const checkForUpdatesAtStartup = Effect.fn("checkForUpdatesAtStartup")(
         },
       }),
     );
-    const parent = yield* windows.describe(rendererId);
-    if (parent === undefined || (yield* lifecycle.isQuitting)) {
+    const parentWindowId = yield* windows.getVisibleParentWindowId;
+    if (parentWindowId === undefined || (yield* lifecycle.isQuitting)) {
       return;
     }
     yield* showUpdateCheckDialog(updateState, {
       mode: "automatic",
-      parentWindowId: parent.windowId,
+      parentWindowId,
       isQuitting: lifecycle.isQuitting,
       dialog,
       updates,
@@ -133,7 +133,7 @@ export const makeDesktopRuntime = <ROut, E>(
 
       const requestedLaunchMode =
         cliOptions.launchMode ?? settings.preferences.launchMode;
-      const rendererId = yield* windows.open(
+      yield* windows.open(
         requestedLaunchMode === "account-manager" ? "account-manager" : "game",
       );
       yield* installDesktopDevRendererReload;
@@ -141,7 +141,7 @@ export const makeDesktopRuntime = <ROut, E>(
       if (settings.preferences.checkForUpdates) {
         yield* Effect.raceFirst(
           lifecycle.awaitQuit,
-          checkForUpdatesAtStartup(rendererId),
+          checkForUpdatesAtStartup(),
         );
       }
 

@@ -101,11 +101,13 @@ const makeHarness = (useGameTabs = false) => {
           native: {},
           webContents: window.webContents,
           getBounds: () => bounds,
-          setBounds: (value) => {
+          setBounds: (
+            value: Parameters<ElectronGameViewHandle["setBounds"]>[0],
+          ) => {
             bounds = value;
           },
           setBackgroundColor: () => undefined,
-        } as ElectronGameViewHandle;
+        } as unknown as ElectronGameViewHandle;
       }),
     loadFile: () =>
       Effect.suspend(() => {

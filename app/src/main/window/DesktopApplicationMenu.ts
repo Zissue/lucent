@@ -22,6 +22,7 @@ import {
   type DesktopChromiumPerformanceRecordingState,
 } from "../app/observability/DesktopChromiumPerformanceRecording";
 import { DesktopEnvironment } from "../app/DesktopEnvironment";
+import { DesktopLifecycle } from "../app/DesktopLifecycle";
 import { logFailure } from "../../shared/logFailure";
 import { ElectronSession } from "../electron/ElectronSession";
 import { ElectronApp } from "../electron/ElectronApp";
@@ -31,7 +32,6 @@ import { DesktopSettings } from "../settings/DesktopSettings";
 import { DesktopUpdates } from "../updates/DesktopUpdates";
 import { DesktopWindows } from "./DesktopWindows";
 import { showUpdateCheckDialog } from "./UpdateCheckDialog";
-import { DesktopLifecycle } from "../app/DesktopLifecycle";
 
 export interface DesktopApplicationMenuShape {
   readonly install: Effect.Effect<void, never, Scope.Scope>;

@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setImmediate as yieldToEventLoop } from "node:timers/promises";
 
 import { afterEach, beforeEach, describe, expect, it } from "@effect/vitest";
 import { vi } from "vitest";
@@ -254,9 +255,7 @@ const makeStartup = (options: {
       );
       return yield* Effect.gen(function* () {
         yield* Deferred.await(waitingOn);
-        yield* Effect.promise(
-          () => new Promise<void>((resolve) => setImmediate(resolve)),
-        );
+        yield* Effect.promise(() => yieldToEventLoop());
         emitWillQuit();
         yield* Effect.promise(() =>
           vi
