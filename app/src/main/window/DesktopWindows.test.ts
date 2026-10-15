@@ -377,10 +377,13 @@ describe("DesktopWindows.getVisibleParentWindowId", () => {
         const windows = yield* DesktopWindows;
         expect(yield* windows.open("game")).toBe(104);
         expect(yield* windows.getVisibleParentWindowId).toBe(101);
+        expect(yield* windows.isVisibleParentWindow(101)).toBe(true);
+        expect(yield* windows.isVisibleParentWindow(104)).toBe(false);
         harness.created
           .get(101)!
           .emit("close", { preventDefault: () => undefined });
         expect(yield* windows.getVisibleParentWindowId).toBeUndefined();
+        expect(yield* windows.isVisibleParentWindow(101)).toBe(false);
       }).pipe(Effect.provide(harness.layer));
     },
   );
@@ -390,19 +393,26 @@ describe("DesktopWindows.getVisibleParentWindowId", () => {
       const harness = makeHarness();
       return Effect.gen(function* () {
         const windows = yield* DesktopWindows;
+        expect(yield* windows.isVisibleParentWindow(101)).toBe(false);
         yield* windows.open("account-manager");
         yield* windows.open("game");
         yield* windows.open("packets", { ownerRendererId: 102 });
         expect(yield* windows.getVisibleParentWindowId).toBe(101);
+        expect(yield* windows.isVisibleParentWindow(101)).toBe(true);
+        expect(yield* windows.isVisibleParentWindow(102)).toBe(true);
+        expect(yield* windows.isVisibleParentWindow(103)).toBe(false);
         const manager = harness.created.get(101)!;
         manager.emit("close", { preventDefault: () => undefined });
         expect(yield* windows.getVisibleParentWindowId).toBe(102);
+        expect(yield* windows.isVisibleParentWindow(101)).toBe(false);
         harness.created
           .get(102)!
           .emit("close", { preventDefault: () => undefined });
         expect(yield* windows.getVisibleParentWindowId).toBeUndefined();
+        expect(yield* windows.isVisibleParentWindow(102)).toBe(false);
         yield* windows.open("account-manager");
         expect(yield* windows.getVisibleParentWindowId).toBe(101);
+        expect(yield* windows.isVisibleParentWindow(101)).toBe(true);
       }).pipe(Effect.provide(harness.layer));
     },
   );
@@ -415,9 +425,11 @@ describe("DesktopWindows.getVisibleParentWindowId", () => {
         onCreated: () =>
           Effect.gen(function* () {
             expect(yield* windows.getVisibleParentWindowId).toBeUndefined();
+            expect(yield* windows.isVisibleParentWindow(101)).toBe(false);
           }),
       });
       expect(yield* windows.getVisibleParentWindowId).toBe(101);
+      expect(yield* windows.isVisibleParentWindow(101)).toBe(true);
     }).pipe(Effect.provide(harness.layer));
   });
 });

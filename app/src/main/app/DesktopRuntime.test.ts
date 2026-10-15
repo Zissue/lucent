@@ -107,6 +107,7 @@ const makeStartup = (options: {
   const dialogFailed = Deferred.makeUnsafe<void>();
   const directory = mkdtempSync(join(tmpdir(), "lucent-runtime-"));
   const willQuitListeners = new Set<(event: ElectronWillQuitEvent) => void>();
+  const parentWindowId = options.parentWindowId ?? Effect.succeed(42);
 
   const emitWillQuit = (): void => {
     let defaultPrevented = false;
@@ -218,16 +219,9 @@ const makeStartup = (options: {
     Layer.mock(DesktopWindows, {
       observe: () => Effect.void,
       open: () => Effect.succeed(1),
-      describe: () =>
-        Effect.succeed({
-          rendererId: 1,
-          windowId: 42,
-          kind: "game",
-          ownerId: undefined,
-          generation: 0,
-          ready: true,
-        }),
-      getVisibleParentWindowId: options.parentWindowId ?? Effect.succeed(42),
+      getVisibleParentWindowId: parentWindowId,
+      isVisibleParentWindow: (windowId) =>
+        parentWindowId.pipe(Effect.map((id) => id === windowId)),
       setBackgroundColor: () => Effect.void,
     }),
     Layer.mock(DesktopApplicationMenu, { install: Effect.void }),

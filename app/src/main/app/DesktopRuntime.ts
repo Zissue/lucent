@@ -75,7 +75,12 @@ const checkForUpdatesAtStartup = Effect.fn("checkForUpdatesAtStartup")(
     yield* showUpdateCheckDialog(updateState, {
       mode: "automatic",
       parentWindowId,
-      isQuitting: lifecycle.isQuitting,
+      isQuitting: Effect.gen(function* () {
+        return (
+          (yield* lifecycle.isQuitting) ||
+          !(yield* windows.isVisibleParentWindow(parentWindowId))
+        );
+      }),
       dialog,
       updates,
     }).pipe(

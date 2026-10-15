@@ -123,6 +123,7 @@ export interface DesktopWindowsShape {
     rendererId: number,
   ) => Effect.Effect<DesktopRendererInfo | undefined>;
   readonly getVisibleParentWindowId: Effect.Effect<number | undefined>;
+  readonly isVisibleParentWindow: (windowId: number) => Effect.Effect<boolean>;
   readonly generationGuard: (
     rendererId: number,
     generation: number,
@@ -743,30 +744,47 @@ const makeDesktopWindows = Effect.gen(function* () {
           }),
       });
 
+  const getVisibleParentWindow = (
+    record: DesktopRendererRecord,
+  ): ElectronNativeWindowHandle | undefined => {
+    if (
+      "host" in record
+        ? record.kind !== "game-host"
+        : isGameViewRecord(record) ||
+          getDesktopWindowDefinition(record.kind).scope === "game-child"
+    ) {
+      return undefined;
+    }
+    const scope = "host" in record ? record.host.scope : record.scope;
+    const window =
+      "host" in record ? record.host.window : nativeWindowForRenderer(record);
+    return scope.state._tag !== "Closed" &&
+      !closingWindows.has(window) &&
+      isElectronWindowUsable(window) &&
+      window.isVisible()
+      ? window
+      : undefined;
+  };
+
   const getVisibleParentWindowId = Effect.sync(() => {
     for (const record of renderers.values()) {
-      if (
-        "host" in record
-          ? record.kind !== "game-host"
-          : isGameViewRecord(record) ||
-            getDesktopWindowDefinition(record.kind).scope === "game-child"
-      ) {
-        continue;
-      }
-      const scope = "host" in record ? record.host.scope : record.scope;
-      const window =
-        "host" in record ? record.host.window : nativeWindowForRenderer(record);
-      if (
-        scope.state._tag !== "Closed" &&
-        !closingWindows.has(window) &&
-        isElectronWindowUsable(window) &&
-        window.isVisible()
-      ) {
+      const window = getVisibleParentWindow(record);
+      if (window !== undefined) {
         return window.id;
       }
     }
     return undefined;
   });
+
+  const isVisibleParentWindow: DesktopWindowsShape["isVisibleParentWindow"] = (
+    windowId,
+  ) =>
+    Effect.sync(() => {
+      for (const record of renderers.values()) {
+        if (getVisibleParentWindow(record)?.id === windowId) return true;
+      }
+      return false;
+    });
 
   const describe: DesktopWindowsShape["describe"] = (rendererId) =>
     Effect.sync(() => {
@@ -2074,6 +2092,7 @@ const makeDesktopWindows = Effect.gen(function* () {
     getRendererIds,
     describe,
     getVisibleParentWindowId,
+    isVisibleParentWindow,
     generationGuard,
     getGameViewHostState,
     getGameViewPresentation,
