@@ -23,7 +23,6 @@ export const findLeftoverPackageCopies = async (
   )) {
     if (
       !entry.isDirectory() ||
-      entry.isSymbolicLink() ||
       ![SCRIPT_PACKAGE_BACKUP_PREFIX, SCRIPT_PACKAGE_REMOVE_PREFIX].some(
         (prefix) => entry.name.startsWith(prefix),
       )
@@ -37,7 +36,7 @@ export const findLeftoverPackageCopies = async (
     for (const child of children.toSorted((left, right) =>
       left.name.localeCompare(right.name),
     )) {
-      if (!child.isDirectory() || child.isSymbolicLink()) continue;
+      if (!child.isDirectory()) continue;
       try {
         packageName = (
           await readScriptPackageManifest(

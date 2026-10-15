@@ -59,6 +59,7 @@ import {
   createMemo,
   createSignal,
   For,
+  on,
   onCleanup,
   onMount,
   Show,
@@ -111,6 +112,7 @@ import {
   type ScriptCatalogPageCache,
 } from "./scriptCatalogPages";
 import { confirmScriptPackageRemoval } from "./scriptPackageRemoval";
+import { refreshScriptPackageLeftovers } from "./scriptPackageLeftovers";
 import {
   checkScriptPackageUpdatesSerially,
   formatScriptPackageUpdateCheckFailures,
@@ -986,6 +988,7 @@ export function ScriptsDialog(props: ScriptsDialogProps): JSX.Element {
   const [leftoverCopies, setLeftoverCopies] = createSignal<
     readonly ScriptPackageLeftoverCopy[]
   >([]);
+  const [leftoverError, setLeftoverError] = createSignal("");
   let leftoverRequestId = 0;
   let catalogRequestId = 0;
   let scriptQueryRequestId = 0;
@@ -1539,18 +1542,12 @@ export function ScriptsDialog(props: ScriptsDialogProps): JSX.Element {
     const bridge = props.bridge;
     if (bridge === undefined || fixtureMode) return;
     const requestId = ++leftoverRequestId;
-    try {
-      const copies = await bridge.listPackageLeftovers();
-      if (requestId === leftoverRequestId && props.open)
-        setLeftoverCopies(copies);
-    } catch (cause) {
-      if (requestId === leftoverRequestId && props.open) {
-        setOperationError(
-          "Failed to find saved package folders. Refresh to try again.",
-          cause,
-        );
-      }
-    }
+    await refreshScriptPackageLeftovers({
+      list: () => bridge.listPackageLeftovers(),
+      isCurrent: () => requestId === leftoverRequestId && props.open,
+      setCopies: setLeftoverCopies,
+      setError: setLeftoverError,
+    });
   };
 
   const refreshCatalog = async (): Promise<void> => {
@@ -1566,6 +1563,15 @@ export function ScriptsDialog(props: ScriptsDialogProps): JSX.Element {
       setOperationError("Unable to load GitHub tokens. Try again.", cause);
     }
   };
+
+  createEffect(
+    on(
+      () => props.open,
+      (open) => {
+        if (open) void refreshLeftovers();
+      },
+    ),
+  );
 
   createEffect(() => {
     const revision = untrack(() => catalog().revision);
@@ -1585,7 +1591,6 @@ export function ScriptsDialog(props: ScriptsDialogProps): JSX.Element {
       return;
     }
     setError("");
-    void refreshLeftovers();
     if (revision === "") {
       void Promise.all([loadCatalog(false), refreshCredentials()]);
     } else {
@@ -1956,10 +1961,12 @@ export function ScriptsDialog(props: ScriptsDialogProps): JSX.Element {
   ): Promise<void> => {
     const bridge = props.bridge;
     if (bridge === undefined) return;
-    const result = await bridge.updatePackage({
-      packageName: entry.name,
-      ...(replaceModified ? { replaceModified: true } : {}),
-    });
+    const result = await bridge
+      .updatePackage({
+        packageName: entry.name,
+        ...(replaceModified ? { replaceModified: true } : {}),
+      })
+      .finally(refreshLeftovers);
     if (result.status === "confirmation-required") {
       askForConfirmation({
         confirmLabel: "Discard changes and update",
@@ -2008,7 +2015,8 @@ export function ScriptsDialog(props: ScriptsDialogProps): JSX.Element {
     if (bridge === undefined) return;
     confirmScriptPackageRemoval(entry, {
       askForConfirmation,
-      removePackage: (request) => bridge.removePackage(request),
+      removePackage: (request) =>
+        bridge.removePackage(request).finally(refreshLeftovers),
       applyMutation: (result) => {
         applyMutation(result);
         if (result.status === "completed" || result.status === "unchanged") {
@@ -3222,35 +3230,44 @@ export function ScriptsDialog(props: ScriptsDialogProps): JSX.Element {
                     />
                   </div>
                 </div>
-                <Show when={leftoverCopies().length > 0}>
+                <Show
+                  when={leftoverCopies().length > 0 || leftoverError() !== ""}
+                >
                   <Alert
                     class="game-scripts-dialog__package-notice"
                     variant="warning"
                   >
-                    <AlertTitle>Saved package folders found</AlertTitle>
+                    <AlertTitle>Leftover package folders</AlertTitle>
                     <AlertDescription>
-                      These folders may contain files from an interrupted update
-                      or removal. Another Lucent app may still be using them.
-                      <ul class="game-scripts-dialog__package-leftovers">
-                        <For each={leftoverCopies()}>
-                          {(copy) => (
-                            <li>
-                              <span title={copy.path}>
-                                {copy.packageName ?? copy.path}
-                              </span>
-                              <Button
-                                aria-label={`Open folder for ${copy.packageName ?? copy.path}`}
-                                onClick={() => void openPackage(copy)}
-                                size="sm"
-                                variant="secondary"
-                              >
-                                <Icon icon="folder_open" size="sm" />
-                                Open folder
-                              </Button>
-                            </li>
-                          )}
-                        </For>
-                      </ul>
+                      <Show when={leftoverError() !== ""}>
+                        <p>{leftoverError()}</p>
+                      </Show>
+                      <Show when={leftoverCopies().length > 0}>
+                        An update or removal didn't finish. These folders hold
+                        the old package files. Another open copy of Lucent may
+                        still be using them.
+                        <ul class="game-scripts-dialog__package-leftovers">
+                          <For each={leftoverCopies()}>
+                            {(copy) => (
+                              <li>
+                                <span title={copy.path}>
+                                  {copy.packageName ??
+                                    copy.path.split(/[\\/]/u).at(-1)}
+                                </span>
+                                <Button
+                                  aria-label={`Open folder for ${copy.packageName ?? copy.path.split(/[\\/]/u).at(-1)}`}
+                                  onClick={() => void openPackage(copy)}
+                                  size="sm"
+                                  variant="secondary"
+                                >
+                                  <Icon icon="folder_open" size="sm" />
+                                  Open folder
+                                </Button>
+                              </li>
+                            )}
+                          </For>
+                        </ul>
+                      </Show>
                     </AlertDescription>
                   </Alert>
                 </Show>

@@ -12,12 +12,13 @@ export const refreshScriptPackageLeftovers = async (
 ): Promise<void> => {
   try {
     const copies = await actions.list();
-    if (actions.isCurrent()) actions.setCopies(copies);
+    if (actions.isCurrent()) {
+      actions.setCopies(copies);
+      actions.setError("");
+    }
   } catch {
     if (actions.isCurrent()) {
-      actions.setError(
-        "Failed to find saved package folders. Refresh to try again.",
-      );
+      actions.setError("Couldn't check for leftover package folders.");
     }
   }
 };
