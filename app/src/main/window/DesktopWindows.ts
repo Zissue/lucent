@@ -5,7 +5,6 @@ import {
   type BrowserWindowConstructorOptions,
   type Event as ElectronEvent,
   type RenderProcessGoneDetails,
-  type WebContentsDidStartNavigationEventParams,
 } from "electron";
 
 import * as Context from "effect/Context";
@@ -1019,7 +1018,7 @@ const makeDesktopWindows = Effect.gen(function* () {
         ? record.gameView.webContents
         : record.window.webContents;
       const { rendererId, kind } = record;
-      let initialNavigationStarted = false;
+      let initialDocumentCommitted = false;
       contents.once("destroyed", () => dispose(record.scope));
       yield* listen(
         contents,
@@ -1044,57 +1043,59 @@ const makeDesktopWindows = Effect.gen(function* () {
           );
         },
       );
+      const commitDocument = (): void => {
+        if (!initialDocumentCommitted) {
+          initialDocumentCommitted = true;
+          return;
+        }
+        record.generation += 1;
+        record.rendererReady = false;
+        delete record.unavailableGeneration;
+        if (host !== undefined) updateGameViewPhase(rendererId, "loading");
+        run(
+          publish({
+            type: "reloaded",
+            rendererId,
+            kind,
+            generation: record.generation,
+          }),
+        );
+      };
+      yield* listen(contents, "did-navigate", commitDocument);
       yield* listen(
         contents,
-        "did-start-navigation",
-        ({
-          isMainFrame,
-          isSameDocument,
-        }: WebContentsDidStartNavigationEventParams) => {
-          if (!isMainFrame || isSameDocument) return;
-          if (!initialNavigationStarted) {
-            initialNavigationStarted = true;
-            return;
-          }
-          record.generation += 1;
-          record.rendererReady = false;
-          delete record.unavailableGeneration;
-          if (host !== undefined) updateGameViewPhase(rendererId, "loading");
-          run(
-            publish({
-              type: "reloaded",
-              rendererId,
-              kind,
-              generation: record.generation,
-            }),
-          );
+        "did-fail-provisional-load",
+        (
+          _event: ElectronEvent,
+          code: number,
+          _description: string,
+          _url: string,
+          isMainFrame: boolean,
+        ) => {
+          if (isMainFrame && code !== -3) commitDocument();
         },
       );
       if (host === undefined || !isGameViewRecord(record)) return;
-      yield* listen(contents, "did-start-loading", () => {
-        record.rendererReady = false;
-        updateGameViewPhase(rendererId, "loading");
-      });
+      yield* listen(
+        contents,
+        "did-fail-load",
+        (
+          _event: ElectronEvent,
+          code: number,
+          description: string,
+          _url: string,
+          isMainFrame: boolean,
+        ) => {
+          if (isMainFrame && code !== -3)
+            updateGameViewPhase(rendererId, "error", description);
+        },
+      );
       yield* listen(contents, "focus", () => {
         gameHosts.activate(host, record);
         if (host.groupControlsOpen && !host.groupControlsNativeDialogOpen) {
           gameHosts.setGroupControlsOpen(host, false);
         }
       });
-      yield* listen(
-        contents,
-        "did-fail-load",
-        (
-          _event: ElectronEvent,
-          _code: number,
-          description: string,
-          _url: string,
-          isMainFrame: boolean,
-        ) => {
-          if (isMainFrame === false) return;
-          updateGameViewPhase(rendererId, "error", description);
-        },
-      );
     },
     (effect, ...[record]) => effect.pipe(Scope.provide(record.scope)),
   );
