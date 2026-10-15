@@ -2102,37 +2102,37 @@ describe("script package integrity rows", () => {
         }),
     );
   }
-});
 
-it.effect("keeps invalid edited manifests invalid after rejection", () =>
-  Effect.gen(function* () {
-    const { destination, managed, workspaceDir } = yield* installedPackage;
-    const harness = makeManagerHarness({
-      managed,
-      workspaceDir,
-      resolution: { status: "modified", commit: REMOTE_COMMIT },
-    });
-    const { manager, catalog } = yield* harness.services;
-    yield* catalog.getOverview;
-    yield* Effect.promise(() =>
-      write(join(destination, "package.json"), '{"name":"different"}'),
-    );
-    const result = yield* manager.remove({ packageName: PACKAGE_NAME });
-    expect(result).toEqual({
-      status: "confirmation-required",
-      packageName: PACKAGE_NAME,
-      reason: "local-modifications",
-    });
-    expect((yield* catalog.getOverview).packages[0]).toMatchObject({
-      status: "invalid",
-      path: destination,
-      diagnostic:
-        'The installed package name is "example", but package.json declares "different".',
-    });
-    expect(
+  it.effect("keeps invalid edited manifests invalid after rejection", () =>
+    Effect.gen(function* () {
+      const { destination, managed, workspaceDir } = yield* installedPackage;
+      const harness = makeManagerHarness({
+        managed,
+        workspaceDir,
+        resolution: { status: "modified", commit: REMOTE_COMMIT },
+      });
+      const { manager, catalog } = yield* harness.services;
+      yield* catalog.getOverview;
       yield* Effect.promise(() =>
-        fs.readFile(join(destination, "package.json"), "utf8"),
-      ),
-    ).toBe('{"name":"different"}');
-  }),
-);
+        write(join(destination, "package.json"), '{"name":"different"}'),
+      );
+      const result = yield* manager.remove({ packageName: PACKAGE_NAME });
+      expect(result).toEqual({
+        status: "confirmation-required",
+        packageName: PACKAGE_NAME,
+        reason: "local-modifications",
+      });
+      expect((yield* catalog.getOverview).packages[0]).toMatchObject({
+        status: "invalid",
+        path: destination,
+        diagnostic:
+          'The installed package name is "example", but package.json declares "different".',
+      });
+      expect(
+        yield* Effect.promise(() =>
+          fs.readFile(join(destination, "package.json"), "utf8"),
+        ),
+      ).toBe('{"name":"different"}');
+    }),
+  );
+});

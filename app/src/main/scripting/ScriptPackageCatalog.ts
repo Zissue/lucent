@@ -967,9 +967,7 @@ const replaceDiscoveredPackage = (
   }
 
   const packages = current.catalog.packages.filter(
-    (entry) =>
-      resolve(entry.path) !== normalizedRoot &&
-      !(entry.status === "valid" && entry.name === managed.name),
+    (entry) => resolve(entry.path) !== normalizedRoot,
   );
   packages.push(summary);
   const packageIndex = new Map(current.packages);
