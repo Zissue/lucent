@@ -195,6 +195,7 @@ describe("DesktopObservability", () => {
             component: "c".repeat(64),
             message: "m".repeat(1_024),
             annotations: { rendererId: 42 },
+            repeatKey: "r".repeat(256),
             suppressed: 1,
             lastAt: "1970-01-01T00:00:00.000Z",
           },
@@ -410,7 +411,7 @@ describe("DesktopObservability", () => {
 
   for (const renderer of [false, true]) {
     it.effect(
-      `separates repeatKey details without writing the key for renderer=${renderer}`,
+      `separates repeatKey details and names the key only in tails for renderer=${renderer}`,
       () =>
         Effect.gen(function* () {
           const root = yield* Effect.promise(makeFixture);
@@ -460,11 +461,12 @@ describe("DesktopObservability", () => {
               data: { key: "second" },
               ...(renderer ? { annotations: { rendererId: 42 } } : {}),
             },
-            ...Array.from({ length: 2 }, () => ({
+            ...["first", "second"].map((repeatKey) => ({
               at: "1970-01-01T00:00:00.000Z",
               level: "warn",
               component: "environment",
               message: "Automation failed",
+              repeatKey,
               suppressed: 1,
               lastAt: "1970-01-01T00:00:00.000Z",
               ...(renderer ? { annotations: { rendererId: 42 } } : {}),
@@ -473,6 +475,57 @@ describe("DesktopObservability", () => {
         }),
     );
   }
+
+  it.effect(
+    "keeps collapsing main records after renderers fill their windows",
+    () =>
+      Effect.gen(function* () {
+        const root = yield* Effect.promise(makeFixture);
+        yield* Effect.gen(function* () {
+          const observability = yield* DesktopObservability;
+          for (let i = 0; i < 1_100; i++) {
+            ipcMain.emit(
+              RendererLogIpc.record.channel,
+              { sender: { id: 42 } },
+              { level: "warn", message: `Renderer flood ${i}` },
+            );
+            if (i % 200 === 199) yield* observability.flush;
+          }
+          for (let i = 0; i < 2; i++) {
+            yield* Effect.logWarning("Retrying").pipe(
+              Effect.annotateLogs({ component: "relay" }),
+            );
+          }
+        }).pipe(Effect.provide(makeLayer(root, false)));
+        const records = yield* Effect.promise(() =>
+          readRecords(join(root, "logs", "lucent.log")),
+        );
+        expect(
+          records.filter(
+            (record) =>
+              typeof record === "object" &&
+              record !== null &&
+              "component" in record &&
+              record.component === "relay",
+          ),
+        ).toEqual([
+          {
+            at: "1970-01-01T00:00:00.000Z",
+            level: "warn",
+            component: "relay",
+            message: "Retrying",
+          },
+          {
+            at: "1970-01-01T00:00:00.000Z",
+            level: "warn",
+            component: "relay",
+            message: "Retrying",
+            suppressed: 1,
+            lastAt: "1970-01-01T00:00:00.000Z",
+          },
+        ]);
+      }),
+  );
 
   it.effect("writes renderer records and removes the handler on shutdown", () =>
     Effect.gen(function* () {

@@ -209,7 +209,7 @@ describe("DesktopLogWriter", () => {
     ]);
   });
 
-  it("serializes at flush and supports bigint, circular values, and errors", async () => {
+  it("serializes when written and supports bigint, circular values, and errors", async () => {
     const { logFilePath, writer } = await makeFixture();
     const cause = new Error("broken");
     cause.stack = "Error: broken\n    at test";
@@ -220,7 +220,7 @@ describe("DesktopLogWriter", () => {
     await writer.close();
     expect(await readRecords(logFilePath)).toEqual([
       {
-        message: "after",
+        message: "before",
         bigint: "42",
         cause: {
           name: "Error",

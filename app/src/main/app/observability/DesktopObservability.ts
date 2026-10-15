@@ -25,6 +25,7 @@ import { RendererLogIpc } from "../../../shared/ipc/rendererLog";
 
 const REPEAT_WINDOW_MS = 60_000;
 const MAX_REPEAT_WINDOWS = 1_000;
+const MAX_RENDERER_REPEAT_WINDOWS = 200;
 const TAIL_BATCH_SIZE = 100;
 
 interface RepeatWindow {
@@ -32,6 +33,7 @@ interface RepeatWindow {
   readonly component: unknown;
   readonly message: string;
   readonly rendererId?: number;
+  readonly repeatKey?: string;
   readonly startedAt: number;
   suppressed: number;
   lastAt: number;
@@ -77,7 +79,8 @@ const makeDesktopObservability = Effect.gen(function* () {
   const logsDir = join(env.appDataDir, "logs");
   const logFilePath = join(logsDir, "lucent.log");
   const bufferedWriter = makeBufferedDesktopLogWriter(logsDir, logFilePath);
-  const windows = new Map<string, RepeatWindow>();
+  const mainWindows = new Map<string, RepeatWindow>();
+  const rendererWindows = new Map<string, RepeatWindow>();
 
   const writeTail = (window: RepeatWindow, at: Date) => {
     bufferedWriter.write({
@@ -88,6 +91,9 @@ const makeDesktopObservability = Effect.gen(function* () {
       ...(window.rendererId === undefined
         ? {}
         : { annotations: { rendererId: window.rendererId } }),
+      ...(window.repeatKey === undefined
+        ? {}
+        : { repeatKey: window.repeatKey }),
       suppressed: window.suppressed,
       lastAt: DateTime.formatIso(DateTime.makeUnsafe(window.lastAt)),
     });
@@ -97,18 +103,20 @@ const makeDesktopObservability = Effect.gen(function* () {
     yield* Effect.promise(() => bufferedWriter.flush());
     let now = yield* DateTime.nowAsDate;
     let emitted = 0;
-    for (const [key, window] of windows) {
-      if (!all && now.getTime() - window.startedAt < REPEAT_WINDOW_MS) {
-        continue;
-      }
-      windows.delete(key);
-      if (window.suppressed === 0) {
-        continue;
-      }
-      writeTail(window, now);
-      if (++emitted % TAIL_BATCH_SIZE === 0) {
-        yield* Effect.promise(() => bufferedWriter.flush());
-        now = yield* DateTime.nowAsDate;
+    for (const windows of [mainWindows, rendererWindows]) {
+      for (const [key, window] of windows) {
+        if (!all && now.getTime() - window.startedAt < REPEAT_WINDOW_MS) {
+          continue;
+        }
+        windows.delete(key);
+        if (window.suppressed === 0) {
+          continue;
+        }
+        writeTail(window, now);
+        if (++emitted % TAIL_BATCH_SIZE === 0) {
+          yield* Effect.promise(() => bufferedWriter.flush());
+          now = yield* DateTime.nowAsDate;
+        }
       }
     }
   }, Effect.uninterruptible);
@@ -128,6 +136,10 @@ const makeDesktopObservability = Effect.gen(function* () {
       message,
       repeatKey,
     ]);
+    const [windows, maxWindows] =
+      rendererId === undefined
+        ? [mainWindows, MAX_REPEAT_WINDOWS]
+        : [rendererWindows, MAX_RENDERER_REPEAT_WINDOWS];
     const window = windows.get(key);
     if (window !== undefined) {
       if (at - window.startedAt < REPEAT_WINDOW_MS) {
@@ -139,12 +151,13 @@ const makeDesktopObservability = Effect.gen(function* () {
       windows.delete(key);
     }
     const kept = bufferedWriter.write(output);
-    if (kept && windows.size < MAX_REPEAT_WINDOWS) {
+    if (kept && windows.size < maxWindows) {
       windows.set(key, {
         level,
         component,
         message,
         ...(rendererId === undefined ? {} : { rendererId }),
+        ...(repeatKey === undefined ? {} : { repeatKey }),
         startedAt: at,
         suppressed: 0,
         lastAt: at,
