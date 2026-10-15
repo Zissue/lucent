@@ -106,28 +106,22 @@ const makeDesktopObservability = Effect.gen(function* () {
         ? messages[0]
         : options.message;
     const level = options.logLevel.toLowerCase();
-    if (typeof message === "string") {
-      const key = `${level}\u0000${String(component)}\u0000${message}`;
-      const at = options.date.getTime();
-      const window = windows.get(key);
-      if (window !== undefined && at - window.startedAt < REPEAT_WINDOW_MS) {
+    const at = options.date.getTime();
+    const key =
+      typeof message === "string"
+        ? `${level}\u0000${String(component)}\u0000${message}`
+        : undefined;
+    const window = key === undefined ? undefined : windows.get(key);
+    if (key !== undefined && window !== undefined) {
+      if (at - window.startedAt < REPEAT_WINDOW_MS) {
         window.suppressed++;
         window.lastAt = at;
         return;
       }
-      if (window !== undefined && window.suppressed > 0) {
+      if (window.suppressed > 0) {
         writeTail(window, options.date);
       }
-      if (window !== undefined || windows.size < MAX_REPEAT_WINDOWS) {
-        windows.set(key, {
-          level,
-          component,
-          message,
-          startedAt: at,
-          suppressed: 0,
-          lastAt: at,
-        });
-      }
+      windows.delete(key);
     }
     const errors = messages
       .slice(1)
@@ -139,7 +133,7 @@ const makeDesktopObservability = Effect.gen(function* () {
         ).map((error) => desktopLogErrorDetails(error)),
       );
     }
-    bufferedWriter.write({
+    const kept = bufferedWriter.write({
       at: options.date.toISOString(),
       level,
       component,
@@ -151,6 +145,21 @@ const makeDesktopObservability = Effect.gen(function* () {
         ? {}
         : { traceId: span.traceId, spanId: span.spanId }),
     });
+    if (
+      kept &&
+      typeof message === "string" &&
+      key !== undefined &&
+      windows.size < MAX_REPEAT_WINDOWS
+    ) {
+      windows.set(key, {
+        level,
+        component,
+        message,
+        startedAt: at,
+        suppressed: 0,
+        lastAt: at,
+      });
+    }
   });
 
   const flush: DesktopObservabilityShape["flush"] = Effect.promise(() =>

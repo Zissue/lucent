@@ -134,7 +134,7 @@ const isMissingFileError = (cause: unknown): boolean =>
 export interface DesktopLogWriter {
   readonly close: (finalRecord?: unknown) => Promise<void>;
   readonly flush: () => Promise<void>;
-  readonly write: (record: unknown) => void;
+  readonly write: (record: unknown) => boolean;
 }
 
 export const makeBufferedDesktopLogWriter = (
@@ -294,9 +294,9 @@ export const makeBufferedDesktopLogWriter = (
     flushTimer.unref?.();
   };
 
-  const write = (record: unknown): void => {
+  const write = (record: unknown): boolean => {
     if (closed) {
-      return;
+      return false;
     }
     const level = recordLevel(record);
     if (pending.length >= MAX_PENDING_RECORDS) {
@@ -311,7 +311,7 @@ export const makeBufferedDesktopLogWriter = (
       dropped[lowestLevel] = (dropped[lowestLevel] ?? 0) + 1;
       if (evictionIndex === -1) {
         scheduleFlush(0);
-        return;
+        return false;
       }
       pending.splice(evictionIndex, 1);
     }
@@ -319,6 +319,7 @@ export const makeBufferedDesktopLogWriter = (
     scheduleFlush(
       pending.length === MAX_PENDING_RECORDS ? 0 : FLUSH_INTERVAL_MS,
     );
+    return true;
   };
 
   const flush = async (): Promise<void> => {

@@ -231,6 +231,49 @@ describe("DesktopObservability", () => {
     }),
   );
 
+  it.effect("writes an error in full after the writer drops it", () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.promise(makeFixture);
+      const logFilePath = join(root, "logs", "lucent.log");
+      yield* Effect.gen(function* () {
+        const observability = yield* DesktopObservability;
+        for (let i = 0; i < 256; i++) {
+          yield* Effect.logError("Backlog").pipe(
+            Effect.annotateLogs({ component: `queue-${i}` }),
+          );
+        }
+        yield* Effect.logError("Relay failed", new Error("first")).pipe(
+          Effect.annotateLogs({ component: "relay" }),
+        );
+        yield* observability.flush;
+        yield* Effect.logError("Relay failed", new Error("second")).pipe(
+          Effect.annotateLogs({ component: "relay" }),
+        );
+        yield* observability.flush;
+      }).pipe(Effect.provide(makeLayer(root, false)));
+      const records = yield* Effect.promise(() => readRecords(logFilePath));
+      expect(
+        records.filter(
+          (record) =>
+            typeof record === "object" &&
+            record !== null &&
+            "component" in record &&
+            record.component === "relay",
+        ),
+      ).toEqual([
+        {
+          at: "1970-01-01T00:00:00.000Z",
+          level: "error",
+          component: "relay",
+          message: "Relay failed",
+          error: [
+            { name: "Error", message: "second", stack: expect.any(String) },
+          ],
+        },
+      ]);
+    }),
+  );
+
   it.effect("writes an expired tail before the next full occurrence", () =>
     Effect.gen(function* () {
       const root = yield* Effect.promise(makeFixture);
