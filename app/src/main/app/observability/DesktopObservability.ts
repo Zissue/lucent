@@ -4,6 +4,7 @@ import * as Cause from "effect/Cause";
 import * as Logger from "effect/Logger";
 import * as References from "effect/References";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Scope from "effect/Scope";
@@ -13,6 +14,19 @@ import {
   desktopLogErrorDetails,
   makeBufferedDesktopLogWriter,
 } from "./DesktopLogWriter";
+
+const REPEAT_WINDOW_MS = 60_000;
+const MAX_REPEAT_WINDOWS = 1_000;
+const TAIL_BATCH_SIZE = 100;
+
+interface RepeatWindow {
+  readonly level: string;
+  readonly component: unknown;
+  readonly message: string;
+  readonly startedAt: number;
+  suppressed: number;
+  lastAt: number;
+}
 
 const boundReason = (reason: Cause.Reason<unknown>): Cause.Reason<unknown> => {
   if (Cause.isFailReason(reason) && reason.error instanceof Error) {
@@ -44,6 +58,38 @@ const makeDesktopObservability = Effect.gen(function* () {
   const logsDir = join(env.appDataDir, "logs");
   const logFilePath = join(logsDir, "lucent.log");
   const bufferedWriter = makeBufferedDesktopLogWriter(logsDir, logFilePath);
+  const windows = new Map<string, RepeatWindow>();
+
+  const writeTail = (window: RepeatWindow, at: Date) => {
+    bufferedWriter.write({
+      at: at.toISOString(),
+      level: window.level,
+      component: window.component,
+      message: window.message,
+      suppressed: window.suppressed,
+      lastAt: DateTime.formatIso(DateTime.makeUnsafe(window.lastAt)),
+    });
+  };
+
+  const drainWindows = Effect.fnUntraced(function* (all: boolean) {
+    yield* Effect.promise(() => bufferedWriter.flush());
+    let now = yield* DateTime.nowAsDate;
+    let emitted = 0;
+    for (const [key, window] of windows) {
+      if (!all && now.getTime() - window.startedAt < REPEAT_WINDOW_MS) {
+        continue;
+      }
+      windows.delete(key);
+      if (window.suppressed === 0) {
+        continue;
+      }
+      writeTail(window, now);
+      if (++emitted % TAIL_BATCH_SIZE === 0) {
+        yield* Effect.promise(() => bufferedWriter.flush());
+        now = yield* DateTime.nowAsDate;
+      }
+    }
+  }, Effect.uninterruptible);
 
   const logger = Logger.make<unknown, void>((options) => {
     const {
@@ -55,6 +101,28 @@ const makeDesktopObservability = Effect.gen(function* () {
     const messages = Array.isArray(options.message)
       ? options.message
       : [options.message];
+    const message =
+      typeof messages[0] === "string" || messages.length === 1
+        ? messages[0]
+        : options.message;
+    const level = options.logLevel.toLowerCase();
+    const at = options.date.getTime();
+    const key =
+      typeof message === "string"
+        ? `${level}\u0000${String(component)}\u0000${message}`
+        : undefined;
+    const window = key === undefined ? undefined : windows.get(key);
+    if (key !== undefined && window !== undefined) {
+      if (at - window.startedAt < REPEAT_WINDOW_MS) {
+        window.suppressed++;
+        window.lastAt = at;
+        return;
+      }
+      if (window.suppressed > 0) {
+        writeTail(window, options.date);
+      }
+      windows.delete(key);
+    }
     const errors = messages
       .slice(1)
       .map((value) => desktopLogErrorDetails(value));
@@ -65,14 +133,11 @@ const makeDesktopObservability = Effect.gen(function* () {
         ).map((error) => desktopLogErrorDetails(error)),
       );
     }
-    bufferedWriter.write({
+    const kept = bufferedWriter.write({
       at: options.date.toISOString(),
-      level: options.logLevel.toLowerCase(),
+      level,
       component,
-      message:
-        typeof messages[0] === "string" || messages.length === 1
-          ? messages[0]
-          : options.message,
+      message,
       ...(data === undefined ? {} : { data }),
       ...(Object.keys(annotations).length === 0 ? {} : { annotations }),
       ...(errors.length === 0 ? {} : { error: errors }),
@@ -80,6 +145,21 @@ const makeDesktopObservability = Effect.gen(function* () {
         ? {}
         : { traceId: span.traceId, spanId: span.spanId }),
     });
+    if (
+      kept &&
+      typeof message === "string" &&
+      key !== undefined &&
+      windows.size < MAX_REPEAT_WINDOWS
+    ) {
+      windows.set(key, {
+        level,
+        component,
+        message,
+        startedAt: at,
+        suppressed: 0,
+        lastAt: at,
+      });
+    }
   });
 
   const flush: DesktopObservabilityShape["flush"] = Effect.promise(() =>
@@ -124,6 +204,12 @@ const makeDesktopObservability = Effect.gen(function* () {
 
   yield* Effect.addFinalizer(() =>
     Effect.promise(() => bufferedWriter.close()),
+  );
+  yield* Effect.addFinalizer(() => drainWindows(true));
+  yield* drainWindows(false).pipe(
+    Effect.delay(REPEAT_WINDOW_MS),
+    Effect.forever,
+    Effect.forkScoped,
   );
 
   return Context.make(

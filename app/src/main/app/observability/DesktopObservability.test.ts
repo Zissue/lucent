@@ -8,9 +8,13 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
+import * as TestClock from "effect/testing/TestClock";
 
 import { layer as desktopEnvironmentLayer } from "../DesktopEnvironment";
-import { layer as desktopObservabilityLayer } from "./DesktopObservability";
+import {
+  DesktopObservability,
+  layer as desktopObservabilityLayer,
+} from "./DesktopObservability";
 
 const fixtureDirectories = new Set<string>();
 
@@ -67,6 +71,425 @@ afterEach(async () => {
 });
 
 describe("DesktopObservability", () => {
+  it.effect("collapses 100 warnings until the window expires", () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.promise(makeFixture);
+      const logFilePath = join(root, "logs", "lucent.log");
+      yield* Effect.gen(function* () {
+        const observability = yield* DesktopObservability;
+        yield* Effect.logWarning("Loop failed", new Error("offline")).pipe(
+          Effect.annotateLogs({
+            component: "relay",
+            data: { attempt: 1 },
+            requestId: "first",
+          }),
+          Effect.withSpan("retry"),
+        );
+        yield* TestClock.adjust("10 seconds");
+        for (let i = 0; i < 99; i++) {
+          yield* Effect.logWarning(
+            "Loop failed",
+            new Error("still offline"),
+          ).pipe(
+            Effect.annotateLogs({
+              component: "relay",
+              data: { attempt: i + 2 },
+              requestId: "repeat",
+            }),
+            Effect.withSpan("retry"),
+          );
+        }
+        yield* observability.flush;
+        expect(yield* Effect.promise(() => readRecords(logFilePath))).toEqual([
+          {
+            at: "1970-01-01T00:00:00.000Z",
+            level: "warn",
+            component: "relay",
+            message: "Loop failed",
+            data: { attempt: 1 },
+            annotations: { requestId: "first" },
+            error: [
+              { name: "Error", message: "offline", stack: expect.any(String) },
+            ],
+            traceId: expect.any(String),
+            spanId: expect.any(String),
+          },
+        ]);
+        yield* TestClock.adjust("50 seconds");
+        yield* observability.flush;
+        expect(yield* Effect.promise(() => readRecords(logFilePath))).toEqual([
+          {
+            at: "1970-01-01T00:00:00.000Z",
+            level: "warn",
+            component: "relay",
+            message: "Loop failed",
+            data: { attempt: 1 },
+            annotations: { requestId: "first" },
+            error: [
+              { name: "Error", message: "offline", stack: expect.any(String) },
+            ],
+            traceId: expect.any(String),
+            spanId: expect.any(String),
+          },
+          {
+            at: "1970-01-01T00:01:00.000Z",
+            level: "warn",
+            component: "relay",
+            message: "Loop failed",
+            suppressed: 99,
+            lastAt: "1970-01-01T00:00:10.000Z",
+          },
+        ]);
+      }).pipe(Effect.provide(makeLayer(root, false)));
+      expect(
+        yield* Effect.promise(() => readRecords(logFilePath)),
+      ).toHaveLength(2);
+    }),
+  );
+
+  it.effect("keeps message, component, and level windows separate", () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.promise(makeFixture);
+      yield* Effect.gen(function* () {
+        for (let i = 0; i < 2; i++) {
+          yield* Effect.logWarning("Retrying").pipe(
+            Effect.annotateLogs({ component: "relay" }),
+          );
+          yield* Effect.logWarning("Disconnected").pipe(
+            Effect.annotateLogs({ component: "relay" }),
+          );
+          yield* Effect.logWarning("Retrying").pipe(
+            Effect.annotateLogs({ component: "loader" }),
+          );
+          yield* Effect.logError("Retrying").pipe(
+            Effect.annotateLogs({ component: "relay" }),
+          );
+        }
+      }).pipe(Effect.provide(makeLayer(root, false)));
+      expect(
+        yield* Effect.promise(() =>
+          readRecords(join(root, "logs", "lucent.log")),
+        ),
+      ).toEqual([
+        {
+          at: "1970-01-01T00:00:00.000Z",
+          level: "warn",
+          component: "relay",
+          message: "Retrying",
+        },
+        {
+          at: "1970-01-01T00:00:00.000Z",
+          level: "warn",
+          component: "relay",
+          message: "Disconnected",
+        },
+        {
+          at: "1970-01-01T00:00:00.000Z",
+          level: "warn",
+          component: "loader",
+          message: "Retrying",
+        },
+        {
+          at: "1970-01-01T00:00:00.000Z",
+          level: "error",
+          component: "relay",
+          message: "Retrying",
+        },
+        {
+          at: "1970-01-01T00:00:00.000Z",
+          level: "warn",
+          component: "relay",
+          message: "Retrying",
+          suppressed: 1,
+          lastAt: "1970-01-01T00:00:00.000Z",
+        },
+        {
+          at: "1970-01-01T00:00:00.000Z",
+          level: "warn",
+          component: "relay",
+          message: "Disconnected",
+          suppressed: 1,
+          lastAt: "1970-01-01T00:00:00.000Z",
+        },
+        {
+          at: "1970-01-01T00:00:00.000Z",
+          level: "warn",
+          component: "loader",
+          message: "Retrying",
+          suppressed: 1,
+          lastAt: "1970-01-01T00:00:00.000Z",
+        },
+        {
+          at: "1970-01-01T00:00:00.000Z",
+          level: "error",
+          component: "relay",
+          message: "Retrying",
+          suppressed: 1,
+          lastAt: "1970-01-01T00:00:00.000Z",
+        },
+      ]);
+    }),
+  );
+
+  it.effect("writes an error in full after the writer drops it", () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.promise(makeFixture);
+      const logFilePath = join(root, "logs", "lucent.log");
+      yield* Effect.gen(function* () {
+        const observability = yield* DesktopObservability;
+        for (let i = 0; i < 256; i++) {
+          yield* Effect.logError("Backlog").pipe(
+            Effect.annotateLogs({ component: `queue-${i}` }),
+          );
+        }
+        yield* Effect.logError("Relay failed", new Error("first")).pipe(
+          Effect.annotateLogs({ component: "relay" }),
+        );
+        yield* observability.flush;
+        yield* Effect.logError("Relay failed", new Error("second")).pipe(
+          Effect.annotateLogs({ component: "relay" }),
+        );
+        yield* observability.flush;
+      }).pipe(Effect.provide(makeLayer(root, false)));
+      const records = yield* Effect.promise(() => readRecords(logFilePath));
+      expect(
+        records.filter(
+          (record) =>
+            typeof record === "object" &&
+            record !== null &&
+            "component" in record &&
+            record.component === "relay",
+        ),
+      ).toEqual([
+        {
+          at: "1970-01-01T00:00:00.000Z",
+          level: "error",
+          component: "relay",
+          message: "Relay failed",
+          error: [
+            { name: "Error", message: "second", stack: expect.any(String) },
+          ],
+        },
+      ]);
+    }),
+  );
+
+  it.effect("writes an expired tail before the next full occurrence", () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.promise(makeFixture);
+      yield* Effect.gen(function* () {
+        yield* TestClock.adjust("30 seconds");
+        yield* Effect.logWarning("Retrying");
+        yield* TestClock.adjust("10 seconds");
+        yield* Effect.logWarning("Retrying");
+        yield* TestClock.adjust("50 seconds");
+        yield* Effect.logWarning("Retrying");
+        yield* TestClock.adjust("90 seconds");
+      }).pipe(Effect.provide(makeLayer(root, false)));
+      expect(
+        yield* Effect.promise(() =>
+          readRecords(join(root, "logs", "lucent.log")),
+        ),
+      ).toEqual([
+        {
+          at: "1970-01-01T00:00:30.000Z",
+          level: "warn",
+          component: "effect",
+          message: "Retrying",
+        },
+        {
+          at: "1970-01-01T00:01:30.000Z",
+          level: "warn",
+          component: "effect",
+          message: "Retrying",
+          suppressed: 1,
+          lastAt: "1970-01-01T00:00:40.000Z",
+        },
+        {
+          at: "1970-01-01T00:01:30.000Z",
+          level: "warn",
+          component: "effect",
+          message: "Retrying",
+        },
+      ]);
+    }),
+  );
+
+  it.effect(
+    "drains pending repeats at shutdown using the last repeat time",
+    () =>
+      Effect.gen(function* () {
+        const root = yield* Effect.promise(makeFixture);
+        yield* Effect.gen(function* () {
+          yield* Effect.logWarning("Retrying");
+          yield* TestClock.adjust("5 seconds");
+          yield* Effect.logWarning("Retrying");
+          yield* TestClock.adjust("5 seconds");
+          yield* Effect.logWarning("Retrying");
+          yield* TestClock.adjust("5 seconds");
+        }).pipe(Effect.provide(makeLayer(root, false)));
+        expect(
+          yield* Effect.promise(() =>
+            readRecords(join(root, "logs", "lucent.log")),
+          ),
+        ).toEqual([
+          {
+            at: "1970-01-01T00:00:00.000Z",
+            level: "warn",
+            component: "effect",
+            message: "Retrying",
+          },
+          {
+            at: "1970-01-01T00:00:15.000Z",
+            level: "warn",
+            component: "effect",
+            message: "Retrying",
+            suppressed: 2,
+            lastAt: "1970-01-01T00:00:10.000Z",
+          },
+        ]);
+      }),
+  );
+
+  it.effect("never collapses non-string record messages", () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.promise(makeFixture);
+      yield* Effect.gen(function* () {
+        const message = { ready: true };
+        for (let i = 0; i < 2; i++) {
+          yield* Effect.logInfo(message);
+          yield* Effect.logInfo(message, "detail");
+        }
+      }).pipe(Effect.provide(makeLayer(root, false)));
+      expect(
+        yield* Effect.promise(() =>
+          readRecords(join(root, "logs", "lucent.log")),
+        ),
+      ).toEqual([
+        {
+          at: "1970-01-01T00:00:00.000Z",
+          level: "info",
+          component: "effect",
+          message: { ready: true },
+        },
+        {
+          at: "1970-01-01T00:00:00.000Z",
+          level: "info",
+          component: "effect",
+          message: [{ ready: true }, "detail"],
+          error: [{ name: "NonError", message: "detail" }],
+        },
+        {
+          at: "1970-01-01T00:00:00.000Z",
+          level: "info",
+          component: "effect",
+          message: { ready: true },
+        },
+        {
+          at: "1970-01-01T00:00:00.000Z",
+          level: "info",
+          component: "effect",
+          message: [{ ready: true }, "detail"],
+          error: [{ name: "NonError", message: "detail" }],
+        },
+      ]);
+    }),
+  );
+
+  it.effect(
+    "writes new keys untracked at capacity and reclaims windows without repeats",
+    () =>
+      Effect.gen(function* () {
+        const root = yield* Effect.promise(makeFixture);
+        yield* Effect.gen(function* () {
+          const observability = yield* DesktopObservability;
+          for (let i = 0; i < 1_000; i++) {
+            yield* Effect.logInfo(`message-${i}`);
+            if (i % 100 === 99) yield* observability.flush;
+          }
+          yield* Effect.logWarning("overflow");
+          yield* Effect.logWarning("overflow");
+          yield* TestClock.adjust("60 seconds");
+          yield* observability.flush;
+          yield* Effect.logWarning("overflow");
+          yield* Effect.logWarning("overflow");
+        }).pipe(Effect.provide(makeLayer(root, false)));
+        const records = yield* Effect.promise(() =>
+          readRecords(join(root, "logs", "lucent.log")),
+        );
+        expect(records).toHaveLength(1_004);
+        expect(records[0]).toEqual({
+          at: "1970-01-01T00:00:00.000Z",
+          level: "info",
+          component: "effect",
+          message: "message-0",
+        });
+        expect(records.slice(1_000)).toEqual([
+          {
+            at: "1970-01-01T00:00:00.000Z",
+            level: "warn",
+            component: "effect",
+            message: "overflow",
+          },
+          {
+            at: "1970-01-01T00:00:00.000Z",
+            level: "warn",
+            component: "effect",
+            message: "overflow",
+          },
+          {
+            at: "1970-01-01T00:01:00.000Z",
+            level: "warn",
+            component: "effect",
+            message: "overflow",
+          },
+          {
+            at: "1970-01-01T00:01:00.000Z",
+            level: "warn",
+            component: "effect",
+            message: "overflow",
+            suppressed: 1,
+            lastAt: "1970-01-01T00:01:00.000Z",
+          },
+        ]);
+      }),
+  );
+
+  for (const expire of [false, true]) {
+    it.effect(
+      `drains 1,000 pending tails without overflowing the writer with expire=${expire}`,
+      () =>
+        Effect.gen(function* () {
+          const root = yield* Effect.promise(makeFixture);
+          yield* Effect.gen(function* () {
+            const observability = yield* DesktopObservability;
+            for (let i = 0; i < 1_000; i++) {
+              yield* Effect.logWarning(`message-${i}`);
+              yield* Effect.logWarning(`message-${i}`);
+              if (i % 100 === 99) yield* observability.flush;
+            }
+            if (expire) yield* TestClock.adjust("60 seconds");
+          }).pipe(Effect.provide(makeLayer(root, false)));
+          const records = yield* Effect.promise(() =>
+            readRecords(join(root, "logs", "lucent.log")),
+          );
+          expect(records).toHaveLength(2_000);
+          expect(records.slice(1_000)).toEqual(
+            Array.from({ length: 1_000 }, (_, i) => ({
+              at: expire
+                ? "1970-01-01T00:01:00.000Z"
+                : "1970-01-01T00:00:00.000Z",
+              level: "warn",
+              component: "effect",
+              message: `message-${i}`,
+              suppressed: 1,
+              lastAt: "1970-01-01T00:00:00.000Z",
+            })),
+          );
+        }),
+    );
+  }
+
   it.effect(
     "retains operation, cleanup, and interruption failures in the log file",
     () =>
