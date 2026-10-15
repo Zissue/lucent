@@ -79,14 +79,21 @@ describe("script package removal", () => {
     expect(test.applied).toEqual([completed]);
   });
 
-  it.each(["modified", "unmanaged"] as const)(
+  it.each([
+    [
+      "modified",
+      "example has local changes. Removing it will permanently delete the entire package folder, including your changes.",
+    ],
+    [
+      "unmanaged",
+      "example is not managed by Lucent. Removing it will permanently delete the entire package folder.",
+    ],
+  ] as const)(
     "warns before deleting a %s row",
-    async (integrity) => {
+    async (integrity, description) => {
       const test = scenario([completed]);
       confirmScriptPackageRemoval({ name: "example", integrity }, test.actions);
-      expect(test.prompts[0]?.description).toBe(
-        "example has local changes. Removing it will permanently delete the entire package folder, including your changes.",
-      );
+      expect(test.prompts[0]?.description).toBe(description);
       await test.prompts[0]?.onConfirm();
       expect(test.requests).toEqual([
         { packageName: "example", confirmModified: true },
