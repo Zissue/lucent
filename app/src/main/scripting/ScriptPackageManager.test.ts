@@ -2547,6 +2547,50 @@ describe("bundled package restore", () => {
       }),
   );
 
+  it.effect(
+    "refuses bundled restore after its package moves out of the saved folder",
+    () =>
+      Effect.gen(function* () {
+        const { manager, catalog, destination, managed, state } =
+          yield* seededBundledPackage;
+        const moved = join(dirname(destination), "moved-example");
+        yield* Effect.promise(() => fs.rename(destination, moved));
+        yield* Effect.promise(() =>
+          Promise.all([
+            write(join(destination, "package.json"), '{"name":"unrelated"}'),
+            write(join(destination, "index.js"), "unrelated files"),
+          ]),
+        );
+        yield* catalog.refresh;
+        const result = yield* manager
+          .restore({ packageName: PACKAGE_NAME })
+          .pipe(
+            Effect.match({
+              onFailure: (error) => ({
+                status: "failed",
+                message: error.message,
+              }),
+              onSuccess: (value) => value,
+            }),
+          );
+        expect(result).toEqual({
+          status: "failed",
+          message: 'Package "example" is not in its saved folder.',
+        });
+        expect(
+          yield* Effect.promise(() =>
+            fs.readFile(join(destination, "index.js"), "utf8"),
+          ),
+        ).toBe("unrelated files");
+        expect(
+          yield* Effect.promise(() =>
+            fs.readFile(join(moved, "index.js"), "utf8"),
+          ),
+        ).toBe(OLD_SOURCE);
+        expect(yield* state.get(PACKAGE_NAME)).toEqual(managed);
+      }),
+  );
+
   it.effect("tags a downloaded name mismatch as a restore failure", () =>
     Effect.gen(function* () {
       const { destination, managed, workspaceDir } = yield* installedPackage;
