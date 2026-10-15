@@ -680,3 +680,39 @@ describe("ScriptPackageCatalog", () => {
     }),
   );
 });
+
+it.live.each(["refresh", "remove"] as const)(
+  "allows a %s listener to read the committed catalog",
+  (operation) =>
+    Effect.gen(function* () {
+      const { catalog, workspace } = yield* makeCatalogHarness();
+      yield* Effect.promise(() =>
+        write(
+          join(workspace.packagesDir, "tools", "package.json"),
+          '{"name":"tools"}',
+        ),
+      );
+      yield* catalog.getOverview;
+      const names: (readonly string[])[] = [];
+      yield* catalog.onChanged(() =>
+        catalog.getOverview.pipe(
+          Effect.tap((overview) =>
+            Effect.sync(() => {
+              names.push(
+                overview.packages.map((entry) => entry.name ?? "invalid"),
+              );
+            }),
+          ),
+        ),
+      );
+      const result = yield* (
+        operation === "refresh"
+          ? catalog.refresh
+          : catalog.removePackage("tools")
+      ).pipe(Effect.timeout("200 millis"));
+      expect(names).toEqual([operation === "refresh" ? ["tools"] : []]);
+      expect(result.packages.map((entry) => entry.name)).toEqual(
+        operation === "refresh" ? ["tools"] : [],
+      );
+    }),
+);

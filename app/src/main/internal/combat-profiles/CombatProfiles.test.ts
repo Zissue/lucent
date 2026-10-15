@@ -337,3 +337,33 @@ describe("CombatProfiles", () => {
       }),
   );
 });
+
+it.live.each(["save", "reload"] as const)(
+  "allows a %s listener to read committed combat profiles",
+  (operation) =>
+    Effect.gen(function* () {
+      const { combatProfiles } = yield* makeHarness();
+      yield* combatProfiles.saveProfile(testProfile);
+      const labels: string[] = [];
+      yield* combatProfiles.onChanged(() =>
+        combatProfiles.get.pipe(
+          Effect.tap((library) =>
+            Effect.sync(() => {
+              labels.push(library.profiles.at(-1)?.label ?? "missing");
+            }),
+          ),
+        ),
+      );
+      const result = yield* (
+        operation === "save"
+          ? combatProfiles.saveProfile({ ...testProfile, label: "Committed" })
+          : combatProfiles.load
+      ).pipe(Effect.timeout("200 millis"));
+      expect(labels).toEqual([
+        operation === "save" ? "Committed" : "Farm Rotation",
+      ]);
+      expect(result.profiles.at(-1)?.label).toBe(
+        operation === "save" ? "Committed" : "Farm Rotation",
+      );
+    }),
+);

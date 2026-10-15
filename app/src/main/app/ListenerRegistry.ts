@@ -7,6 +7,10 @@ export type Listener<Value> = (
 ) => void | Effect.Effect<void, unknown>;
 
 export interface ListenerRegistry<Value> {
+  readonly publishLatest: (
+    revision: number,
+    value: Value,
+  ) => Effect.Effect<void>;
   readonly publish: (
     value: Value,
     concurrency?: 1 | "unbounded",
@@ -46,6 +50,7 @@ export const makeListenerRegistry = <Value>(
     });
 
   return {
+    publishLatest: (_revision, value) => publish(value),
     publish,
     subscribe,
   };
