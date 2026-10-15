@@ -56,6 +56,13 @@ describe("parseCliOptions", () => {
     expect(parseCliOptions(["--debug=false"])).toEqual({});
   });
 
+  it("ignores the removed --trace-projections flag", () => {
+    expect(parseCliOptions(["--trace-projections"])).toEqual({});
+    expect(parseCliOptions(["--trace-projections", "--debug"])).toEqual({
+      debug: true,
+    });
+  });
+
   it("stops parsing options after the argument terminator", () => {
     expect(
       parseCliOptions([
