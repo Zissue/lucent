@@ -1782,15 +1782,13 @@ describe("script package removal failures", () => {
         const result = yield* manager
           .remove({ packageName: PACKAGE_NAME })
           .pipe(
-            Effect.provide(
-              Logger.layer([
-                Logger.make((options) => {
-                  logs.push({
-                    level: options.logLevel,
-                    message: options.message,
-                  });
-                }),
-              ]),
+            Effect.withLogger(
+              Logger.make((options) => {
+                logs.push({
+                  level: options.logLevel,
+                  message: options.message,
+                });
+              }),
             ),
           );
         expect(result.status).toBe("completed");

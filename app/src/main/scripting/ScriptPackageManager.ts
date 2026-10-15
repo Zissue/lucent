@@ -1116,37 +1116,46 @@ export const layer = Layer.effect(
           if (input.confirmModified !== true && managed === undefined) {
             return localModifications(input.packageName);
           }
-          const temporaryRoot = yield* Effect.tryPromise({
-            try: () =>
-              fs.mkdtemp(join(env.workspaceDir, ".lucent-package-remove-")),
-            catch: (cause) =>
-              managerError(
-                "remove",
-                "Failed to create removal staging.",
-                cause,
-              ),
-          });
-          const removedPath = join(temporaryRoot, basename(root));
-          const failRemoval = Effect.fnUntraced(function* (
-            error: ScriptPackageManagerError,
-          ): Effect.fn.Return<never, ScriptPackageManagerError> {
-            const removedExists = yield* Effect.tryPromise(() =>
-              pathExists(removedPath),
-            ).pipe(Effect.orElseSucceed(() => true));
-            if (!removedExists) {
-              yield* Effect.tryPromise(() => fs.rmdir(temporaryRoot)).pipe(
-                Effect.ignore,
-              );
-            }
-            return yield* managerError(
-              "remove",
-              removedExists
-                ? `${error.message} The package is saved at ${removedPath}.`
-                : error.message,
-              error,
-            );
-          });
           return yield* Effect.gen(function* () {
+            const temporaryRoot = yield* Effect.tryPromise({
+              try: () =>
+                fs.mkdtemp(join(env.workspaceDir, ".lucent-package-remove-")),
+              catch: (cause) =>
+                managerError(
+                  "remove",
+                  "Failed to create removal staging.",
+                  cause,
+                ),
+            });
+            const removedPath = join(temporaryRoot, basename(root));
+            const removeEmptyStaging = Effect.tryPromise(() =>
+              fs.rmdir(temporaryRoot),
+            ).pipe(Effect.ignore);
+            const failRemoval = Effect.fnUntraced(function* (
+              cause: unknown,
+              restoredDetail: string,
+              unrestoredDetail = restoredDetail,
+            ): Effect.fn.Return<never, ScriptPackageManagerError> {
+              const location = yield* Effect.tryPromise(() =>
+                pathExists(removedPath),
+              ).pipe(
+                Effect.match({
+                  onFailure: () => "unknown" as const,
+                  onSuccess: (exists) =>
+                    exists ? ("present" as const) : ("absent" as const),
+                }),
+              );
+              if (location === "absent") yield* removeEmptyStaging;
+              return yield* managerError(
+                "remove",
+                location === "unknown"
+                  ? `Failed to remove the package. Its location could not be checked. Check ${root} and ${removedPath}.`
+                  : location === "present"
+                    ? `${unrestoredDetail} The package is saved at ${removedPath}.`
+                    : restoredDetail,
+                cause,
+              );
+            });
             yield* Effect.tryPromise({
               try: () => fs.rename(root, removedPath),
               catch: (cause) =>
@@ -1155,7 +1164,11 @@ export const layer = Layer.effect(
                   "Failed to stage the package for removal.",
                   cause,
                 ),
-            });
+            }).pipe(
+              Effect.catch((cause) =>
+                failRemoval(cause, "Failed to stage the package for removal."),
+              ),
+            );
             if (
               input.confirmModified !== true &&
               (yield* Effect.promise(() =>
@@ -1170,10 +1183,16 @@ export const layer = Layer.effect(
                     "Failed to restore the locally modified package.",
                     cause,
                   ),
-              });
-              yield* Effect.tryPromise(() => fs.rmdir(temporaryRoot)).pipe(
-                Effect.ignore,
+              }).pipe(
+                Effect.catch((cause) =>
+                  failRemoval(
+                    cause,
+                    "The locally modified package was restored.",
+                    "Failed to restore the locally modified package.",
+                  ),
+                ),
               );
+              yield* removeEmptyStaging;
               yield* catalog.refresh.pipe(Effect.mapError(mapCatalogError));
               return localModifications(input.packageName);
             }
@@ -1186,15 +1205,22 @@ export const layer = Layer.effect(
                 ),
               ),
               Effect.catch((error) =>
-                Effect.tryPromise({
-                  try: () => fs.rename(removedPath, root),
-                  catch: (cause) =>
-                    managerError(
-                      "remove",
+                Effect.tryPromise(() => fs.rename(removedPath, root)).pipe(
+                  Effect.match({
+                    onFailure: (restoreCause) => ({
+                      cause: error,
+                      restoreCause,
+                    }),
+                    onSuccess: () => error,
+                  }),
+                  Effect.flatMap((cause) =>
+                    failRemoval(
+                      cause,
+                      "Failed to update package state. The package was restored.",
                       "Package state failed and the package could not be restored.",
-                      { cause: error, restoreCause: cause },
                     ),
-                }).pipe(Effect.flatMap(() => error)),
+                  ),
+                ),
               ),
             );
             yield* Effect.tryPromise({
@@ -1221,7 +1247,7 @@ export const layer = Layer.effect(
               catalog: nextCatalog,
               packageName: input.packageName,
             } satisfies ScriptPackageMutationResult;
-          }).pipe(Effect.catch(failRemoval), Effect.uninterruptible);
+          }).pipe(Effect.uninterruptible);
         }),
       );
 
