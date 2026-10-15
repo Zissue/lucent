@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "@effect/vitest";
 import { vi } from "vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
@@ -18,7 +19,10 @@ import {
   ElectronApp,
   type ElectronWillQuitEvent,
 } from "../electron/ElectronApp";
-import { ElectronDialog } from "../electron/ElectronDialog";
+import {
+  ElectronDialog,
+  ElectronDialogMessageBoxError,
+} from "../electron/ElectronDialog";
 import { ElectronShell } from "../electron/ElectronShell";
 import { ElectronTheme } from "../electron/ElectronTheme";
 import { GitHubCredentials } from "../scripting/GitHubCredentials";
@@ -46,10 +50,7 @@ import { ScriptWorkspace } from "../scripting/ScriptWorkspace";
 import { DesktopSettings } from "../settings/DesktopSettings";
 import { DesktopUpdates } from "../updates/DesktopUpdates";
 import { DesktopApplicationMenu } from "../window/DesktopApplicationMenu";
-import {
-  DesktopWindows,
-  type DesktopRendererInfo,
-} from "../window/DesktopWindows";
+import { DesktopWindows } from "../window/DesktopWindows";
 import { DesktopEnvironment } from "./DesktopEnvironment";
 import { DesktopGameRendererRecovery } from "./DesktopGameRendererRecovery";
 import { layer as desktopLifecycleLayer } from "./DesktopLifecycle";
@@ -93,11 +94,15 @@ const servicesStartupNeverCalls = Layer.mergeAll(
 
 const makeStartup = (options: {
   readonly checkNow: Effect.Effect<UpdateCheckState>;
-  readonly describe?: Effect.Effect<DesktopRendererInfo | undefined>;
-  readonly showMessageBox: Effect.Effect<MessageBoxReturnValue>;
+  readonly parentWindowId?: Effect.Effect<number | undefined>;
+  readonly showMessageBox: Effect.Effect<
+    MessageBoxReturnValue,
+    ElectronDialogMessageBoxError
+  >;
 }) => {
   const events: string[] = [];
   const dialogParents: (number | undefined)[] = [];
+  const dialogFailed = Deferred.makeUnsafe<void>();
   const directory = mkdtempSync(join(tmpdir(), "lucent-runtime-"));
   const willQuitListeners = new Set<(event: ElectronWillQuitEvent) => void>();
 
@@ -122,6 +127,10 @@ const makeStartup = (options: {
     NodeFileSystem.layer,
     Logger.layer([
       Logger.make((log) => {
+        if (String(log.message) === "Failed to show startup update dialog") {
+          events.push("dialog-failed");
+          Deferred.doneUnsafe(dialogFailed, Exit.void);
+        }
         if (log.logLevel === "Error") {
           events.push(`error:${String(log.message)}`);
         }
@@ -188,6 +197,11 @@ const makeStartup = (options: {
       checkNow: () => options.checkNow,
       onStateChanged: () => unsubscribe,
       shouldPromptForAvailableRelease: () => Effect.succeed(true),
+      skipAvailableRelease: (version) =>
+        Effect.sync(() => {
+          events.push(`skip:${version}`);
+          return true;
+        }),
     }),
     Layer.mock(ElectronDialog, {
       showMessageBox: (_, parentWindowId) => {
@@ -203,7 +217,6 @@ const makeStartup = (options: {
       observe: () => Effect.void,
       open: () => Effect.succeed(1),
       describe: () =>
-        options.describe ??
         Effect.succeed({
           rendererId: 1,
           windowId: 42,
@@ -212,6 +225,7 @@ const makeStartup = (options: {
           generation: 0,
           ready: true,
         }),
+      getVisibleParentWindowId: options.parentWindowId ?? Effect.succeed(42),
       setBackgroundColor: () => Effect.void,
     }),
     Layer.mock(DesktopApplicationMenu, { install: Effect.void }),
@@ -240,6 +254,9 @@ const makeStartup = (options: {
       );
       return yield* Effect.gen(function* () {
         yield* Deferred.await(waitingOn);
+        yield* Effect.promise(
+          () => new Promise<void>((resolve) => setImmediate(resolve)),
+        );
         emitWillQuit();
         yield* Effect.promise(() =>
           vi
@@ -260,7 +277,7 @@ const makeStartup = (options: {
       ),
     );
 
-  return { quitDuringStartup, dialogParents };
+  return { quitDuringStartup, dialogParents, dialogFailed };
 };
 
 beforeEach(() => {
@@ -281,7 +298,7 @@ describe("makeDesktopRuntime", () => {
           checkNow: Deferred.succeed(resolved, undefined).pipe(
             Effect.as(availableUpdate),
           ),
-          describe: Effect.succeed(undefined),
+          parentWindowId: Effect.succeed(undefined),
           showMessageBox: Effect.never,
         });
 
@@ -289,6 +306,40 @@ describe("makeDesktopRuntime", () => {
 
         expect(events).toEqual(["cleanup", "runtime-settled"]);
         expect(startup.dialogParents).toEqual([]);
+      }),
+  );
+
+  it.live("uses another visible window after the startup window closes", () =>
+    Effect.gen(function* () {
+      const dialogOpen = yield* Deferred.make<void>();
+      const startup = makeStartup({
+        checkNow: Effect.succeed(availableUpdate),
+        parentWindowId: Effect.succeed(84),
+        showMessageBox: Deferred.succeed(dialogOpen, undefined).pipe(
+          Effect.andThen(Effect.never),
+        ),
+      });
+      const events = yield* startup.quitDuringStartup(dialogOpen);
+      expect(startup.dialogParents).toEqual([84]);
+      expect(events).toEqual(["cleanup", "runtime-settled"]);
+    }),
+  );
+
+  it.live(
+    "settles without a skip when the parent closes before the dialog shows",
+    () =>
+      Effect.gen(function* () {
+        const startup = makeStartup({
+          checkNow: Effect.succeed(availableUpdate),
+          showMessageBox: Effect.fail(
+            new ElectronDialogMessageBoxError({
+              cause: new Error("Browser window is not open: 42"),
+            }),
+          ),
+        });
+        const events = yield* startup.quitDuringStartup(startup.dialogFailed);
+        expect(startup.dialogParents).toEqual([42]);
+        expect(events).toEqual(["dialog-failed", "cleanup", "runtime-settled"]);
       }),
   );
 
