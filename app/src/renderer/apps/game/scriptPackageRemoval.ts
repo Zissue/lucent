@@ -30,9 +30,12 @@ export const confirmScriptPackageRemoval = (
     entry.integrity === "modified" || entry.integrity === "unmanaged";
   actions.askForConfirmation({
     confirmLabel: "Remove package",
-    description: warnsAboutChanges
-      ? `${entry.name} has local changes. Removing it will permanently delete the entire package folder, including your changes.`
-      : `Remove ${entry.name} and delete its entire package folder?`,
+    description:
+      entry.integrity === "unmanaged"
+        ? `${entry.name} is not managed by Lucent. Removing it will permanently delete the entire package folder.`
+        : warnsAboutChanges
+          ? `${entry.name} has local changes. Removing it will permanently delete the entire package folder, including your changes.`
+          : `Remove ${entry.name} and delete its entire package folder?`,
     destructive: true,
     onConfirm: async () => {
       const result = await actions.removePackage({
