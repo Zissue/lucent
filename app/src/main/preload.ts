@@ -270,6 +270,8 @@ const accountSettingsBridge: DesktopAccountSettingsBridge = {
 };
 
 const scriptingBridge: DesktopScriptingBridge = {
+  listPackageLeftovers: () =>
+    invoke(ScriptingIpc.listPackageLeftovers, undefined),
   checkPackageUpdate: (packageName) =>
     invoke(ScriptingIpc.checkPackageUpdate, { packageName }),
   deleteCredential: (id) => invoke(ScriptingIpc.deleteCredential, { id }),

@@ -64,6 +64,7 @@ import type {
   ScriptCatalogPage,
   ScriptCatalogPageRequest,
   ScriptPackageInstallRequest,
+  ScriptPackageLeftoverCopy,
   ScriptPackageMutationResult,
   ScriptPackageRemoveRequest,
   ScriptPackageUpdateRequest,
@@ -167,6 +168,9 @@ export interface DesktopAboutBridge {
 }
 
 export interface DesktopScriptingBridge {
+  readonly listPackageLeftovers: () => Promise<
+    readonly ScriptPackageLeftoverCopy[]
+  >;
   readonly checkPackageUpdate: (
     packageName: string,
   ) => Promise<ScriptCatalogOverview>;

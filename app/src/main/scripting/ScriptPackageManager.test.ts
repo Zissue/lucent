@@ -2160,6 +2160,7 @@ it.effect("lists another manager's saved package copy during an update", () =>
           moved.resolve(String(to));
           return finishMove.promise;
         }
+        return undefined;
       }),
     );
     const updating = yield* manager
@@ -2171,6 +2172,7 @@ it.effect("lists another manager's saved package copy during an update", () =>
       resolution: { status: "modified", commit: REMOTE_COMMIT },
     });
     const { manager: other } = yield* second.services;
+    const ownListing = yield* manager.listLeftovers.pipe(Effect.forkScoped);
     const copies = yield* other.listLeftovers;
     const contents = yield* Effect.promise(() =>
       fs.readFile(join(savedPath, "index.js"), "utf8"),
@@ -2179,8 +2181,45 @@ it.effect("lists another manager's saved package copy during an update", () =>
     const updated = yield* Fiber.join(updating);
     expect(updated.status).toBe("completed");
     expect(contents).toBe(OLD_SOURCE);
+    expect(yield* Fiber.join(ownListing)).toEqual([]);
     expect(copies).toEqual([
       { path: dirname(savedPath), packageName: PACKAGE_NAME },
     ]);
   }),
+);
+
+it.effect(
+  "reports unknown saved folders and skips staging and symlinks without changing files",
+  () =>
+    Effect.gen(function* () {
+      const { workspaceDir } = yield* installedPackage;
+      const empty = join(workspaceDir, ".lucent-package-backup-empty");
+      const unknown = join(workspaceDir, ".lucent-package-remove-unknown");
+      yield* Effect.promise(() =>
+        Promise.all([
+          fs.mkdir(empty),
+          write(join(unknown, "example", "package.json"), "invalid"),
+          fs.mkdir(join(workspaceDir, ".lucent-package-install-ignore")),
+          fs.mkdir(join(workspaceDir, ".lucent-package-seed-ignore")),
+        ]),
+      );
+      yield* Effect.promise(() =>
+        fs.symlink(empty, join(workspaceDir, ".lucent-package-backup-link")),
+      );
+      const harness = makeManagerHarness({
+        workspaceDir,
+        resolution: { status: "modified", commit: REMOTE_COMMIT },
+      });
+      const { manager } = yield* harness.services;
+      expect(yield* manager.listLeftovers).toEqual([
+        { path: empty },
+        { path: unknown },
+      ]);
+      expect(
+        yield* Effect.promise(() =>
+          fs.readFile(join(unknown, "example", "package.json"), "utf8"),
+        ),
+      ).toBe("invalid");
+      expect(yield* Effect.promise(() => fs.readdir(empty))).toEqual([]);
+    }),
 );
