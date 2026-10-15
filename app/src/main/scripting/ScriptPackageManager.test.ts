@@ -14,6 +14,7 @@ import * as Logger from "effect/Logger";
 import { create as createTar } from "tar";
 
 import { DesktopEnvironment } from "../app/DesktopEnvironment";
+import { initializeBundledScriptPackages } from "./BundledScriptPackages";
 import { ElectronApp } from "../electron/ElectronApp";
 import {
   GitHubScriptPackageClient,
@@ -96,6 +97,7 @@ const refuseRenamesInto = (
 };
 
 const makeManagerHarness = (options: {
+  readonly assetsDir?: string;
   readonly archivePath?: string | ((ref: string | undefined) => string);
   readonly downloadError?: GitHubScriptPackageClientError;
   readonly directoryTree?: string | Effect.Effect<string>;
@@ -113,7 +115,9 @@ const makeManagerHarness = (options: {
   readonly workspaceDir: string;
 }) => {
   let downloadCount = 0;
-  const archiveRequests: (string | undefined)[] = [];
+  const archiveRequests: Parameters<
+    GitHubScriptPackageClientShape["downloadArchive"]
+  >[0][] = [];
   const requests: Parameters<
     GitHubScriptPackageClientShape["resolveCommit"]
   >[0][] = [];
@@ -122,11 +126,12 @@ const makeManagerHarness = (options: {
   >[0][] = [];
 
   const client = GitHubScriptPackageClient.of({
-    downloadArchive: ({ ref, targetPath }) =>
+    downloadArchive: (request) =>
       options.downloadError !== undefined
         ? Effect.fail(options.downloadError)
         : Effect.promise(async () => {
-            archiveRequests.push(ref);
+            const { ref, targetPath } = request;
+            archiveRequests.push(request);
             downloadCount += 1;
             if (options.archivePath !== undefined) {
               await fs.copyFile(
@@ -157,7 +162,7 @@ const makeManagerHarness = (options: {
   });
   const environment = DesktopEnvironment.of({
     appDataDir: join(dirname(options.workspaceDir), "app-data"),
-    assetsDir: "/tmp/lucent-package-manager-assets",
+    assetsDir: options.assetsDir ?? "/tmp/lucent-package-manager-assets",
     isDev: true,
     platform: "darwin",
     workspaceDir: options.workspaceDir,
@@ -231,6 +236,39 @@ const makeManagerHarness = (options: {
     }).pipe(Effect.provide(layer)),
   };
 };
+
+const seededBundledPackage = Effect.gen(function* () {
+  const root = yield* Effect.promise(makeDirectory);
+  const workspaceDir = join(root, "workspace");
+  const assetsDir = join(root, "assets");
+  const source = join(root, "script-packages", "example-bundle");
+  yield* Effect.promise(() =>
+    Promise.all([
+      write(join(source, "package.json"), '{"name":"example"}'),
+      write(join(source, "index.js"), OLD_SOURCE),
+    ]),
+  );
+  const harness = makeManagerHarness({
+    assetsDir,
+    workspaceDir,
+    resolution: { status: "modified", commit: REMOTE_COMMIT },
+  });
+  yield* initializeBundledScriptPackages.pipe(
+    Effect.provide(harness.layer),
+    Effect.provide(desktopFileSystemLayer),
+  );
+  const services = yield* harness.services;
+  const managed = yield* services.state.get(PACKAGE_NAME);
+  if (managed === undefined)
+    throw new Error("Bundled setup did not install example.");
+  return {
+    ...services,
+    harness,
+    source,
+    managed,
+    destination: join(workspaceDir, "packages", managed.directory),
+  };
+});
 
 const interruptDuringSwap = <A, E>(
   destination: string,
@@ -2272,6 +2310,7 @@ it.effect("restores the installed commit after the tracked branch moves", () =>
     const installed = yield* manager.install({
       repositoryUrl: "https://github.com/example/package",
       ref: "main",
+      credentialId: "restore-token",
     });
     expect(installed.status).toBe("completed");
     remoteCommit = REMOTE_COMMIT;
@@ -2286,9 +2325,18 @@ it.effect("restores the installed commit after the tracked branch moves", () =>
         fs.readFile(join(destination, "index.js"), "utf8"),
       ),
     ).toBe(OLD_SOURCE);
-    expect(harness.archiveRequests).toEqual([
+    expect(harness.archiveRequests.map(({ ref }) => ref)).toEqual([
       INSTALLED_COMMIT,
       INSTALLED_COMMIT,
+    ]);
+    expect(
+      harness.archiveRequests.map(({ ref, credentialId }) => ({
+        ref,
+        credentialId,
+      })),
+    ).toEqual([
+      { ref: INSTALLED_COMMIT, credentialId: "restore-token" },
+      { ref: INSTALLED_COMMIT, credentialId: "restore-token" },
     ]);
     expect((yield* catalog.getOverview).packages[0]).toMatchObject({
       integrity: "verified",
@@ -2322,7 +2370,9 @@ it.effect(
       const error = yield* manager
         .restore({ packageName: PACKAGE_NAME })
         .pipe(Effect.flip);
-      expect(error.message).toContain("use Update");
+      expect(error.message).toContain(
+        "Check for updates, then use Update to install the latest version.",
+      );
       expect(yield* state.get(PACKAGE_NAME)).toEqual(managed);
       expect(
         yield* Effect.promise(() =>
@@ -2355,7 +2405,9 @@ it.effect(
       const error = yield* manager
         .restore({ packageName: PACKAGE_NAME })
         .pipe(Effect.flip);
-      expect(error.message).toContain("Use Update");
+      expect(error.message).toContain(
+        "Check for updates, then use Update to install the latest version.",
+      );
       expect(harness.requests).toEqual([]);
       expect(harness.downloadCount()).toBe(0);
       expect(yield* state.get(PACKAGE_NAME)).toMatchObject({
@@ -2415,7 +2467,9 @@ it.effect(
       );
       const result = yield* manager.restore({ packageName: PACKAGE_NAME });
       expect(result.status).toBe("completed");
-      expect(harness.archiveRequests).toEqual([INSTALLED_COMMIT]);
+      expect(harness.archiveRequests.map(({ ref }) => ref)).toEqual([
+        INSTALLED_COMMIT,
+      ]);
       expect(harness.requests).toEqual([]);
       expect(harness.directoryRequests).toEqual([]);
       expect((yield* state.get(PACKAGE_NAME))?.source).toEqual(sourceRecord);
@@ -2430,3 +2484,104 @@ it.effect(
       ).toBe(OLD_SOURCE);
     }),
 );
+
+describe("bundled package restore", () => {
+  it.effect("restores the seeded bundled copy offline", () =>
+    Effect.gen(function* () {
+      const { manager, state, catalog, harness, destination, managed } =
+        yield* seededBundledPackage;
+      yield* Effect.promise(() =>
+        write(join(destination, "index.js"), "local edit"),
+      );
+      expect((yield* catalog.refresh).packages[0]).toMatchObject({
+        integrity: "modified",
+      });
+      const result = yield* manager.restore({ packageName: PACKAGE_NAME });
+      expect(result.status).toBe("completed");
+      expect(
+        yield* Effect.promise(() =>
+          fs.readFile(join(destination, "index.js"), "utf8"),
+        ),
+      ).toBe(OLD_SOURCE);
+      expect((yield* catalog.getOverview).packages[0]).toMatchObject({
+        integrity: "verified",
+        update: { status: "unchecked" },
+        source: managed.source,
+      });
+      expect((yield* state.get(PACKAGE_NAME))?.source).toEqual(managed.source);
+      expect(harness.archiveRequests).toEqual([]);
+      expect(harness.requests).toEqual([]);
+      expect(harness.directoryRequests).toEqual([]);
+    }),
+  );
+
+  it.effect.each(["changed", "missing"] as const)(
+    "preserves edits when the app bundle is %s",
+    (change) =>
+      Effect.gen(function* () {
+        const { manager, state, harness, source, destination, managed } =
+          yield* seededBundledPackage;
+        yield* Effect.promise(() =>
+          write(join(destination, "index.js"), "local edit"),
+        );
+        yield* Effect.promise(() =>
+          change === "changed"
+            ? write(join(source, "index.js"), NEW_SOURCE)
+            : fs.rm(source, { recursive: true }),
+        );
+        const error = yield* manager
+          .restore({ packageName: PACKAGE_NAME })
+          .pipe(Effect.flip);
+        expect(error.message).toContain(
+          "Check for updates, then use Update to install the latest version.",
+        );
+        expect(
+          yield* Effect.promise(() =>
+            fs.readFile(join(destination, "index.js"), "utf8"),
+          ),
+        ).toBe("local edit");
+        expect(yield* state.get(PACKAGE_NAME)).toEqual(managed);
+        expect(harness.archiveRequests).toEqual([]);
+        expect(harness.requests).toEqual([]);
+        expect(harness.directoryRequests).toEqual([]);
+      }),
+  );
+
+  it.effect("tags a downloaded name mismatch as a restore failure", () =>
+    Effect.gen(function* () {
+      const { destination, managed, workspaceDir } = yield* installedPackage;
+      const source = join(dirname(workspaceDir), "mismatched-source");
+      yield* Effect.promise(() =>
+        write(
+          join(source, "repository-commit", "package.json"),
+          '{"name":"different"}',
+        ),
+      );
+      const archivePath = join(dirname(workspaceDir), "mismatched.tgz");
+      yield* Effect.promise(() =>
+        createTar({ cwd: source, file: archivePath, gzip: true }, [
+          "repository-commit",
+        ]),
+      );
+      const harness = makeManagerHarness({
+        managed,
+        workspaceDir,
+        archivePath,
+        resolution: { status: "modified", commit: REMOTE_COMMIT },
+      });
+      const { manager } = yield* harness.services;
+      const error = yield* manager
+        .restore({ packageName: PACKAGE_NAME })
+        .pipe(Effect.flip);
+      expect(error.operation).toBe("restore");
+      expect(error.message).toBe(
+        'The downloaded package declares "different" instead of "example".',
+      );
+      expect(
+        yield* Effect.promise(() =>
+          fs.readFile(join(destination, "index.js"), "utf8"),
+        ),
+      ).toBe(OLD_SOURCE);
+    }),
+  );
+});
