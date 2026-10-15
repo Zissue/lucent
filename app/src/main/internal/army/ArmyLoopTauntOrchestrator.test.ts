@@ -1,4 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Scope from "effect/Scope";
@@ -190,6 +191,194 @@ const advance = Effect.fn("ArmyLoopTauntOrchestrator.test.advance")(function* (
 });
 
 describe("ArmyLoopTauntOrchestrator", () => {
+  it.effect(
+    "does not publish a queued taunt after a report advances its turn",
+    () =>
+      Effect.gen(function* () {
+        const publishing = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        yield* Effect.gen(function* () {
+          const harness = yield* makeHarness(["Alice", "Bob"]);
+          const { runId } = yield* registerAll(
+            harness,
+            makePriorityRegistration(harness.sessionId, [
+              { assignments: [assignment({ assignmentId: 6 })] },
+              {
+                assignments: [7, 8].map((assignmentId, index) =>
+                  assignment({
+                    assignmentId,
+                    players: [index + 1],
+                    target: {
+                      focusActive: false,
+                      lifeRevision: 0,
+                      monsterMapId: 42,
+                      state: "alive",
+                    },
+                  }),
+                ),
+              },
+            ]),
+          );
+          for (const senderId of harness.ids) {
+            yield* report(harness, runId, senderId, {
+              alive: true,
+              cooldownMs: 0,
+              type: "participant-state",
+              usable: true,
+            });
+          }
+          yield* report(harness, runId, harness.ids[0]!, {
+            assignmentId: 6,
+            lifeRevision: 0,
+            monsterMapId: 42,
+            state: "dead",
+            type: "target-state",
+          });
+          yield* harness.orchestrator.onCommand((event) =>
+            event.command.command.type === "taunt" &&
+            event.command.command.assignmentId === 7
+              ? Deferred.succeed(publishing, undefined).pipe(
+                  Effect.andThen(Deferred.await(release)),
+                )
+              : Effect.void,
+          );
+          const publishingReport = yield* report(
+            harness,
+            runId,
+            harness.ids[1]!,
+            {
+              assignmentId: 6,
+              lifeRevision: 0,
+              monsterMapId: 42,
+              state: "dead",
+              type: "target-state",
+            },
+          ).pipe(Effect.forkScoped);
+          yield* Deferred.await(publishing);
+          yield* report(harness, runId, harness.ids[0]!, {
+            active: true,
+            assignmentId: 8,
+            lifeRevision: 0,
+            monsterMapId: 42,
+            type: "focus-state",
+          });
+          yield* report(harness, runId, harness.ids[0]!, {
+            active: false,
+            assignmentId: 8,
+            lifeRevision: 0,
+            monsterMapId: 42,
+            type: "focus-state",
+          });
+          yield* Deferred.succeed(release, undefined);
+          yield* Fiber.join(publishingReport);
+          expect(
+            tauntEvents(harness.events).map((event) => ({
+              command: event.command.command,
+              participantIds: event.participantIds,
+            })),
+          ).toMatchObject([
+            {
+              command: { type: "taunt", assignmentId: 7 },
+              participantIds: [harness.ids[0]],
+            },
+            {
+              command: { type: "taunt", assignmentId: 8 },
+              participantIds: [harness.ids[1]],
+            },
+          ]);
+        }).pipe(Effect.ensuring(Deferred.succeed(release, undefined)));
+      }),
+  );
+
+  it.effect(
+    "ignores superseded readiness and waits for the replacement roster",
+    () =>
+      Effect.gen(function* () {
+        const activated = yield* Deferred.make<void>();
+        const releaseActivation = yield* Deferred.make<void>();
+        const replaced = yield* Deferred.make<void>();
+        const releaseReplacement = yield* Deferred.make<void>();
+        yield* Effect.gen(function* () {
+          const harness = yield* makeHarness(
+            ["Alice", "Bob"],
+            (coordinator, ids) => {
+              const calls = new Map<number, number>();
+              return {
+                ...coordinator,
+                requireParticipant: (sessionId, senderId) =>
+                  Effect.gen(function* () {
+                    const identity = yield* coordinator.requireParticipant(
+                      sessionId,
+                      senderId,
+                    );
+                    const count = (calls.get(senderId) ?? 0) + 1;
+                    calls.set(senderId, count);
+                    if (senderId === ids[1] && count === 2) {
+                      yield* Deferred.succeed(activated, undefined);
+                      yield* Deferred.await(releaseActivation);
+                    }
+                    if (senderId === ids[0] && count === 5) {
+                      yield* Deferred.succeed(replaced, undefined);
+                      yield* Deferred.await(releaseReplacement);
+                    }
+                    return identity;
+                  }),
+              };
+            },
+          );
+          const registration = makeRegistration(harness.sessionId);
+          const original = yield* harness.orchestrator.register(
+            registration,
+            harness.ids[0]!,
+          );
+          const originalReady = yield* harness.orchestrator
+            .ready(
+              { ...original, sessionId: harness.sessionId },
+              harness.ids[0]!,
+            )
+            .pipe(Effect.result, Effect.forkScoped);
+          yield* Effect.yieldNow;
+          const activation = yield* harness.orchestrator
+            .register(registration, harness.ids[1]!)
+            .pipe(Effect.forkScoped);
+          yield* Deferred.await(activated);
+          const replacement = yield* harness.orchestrator
+            .register(registration, harness.ids[0]!)
+            .pipe(Effect.forkScoped);
+          yield* Deferred.await(replaced);
+          yield* Deferred.succeed(releaseActivation, undefined);
+          yield* Fiber.join(activation);
+          yield* Deferred.succeed(releaseReplacement, undefined);
+          const next = yield* Fiber.join(replacement);
+          expect(yield* Fiber.join(originalReady)).toMatchObject({
+            _tag: "Failure",
+            failure: {
+              reason: "registration-failed",
+              message: "Loop taunt registration was superseded",
+            },
+          });
+          const nextReady = yield* harness.orchestrator
+            .ready({ ...next, sessionId: harness.sessionId }, harness.ids[0]!)
+            .pipe(Effect.as("ready"), Effect.forkScoped);
+          yield* Effect.yieldNow;
+          expect(nextReady.pollUnsafe()).toBeUndefined();
+          const nextBob = yield* harness.orchestrator.register(
+            registration,
+            harness.ids[1]!,
+          );
+          expect(nextBob.runId).toBe(next.runId);
+          expect(yield* Fiber.join(nextReady)).toBe("ready");
+        }).pipe(
+          Effect.ensuring(
+            Effect.all([
+              Deferred.succeed(releaseActivation, undefined),
+              Deferred.succeed(releaseReplacement, undefined),
+            ]),
+          ),
+        );
+      }),
+  );
+
   it.effect("opens the readiness gate only for the full Army roster", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness(["Alice", "Bob"]);

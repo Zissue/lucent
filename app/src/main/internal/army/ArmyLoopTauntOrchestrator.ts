@@ -116,6 +116,8 @@ export const makeArmyLoopTauntOrchestrator = (): Effect.Effect<
         ] as const;
       });
 
+    // State mutations publish effects after releasing stateRef. A newer report
+    // or teardown can stale an effect before it crosses IPC.
     const currentCommand = (
       event: ArmyLoopTauntCommandEvent,
     ): Effect.Effect<ArmyLoopTauntCommandEvent | undefined> =>
@@ -229,6 +231,8 @@ export const makeArmyLoopTauntOrchestrator = (): Effect.Effect<
         if (Result.isFailure(outcome.result))
           return yield* outcome.result.failure;
         const result = outcome.result.success;
+        // Coordinator teardown and orchestrator registration commit under
+        // separate locks, so authenticate again before publishing activation.
         const reauthenticated = yield* coordinator
           .requireParticipant(payload.sessionId, senderId)
           .pipe(Effect.result);

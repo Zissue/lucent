@@ -349,6 +349,8 @@ const registrationMatches = (
   run: RunState,
   payload: ArmyLoopTauntRegisterPayload,
 ): string | undefined => {
+  // Registrations must agree on the plan and target identity. Liveness and
+  // Focus remain observer snapshots that are reconciled after activation.
   if (!sameMap(run.map, payload.map)) {
     return "Loop taunt map identity must match across the Army roster";
   }
@@ -421,6 +423,8 @@ const priorityDecision = (
   readonly selectedGroupIndex?: number | undefined;
   readonly unresolvedAssignmentIds: ReadonlySet<number>;
 } => {
+  // Every renderer must agree that a higher-priority group is dead before
+  // lower-priority assignments may issue casts.
   for (const [groupIndex, assignmentIds] of run.priorityGroups.entries()) {
     const unresolvedAssignmentIds = assignmentIds.filter(
       (assignmentId) =>
@@ -819,6 +823,8 @@ const refreshAssignmentFromTargets = (
     targetState = candidate.state;
   }
   const alive = targetState === "alive";
+  // One positive Focus observation suppresses another cast while projections
+  // converge; duplicate taunts are more dangerous than a brief delay.
   const focusActive = alive && targets.some((target) => target.focusActive);
   const canonicalChanged =
     hasIdentityConsensus &&
@@ -839,6 +845,8 @@ const refreshAssignmentFromTargets = (
   const resetRevision = hasIdentityConsensus
     ? candidate.lifeRevision
     : observedLifeRevision;
+  // Reset on the first new-life observation so delayed consensus cannot carry
+  // the previous life's rotation into a respawn.
   const resetLife =
     (canonicalChanged || observedNewLife) &&
     current.pendingLifeRevision !== resetRevision;
@@ -987,6 +995,8 @@ const reconcileTopology = (inputRun: RunState, now: number): RunMutation => {
 
     const turn = assignment.turn;
     if (!assignment.active || turn === undefined) {
+      // Preemption and active Focus pause degradation; time without a required
+      // taunt must not consume the assignment's recovery budget.
       let degraded = assignment.degraded;
       let degradationRevision = assignment.degradationRevision;
       if (degraded?.activeSince !== undefined) {
@@ -1404,6 +1414,8 @@ const applyMessage = (
     if (senderTarget.state !== "alive") {
       return { ...noEffects(), run: inputRun };
     }
+    // Encounter messages can arrive before target-life consensus. Retain one
+    // trigger for the life that may become active.
     const pending = current.pendingMessage;
     const shouldReplacePending =
       pending === undefined ||
@@ -1472,6 +1484,8 @@ const applyCommandResult = (
 
   if (report.outcome === "confirmed") {
     if (current.strategy.type === "focus") {
+      // A confirmed cast is authoritative before aura projections converge,
+      // preventing another participant from receiving a duplicate command.
       for (const currentParticipant of run.participants.values()) {
         const target = currentParticipant.targets.get(assignmentId);
         if (target === undefined) continue;
@@ -1700,6 +1714,8 @@ const onDegradedTimeout = (
       state,
     ];
   }
+  // Sustained degradation stops this background capability without failing
+  // the shared Army session or its script.
   const mutation = terminalize(run, { status: "completed" });
   return [mutation, storeRun(state, mutation.run)];
 };
