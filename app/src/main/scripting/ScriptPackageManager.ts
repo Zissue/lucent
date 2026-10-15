@@ -4,6 +4,7 @@ import { isDeepStrictEqual } from "util";
 
 import type * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -39,7 +40,8 @@ import {
   SCRIPT_PACKAGE_BACKUP_PREFIX,
   SCRIPT_PACKAGE_REMOVE_PREFIX,
 } from "./ScriptPackageLeftovers";
-import { hashDirectory } from "./ScriptPackageFileSystem";
+import { hashDirectory, isPathInside } from "./ScriptPackageFileSystem";
+import { copyBundledScriptPackage } from "./BundledScriptPackageSnapshot";
 import {
   allocatePackageDirectory,
   packageDirectoryPath,
@@ -143,10 +145,16 @@ interface ResolvedInstallSource extends ResolvedPackageRevision {
 
 type ManagedPackageReplacement = {
   readonly installed: ManagedScriptPackage;
-  readonly source: ResolvedInstallSource;
 } & (
-  | { readonly kind: "update"; readonly replaceModified: boolean }
-  | { readonly kind: "restore" }
+  | {
+      readonly kind: "update";
+      readonly replaceModified: boolean;
+      readonly source: ResolvedInstallSource;
+    }
+  | {
+      readonly kind: "restore";
+      readonly source: Pick<ResolvedInstallSource, "commit" | "revision">;
+    }
 );
 
 const installedRevision = (
@@ -718,57 +726,68 @@ export const layer = Layer.effect(
                     cause,
                   ),
               });
-        const resolvedSource: ResolvedInstallSource =
-          replacement?.source ??
-          (yield* Effect.gen(function* () {
-            const commit = yield* client
-              .resolveCommit({
-                repositoryUrl: repository.url,
-                ...(input.credentialId === undefined
-                  ? {}
-                  : { credentialId: input.credentialId }),
-                ...(input.ref === undefined ? {} : { ref: input.ref }),
-              })
-              .pipe(
-                Effect.mapError((cause) =>
-                  managerError("install", cause.message, cause),
-                ),
-              );
-            if (commit.status !== "modified") {
-              return yield* managerError(
-                "install",
-                "GitHub couldn't resolve the selected Git ref to a commit.",
-              );
-            }
-            const checkedAt = new Date().toISOString();
-            if (subdirectory === undefined) {
-              return {
-                checkedAt,
-                commit: commit.commit,
-                revision: { kind: "commit", sha: commit.commit },
-                ...(commit.etag === undefined ? {} : { etag: commit.etag }),
-              } satisfies ResolvedInstallSource;
-            }
-            const directory = yield* client
-              .resolveDirectory({
-                repositoryUrl: repository.url,
-                ref: commit.commit,
-                subdirectory,
-                ...(input.credentialId === undefined
-                  ? {}
-                  : { credentialId: input.credentialId }),
-              })
-              .pipe(
-                Effect.mapError((cause) =>
-                  managerError("install", cause.message, cause),
-                ),
-              );
-            return {
-              checkedAt,
-              commit: commit.commit,
-              revision: { kind: "tree", sha: directory.tree },
-            } satisfies ResolvedInstallSource;
-          }));
+        const resolvedSource =
+          replacement?.kind === "restore"
+            ? {
+                ...replacement.source,
+                kind: "restore" as const,
+                installed: replacement.installed,
+              }
+            : {
+                ...(replacement?.source ??
+                  (yield* Effect.gen(function* () {
+                    const commit = yield* client
+                      .resolveCommit({
+                        repositoryUrl: repository.url,
+                        ...(input.credentialId === undefined
+                          ? {}
+                          : { credentialId: input.credentialId }),
+                        ...(input.ref === undefined ? {} : { ref: input.ref }),
+                      })
+                      .pipe(
+                        Effect.mapError((cause) =>
+                          managerError("install", cause.message, cause),
+                        ),
+                      );
+                    if (commit.status !== "modified") {
+                      return yield* managerError(
+                        "install",
+                        "GitHub couldn't resolve the selected Git ref to a commit.",
+                      );
+                    }
+                    const checkedAt = new Date().toISOString();
+                    if (subdirectory === undefined) {
+                      return {
+                        checkedAt,
+                        commit: commit.commit,
+                        revision: { kind: "commit", sha: commit.commit },
+                        ...(commit.etag === undefined
+                          ? {}
+                          : { etag: commit.etag }),
+                      } satisfies ResolvedInstallSource;
+                    }
+                    const directory = yield* client
+                      .resolveDirectory({
+                        repositoryUrl: repository.url,
+                        ref: commit.commit,
+                        subdirectory,
+                        ...(input.credentialId === undefined
+                          ? {}
+                          : { credentialId: input.credentialId }),
+                      })
+                      .pipe(
+                        Effect.mapError((cause) =>
+                          managerError("install", cause.message, cause),
+                        ),
+                      );
+                    return {
+                      checkedAt,
+                      commit: commit.commit,
+                      revision: { kind: "tree", sha: directory.tree },
+                    } satisfies ResolvedInstallSource;
+                  }))),
+                kind: "remote" as const,
+              };
         if (
           (subdirectory === undefined &&
             resolvedSource.revision.kind !== "commit") ||
@@ -818,7 +837,7 @@ export const layer = Layer.effect(
                       replacement?.kind === "restore" ? "restore" : "install",
                       replacement?.kind === "restore" &&
                         cause.kind === "not-found"
-                        ? "GitHub could not provide the installed commit. Check repository access or use Update to install the latest version."
+                        ? "GitHub could not provide the installed commit. Check repository access. Check for updates, then use Update to install the latest version."
                         : cause.message,
                       cause,
                     ),
@@ -854,7 +873,7 @@ export const layer = Layer.effect(
                 packageName !== replacement.installed.name
               ) {
                 return yield* managerError(
-                  "update",
+                  replacement.kind,
                   `The downloaded package declares ${JSON.stringify(packageName)} instead of ${JSON.stringify(replacement.installed.name)}.`,
                 );
               }
@@ -953,9 +972,9 @@ export const layer = Layer.effect(
                   ),
               });
               const managed: ManagedScriptPackage =
-                replacement?.kind === "restore"
+                resolvedSource.kind === "restore"
                   ? {
-                      ...replacement.installed,
+                      ...resolvedSource.installed,
                       files,
                       installedAt: new Date().toISOString(),
                     }
@@ -1142,36 +1161,111 @@ export const layer = Layer.effect(
               "This package has no saved GitHub installation to restore.",
             );
           }
-          const commit = managed.source.resolvedCommit;
-          if (commit === undefined) {
-            return yield* managerError(
-              "restore",
-              "The installed package has no saved commit to download. Use Update to install the latest version.",
-            );
-          }
-          return yield* installInternal(
-            {
-              repositoryUrl: managed.source.repositoryUrl,
-              replaceExisting: true,
-              ...(managed.source.credentialId === undefined
-                ? {}
-                : { credentialId: managed.source.credentialId }),
-              ...(managed.source.requestedRef === undefined
-                ? {}
-                : { ref: managed.source.requestedRef }),
-              ...(managed.source.kind === "repository"
-                ? {}
-                : { subdirectory: managed.source.subdirectory }),
-            },
-            {
-              kind: "restore",
-              installed: managed,
-              source: {
-                commit,
-                revision: installedRevision(managed),
-                checkedAt: managed.installedAt,
+          const source = managed.source;
+          const restoreCommit = (commit: string) =>
+            installInternal(
+              {
+                repositoryUrl: managed.source.repositoryUrl,
+                replaceExisting: true,
+                ...(managed.source.credentialId === undefined
+                  ? {}
+                  : { credentialId: managed.source.credentialId }),
+                ...(managed.source.kind === "repository"
+                  ? {}
+                  : { subdirectory: managed.source.subdirectory }),
               },
-            },
+              {
+                kind: "restore",
+                installed: managed,
+                source: {
+                  commit,
+                  revision: installedRevision(managed),
+                },
+              },
+            );
+          if (source.kind === "repository")
+            return yield* restoreCommit(source.resolvedCommit);
+          if (source.resolvedCommit !== undefined)
+            return yield* restoreCommit(source.resolvedCommit);
+          const unavailable =
+            "The installed bundled copy is not available in this app. Check for updates, then use Update to install the latest version.";
+          const bundledRoot = join(env.assetsDir, "..", "script-packages");
+          const bundledPath = join(env.assetsDir, "..", source.subdirectory);
+          if (!isPathInside(bundledRoot, bundledPath))
+            return yield* managerError("restore", unavailable);
+          return yield* Effect.acquireUseRelease(
+            Effect.tryPromise({
+              try: () =>
+                fs.mkdtemp(join(env.workspaceDir, ".lucent-package-install-")),
+              catch: (cause) =>
+                managerError(
+                  "restore",
+                  "Failed to create package staging.",
+                  cause,
+                ),
+            }),
+            (temporaryRoot) =>
+              Effect.gen(function* () {
+                const staging = join(temporaryRoot, "package");
+                const snapshot = yield* Effect.tryPromise({
+                  try: () => copyBundledScriptPackage(bundledPath, staging),
+                  catch: (cause) => managerError("restore", unavailable, cause),
+                });
+                if (snapshot.tree !== source.resolvedTree)
+                  return yield* managerError("restore", unavailable);
+                const inspected = yield* Effect.tryPromise({
+                  try: () => inspectScriptPackageDirectory(staging),
+                  catch: (cause) =>
+                    managerError(
+                      "restore",
+                      "The bundled copy is not a valid script package.",
+                      cause,
+                    ),
+                });
+                if (inspected.manifest.name !== managed.name)
+                  return yield* managerError("restore", unavailable);
+                const overview = yield* catalog.getOverview.pipe(
+                  Effect.mapError(mapCatalogError),
+                );
+                const matchingPackages = overview.packages.filter(
+                  (entry) => entry.name === managed.name,
+                );
+                if (matchingPackages.length > 1)
+                  return yield* managerError(
+                    "restore",
+                    `More than one package folder declares the name ${JSON.stringify(managed.name)}.`,
+                  );
+                const destination = packageDirectoryPath(
+                  packagesDir,
+                  managed.directory,
+                );
+                const matchingPackage = matchingPackages[0];
+                if (
+                  matchingPackage !== undefined &&
+                  resolve(matchingPackage.path) !== resolve(destination)
+                ) {
+                  return yield* managerError(
+                    "restore",
+                    `Package ${JSON.stringify(managed.name)} is not in its saved folder.`,
+                  );
+                }
+                return yield* replacePackage({
+                  inspected,
+                  managed: {
+                    ...managed,
+                    files: snapshot.files,
+                    installedAt: yield* DateTime.now.pipe(
+                      Effect.map(DateTime.formatIso),
+                    ),
+                  },
+                  rootPath: destination,
+                  sourceRoot: staging,
+                });
+              }),
+            (temporaryRoot) =>
+              Effect.tryPromise(() =>
+                fs.rm(temporaryRoot, { recursive: true, force: true }),
+              ).pipe(Effect.ignore),
           );
         }),
       );
