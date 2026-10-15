@@ -1029,8 +1029,10 @@ export const layer = Layer.effect(
       env.workspaceDir,
     );
     const changes = makeListenerRegistry<ScriptCatalogChange>();
-    const discoveryRef =
-      yield* SynchronizedRef.make<DiscoveredScriptCatalog | null>(null);
+    const discoveryRef = yield* SynchronizedRef.make<{
+      readonly value: DiscoveredScriptCatalog | null;
+      readonly publicationRevision: number;
+    }>({ value: null, publicationRevision: 0 });
     const scan = Effect.gen(function* () {
       const managedPackages = yield* state.getAll;
       return yield* Effect.tryPromise({
@@ -1050,19 +1052,34 @@ export const layer = Layer.effect(
           new ScriptPackageCatalogError({ operation: "scan", cause }),
       });
     });
-    const getDiscovery = SynchronizedRef.modifyEffect(discoveryRef, (current) =>
-      (current === null ? scan : Effect.succeed(current)).pipe(
-        Effect.map((next) => [next, next] as const),
+    const publishCurrent = SynchronizedRef.get(discoveryRef).pipe(
+      Effect.flatMap(({ value, publicationRevision }) =>
+        value === null || publicationRevision === 0
+          ? Effect.void
+          : changes.publishLatest(publicationRevision, {
+              revision: value.catalog.revision,
+            }),
       ),
     );
-    const refresh = SynchronizedRef.modifyEffect(discoveryRef, () =>
-      scan.pipe(
-        Effect.tap((next) =>
-          changes.publish({ revision: next.catalog.revision }),
-        ),
-        Effect.map((next) => [next, next] as const),
+    const getDiscovery = SynchronizedRef.modifyEffect(discoveryRef, (current) =>
+      (current.value === null ? scan : Effect.succeed(current.value)).pipe(
+        Effect.map((next) => [next, { ...current, value: next }] as const),
       ),
-    ).pipe(Effect.map(catalogOverview));
+    );
+    const refresh = SynchronizedRef.modifyEffect(discoveryRef, (current) =>
+      scan.pipe(
+        Effect.map(
+          (next) =>
+            [
+              next,
+              {
+                value: next,
+                publicationRevision: current.publicationRevision + 1,
+              },
+            ] as const,
+        ),
+      ),
+    ).pipe(Effect.ensuring(publishCurrent), Effect.map(catalogOverview));
     const updateDiscovery = Effect.fn("ScriptPackageCatalog.updateDiscovery")(
       function* (
         transform: (
@@ -1072,22 +1089,31 @@ export const layer = Layer.effect(
         const next = yield* SynchronizedRef.modifyEffect(
           discoveryRef,
           (current) =>
-            (current === null ? scan : Effect.succeed(current)).pipe(
+            (current.value === null
+              ? scan
+              : Effect.succeed(current.value)
+            ).pipe(
               Effect.flatMap((previous) => {
                 const transformed = transform(previous);
                 return (
                   transformed === undefined ? scan : Effect.succeed(transformed)
                 ).pipe(
-                  Effect.flatMap((next) =>
-                    (previous === next
-                      ? Effect.void
-                      : changes.publish({ revision: next.catalog.revision })
-                    ).pipe(Effect.as([next, next] as const)),
+                  Effect.map(
+                    (next) =>
+                      [
+                        next,
+                        {
+                          value: next,
+                          publicationRevision:
+                            current.publicationRevision +
+                            (previous === next ? 0 : 1),
+                        },
+                      ] as const,
                   ),
                 );
               }),
             ),
-        );
+        ).pipe(Effect.ensuring(publishCurrent));
         return catalogOverview(next);
       },
     );
