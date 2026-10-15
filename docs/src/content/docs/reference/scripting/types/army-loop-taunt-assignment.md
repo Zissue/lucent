@@ -15,13 +15,13 @@ Assigns one target to the Army players allowed to keep it taunted.
 interface ArmyLoopTauntAssignment
 ```
 
-<p class="source-reference">Defined in <a class="source-reference__link" href="https://github.com/toommyliu/lucent/blob/main/app/src/renderer/apps/game/army/ArmyLoopTaunt.ts#L73" aria-label="Open source: app/src/renderer/apps/game/army/ArmyLoopTaunt.ts:73" title="app/src/renderer/apps/game/army/ArmyLoopTaunt.ts:73" target="_blank" rel="noreferrer"><code class="source-reference__path">ArmyLoopTaunt.ts:73</code></a></p>
+<p class="source-reference">Defined in <a class="source-reference__link" href="https://github.com/toommyliu/lucent/blob/main/app/src/renderer/apps/game/army/ArmyLoopTaunt.ts#L72" aria-label="Open source: app/src/renderer/apps/game/army/ArmyLoopTaunt.ts:72" title="app/src/renderer/apps/game/army/ArmyLoopTaunt.ts:72" target="_blank" rel="noreferrer"><code class="source-reference__path">ArmyLoopTaunt.ts:72</code></a></p>
 
 ## Properties
 
 <a id="property-players"></a>
 
-### `players` <a class="source-reference__heading-link" style="float: right; display: inline-flex; align-items: center; justify-content: center; margin-block: -0.125rem; margin-inline-start: 0.5rem; border-radius: var(--radius-sm); text-decoration: none;" href="https://github.com/toommyliu/lucent/blob/main/app/src/renderer/apps/game/army/ArmyLoopTaunt.ts#L75" tabindex="-1" aria-hidden="true" title="Open source: app/src/renderer/apps/game/army/ArmyLoopTaunt.ts:75" target="_blank" rel="noreferrer"><svg class="source-reference__icon" width="16" height="16" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"></path><path d="m6 8-4 4 4 4"></path><path d="m14.5 4-5 16"></path></svg></a>
+### `players` <a class="source-reference__heading-link" style="float: right; display: inline-flex; align-items: center; justify-content: center; margin-block: -0.125rem; margin-inline-start: 0.5rem; border-radius: var(--radius-sm); text-decoration: none;" href="https://github.com/toommyliu/lucent/blob/main/app/src/renderer/apps/game/army/ArmyLoopTaunt.ts#L74" tabindex="-1" aria-hidden="true" title="Open source: app/src/renderer/apps/game/army/ArmyLoopTaunt.ts:74" target="_blank" rel="noreferrer"><svg class="source-reference__icon" width="16" height="16" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"></path><path d="m6 8-4 4 4 4"></path><path d="m14.5 4-5 16"></path></svg></a>
 
 One-based player numbers from the active Army roster.
 
@@ -31,7 +31,7 @@ readonly players: readonly number[]
 
 <a id="property-skipwhen"></a>
 
-### `skipWhen` <a class="source-reference__heading-link" style="float: right; display: inline-flex; align-items: center; justify-content: center; margin-block: -0.125rem; margin-inline-start: 0.5rem; border-radius: var(--radius-sm); text-decoration: none;" href="https://github.com/toommyliu/lucent/blob/main/app/src/renderer/apps/game/army/ArmyLoopTaunt.ts#L77" tabindex="-1" aria-hidden="true" title="Open source: app/src/renderer/apps/game/army/ArmyLoopTaunt.ts:77" target="_blank" rel="noreferrer"><svg class="source-reference__icon" width="16" height="16" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"></path><path d="m6 8-4 4 4 4"></path><path d="m14.5 4-5 16"></path></svg></a>
+### `skipWhen` <a class="source-reference__heading-link" style="float: right; display: inline-flex; align-items: center; justify-content: center; margin-block: -0.125rem; margin-inline-start: 0.5rem; border-radius: var(--radius-sm); text-decoration: none;" href="https://github.com/toommyliu/lucent/blob/main/app/src/renderer/apps/game/army/ArmyLoopTaunt.ts#L76" tabindex="-1" aria-hidden="true" title="Open source: app/src/renderer/apps/game/army/ArmyLoopTaunt.ts:76" target="_blank" rel="noreferrer"><svg class="source-reference__icon" width="16" height="16" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"></path><path d="m6 8-4 4 4 4"></path><path d="m14.5 4-5 16"></path></svg></a>
 
 Skips the selected player's attempt when the callback returns true.
 
@@ -39,7 +39,7 @@ Skips the selected player's attempt when the callback returns true.
 
 <a id="property-strategy"></a>
 
-### `strategy` <a class="source-reference__heading-link" style="float: right; display: inline-flex; align-items: center; justify-content: center; margin-block: -0.125rem; margin-inline-start: 0.5rem; border-radius: var(--radius-sm); text-decoration: none;" href="https://github.com/toommyliu/lucent/blob/main/app/src/renderer/apps/game/army/ArmyLoopTaunt.ts#L79" tabindex="-1" aria-hidden="true" title="Open source: app/src/renderer/apps/game/army/ArmyLoopTaunt.ts:79" target="_blank" rel="noreferrer"><svg class="source-reference__icon" width="16" height="16" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"></path><path d="m6 8-4 4 4 4"></path><path d="m14.5 4-5 16"></path></svg></a>
+### `strategy` <a class="source-reference__heading-link" style="float: right; display: inline-flex; align-items: center; justify-content: center; margin-block: -0.125rem; margin-inline-start: 0.5rem; border-radius: var(--radius-sm); text-decoration: none;" href="https://github.com/toommyliu/lucent/blob/main/app/src/renderer/apps/game/army/ArmyLoopTaunt.ts#L78" tabindex="-1" aria-hidden="true" title="Open source: app/src/renderer/apps/game/army/ArmyLoopTaunt.ts:78" target="_blank" rel="noreferrer"><svg class="source-reference__icon" width="16" height="16" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"></path><path d="m6 8-4 4 4 4"></path><path d="m14.5 4-5 16"></path></svg></a>
 
 The event that starts each taunt attempt.
 
@@ -47,7 +47,7 @@ The event that starts each taunt attempt.
 
 <a id="property-target"></a>
 
-### `target` <a class="source-reference__heading-link" style="float: right; display: inline-flex; align-items: center; justify-content: center; margin-block: -0.125rem; margin-inline-start: 0.5rem; border-radius: var(--radius-sm); text-decoration: none;" href="https://github.com/toommyliu/lucent/blob/main/app/src/renderer/apps/game/army/ArmyLoopTaunt.ts#L81" tabindex="-1" aria-hidden="true" title="Open source: app/src/renderer/apps/game/army/ArmyLoopTaunt.ts:81" target="_blank" rel="noreferrer"><svg class="source-reference__icon" width="16" height="16" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"></path><path d="m6 8-4 4 4 4"></path><path d="m14.5 4-5 16"></path></svg></a>
+### `target` <a class="source-reference__heading-link" style="float: right; display: inline-flex; align-items: center; justify-content: center; margin-block: -0.125rem; margin-inline-start: 0.5rem; border-radius: var(--radius-sm); text-decoration: none;" href="https://github.com/toommyliu/lucent/blob/main/app/src/renderer/apps/game/army/ArmyLoopTaunt.ts#L80" tabindex="-1" aria-hidden="true" title="Open source: app/src/renderer/apps/game/army/ArmyLoopTaunt.ts:80" target="_blank" rel="noreferrer"><svg class="source-reference__icon" width="16" height="16" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"></path><path d="m6 8-4 4 4 4"></path><path d="m14.5 4-5 16"></path></svg></a>
 
 The monster this assignment may taunt.
 
