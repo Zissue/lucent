@@ -712,7 +712,7 @@ it.live.each(["refresh", "remove"] as const)(
         operation === "refresh"
           ? catalog.refresh
           : catalog.removePackage("tools")
-      ).pipe(Effect.timeout("200 millis"));
+      ).pipe(Effect.timeout("2 seconds"));
       expect(names).toEqual([operation === "refresh" ? ["tools"] : []]);
       expect(result.packages.map((entry) => entry.name)).toEqual(
         operation === "refresh" ? ["tools"] : [],

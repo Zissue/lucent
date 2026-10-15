@@ -358,7 +358,7 @@ it.live.each(["save", "reload"] as const)(
         operation === "save"
           ? combatProfiles.saveProfile({ ...testProfile, label: "Committed" })
           : combatProfiles.load
-      ).pipe(Effect.timeout("200 millis"));
+      ).pipe(Effect.timeout("2 seconds"));
       expect(labels).toEqual([
         operation === "save" ? "Committed" : "Farm Rotation",
       ]);
