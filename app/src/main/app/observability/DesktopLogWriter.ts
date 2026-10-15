@@ -1,6 +1,8 @@
 import { promises as fs } from "fs";
 import { basename, join } from "path";
 
+import { desktopLogErrorDetails } from "../../../shared/logRecord";
+
 const FLUSH_INTERVAL_MS = 250;
 const MAX_LOG_BYTES = 10 * 1024 * 1024;
 const MAX_PENDING_RECORDS = 256;
@@ -18,7 +20,7 @@ const TIMESTAMP_BACKUP = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z$/;
 
 type LogLevel = (typeof LOG_LEVELS)[number];
 type LevelCounts = Partial<Record<LogLevel, number>>;
-type PendingRecord = { record: unknown; level: LogLevel };
+type PendingRecord = { line: string; level: LogLevel };
 
 const addCounts = (target: LevelCounts, source: LevelCounts): void => {
   for (const level of LOG_LEVELS) {
@@ -38,44 +40,6 @@ const recordLevel = (record: unknown): LogLevel => {
   } catch {
     return "info";
   }
-};
-
-export interface DesktopLogError {
-  readonly name: string;
-  readonly message: string;
-  readonly stack?: string;
-  readonly cause?: DesktopLogError;
-}
-
-export const desktopLogErrorDetails = (
-  value: unknown,
-  depth = 0,
-): DesktopLogError => {
-  if (value instanceof Error) {
-    return {
-      name: value.name,
-      message: value.message,
-      ...(value.stack === undefined ? {} : { stack: value.stack }),
-      ...(value.cause === undefined || depth >= 5
-        ? {}
-        : { cause: desktopLogErrorDetails(value.cause, depth + 1) }),
-    };
-  }
-
-  let message: string;
-  try {
-    message =
-      typeof value === "string"
-        ? value
-        : (JSON.stringify(value) ?? String(value));
-  } catch {
-    try {
-      message = String(value);
-    } catch {
-      message = "[Unserializable]";
-    }
-  }
-  return { name: "NonError", message: message.slice(0, 1_024) };
 };
 
 const fallbackSerializationRecord = () => ({
@@ -226,6 +190,7 @@ export const makeBufferedDesktopLogWriter = (
     }
 
     const records = pending;
+    const batchLevels = records.map(({ level }) => level);
     const batchDropped = dropped;
     const batchFailedWrites = failedWrites;
     const batchFailedRecords = failedRecords;
@@ -257,8 +222,8 @@ export const makeBufferedDesktopLogWriter = (
         }),
       );
     }
-    for (const { record } of records) {
-      serializedRecords.push(serializeDiagnostic(record));
+    for (const { line } of records) {
+      serializedRecords.push(line);
     }
     const source = serializedRecords.join("");
     writeInFlight = append(source, Buffer.byteLength(source, "utf8"))
@@ -267,7 +232,7 @@ export const makeBufferedDesktopLogWriter = (
         failedWrites += batchFailedWrites + 1;
         addCounts(dropped, batchDropped);
         addCounts(failedRecords, batchFailedRecords);
-        for (const { level } of records) {
+        for (const level of batchLevels) {
           addCounts(failedRecords, { [level]: 1 });
         }
       })
@@ -315,7 +280,7 @@ export const makeBufferedDesktopLogWriter = (
       }
       pending.splice(evictionIndex, 1);
     }
-    pending.push({ record, level });
+    pending.push({ line: serializeDiagnostic(record), level });
     scheduleFlush(
       pending.length === MAX_PENDING_RECORDS ? 0 : FLUSH_INTERVAL_MS,
     );
@@ -336,7 +301,10 @@ export const makeBufferedDesktopLogWriter = (
       return;
     }
     if (finalRecord !== undefined) {
-      pending.push({ record: finalRecord, level: recordLevel(finalRecord) });
+      pending.push({
+        line: serializeDiagnostic(finalRecord),
+        level: recordLevel(finalRecord),
+      });
     }
     closed = true;
     await flush();

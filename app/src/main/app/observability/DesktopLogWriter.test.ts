@@ -1,3 +1,4 @@
+import { desktopLogErrorDetails } from "../../../shared/logRecord";
 import { promises as fs } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -11,10 +12,7 @@ import {
   vi,
 } from "@effect/vitest";
 
-import {
-  desktopLogErrorDetails,
-  makeBufferedDesktopLogWriter,
-} from "./DesktopLogWriter";
+import { makeBufferedDesktopLogWriter } from "./DesktopLogWriter";
 
 const fixtureDirectories = new Set<string>();
 const at = "2026-10-12T12:34:56.789Z";
@@ -211,7 +209,7 @@ describe("DesktopLogWriter", () => {
     ]);
   });
 
-  it("serializes at flush and supports bigint, circular values, and errors", async () => {
+  it("serializes when written and supports bigint, circular values, and errors", async () => {
     const { logFilePath, writer } = await makeFixture();
     const cause = new Error("broken");
     cause.stack = "Error: broken\n    at test";
@@ -222,7 +220,7 @@ describe("DesktopLogWriter", () => {
     await writer.close();
     expect(await readRecords(logFilePath)).toEqual([
       {
-        message: "after",
+        message: "before",
         bigint: "42",
         cause: {
           name: "Error",

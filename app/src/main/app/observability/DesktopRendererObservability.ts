@@ -1,67 +1,10 @@
-import {
-  app,
-  ipcMain,
-  type Event as ElectronEvent,
-  type IpcMainEvent,
-  type WebContents,
-} from "electron";
+import { app, type Event as ElectronEvent, type WebContents } from "electron";
 import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
-
-import { DiagnosticsIpc, GameConsoleIpc } from "../../../shared/ipc";
-
-const decodeRendererRecord = Option.liftThrowable(
-  DiagnosticsIpc.rendererRecord.decodePayload,
-);
-const decodeConsoleMessage = Option.liftThrowable(
-  GameConsoleIpc.rendererMessage.decodePayload,
-);
 
 export const installDesktopRendererObservability = Effect.gen(function* () {
   const context = yield* Effect.context();
   const runFork = Effect.runForkWith(context);
   const webContentsCleanups = new Set<() => void>();
-
-  const handleRendererRecord = (
-    event: IpcMainEvent,
-    rawPayload: unknown,
-  ): void => {
-    const decoded = decodeRendererRecord(rawPayload);
-    if (Option.isNone(decoded)) {
-      return;
-    }
-    const { type, ...data } = decoded.value;
-    runFork(
-      Effect.logError(
-        type === "renderer.error"
-          ? "Renderer error"
-          : "Renderer unhandled rejection",
-      ).pipe(
-        Effect.annotateLogs({
-          component: "renderer",
-          data: { rendererId: event.sender.id, ...data },
-        }),
-      ),
-    );
-  };
-
-  const handleConsoleMessage = (
-    event: IpcMainEvent,
-    rawPayload: unknown,
-  ): void => {
-    const decoded = decodeConsoleMessage(rawPayload);
-    if (Option.isNone(decoded)) {
-      return;
-    }
-    runFork(
-      Effect.logDebug("Renderer console message").pipe(
-        Effect.annotateLogs({
-          component: "renderer",
-          data: { message: decoded.value.message, rendererId: event.sender.id },
-        }),
-      ),
-    );
-  };
 
   const handleChildProcessGone = (
     _event: ElectronEvent,
@@ -164,22 +107,12 @@ export const installDesktopRendererObservability = Effect.gen(function* () {
   };
 
   yield* Effect.sync(() => {
-    ipcMain.on(DiagnosticsIpc.rendererRecord.channel, handleRendererRecord);
-    ipcMain.on(GameConsoleIpc.rendererMessage.channel, handleConsoleMessage);
     app.on("child-process-gone", handleChildProcessGone);
     app.on("render-process-gone", handleRenderProcessGone);
     app.on("web-contents-created", handleWebContentsCreated);
   });
   yield* Effect.addFinalizer(() =>
     Effect.sync(() => {
-      ipcMain.removeListener(
-        DiagnosticsIpc.rendererRecord.channel,
-        handleRendererRecord,
-      );
-      ipcMain.removeListener(
-        GameConsoleIpc.rendererMessage.channel,
-        handleConsoleMessage,
-      );
       app.removeListener("child-process-gone", handleChildProcessGone);
       app.removeListener("render-process-gone", handleRenderProcessGone);
       app.removeListener("web-contents-created", handleWebContentsCreated);

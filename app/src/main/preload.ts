@@ -29,6 +29,7 @@ import type {
   DesktopGameViewBridge,
   DesktopGameViewHostBridge,
   DesktopLoaderGrabberWindowBridge,
+  DesktopLogBridge,
   DesktopPacketsWindowBridge,
   DesktopScriptingBridge,
   DesktopSettingsBridge,
@@ -42,7 +43,7 @@ import {
   AccountsIpc,
   ArmyIpc,
   CombatProfilesIpc,
-  DiagnosticsIpc,
+  RendererLogIpc,
   EnvironmentIpc,
   FollowerIpc,
   FileSystemIpc,
@@ -55,12 +56,14 @@ import {
   SettingsIpc,
   UpdatesIpc,
   WindowsIpc,
-  GameConsoleIpc,
   LoaderGrabberIpc,
   PacketsIpc,
-  type RendererDiagnosticError,
-  type RendererDiagnosticPayload,
+  type RendererLogRecord,
 } from "../shared/ipc";
+import {
+  desktopLogErrorDetails,
+  desktopLogJsonSafe,
+} from "../shared/logRecord";
 import { createInvoke, createSubscribe } from "./preloadIpcClient";
 
 // Cancel cross-document navigations before Chromium emits the loading events
@@ -121,28 +124,42 @@ const platform: AppPlatform =
       ? "windows"
       : "linux";
 
-const diagnosticError = (cause: unknown): RendererDiagnosticError => {
-  if (cause instanceof Error) {
-    return {
-      message: cause.message,
-      name: cause.name,
-      ...(cause.stack === undefined ? {} : { stack: cause.stack }),
-    };
-  }
-
-  let message: string;
+const writeRendererLog = (record: RendererLogRecord): void => {
   try {
-    message = typeof cause === "string" ? cause : String(cause);
-  } catch {
-    message = "[Unprintable error]";
-  }
-  return { message, name: "Error" };
+    ipcRenderer.send(RendererLogIpc.record.channel, desktopLogJsonSafe(record));
+  } catch {}
 };
 
-const sendRendererDiagnostic = (payload: RendererDiagnosticPayload): void => {
+const logRenderer = (
+  level: RendererLogRecord["level"],
+  message: string,
+  data: Record<string, unknown>,
+  error?: unknown,
+): void => {
   try {
-    ipcRenderer.send(DiagnosticsIpc.rendererRecord.channel, payload);
+    writeRendererLog({
+      level,
+      message,
+      component: "renderer",
+      data,
+      ...(error === undefined
+        ? {}
+        : { error: [desktopLogErrorDetails(error)] }),
+    });
   } catch {}
+};
+
+const logAtLevel =
+  (level: RendererLogRecord["level"]) =>
+  (message: string, error?: unknown): void =>
+    logRenderer(level, message, { view: bridgeView }, error);
+
+const logBridge: DesktopLogBridge = {
+  error: logAtLevel("error"),
+  warn: logAtLevel("warn"),
+  info: logAtLevel("info"),
+  debug: logAtLevel("debug"),
+  write: writeRendererLog,
 };
 
 const invoke = createInvoke((channel, payload) =>
@@ -151,23 +168,26 @@ const invoke = createInvoke((channel, payload) =>
 
 if (debug) {
   window.addEventListener("error", (event) => {
-    sendRendererDiagnostic({
-      type: "renderer.error",
-      ...(event.colno === 0 ? {} : { columnNumber: event.colno }),
-      error: diagnosticError(event.error ?? event.message),
-      ...(event.lineno === 0 ? {} : { lineNumber: event.lineno }),
-      observedAt: new Date().toISOString(),
-      ...(event.filename === "" ? {} : { source: event.filename }),
-      view: bridgeView,
-    });
+    logRenderer(
+      "error",
+      "Renderer error",
+      {
+        ...(event.colno === 0 ? {} : { columnNumber: event.colno }),
+        ...(event.lineno === 0 ? {} : { lineNumber: event.lineno }),
+        observedAt: new Date().toISOString(),
+        ...(event.filename === "" ? {} : { source: event.filename }),
+        view: bridgeView,
+      },
+      event.error ?? event.message,
+    );
   });
   window.addEventListener("unhandledrejection", (event) => {
-    sendRendererDiagnostic({
-      type: "renderer.unhandled-rejection",
-      error: diagnosticError(event.reason),
-      observedAt: new Date().toISOString(),
-      view: bridgeView,
-    });
+    logRenderer(
+      "error",
+      "Renderer unhandled rejection",
+      { observedAt: new Date().toISOString(), view: bridgeView },
+      event.reason,
+    );
   });
 }
 const eventWrappers = new WeakMap<
@@ -281,9 +301,8 @@ const scriptingBridge: DesktopScriptingBridge = {
 };
 
 const gameConsoleObservabilityBridge: DesktopGameConsoleObservabilityBridge = {
-  message: (message) => {
-    ipcRenderer.send(GameConsoleIpc.rendererMessage.channel, { message });
-  },
+  message: (method, message) =>
+    logRenderer("debug", "Renderer console message", { method, message }),
 };
 
 const fileSystemBridge: DesktopFileSystemBridge = {
@@ -436,6 +455,7 @@ const updatesBridge: DesktopUpdatesBridge = {
 
 const commonBridge = {
   debug,
+  log: logBridge,
   platform: {
     os: platform,
   },
