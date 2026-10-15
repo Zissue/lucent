@@ -8,7 +8,7 @@ import { layer as electronAppLayer } from "./electron/ElectronApp";
 
 const { cliOptions, envConfig } = prepareMainProcess();
 
-if (!app.requestSingleInstanceLock()) {
+if (!app.requestSingleInstanceLock({ argv: process.argv })) {
   app.exit(0);
 } else {
   void Effect.runPromise(

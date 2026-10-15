@@ -1,5 +1,6 @@
 import * as Effect from "effect/Effect";
 import * as Queue from "effect/Queue";
+import * as Schema from "effect/Schema";
 import type * as Layer from "effect/Layer";
 
 import { createAppearanceSnapshot } from "@lucent/core/appearance";
@@ -22,6 +23,10 @@ import { DesktopUpdates } from "../updates/DesktopUpdates";
 import { DesktopApplicationMenu } from "../window/DesktopApplicationMenu";
 import { DesktopWindows } from "../window/DesktopWindows";
 import { showUpdateCheckDialog } from "../window/UpdateCheckDialog";
+
+const secondInstanceDataSchema = Schema.Struct({
+  argv: Schema.Array(Schema.String),
+});
 
 export const installDesktopNativeAppearanceSync = (
   initialSettings: AppSettings,
@@ -106,8 +111,11 @@ export const makeDesktopRuntime = <ROut, E>(
     );
     const disposeSecondInstance = yield* app.on(
       "second-instance",
-      (_, argv) => {
-        Queue.offerUnsafe(pendingLaunches, parseCliOptions(argv));
+      (_, argv, _workingDirectory, additionalData) => {
+        const originalArgv = Schema.is(secondInstanceDataSchema)(additionalData)
+          ? additionalData.argv
+          : argv;
+        Queue.offerUnsafe(pendingLaunches, parseCliOptions(originalArgv));
       },
     );
     yield* Effect.addFinalizer(() => Effect.sync(disposeSecondInstance));
@@ -119,7 +127,6 @@ export const makeDesktopRuntime = <ROut, E>(
       yield* lifecycle.register;
 
       yield* Effect.gen(function* () {
-        const app = yield* ElectronApp;
         const applicationMenu = yield* DesktopApplicationMenu;
         const env = yield* DesktopEnvironment;
         const gameRendererRecovery = yield* DesktopGameRendererRecovery;
@@ -165,6 +172,9 @@ export const makeDesktopRuntime = <ROut, E>(
             const launchMode =
               options.launchMode ??
               (yield* settingsService.get).preferences.launchMode;
+            if (yield* lifecycle.isQuitting) {
+              return;
+            }
             yield* openLaunchWindow(launchMode);
           }).pipe(
             Effect.catchCause((cause) =>

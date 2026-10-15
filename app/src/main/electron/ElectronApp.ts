@@ -13,7 +13,12 @@ export interface ElectronAppListeners {
   readonly activate: () => void;
   readonly "before-quit": () => void;
   readonly "will-quit": (event: ElectronWillQuitEvent) => void;
-  readonly "second-instance": (event: unknown, argv: readonly string[]) => void;
+  readonly "second-instance": (
+    event: unknown,
+    argv: readonly string[],
+    workingDirectory: string,
+    additionalData: unknown,
+  ) => void;
   readonly "window-all-closed": () => void;
 }
 
