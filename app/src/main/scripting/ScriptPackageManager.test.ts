@@ -1939,6 +1939,46 @@ describe("script package removal failures", () => {
 });
 
 describe("script package integrity rows", () => {
+  it.effect(
+    "marks reverted edits verified on update without scanning packages again",
+    () =>
+      Effect.gen(function* () {
+        const { destination, managed, workspaceDir } = yield* installedPackage;
+        const harness = makeManagerHarness({
+          managed,
+          workspaceDir,
+          resolution: { status: "modified", commit: INSTALLED_COMMIT },
+        });
+        const { manager, catalog } = yield* harness.services;
+        yield* catalog.getOverview;
+        yield* Effect.promise(() =>
+          write(join(destination, "index.js"), "edited"),
+        );
+        expect((yield* catalog.refresh).packages[0]).toMatchObject({
+          name: PACKAGE_NAME,
+          integrity: "modified",
+        });
+        yield* Effect.promise(() =>
+          write(join(destination, "index.js"), OLD_SOURCE),
+        );
+        const reads = vi.spyOn(fs, "readdir");
+        const result = yield* manager.update({ packageName: PACKAGE_NAME });
+        expect(result.status).toBe("unchanged");
+        expect((yield* catalog.getOverview).packages[0]).toMatchObject({
+          name: PACKAGE_NAME,
+          integrity: "verified",
+          update: { status: "current" },
+        });
+        expect(
+          reads.mock.calls.filter(
+            ([path]) =>
+              resolve(String(path)) === join(workspaceDir, "packages"),
+          ),
+        ).toEqual([]);
+        expect(harness.downloadCount()).toBe(0);
+      }),
+  );
+
   for (const operation of ["remove", "update"] as const) {
     it.effect(
       `marks a rejected ${operation} modified without another package scan`,

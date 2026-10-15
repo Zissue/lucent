@@ -574,6 +574,55 @@ describe("ScriptPackageCatalog", () => {
     }),
   );
 
+  it.effect(
+    "rescans instead of hiding another folder with the replacement name",
+    () =>
+      Effect.gen(function* () {
+        const { catalog, workspace, scanCount } = yield* makeCatalogHarness();
+        const duplicatePath = join(workspace.packagesDir, "other-tools");
+        yield* Effect.promise(() =>
+          write(join(duplicatePath, "package.json"), '{"name":"tools"}'),
+        );
+        expect((yield* catalog.getOverview).packages).toMatchObject([
+          { status: "valid", name: "tools", path: duplicatePath },
+        ]);
+        const rootPath = join(workspace.packagesDir, "tools");
+        yield* Effect.promise(() =>
+          write(join(rootPath, "package.json"), '{"name":"tools"}'),
+        );
+        const inspected = yield* Effect.promise(() =>
+          inspectScriptPackageDirectory(rootPath),
+        );
+        const replaced = yield* catalog.replacePackage({
+          inspected,
+          integrity: "modified",
+          managed: {
+            directory: "tools",
+            name: "tools",
+            files: {},
+            installedAt: new Date(0).toISOString(),
+            source: {
+              kind: "repository",
+              repositoryUrl: "https://github.com/example/tools",
+              resolvedCommit: "abc123",
+            },
+          },
+          rootPath,
+          sourceRoot: rootPath,
+        });
+        expect(replaced.packages).toEqual(
+          [duplicatePath, rootPath].map((path) => ({
+            status: "invalid",
+            name: "tools",
+            path,
+            diagnostic:
+              'More than one package folder declares the name "tools".',
+          })),
+        );
+        expect((yield* catalog.getDiscovery).packages.size).toBe(0);
+        expect(scanCount()).toBe(2);
+      }),
+  );
   it.effect("replaces and removes a package without a full rescan", () =>
     Effect.gen(function* () {
       const { catalog, workspace, scanCount } = yield* makeCatalogHarness();
