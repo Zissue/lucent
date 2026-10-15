@@ -440,6 +440,15 @@ describe("DesktopWindows renderer generations", () => {
 
           expect(yield* Deferred.await(observed)).toEqual(expected);
           expect(firstLifetime.scope.state._tag).toBe("Closed");
+          const error = yield* Effect.flip(
+            windows.markRendererReady(firstLifetime),
+          );
+          expect(error.detail).toBe("Failed to mark renderer ready: 101");
+          const latest = yield* windows.lifetime(rendererId);
+          if (latest?.isCurrent()) {
+            yield* windows.markRendererReady(latest);
+            expect((yield* windows.describe(rendererId))?.ready).toBe(true);
+          }
         }).pipe(Effect.provide(harness.layer));
       },
     );
@@ -455,7 +464,7 @@ describe("DesktopWindows document commits", () => {
       const contents = harness.created.get(id)!.webContents;
       contents.emit("did-start-navigation", navigate);
       contents.emit("did-navigate");
-      yield* windows.markRendererReady(id, 1);
+      yield* windows.markRendererReady((yield* windows.lifetime(id))!);
       const events: DesktopRendererEvent[] = [];
       yield* windows.observe({}, (event) =>
         Effect.sync(() => {
@@ -477,7 +486,7 @@ describe("DesktopWindows document commits", () => {
     return Effect.gen(function* () {
       const windows = yield* DesktopWindows;
       const id = yield* windows.open("game");
-      yield* windows.markRendererReady(id, 1);
+      yield* windows.markRendererReady((yield* windows.lifetime(id))!);
       harness.created.get(id)!.webContents.emit("did-start-loading");
       expect((yield* windows.describe(id))?.ready).toBe(true);
       expect((yield* windows.getGameViewHostState(102)).sessions).toEqual([
@@ -525,7 +534,7 @@ describe("DesktopWindows document commits", () => {
         contents.emit("did-navigate");
         expect((yield* windows.describe(id))?.generation).toBe(2);
         expect((yield* windows.lifetime(id))?.isCurrent()).toBe(true);
-        yield* windows.markRendererReady(id, 2);
+        yield* windows.markRendererReady((yield* windows.lifetime(id))!);
         expect((yield* windows.describe(id))?.ready).toBe(true);
       }).pipe(Effect.provide(harness.layer));
     },
@@ -538,7 +547,7 @@ describe("DesktopWindows document commits", () => {
       const id = yield* windows.open("game");
       const contents = harness.created.get(id)!.webContents;
       contents.emit("did-navigate");
-      yield* windows.markRendererReady(id, 1);
+      yield* windows.markRendererReady((yield* windows.lifetime(id))!);
       const events: DesktopRendererEvent[] = [];
       yield* windows.observe({}, (event) =>
         Effect.sync(() => {
@@ -572,7 +581,7 @@ describe("DesktopWindows document commits", () => {
         const id = yield* windows.open("game");
         const contents = harness.created.get(id)!.webContents;
         contents.emit("did-navigate");
-        yield* windows.markRendererReady(id, 1);
+        yield* windows.markRendererReady((yield* windows.lifetime(id))!);
         const events: DesktopRendererEvent[] = [];
         yield* windows.observe({}, (event) =>
           Effect.sync(() => {
@@ -615,7 +624,7 @@ describe("DesktopWindows document commits", () => {
           const id = yield* windows.open("game");
           const contents = harness.created.get(id)!.webContents;
           contents.emit("did-navigate");
-          yield* windows.markRendererReady(id, 1);
+          yield* windows.markRendererReady((yield* windows.lifetime(id))!);
           const events: DesktopRendererEvent[] = [];
           yield* windows.observe({}, (event) =>
             Effect.sync(() => {

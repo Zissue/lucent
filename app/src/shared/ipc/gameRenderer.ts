@@ -29,7 +29,7 @@ export const GameRendererIpc = {
   ready: defineInvoke({
     channel: `${namespace}:ready`,
     name: "gameRenderer.ready",
-    payload: Schema.Struct({ generation: Schema.Int }),
+    payload: Schema.Void,
     result: Schema.Void,
   }),
 } as const;
