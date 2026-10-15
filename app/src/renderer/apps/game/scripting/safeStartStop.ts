@@ -6,6 +6,7 @@ import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 
 import type { RoomPolicy } from "@lucent/core/accountSettings";
+import { logFailure } from "../../../../shared/logFailure";
 import type { ApiService } from "../flash/api/Api";
 import type { BridgeService } from "../flash/bridge/Bridge";
 import {
@@ -42,17 +43,12 @@ const safeMoveRetrySchedule = Schedule.exponential("1 second").pipe(
   Schedule.upTo({ times: maximumSafeMoveAttempts - 1 }),
 );
 
-const warnFailure = (phase: SafeStartStopPhase) =>
+const logMoveFailure = (phase: SafeStartStopPhase) =>
   Effect.catchCause((cause: Cause.Cause<unknown>) =>
-    Effect.logWarning("script safeStartStop safe move failed", cause).pipe(
+    logFailure("Safe start/stop move failed", cause).pipe(
       Effect.annotateLogs({ component: "scripting", data: { phase } }),
     ),
   );
-
-const abortDisconnected = (phase: SafeStartStopPhase) =>
-  Effect.logInfo(
-    "script safeStartStop safe move aborted; connection is unavailable",
-  ).pipe(Effect.annotateLogs({ component: "scripting", data: { phase } }));
 
 export const retrySafeMove = <R>(
   attempt: Effect.Effect<SafeMoveAttemptResult, never, R>,
@@ -107,18 +103,13 @@ export const makeMoveToSafeDestination = (services: SafeStartStopServices) => {
       .pipe(Effect.map(Option.isSome));
 
   const moveToSafeDestination = Effect.fn("ScriptRunner.moveToSafeDestination")(
-    function* (phase: SafeStartStopPhase) {
+    function* () {
       if (!(yield* auth.isLoggedIn())) {
-        return yield* abortDisconnected(phase);
+        return;
       }
 
       const username = (yield* auth.getUsername()).trim();
       if (username === "") {
-        yield* Effect.logWarning(
-          "script safeStartStop safe move skipped; username is unavailable",
-        ).pipe(
-          Effect.annotateLogs({ component: "scripting", data: { phase } }),
-        );
         return;
       }
 
@@ -129,7 +120,7 @@ export const makeMoveToSafeDestination = (services: SafeStartStopServices) => {
       if (hasEquippedHouse) {
         const inOwnHouse = yield* isInOwnHouse;
         if (!(yield* auth.isLoggedIn())) {
-          return yield* abortDisconnected(phase);
+          return;
         }
         if (inOwnHouse) return;
         destination = { kind: "house" };
@@ -154,14 +145,9 @@ export const makeMoveToSafeDestination = (services: SafeStartStopServices) => {
 
       const alive = yield* player.isAlive();
       if (!(yield* auth.isLoggedIn())) {
-        return yield* abortDisconnected(phase);
+        return;
       }
       if (!alive) {
-        yield* Effect.logInfo(
-          "script safeStartStop safe move waiting for automatic respawn",
-        ).pipe(
-          Effect.annotateLogs({ component: "scripting", data: { phase } }),
-        );
         const respawn = yield* wait.untilSome(
           Effect.all([auth.isLoggedIn(), player.isAlive()]).pipe(
             Effect.map(([loggedIn, alive]) =>
@@ -175,98 +161,73 @@ export const makeMoveToSafeDestination = (services: SafeStartStopServices) => {
           { timeout: respawnTimeout },
         );
         if (respawn === "aborted") {
-          return yield* abortDisconnected(phase);
+          return;
         }
         if (respawn !== "ready") {
-          yield* Effect.logWarning(
-            "script safeStartStop safe move skipped; automatic respawn timed out",
-          ).pipe(
-            Effect.annotateLogs({ component: "scripting", data: { phase } }),
-          );
           return;
         }
       }
 
       const exitedCombat = yield* combat.exit();
       if (!(yield* auth.isLoggedIn())) {
-        return yield* abortDisconnected(phase);
+        return;
       }
       if (!exitedCombat) {
-        yield* Effect.logWarning(
-          "script safeStartStop safe move skipped; failed to exit combat",
-        ).pipe(
-          Effect.annotateLogs({ component: "scripting", data: { phase } }),
-        );
         return;
       }
 
       yield* Effect.sleep("1 second");
       if (!(yield* auth.isLoggedIn())) {
-        return yield* abortDisconnected(phase);
+        return;
       }
 
-      const move = Effect.gen(function* () {
-        const result = yield* retrySafeMove(
-          destination.kind === "house"
-            ? Effect.gen(function* () {
-                if (!(yield* auth.isLoggedIn())) return "aborted";
-                if (
-                  !(yield* packet.sendToServer(`%xt%zm%house%1%${username}%`))
-                ) {
-                  return "retry";
-                }
-                const outcome = yield* wait.untilSome(
-                  Effect.all([
-                    auth.isLoggedIn(),
-                    isInOwnHouse,
-                    player.isReady(),
-                  ]).pipe(
-                    Effect.map(([loggedIn, ownHouse, ready]) =>
-                      !loggedIn
-                        ? Option.some<SafeMoveAttemptResult>("aborted")
-                        : ownHouse && ready
-                          ? Option.some<SafeMoveAttemptResult>("moved")
-                          : Option.none(),
-                    ),
+      const move = retrySafeMove(
+        destination.kind === "house"
+          ? Effect.gen(function* () {
+              if (!(yield* auth.isLoggedIn())) return "aborted";
+              if (
+                !(yield* packet.sendToServer(`%xt%zm%house%1%${username}%`))
+              ) {
+                return "retry";
+              }
+              const outcome = yield* wait.untilSome(
+                Effect.all([
+                  auth.isLoggedIn(),
+                  isInOwnHouse,
+                  player.isReady(),
+                ]).pipe(
+                  Effect.map(([loggedIn, ownHouse, ready]) =>
+                    !loggedIn
+                      ? Option.some<SafeMoveAttemptResult>("aborted")
+                      : ownHouse && ready
+                        ? Option.some<SafeMoveAttemptResult>("moved")
+                        : Option.none(),
                   ),
-                  { timeout: "5 seconds" },
-                );
-                return outcome ?? "retry";
-              })
-            : Effect.gen(function* () {
-                if (!(yield* auth.isLoggedIn())) return "aborted";
-                const joined = yield* player.joinMap(destination.target);
-                if (!(yield* auth.isLoggedIn())) return "aborted";
-                if (!joined) return "retry";
-                const outcome = yield* wait.untilSome(
-                  Effect.all([auth.isLoggedIn(), player.isReady()]).pipe(
-                    Effect.map(([loggedIn, ready]) =>
-                      !loggedIn
-                        ? Option.some<SafeMoveAttemptResult>("aborted")
-                        : ready
-                          ? Option.some<SafeMoveAttemptResult>("moved")
-                          : Option.none(),
-                    ),
+                ),
+                { timeout: "5 seconds" },
+              );
+              return outcome ?? "retry";
+            })
+          : Effect.gen(function* () {
+              if (!(yield* auth.isLoggedIn())) return "aborted";
+              const joined = yield* player.joinMap(destination.target);
+              if (!(yield* auth.isLoggedIn())) return "aborted";
+              if (!joined) return "retry";
+              const outcome = yield* wait.untilSome(
+                Effect.all([auth.isLoggedIn(), player.isReady()]).pipe(
+                  Effect.map(([loggedIn, ready]) =>
+                    !loggedIn
+                      ? Option.some<SafeMoveAttemptResult>("aborted")
+                      : ready
+                        ? Option.some<SafeMoveAttemptResult>("moved")
+                        : Option.none(),
                   ),
-                  { timeout: "5 seconds" },
-                );
-                return outcome ?? "retry";
-              }),
-        );
-
-        if (result === "aborted") {
-          yield* abortDisconnected(phase);
-        } else if (result === "timed-out") {
-          yield* Effect.logWarning(
-            "script safeStartStop safe move timed out",
-          ).pipe(
-            Effect.annotateLogs({
-              component: "scripting",
-              data: { phase, destination: destination.kind },
+                ),
+                { timeout: "5 seconds" },
+              );
+              return outcome ?? "retry";
             }),
-          );
-        }
-      });
+      );
 
       // Clear (potentially) stale returnInfo for clean transfer.
       const returnInfoIsNull = yield* bridge.invoke(
@@ -274,7 +235,8 @@ export const makeMoveToSafeDestination = (services: SafeStartStopServices) => {
         [returnInfoPath],
         Schema.Boolean,
       );
-      if (Option.getOrElse(returnInfoIsNull, () => false)) return yield* move;
+      if (Option.getOrElse(returnInfoIsNull, () => false))
+        return yield* Effect.asVoid(move);
 
       const returnInfo = yield* bridge.invokeJson(
         "flash.getGameObject",
@@ -282,11 +244,6 @@ export const makeMoveToSafeDestination = (services: SafeStartStopServices) => {
         Schema.Unknown,
       );
       if (Option.isNone(returnInfo) || !(yield* setReturnInfo(null))) {
-        yield* Effect.logWarning(
-          "script safeStartStop safe move skipped; world.returnInfo could not be cleared",
-        ).pipe(
-          Effect.annotateLogs({ component: "scripting", data: { phase } }),
-        );
         return;
       }
 
@@ -297,5 +254,5 @@ export const makeMoveToSafeDestination = (services: SafeStartStopServices) => {
   );
 
   return (phase: SafeStartStopPhase) =>
-    moveToSafeDestination(phase).pipe(warnFailure(phase));
+    moveToSafeDestination().pipe(logMoveFailure(phase));
 };
