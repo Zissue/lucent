@@ -69,16 +69,5 @@ export const makeAtomicFile = (fileSystem: FileSystem) => {
     yield* writeToExistingParent(path, data, options);
   });
 
-  const createIfMissing = Effect.fn("AtomicFile.createIfMissing")(function* (
-    path: string,
-    data: string | Uint8Array,
-  ): Effect.fn.Return<"created" | "exists", PlatformError> {
-    if (yield* fileSystem.exists(path)) {
-      return "exists";
-    }
-    yield* write(path, data);
-    return "created";
-  });
-
-  return { createIfMissing, write, writeToExistingParent };
+  return { write, writeToExistingParent };
 };

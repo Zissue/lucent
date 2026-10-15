@@ -40,27 +40,6 @@ afterEach(async () => {
 });
 
 testLayer(layer)("AtomicFile", (it) => {
-  it.effect("creates a missing file and preserves an existing file", () =>
-    Effect.gen(function* () {
-      const root = yield* Effect.promise(makeFixture);
-      const path = join(root, "state.json");
-      const atomicFile = makeAtomicFile(yield* FileSystem);
-
-      expect(yield* atomicFile.createIfMissing(path, "complete")).toBe(
-        "created",
-      );
-      expect(yield* Effect.promise(() => fs.readFile(path, "utf8"))).toBe(
-        "complete",
-      );
-      expect(yield* atomicFile.createIfMissing(path, "replacement")).toBe(
-        "exists",
-      );
-      expect(yield* Effect.promise(() => fs.readFile(path, "utf8"))).toBe(
-        "complete",
-      );
-    }),
-  );
-
   it.effect("publishes without cleaning the released temp path", () =>
     Effect.gen(function* () {
       const root = yield* Effect.promise(makeFixture);

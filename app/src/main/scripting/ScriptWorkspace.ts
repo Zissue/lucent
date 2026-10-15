@@ -113,10 +113,8 @@ export const layer = Layer.effect(
         .pipe(
           Effect.catchReason("PlatformError", "NotFound", () => Effect.void),
         );
-      if (current?.size === 0n) {
+      if (current === undefined || current.size === 0n) {
         yield* atomicFile.write(configPath, SCRIPT_WORKSPACE_CONFIG);
-      } else if (current === undefined) {
-        yield* atomicFile.createIfMissing(configPath, SCRIPT_WORKSPACE_CONFIG);
       }
     }).pipe(
       Effect.mapError((cause) => makeError("create-config", configPath, cause)),
@@ -137,11 +135,7 @@ export const layer = Layer.effect(
         return;
       }
       const template = yield* fileSystem.readFile(templatePath);
-      if (current === undefined) {
-        yield* atomicFile.createIfMissing(typesPath, template);
-      } else {
-        yield* atomicFile.write(typesPath, template);
-      }
+      yield* atomicFile.write(typesPath, template);
     }).pipe(
       Effect.mapError((cause) => makeError("copy-types", typesPath, cause)),
     );
