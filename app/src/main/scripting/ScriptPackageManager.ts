@@ -1127,6 +1127,25 @@ export const layer = Layer.effect(
               ),
           });
           const removedPath = join(temporaryRoot, basename(root));
+          const failRemoval = Effect.fnUntraced(function* (
+            error: ScriptPackageManagerError,
+          ): Effect.fn.Return<never, ScriptPackageManagerError> {
+            const removedExists = yield* Effect.tryPromise(() =>
+              pathExists(removedPath),
+            ).pipe(Effect.orElseSucceed(() => true));
+            if (!removedExists) {
+              yield* Effect.tryPromise(() => fs.rmdir(temporaryRoot)).pipe(
+                Effect.ignore,
+              );
+            }
+            return yield* managerError(
+              "remove",
+              removedExists
+                ? `${error.message} The package is saved at ${removedPath}.`
+                : error.message,
+              error,
+            );
+          });
           return yield* Effect.gen(function* () {
             yield* Effect.tryPromise({
               try: () => fs.rename(root, removedPath),
@@ -1148,7 +1167,7 @@ export const layer = Layer.effect(
                 catch: (cause) =>
                   managerError(
                     "remove",
-                    `Failed to restore the locally modified package. The package is saved at ${removedPath}.`,
+                    "Failed to restore the locally modified package.",
                     cause,
                   ),
               });
@@ -1173,7 +1192,7 @@ export const layer = Layer.effect(
                     managerError(
                       "remove",
                       "Package state failed and the package could not be restored.",
-                      cause,
+                      { cause: error, restoreCause: cause },
                     ),
                 }).pipe(Effect.flatMap(() => error)),
               ),
@@ -1186,7 +1205,14 @@ export const layer = Layer.effect(
                   "Failed to clean removal staging.",
                   cause,
                 ),
-            }).pipe(Effect.catch(() => Effect.void));
+            }).pipe(
+              Effect.catch((cause) =>
+                Effect.logWarning(
+                  `Failed to clean package removal folder at ${temporaryRoot}.`,
+                  cause,
+                ),
+              ),
+            );
             const nextCatalog = yield* catalog
               .removePackage(input.packageName)
               .pipe(Effect.mapError(mapCatalogError));
@@ -1195,7 +1221,7 @@ export const layer = Layer.effect(
               catalog: nextCatalog,
               packageName: input.packageName,
             } satisfies ScriptPackageMutationResult;
-          }).pipe(Effect.uninterruptible);
+          }).pipe(Effect.catch(failRemoval), Effect.uninterruptible);
         }),
       );
 
