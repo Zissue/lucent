@@ -14,7 +14,6 @@ import type {
 import {
   ArmyCoordinator,
   type ArmyCoordinatorError,
-  ArmySessionError,
   makeArmyCoordinator,
 } from "./ArmyCoordinator";
 import {
@@ -309,23 +308,24 @@ describe("ArmyLoopTauntOrchestrator", () => {
               const calls = new Map<number, number>();
               return {
                 ...coordinator,
-                requireParticipant: (sessionId, senderId) =>
+                loopTaunt: (sessionId, senderId, step) =>
                   Effect.gen(function* () {
-                    const identity = yield* coordinator.requireParticipant(
+                    const outcome = yield* coordinator.loopTaunt(
                       sessionId,
                       senderId,
+                      step,
                     );
                     const count = (calls.get(senderId) ?? 0) + 1;
                     calls.set(senderId, count);
-                    if (senderId === ids[1] && count === 2) {
+                    if (senderId === ids[1] && count === 1) {
                       yield* Deferred.succeed(activated, undefined);
                       yield* Deferred.await(releaseActivation);
                     }
-                    if (senderId === ids[0] && count === 5) {
+                    if (senderId === ids[0] && count === 3) {
                       yield* Deferred.succeed(replaced, undefined);
                       yield* Deferred.await(releaseReplacement);
                     }
-                    return identity;
+                    return outcome;
                   }),
               };
             },
@@ -507,57 +507,59 @@ describe("ArmyLoopTauntOrchestrator", () => {
     Effect.gen(function* () {
       const committed = yield* Deferred.make<void>();
       const releaseRegister = yield* Deferred.make<void>();
-      let aliceAuthentications = 0;
-      const harness = yield* makeHarness(
-        ["Alice", "Bob", "Carol"],
-        (coordinator, [aliceId]) => ({
-          ...coordinator,
-          requireParticipant: (sessionId, participantId) => {
-            const identity = coordinator.requireParticipant(
-              sessionId,
-              participantId,
-            );
-            return participantId === aliceId && ++aliceAuthentications === 2
-              ? identity.pipe(
-                  Effect.tap(() => Deferred.succeed(committed, undefined)),
-                  Effect.tap(() => Deferred.await(releaseRegister)),
-                )
-              : identity;
-          },
-        }),
-      );
-      const registration = makeRegistration(harness.sessionId);
-      const alice = yield* harness.orchestrator
-        .register(registration, harness.ids[0]!)
-        .pipe(Effect.forkScoped);
-      yield* Deferred.await(committed);
-      const interrupt = yield* Fiber.interrupt(alice).pipe(Effect.forkScoped);
-      yield* Effect.yieldNow;
-      yield* Deferred.succeed(releaseRegister, undefined);
-      yield* Fiber.join(interrupt);
-      expect(yield* Fiber.await(alice)).toMatchObject({ _tag: "Failure" });
-      const bob = yield* harness.orchestrator.register(
-        registration,
-        harness.ids[1]!,
-      );
-      const pending = yield* harness.orchestrator
-        .ready(
-          { runId: bob.runId, sessionId: harness.sessionId },
+      yield* Effect.gen(function* () {
+        const harness = yield* makeHarness(
+          ["Alice", "Bob", "Carol"],
+          (coordinator, [aliceId]) => ({
+            ...coordinator,
+            loopTaunt: (sessionId, participantId, step) => {
+              const committedStep = coordinator.loopTaunt(
+                sessionId,
+                participantId,
+                step,
+              );
+              return participantId === aliceId
+                ? committedStep.pipe(
+                    Effect.tap(() => Deferred.succeed(committed, undefined)),
+                    Effect.tap(() => Deferred.await(releaseRegister)),
+                  )
+                : committedStep;
+            },
+          }),
+        );
+        const registration = makeRegistration(harness.sessionId);
+        const alice = yield* harness.orchestrator
+          .register(registration, harness.ids[0]!)
+          .pipe(Effect.forkScoped);
+        yield* Deferred.await(committed);
+        const interrupt = yield* Fiber.interrupt(alice).pipe(Effect.forkScoped);
+        yield* Effect.yieldNow;
+        yield* Deferred.succeed(releaseRegister, undefined);
+        yield* Fiber.join(interrupt);
+        expect(yield* Fiber.await(alice)).toMatchObject({ _tag: "Failure" });
+        const bob = yield* harness.orchestrator.register(
+          registration,
           harness.ids[1]!,
-        )
-        .pipe(Effect.result, Effect.forkScoped);
-      yield* advance("30 seconds");
-      expect(pending.pollUnsafe()).toMatchObject({
-        _tag: "Success",
-        value: {
-          _tag: "Failure",
-          failure: {
-            reason: "registration-failed",
-            message:
-              "Loop taunt registration did not complete for the full Army roster within 30 seconds",
+        );
+        const pending = yield* harness.orchestrator
+          .ready(
+            { runId: bob.runId, sessionId: harness.sessionId },
+            harness.ids[1]!,
+          )
+          .pipe(Effect.result, Effect.forkScoped);
+        yield* advance("30 seconds");
+        expect(pending.pollUnsafe()).toMatchObject({
+          _tag: "Success",
+          value: {
+            _tag: "Failure",
+            failure: {
+              reason: "registration-failed",
+              message:
+                "Loop taunt registration did not complete for the full Army roster within 30 seconds",
+            },
           },
-        },
-      });
+        });
+      }).pipe(Effect.ensuring(Deferred.succeed(releaseRegister, undefined)));
     }),
   );
 
@@ -1269,56 +1271,24 @@ describe("ArmyLoopTauntOrchestrator", () => {
   );
 
   it.effect(
-    "drops a registrant that fails re-authentication so its finished run still retires",
+    "a rejected registrant does not prevent a finished run from retiring",
     () =>
       Effect.gen(function* () {
-        let orchestrator: ArmyLoopTauntOrchestratorShape | undefined;
-        let bobRunId = "";
-        let aliceAuthentications = 0;
-        const harness = yield* makeHarness(
-          ["Alice", "Bob"],
-          (coordinator, [aliceId, bobId]) => ({
-            ...coordinator,
-            requireParticipant: (sessionId, participantId) => {
-              if (participantId !== aliceId || ++aliceAuthentications !== 2) {
-                return coordinator.requireParticipant(sessionId, participantId);
-              }
-              return orchestrator!
-                .register(makeRegistration(sessionId), bobId!)
-                .pipe(
-                  Effect.tap(({ runId }) =>
-                    orchestrator!.report(
-                      {
-                        report: { reason: "Bob changed maps", type: "failed" },
-                        runId,
-                        sessionId,
-                      },
-                      bobId!,
-                    ),
-                  ),
-                  Effect.orDie,
-                  Effect.flatMap(({ runId }) => {
-                    bobRunId = runId;
-                    return Effect.fail(
-                      new ArmySessionError({
-                        detail: "Army session is not active",
-                        reason: "inactive",
-                        sessionId,
-                      }),
-                    );
-                  }),
-                );
-            },
-          }),
+        const harness = yield* makeHarness(["Alice", "Bob"]);
+        const registration = makeRegistration(harness.sessionId);
+        const { runId } = yield* harness.orchestrator.register(
+          registration,
+          harness.ids[1]!,
         );
-        orchestrator = harness.orchestrator;
-
         const rejected = yield* harness.orchestrator
-          .register(makeRegistration(harness.sessionId), harness.ids[0]!)
+          .register(registration, -1)
           .pipe(Effect.flip);
-        expect(rejected).toMatchObject({ reason: "inactive" });
-
-        const run = { runId: bobRunId, sessionId: harness.sessionId };
+        expect(rejected).toMatchObject({ reason: "sender-mismatch" });
+        yield* report(harness, runId, harness.ids[1]!, {
+          reason: "Bob changed maps",
+          type: "failed",
+        });
+        const run = { runId, sessionId: harness.sessionId };
         expect(yield* harness.orchestrator.await(run, harness.ids[1]!)).toEqual(
           {
             reason: "Bob changed maps",
@@ -1326,14 +1296,13 @@ describe("ArmyLoopTauntOrchestrator", () => {
           },
         );
         yield* harness.orchestrator.leave(run, harness.ids[1]!);
-
         expect(
           yield* harness.orchestrator
             .await(run, harness.ids[1]!)
             .pipe(Effect.result),
         ).toMatchObject({
           _tag: "Failure",
-          failure: { reason: "inactive-run", runId: bobRunId },
+          failure: { reason: "inactive-run", runId },
         });
       }),
   );

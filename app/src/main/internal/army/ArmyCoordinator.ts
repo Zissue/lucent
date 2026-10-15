@@ -17,6 +17,15 @@ import {
   type ArmySessionPayload,
 } from "@lucent/core/army";
 
+import {
+  ArmyLoopTauntError,
+  initialLoopTauntSlot,
+  type LoopTauntSlot,
+  type LoopTauntStep,
+  type MutationEffects,
+  noEffects,
+} from "./ArmyLoopTauntState";
+
 export const ARMY_START_TIMEOUT_MS = 120_000;
 export const ARMY_SYNC_TIMEOUT_MS = 10 * 60_000;
 
@@ -150,6 +159,7 @@ export interface CollectingSession extends SessionIdentity {
 }
 
 export interface ActiveSession extends SessionIdentity {
+  readonly loopTaunt: LoopTauntSlot;
   readonly nextStep: number;
   readonly checkpoint: (Checkpoint & { readonly step: number }) | null;
   readonly lastCompleted: StepSignature | null;
@@ -158,6 +168,8 @@ export interface ActiveSession extends SessionIdentity {
 }
 
 export type ArmySessionState = CollectingSession | ActiveSession;
+
+type ArmySessionSnapshot = CollectingSession | Omit<ActiveSession, "loopTaunt">;
 
 export interface ArmyCoordinatorState {
   readonly nextSessionId: number;
@@ -483,6 +495,7 @@ export const joinSession = (
   }
 
   const active: ActiveSession = {
+    loopTaunt: initialLoopTauntSlot,
     nextStep: 0,
     checkpoint: null,
     lastCompleted: null,
@@ -828,7 +841,7 @@ export interface ArmyCoordinatorShape {
     participantId: ArmyParticipantId,
     reason: string,
   ) => Effect.Effect<void, ArmyCoordinatorError>;
-  readonly getSessions: () => Effect.Effect<readonly ArmySessionState[]>;
+  readonly getSessions: () => Effect.Effect<readonly ArmySessionSnapshot[]>;
   readonly join: (
     config: ArmyConfigPayload,
     playerName: string,
@@ -848,10 +861,22 @@ export interface ArmyCoordinatorShape {
       readonly timeoutMs?: number;
     },
   ) => Effect.Effect<ArmyProgressResult, ArmyCoordinatorError>;
-  readonly requireParticipant: (
+  readonly loopTaunt: <A>(
     sessionId: string,
     participantId: ArmyParticipantId,
-  ) => Effect.Effect<ArmyAuthenticatedParticipant, ArmyCoordinatorError>;
+    step: (
+      slot: LoopTauntSlot,
+      seat: ArmyAuthenticatedParticipant & { readonly id: ArmyParticipantId },
+      nowMs: number,
+    ) => LoopTauntStep<A>,
+  ) => Effect.Effect<
+    readonly [A, MutationEffects],
+    ArmyCoordinatorError | ArmyLoopTauntError
+  >;
+  readonly loopTauntTimer: (
+    sessionId: string,
+    step: (slot: LoopTauntSlot, nowMs: number) => LoopTauntStep<void>,
+  ) => Effect.Effect<MutationEffects>;
   readonly sync: (
     sessionId: string,
     participantId: ArmyParticipantId,
@@ -921,6 +946,37 @@ export const makeArmyCoordinator = (): Effect.Effect<
           yield* Effect.forEach(
             session.checkpoint?.waiters ?? [],
             (waiter) => Deferred.fail(waiter, error),
+            { discard: true },
+          );
+        }
+        if (session.phase === "active") {
+          yield* Effect.forEach(
+            session.loopTaunt.runs.values(),
+            (run) =>
+              Deferred.fail(
+                run.readinessGate,
+                new ArmyLoopTauntError({
+                  detail:
+                    run.terminal === undefined
+                      ? cause.reason
+                      : run.terminal.status === "failed"
+                        ? run.terminal.reason
+                        : "Loop taunt registration was superseded",
+                  reason: "registration-failed",
+                  runId: run.runId,
+                  sessionId: session.sessionId,
+                }),
+              ).pipe(
+                Effect.andThen(
+                  Deferred.succeed(
+                    run.terminalGate,
+                    run.terminal ?? {
+                      reason: cause.reason,
+                      status: "failed" as const,
+                    },
+                  ),
+                ),
+              ),
             { discard: true },
           );
         }
@@ -1104,21 +1160,75 @@ export const makeArmyCoordinator = (): Effect.Effect<
         payload.complete,
       );
 
-    const requireParticipant: ArmyCoordinatorShape["requireParticipant"] = (
-      sessionId,
-      participantId,
+    const loopTaunt: ArmyCoordinatorShape["loopTaunt"] = <A>(
+      sessionId: string,
+      participantId: ArmyParticipantId,
+      step: (
+        slot: LoopTauntSlot,
+        seat: ArmyAuthenticatedParticipant & { readonly id: ArmyParticipantId },
+        nowMs: number,
+      ) => LoopTauntStep<A>,
     ) =>
-      Ref.get(stateRef).pipe(
-        Effect.flatMap((state) =>
-          Effect.fromResult(identify(state, sessionId, participantId)),
-        ),
-        Effect.map(({ playerKey, session }) => ({
-          playerCount: session.config.players.length,
-          playerName: canonicalPlayerName(session.config, playerKey),
-          playerNumber: playerNumber(session.config, playerKey),
-          sessionId,
-        })),
-      );
+      Effect.gen(function* () {
+        const nowMs = yield* Clock.currentTimeMillis;
+        const result = yield* Ref.modify(
+          stateRef,
+          (
+            state,
+          ): readonly [
+            Result.Result<
+              readonly [A, MutationEffects],
+              ArmyCoordinatorError | ArmyLoopTauntError
+            >,
+            ArmyCoordinatorState,
+          ] => {
+            const seat = identify(state, sessionId, participantId);
+            if (Result.isFailure(seat))
+              return [Result.fail(seat.failure), state];
+            const { playerKey, session } = seat.success;
+            const outcome = step(
+              session.loopTaunt,
+              {
+                id: participantId,
+                playerCount: session.config.players.length,
+                playerName: canonicalPlayerName(session.config, playerKey),
+                playerNumber: playerNumber(session.config, playerKey),
+                sessionId,
+              },
+              nowMs,
+            );
+            return [
+              Result.map(
+                outcome.result,
+                (result) => [result, outcome.effects] as const,
+              ),
+              outcome.slot === session.loopTaunt
+                ? state
+                : withSession(state, { ...session, loopTaunt: outcome.slot }),
+            ] as const;
+          },
+        );
+        return yield* Effect.fromResult(result);
+      });
+
+    const loopTauntTimer: ArmyCoordinatorShape["loopTauntTimer"] = (
+      sessionId,
+      step,
+    ) =>
+      Effect.gen(function* () {
+        const nowMs = yield* Clock.currentTimeMillis;
+        return yield* Ref.modify(stateRef, (state) => {
+          const session = state.sessions.get(sessionId);
+          if (session?.phase !== "active") return [noEffects(), state] as const;
+          const outcome = step(session.loopTaunt, nowMs);
+          return [
+            outcome.effects,
+            outcome.slot === session.loopTaunt
+              ? state
+              : withSession(state, { ...session, loopTaunt: outcome.slot }),
+          ] as const;
+        });
+      });
 
     const abortSession: ArmyCoordinatorShape["abortSession"] = (
       sessionId,
@@ -1127,7 +1237,13 @@ export const makeArmyCoordinator = (): Effect.Effect<
 
     const getSessions: ArmyCoordinatorShape["getSessions"] = () =>
       Ref.get(stateRef).pipe(
-        Effect.map((state) => [...state.sessions.values()]),
+        Effect.map((state) =>
+          [...state.sessions.values()].map((session) => {
+            if (session.phase === "collecting") return session;
+            const { loopTaunt: _, ...snapshot } = session;
+            return snapshot;
+          }),
+        ),
       );
 
     const service: ArmyCoordinatorShape = {
@@ -1146,7 +1262,8 @@ export const makeArmyCoordinator = (): Effect.Effect<
         dispatch((state, nowMs) => leaveSession(state, participantId, nowMs)),
       onSessionEnded: sessionEndedEvents.subscribe,
       progress,
-      requireParticipant,
+      loopTaunt,
+      loopTauntTimer,
       sync,
     };
 

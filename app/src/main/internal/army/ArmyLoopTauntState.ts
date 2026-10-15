@@ -220,7 +220,7 @@ export const noEffects = (): MutationEffects => ({
   timers: [],
 });
 
-export const mergeMutationEffects = (
+const mergeMutationEffects = (
   left: MutationEffects,
   right: MutationEffects,
 ): MutationEffects => ({
@@ -1564,11 +1564,11 @@ const storeRun = (slot: LoopTauntSlot, run: RunState): LoopTauntSlot => {
 };
 
 export const runForPayload = (
-  state: LoopTauntSlot | undefined,
+  state: LoopTauntSlot,
   payload: ArmyLoopTauntRunPayload,
   senderId: ArmyParticipantId,
 ): RunState | ArmyLoopTauntError => {
-  const run = state?.runs.get(payload.runId);
+  const run = state.runs.get(payload.runId);
   if (run === undefined || run.sessionId !== payload.sessionId) {
     return loopError(
       "inactive-run",
@@ -1896,31 +1896,6 @@ export const registerRun = (
   };
 };
 
-export const rejectRegistration = (
-  slot: LoopTauntSlot,
-  runId: string,
-  senderId: ArmyParticipantId,
-): LoopTauntStep<void> => {
-  const run = slot.runs.get(runId);
-  if (run === undefined || !run.participants.has(senderId)) {
-    return { effects: noEffects(), result: Result.succeed(undefined), slot };
-  }
-  const participants = new Map(run.participants);
-  participants.delete(senderId);
-  const mutation = terminalize(
-    { ...run, participants },
-    {
-      reason: "Army session ended during Loop Taunt registration",
-      status: "failed",
-    },
-  );
-  return {
-    effects: mutation,
-    result: Result.succeed(undefined),
-    slot: storeRun(slot, mutation.run),
-  };
-};
-
 export const reportRun = (
   slot: LoopTauntSlot,
   payload: ArmyLoopTauntReportPayload,
@@ -2025,27 +2000,11 @@ export const onTimer = (
   };
 };
 
-export const endLoopTaunt = (
-  slot: LoopTauntSlot,
-  reason: string,
-): MutationEffects => {
-  let effects = noEffects();
-  for (const run of slot.runs.values()) {
-    if (run.status !== "terminal") {
-      effects = mergeMutationEffects(
-        effects,
-        terminalize(run, { reason, status: "failed" }),
-      );
-    }
-  }
-  return effects;
-};
-
 export const commandForPublication = (
-  slot: LoopTauntSlot | undefined,
+  slot: LoopTauntSlot,
   event: ArmyLoopTauntCommandEvent,
 ): ArmyLoopTauntCommandEvent | undefined => {
-  const run = slot?.runs.get(event.command.runId);
+  const run = slot.runs.get(event.command.runId);
   if (run?.status !== "active") return undefined;
   const participantIds = event.participantIds.filter((participantId) =>
     run.participants.has(participantId),
@@ -2071,9 +2030,9 @@ export const commandForPublication = (
 };
 
 export const isReadinessCurrent = (
-  slot: LoopTauntSlot | undefined,
+  slot: LoopTauntSlot,
   readiness: Extract<ReadinessEffect, { readonly type: "succeed" }>,
 ): boolean => {
-  const run = slot?.runs.get(readiness.result.runId);
+  const run = slot.runs.get(readiness.result.runId);
   return run?.status === "active" && run.readinessGate === readiness.gate;
 };
