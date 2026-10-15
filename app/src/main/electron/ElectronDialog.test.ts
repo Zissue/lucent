@@ -29,7 +29,7 @@ describe("Electron message box interruption", () => {
               shown,
               Effect.succeed(args.length === 1 ? args[0] : args[1]),
             );
-            return new Promise(() => {});
+            return Promise.withResolvers<never>().promise;
           },
         );
         const dialog = yield* ElectronDialog;

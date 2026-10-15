@@ -55,16 +55,16 @@ const showMessageBox: ElectronDialogShape["showMessageBox"] = (
   parentWindowId,
 ) =>
   Effect.tryPromise({
-    try: () => {
+    try: (signal) => {
       if (parentWindowId === undefined) {
-        return dialog.showMessageBox(options);
+        return dialog.showMessageBox({ ...options, signal });
       }
 
       const browserWindow = BaseWindow.fromId(parentWindowId);
       if (browserWindow === null) {
         throw new Error(`Browser window is not open: ${parentWindowId}`);
       }
-      return dialog.showMessageBox(browserWindow, options);
+      return dialog.showMessageBox(browserWindow, { ...options, signal });
     },
     catch: (cause) => new ElectronDialogMessageBoxError({ cause }),
   });
