@@ -1833,9 +1833,9 @@ export function ScriptsDialog(props: ScriptsDialogProps): JSX.Element {
   };
 
   const applyMutation = (result: ScriptPackageMutationResult): void => {
+    setConfirmation(null);
     if (result.status === "completed" || result.status === "unchanged") {
       replaceCatalog(result.catalog);
-      setConfirmation(null);
     }
   };
 
