@@ -4,12 +4,9 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
-import * as Logger from "effect/Logger";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
-import * as References from "effect/References";
 import * as Scope from "effect/Scope";
-import * as TestClock from "effect/testing/TestClock";
 
 import type {
   ArmyLoopTauntCommandPayload,
@@ -270,88 +267,6 @@ const startLoopTaunt = (
     );
 
 describe("Army Loop Taunt renderer", () => {
-  it.effect("logs a readiness failure once until polling recovers", () => {
-    const records: {
-      readonly cause: Cause.Cause<unknown>;
-      readonly level: string;
-      readonly message: unknown;
-      readonly annotations: Readonly<Record<string, unknown>>;
-    }[] = [];
-    const logger = Logger.make((options) => {
-      records.push({
-        cause: options.cause,
-        level: options.logLevel,
-        message: options.message,
-        annotations: options.fiber.getRef(References.CurrentLogAnnotations),
-      });
-    });
-
-    return Effect.gen(function* () {
-      const cycles = yield* Queue.unbounded<number>();
-      const runFork = Effect.runForkWith(yield* Effect.context());
-      const failure = new Error("bridge unavailable");
-      let attempts = 0;
-      const harness = yield* makeRuntime(
-        {},
-        {
-          loopTauntReport: ({ report }) => {
-            if (report.type !== "participant-state") {
-              return Promise.resolve();
-            }
-            attempts++;
-            runFork(Queue.offer(cycles, attempts));
-            return attempts <= 3 ? Promise.reject(failure) : Promise.resolve();
-          },
-        },
-      );
-      const startup = yield* startLoopTaunt(harness.runtime);
-      yield* Fiber.join(startup);
-      expect(yield* Queue.take(cycles)).toBe(1);
-      for (const attempt of [2, 3, 4, 5]) {
-        yield* TestClock.adjust("250 millis");
-        expect(yield* Queue.take(cycles)).toBe(attempt);
-      }
-      yield* TestClock.adjust("0 millis");
-
-      expect(
-        records.map(({ level, message, annotations }) => ({
-          level,
-          message,
-          annotations,
-        })),
-      ).toEqual([
-        {
-          level: "Warn",
-          message: ["Loop Taunt readiness report failed"],
-          annotations: {
-            component: "army",
-            data: {
-              key: "readiness-report",
-              runId: "run-1",
-              sessionId: "session-1",
-            },
-          },
-        },
-        {
-          level: "Info",
-          message: ["Loop Taunt readiness report recovered"],
-          annotations: {
-            component: "army",
-            data: {
-              key: "readiness-report",
-              runId: "run-1",
-              sessionId: "session-1",
-            },
-          },
-        },
-      ]);
-      expect(Cause.squash(records[0]!.cause)).toMatchObject({
-        cause: failure,
-        message: "Failed to report Loop Taunt state",
-      });
-    }).pipe(Effect.provideService(Logger.CurrentLoggers, new Set([logger])));
-  });
-
   it.effect(
     "evaluates skipWhen for the selected member with participant snapshots",
     () =>

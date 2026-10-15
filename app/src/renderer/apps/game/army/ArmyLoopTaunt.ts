@@ -18,7 +18,6 @@ import * as Semaphore from "effect/Semaphore";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import type { DesktopArmyBridge } from "../../../../shared/desktopBridge";
-import { makeFailureTransitions } from "../failureTransitions";
 import type { ApiService } from "../flash/api/Api";
 import {
   CONSUMABLE_CAST_CONFIRMATION_TIMEOUT_MS,
@@ -628,32 +627,15 @@ export const makeArmyLoopTauntRuntime = (
                   fromDesktop("Failed to report Loop Taunt state", () =>
                     bridge.loopTauntReport({ ...loopRun, report }),
                   );
-                const logData = { ...loopRun };
-                const reportLogs = yield* makeFailureTransitions({
-                  component: "army",
-                  failed: "Loop Taunt report failed",
-                  recovered: "Loop Taunt report recovered",
-                });
-                const eventLogs = yield* makeFailureTransitions({
-                  component: "army",
-                  failed: "Loop Taunt event handling failed",
-                  recovered: "Loop Taunt event handling recovered",
-                });
-                const readinessLogs = yield* makeFailureTransitions({
-                  component: "army",
-                  failed: "Loop Taunt readiness report failed",
-                  recovered: "Loop Taunt readiness report recovered",
-                });
-                const targetRefreshLogs = yield* makeFailureTransitions({
-                  component: "army",
-                  failed: "Loop Taunt target refresh failed",
-                  recovered: "Loop Taunt target refresh recovered",
-                });
                 const reportBestEffort = (value: ArmyLoopTauntReport) =>
                   report(value).pipe(
-                    Effect.tap(() => reportLogs.recovered(value.type, logData)),
                     Effect.catchCause((cause) =>
-                      reportLogs.failed(value.type, cause, logData),
+                      Effect.logWarning("Loop Taunt report failed", cause).pipe(
+                        Effect.annotateLogs({
+                          component: "army",
+                          data: { runId: loopRun.runId },
+                        }),
+                      ),
                     ),
                   );
 
@@ -830,9 +812,6 @@ export const makeArmyLoopTauntRuntime = (
                             ),
                           { discard: true },
                         );
-                        if (assignmentIds.length > 0) {
-                          yield* eventLogs.recovered(event.type, logData);
-                        }
                         return;
                       }
                       case "aura-added":
@@ -863,7 +842,6 @@ export const makeArmyLoopTauntRuntime = (
                             ),
                           { discard: true },
                         );
-                        yield* eventLogs.recovered(event.type, logData);
                         return;
                       }
                       case "update-message": {
@@ -890,13 +868,20 @@ export const makeArmyLoopTauntRuntime = (
                             }),
                           { discard: true },
                         );
-                        yield* eventLogs.recovered(event.type, logData);
                         return;
                       }
                     }
                   }).pipe(
                     Effect.catchCause((cause) =>
-                      eventLogs.failed(event.type, cause, logData),
+                      Effect.logWarning(
+                        "Loop Taunt event handling failed",
+                        cause,
+                      ).pipe(
+                        Effect.annotateLogs({
+                          component: "army",
+                          data: { runId: loopRun.runId },
+                        }),
+                      ),
                     ),
                   );
 
@@ -1293,11 +1278,16 @@ export const makeArmyLoopTauntRuntime = (
                   // Equipment and consumable cooldown changes have no reliable
                   // event source, so readiness must be sampled while active.
                   reportParticipantState.pipe(
-                    Effect.tap(() =>
-                      readinessLogs.recovered("readiness-report", logData),
-                    ),
                     Effect.catchCause((cause) =>
-                      readinessLogs.failed("readiness-report", cause, logData),
+                      Effect.logWarning(
+                        "Loop Taunt readiness report failed",
+                        cause,
+                      ).pipe(
+                        Effect.annotateLogs({
+                          component: "army",
+                          data: { runId: loopRun.runId },
+                        }),
+                      ),
                     ),
                     Effect.andThen(
                       Effect.sleep(`${LOOP_TAUNT_STATUS_INTERVAL_MS} millis`),
@@ -1316,14 +1306,15 @@ export const makeArmyLoopTauntRuntime = (
                       discard: true,
                     },
                   ).pipe(
-                    Effect.tap(() =>
-                      targetRefreshLogs.recovered("target-refresh", logData),
-                    ),
                     Effect.catchCause((cause) =>
-                      targetRefreshLogs.failed(
-                        "target-refresh",
+                      Effect.logWarning(
+                        "Loop Taunt target refresh failed",
                         cause,
-                        logData,
+                      ).pipe(
+                        Effect.annotateLogs({
+                          component: "army",
+                          data: { runId: loopRun.runId },
+                        }),
                       ),
                     ),
                     Effect.andThen(
