@@ -5,12 +5,15 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
 import type { DesktopRendererKind } from "../window/DesktopWindowCatalog";
-import { DesktopWindows } from "../window/DesktopWindows";
+import {
+  DesktopWindows,
+  type RendererLifetime,
+} from "../window/DesktopWindows";
 
 export interface DesktopIpcSender {
   readonly rendererId: number;
   readonly kind: DesktopRendererKind;
-  readonly isCurrent: () => boolean;
+  readonly lifetime: RendererLifetime;
 }
 
 export type DesktopIpcSenderKinds = readonly [
@@ -42,7 +45,7 @@ export class DesktopIpcSenders extends Context.Service<
 >()("lucent/desktop/ipc/DesktopIpcSenders") {}
 
 export const makeDesktopIpcSenders = (
-  windows: Pick<DesktopWindows["Service"], "describe" | "generationGuard">,
+  windows: Pick<DesktopWindows["Service"], "describe" | "lifetime">,
 ): DesktopIpcSenders["Service"] => {
   const requireSender = Effect.fn("DesktopIpcSenders.require")(function* (
     event: { readonly sender: Pick<WebContents, "id"> },
@@ -56,10 +59,16 @@ export const makeDesktopIpcSenders = (
       });
     }
 
+    const lifetime = yield* windows.lifetime(rendererId);
+    if (lifetime === undefined) {
+      return yield* new DesktopIpcSenderError({
+        detail: "IPC sender is no longer available",
+      });
+    }
     return {
       rendererId,
       kind: info.kind,
-      isCurrent: yield* windows.generationGuard(rendererId, info.generation),
+      lifetime,
     };
   });
 

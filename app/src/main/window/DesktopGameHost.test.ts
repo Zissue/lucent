@@ -59,7 +59,12 @@ const makeHost = (ids: readonly number[]) => {
       scope: Scope.makeUnsafe(),
       gameView: makeView((presentation) => sent.push(presentation)),
       gameViewPhase: "ready",
-      generation: 0,
+      lifetime: {
+        rendererId: id,
+        generation: 0,
+        scope: Scope.makeUnsafe(),
+        isCurrent: () => true,
+      },
       hostWindow: window,
       kind: "game",
       rendererId: id,

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Scope from "effect/Scope";
 
 import type { DesktopRendererKind } from "../window/DesktopWindowCatalog";
 import { DesktopWindows } from "../window/DesktopWindows";
@@ -29,8 +30,18 @@ const makeWindows = (kind: DesktopRendererKind | null) => {
               ready: false,
             };
       }),
-    generationGuard: (rendererId: number, generation: number) =>
-      Effect.succeed(() => generations.get(rendererId) === generation),
+    lifetime: (rendererId: number) =>
+      Effect.sync(() => {
+        const generation = generations.get(rendererId);
+        return generation === undefined
+          ? undefined
+          : {
+              rendererId,
+              generation,
+              scope: Scope.makeUnsafe(),
+              isCurrent: () => generations.get(rendererId) === generation,
+            };
+      }),
   };
 };
 
@@ -44,11 +55,11 @@ describe("DesktopIpcSenders", () => {
 
       expect(sender.rendererId).toBe(42);
       expect(sender.kind).toBe("game");
-      expect(sender.isCurrent()).toBe(true);
+      expect(sender.lifetime.isCurrent()).toBe(true);
 
       windows.generations.set(42, 2);
 
-      expect(sender.isCurrent()).toBe(false);
+      expect(sender.lifetime.isCurrent()).toBe(false);
     }),
   );
 

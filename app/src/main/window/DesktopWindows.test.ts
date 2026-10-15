@@ -8,6 +8,10 @@ import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Latch from "effect/Latch";
 import * as Layer from "effect/Layer";
+import {
+  makeDesktopGameRendererRecovery,
+  type RecoverableGameWebContents,
+} from "../app/DesktopGameRendererRecovery";
 
 import { DEFAULT_APP_SETTINGS } from "@lucent/core/settings";
 import { DesktopWindowKindSchema } from "../../shared/ipc/windows";
@@ -58,6 +62,9 @@ const makeWindow = (id: number) =>
       focus: () => {},
       send: () => {},
       getZoomFactor: () => 1,
+      getOSProcessId: () => id,
+      forcefullyCrashRenderer: () => {},
+      reload: () => {},
       isDestroyed: () => false,
     }),
   });
@@ -365,7 +372,7 @@ const lifecycles = [
   {
     end: (window: ReturnType<typeof makeWindow>) => window.emit("closed"),
     expected: {
-      event: { type: "closed", rendererId: 101, kind: "game" },
+      event: { type: "closed", rendererId: 101, kind: "game", generation: 1 },
       current: false,
       next: false,
       info: undefined,
@@ -392,6 +399,7 @@ const lifecycles = [
         rendererId: 101,
         kind: "game",
         reason: "crashed",
+        generation: 1,
       },
       current: false,
       next: false,
@@ -409,14 +417,7 @@ describe("DesktopWindows renderer generations", () => {
         return Effect.gen(function* () {
           const windows = yield* DesktopWindows;
           const rendererId = yield* windows.open("game");
-          const isFirstGeneration = yield* windows.generationGuard(
-            rendererId,
-            1,
-          );
-          const isSecondGeneration = yield* windows.generationGuard(
-            rendererId,
-            2,
-          );
+          const firstLifetime = (yield* windows.lifetime(rendererId))!;
           const observed = yield* Deferred.make<{
             readonly event: DesktopRendererEvent;
             readonly current: boolean;
@@ -425,18 +426,20 @@ describe("DesktopWindows renderer generations", () => {
           }>();
           yield* windows.observe({ kind: "game" }, (event) =>
             Effect.gen(function* () {
-              const current = isFirstGeneration();
-              const next = isSecondGeneration();
+              const current = firstLifetime.isCurrent();
+              const latest = yield* windows.lifetime(rendererId);
+              const next = latest?.generation === 2 && latest.isCurrent();
               const info = yield* windows.describe(rendererId);
               yield* Deferred.succeed(observed, { event, current, next, info });
             }),
           );
           expect(rendererId).toBe(101);
-          expect(isFirstGeneration()).toBe(true);
+          expect(firstLifetime.isCurrent()).toBe(true);
 
           end(harness.created.get(rendererId)!);
 
           expect(yield* Deferred.await(observed)).toEqual(expected);
+          expect(firstLifetime.scope.state._tag).toBe("Closed");
         }).pipe(Effect.provide(harness.layer));
       },
     );
@@ -498,10 +501,10 @@ describe("DesktopWindows document commits", () => {
           { sender: contents },
           ["game"],
         );
-        expect(sender.isCurrent()).toBe(true);
+        expect(sender.lifetime.isCurrent()).toBe(true);
         expect((yield* windows.describe(id))?.generation).toBe(1);
         contents.emit("did-navigate");
-        expect(sender.isCurrent()).toBe(false);
+        expect(sender.lifetime.isCurrent()).toBe(false);
         expect((yield* windows.describe(id))?.generation).toBe(2);
       }).pipe(Effect.provide(harness.layer));
     },
@@ -515,13 +518,13 @@ describe("DesktopWindows document commits", () => {
         const windows = yield* DesktopWindows;
         const id = yield* windows.open("game");
         const contents = harness.created.get(id)!.webContents;
-        const first = yield* windows.generationGuard(id, 1);
+        const first = (yield* windows.lifetime(id))!;
         contents.emit("render-process-gone", {}, { reason: "crashed" });
-        expect(first()).toBe(false);
+        expect(first.isCurrent()).toBe(false);
         contents.emit("did-start-navigation", navigate);
         contents.emit("did-navigate");
         expect((yield* windows.describe(id))?.generation).toBe(2);
-        expect((yield* windows.generationGuard(id, 2))()).toBe(true);
+        expect((yield* windows.lifetime(id))?.isCurrent()).toBe(true);
         yield* windows.markRendererReady(id, 2);
         expect((yield* windows.describe(id))?.ready).toBe(true);
       }).pipe(Effect.provide(harness.layer));
@@ -646,3 +649,82 @@ describe("DesktopWindows document commits", () => {
     );
   }
 });
+
+it.effect("gives chrome IPC senders a document lifetime", () => {
+  const harness = makeHarness(true);
+  return Effect.gen(function* () {
+    const windows = yield* DesktopWindows;
+    yield* windows.open("game");
+    for (const [id, kind] of [
+      [101, "game-group-controls"],
+      [102, "game-host"],
+    ] as const) {
+      const contents = harness.created.get(id)!.webContents;
+      contents.emit("did-navigate");
+      const sender = yield* makeDesktopIpcSenders(windows).require(
+        { sender: contents },
+        [kind],
+      );
+      expect(sender.kind).toBe(kind);
+      expect(sender.lifetime.isCurrent()).toBe(true);
+      contents.emit("did-start-loading");
+      expect(sender.lifetime.isCurrent()).toBe(true);
+      contents.emit("did-navigate");
+      expect(sender.lifetime.scope.state._tag).toBe("Closed");
+      expect(sender.lifetime.isCurrent()).toBe(false);
+      expect((yield* windows.lifetime(id))?.generation).toBe(1);
+    }
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect(
+  "interrupts recovery when DesktopWindows commits the next document",
+  () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const windows = yield* DesktopWindows;
+      const id = yield* windows.open("game");
+      const contents = harness.created.get(id)!.webContents;
+      contents.emit("did-navigate");
+      const signals: AbortSignal[] = [];
+      const recovery = makeDesktopGameRendererRecovery({
+        allWebContents: () => [
+          contents as unknown as RecoverableGameWebContents,
+        ],
+        describe: windows.describe,
+        lifetime: windows.lifetime,
+        observe: windows.observe,
+        onWebContentsCreated: () => () => {},
+        onBeforeQuit: () => () => {},
+        showRecoveryPrompt: () =>
+          Effect.promise((signal) => {
+            signals.push(signal);
+            return Promise.withResolvers<number>().promise;
+          }),
+        showRendererRecoveryPrompt: () => Effect.succeed(1),
+        suppressLaunchScript: () => Effect.void,
+        warn: () => Effect.void,
+        error: () => Effect.void,
+        info: () => Effect.void,
+      });
+      yield* recovery.install;
+      const sender = yield* makeDesktopIpcSenders(windows).require(
+        { sender: contents },
+        ["game"],
+      );
+      yield* recovery.beginScriptExecution(sender.lifetime);
+      contents.emit("unresponsive");
+      yield* Effect.yieldNow.pipe(Effect.repeat({ times: 4 }));
+      expect(signals.map((signal) => signal.aborted)).toEqual([false]);
+      contents.emit("did-start-loading");
+      expect(signals.map((signal) => signal.aborted)).toEqual([false]);
+      contents.emit("did-navigate");
+      yield* Effect.yieldNow.pipe(Effect.repeat({ times: 4 }));
+      expect(signals.map((signal) => signal.aborted)).toEqual([true]);
+      expect(sender.lifetime.isCurrent()).toBe(false);
+      const next = (yield* windows.lifetime(id))!;
+      expect(next.generation).toBe(2);
+      expect(next.isCurrent()).toBe(true);
+    }).pipe(Effect.provide(harness.layer));
+  },
+);

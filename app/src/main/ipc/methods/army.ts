@@ -38,7 +38,7 @@ export const start = makeDesktopIpcMethod({
     const configs = yield* ArmyConfigRepository;
     const coordinator = yield* ArmyCoordinator;
     const config = yield* configs.read(payload.configName);
-    return yield* coordinator.join(config, payload.playerName, sender);
+    return yield* coordinator.join(config, payload.playerName, sender.lifetime);
   }),
 });
 

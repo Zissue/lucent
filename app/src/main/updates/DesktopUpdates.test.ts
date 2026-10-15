@@ -1,3 +1,4 @@
+import * as Scope from "effect/Scope";
 import { mkdtemp, readFile, rm, writeFile } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -237,7 +238,12 @@ describe("DesktopUpdates", () => {
         const sender: DesktopIpcSender = {
           rendererId: 1,
           kind: "settings",
-          isCurrent: () => true,
+          lifetime: {
+            rendererId: 1,
+            generation: 1,
+            scope: Scope.makeUnsafe(),
+            isCurrent: () => true,
+          },
         };
 
         const { pending, state } = yield* Effect.gen(function* () {

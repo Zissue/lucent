@@ -4,7 +4,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
-import type * as Scope from "effect/Scope";
+import * as Scope from "effect/Scope";
 
 import type { ArmyConfigPayload } from "@lucent/core/army";
 import { ArmyIpc } from "../../../shared/ipc";
@@ -54,16 +54,19 @@ const makeGameWindows = () => {
             ready: true,
           };
     });
-  const generationGuard: DesktopWindows["Service"]["generationGuard"] = (
-    id,
-    generation,
-  ) =>
-    Effect.succeed(() => {
-      const record = generations.get(id);
-      return (
-        record?.generation === generation &&
-        record.unavailableGeneration !== generation
-      );
+  const lifetime: DesktopWindows["Service"]["lifetime"] = (id) =>
+    Effect.sync(() => {
+      const generation = generations.get(id)?.generation;
+      return generation === undefined
+        ? undefined
+        : {
+            rendererId: id,
+            generation,
+            scope: Scope.makeUnsafe(),
+            isCurrent: () =>
+              generations.get(id)?.generation === generation &&
+              generations.get(id)?.unavailableGeneration !== generation,
+          };
     });
   const observe: DesktopWindows["Service"]["observe"] = (filter, listener) =>
     Effect.acquireRelease(
@@ -79,7 +82,7 @@ const makeGameWindows = () => {
       if (lifecycle === "closed") {
         generations.delete(rendererId);
         return events.publish(
-          { type: "closed", rendererId, kind: "game" },
+          { type: "closed", rendererId, kind: "game", generation: 1 },
           "unbounded",
         );
       }
@@ -87,7 +90,13 @@ const makeGameWindows = () => {
       if (lifecycle === "crashed") {
         record.unavailableGeneration = record.generation;
         return events.publish(
-          { type: "crashed", rendererId, kind: "game", reason: "crashed" },
+          {
+            type: "crashed",
+            rendererId,
+            kind: "game",
+            generation: record.generation,
+            reason: "crashed",
+          },
           "unbounded",
         );
       }
@@ -98,7 +107,7 @@ const makeGameWindows = () => {
         "unbounded",
       );
     });
-  return { describe, end, generationGuard, observe };
+  return { describe, end, lifetime, observe };
 };
 
 const runStartIpc = <A, E>(
@@ -140,7 +149,7 @@ const runStartIpc = <A, E>(
         Layer.succeed(DesktopIpc, ipc),
         Layer.mock(DesktopWindows, {
           describe: windows.describe,
-          generationGuard: windows.generationGuard,
+          lifetime: windows.lifetime,
           observe: windows.observe,
         }),
         Layer.succeed(DesktopIpcSenders, makeDesktopIpcSenders(windows)),

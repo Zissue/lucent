@@ -1,3 +1,4 @@
+import * as Scope from "effect/Scope";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -40,7 +41,12 @@ const hostState: GameViewHostState = {
 const sender = {
   kind: "game-host",
   rendererId: 100,
-  isCurrent: () => true,
+  lifetime: {
+    rendererId: 100,
+    generation: 1,
+    scope: Scope.makeUnsafe(),
+    isCurrent: () => true,
+  },
 } as const;
 
 describe("game view lifecycle IPC", () => {
@@ -137,7 +143,12 @@ describe("game view lifecycle IPC", () => {
           .handler(undefined, {
             kind: "game",
             rendererId: 42,
-            isCurrent: () => true,
+            lifetime: {
+              rendererId: 42,
+              generation: 1,
+              scope: Scope.makeUnsafe(),
+              isCurrent: () => true,
+            },
           })
           .pipe(Effect.provide(dependencies));
         expect(
@@ -233,7 +244,12 @@ describe("game view host command IPC", () => {
               {
                 kind: "game-group-controls",
                 rendererId: 101,
-                isCurrent: () => true,
+                lifetime: {
+                  rendererId: 101,
+                  generation: 1,
+                  scope: Scope.makeUnsafe(),
+                  isCurrent: () => true,
+                },
               },
             ),
           ),
@@ -294,7 +310,16 @@ describe("game view host command IPC", () => {
         yield* dispatchGroupOptionHotkey
           .handler(
             { commandId: "toggleInfiniteRange" },
-            { kind: "game", rendererId: 42, isCurrent: () => true },
+            {
+              kind: "game",
+              rendererId: 42,
+              lifetime: {
+                rendererId: 42,
+                generation: 1,
+                scope: Scope.makeUnsafe(),
+                isCurrent: () => true,
+              },
+            },
           )
           .pipe(Effect.provide(dependencies)),
       ).toEqual({ recipientCount: 0, skippedCount: 0, status: "sent" });

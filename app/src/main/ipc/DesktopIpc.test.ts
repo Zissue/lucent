@@ -1,3 +1,4 @@
+import * as Scope from "effect/Scope";
 import { describe, expect, it } from "@effect/vitest";
 import type { IpcMainInvokeEvent } from "electron";
 import * as Cause from "effect/Cause";
@@ -45,7 +46,12 @@ const senders = DesktopIpcSenders.of({
       return {
         rendererId: 42,
         kind: "game" as const,
-        isCurrent: () => true,
+        lifetime: {
+          rendererId: 42,
+          generation: 1,
+          scope: Scope.makeUnsafe(),
+          isCurrent: () => true,
+        },
       };
     }),
 } satisfies DesktopIpcSendersShape);
