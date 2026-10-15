@@ -26,6 +26,7 @@ import {
   type ElectronWindowHandle,
 } from "../electron/ElectronWindow";
 import { RuffleSocketProxy } from "../ruffle/RuffleSocketProxy";
+import { makeDesktopIpcSenders } from "../ipc/DesktopIpcSenders";
 import { DesktopSettings } from "../settings/DesktopSettings";
 import {
   getDesktopWindowDefinition,
@@ -96,6 +97,7 @@ const makeHarness = (useGameTabs = false) => {
     createView: () =>
       Effect.sync(() => {
         const window = makeWindow(nextRendererId++);
+        created.set(window.id, window);
         let bounds = { x: 0, y: 0, width: 0, height: 0 };
         return {
           native: {},
@@ -456,8 +458,8 @@ const lifecycles = [
   },
   {
     end: ({ webContents }: ReturnType<typeof makeWindow>) => {
-      webContents.emit("did-start-navigation", navigate);
-      webContents.emit("did-start-navigation", navigate);
+      webContents.emit("did-navigate");
+      webContents.emit("did-navigate");
     },
     expected: {
       event: { type: "reloaded", rendererId: 101, kind: "game", generation: 2 },
@@ -520,6 +522,210 @@ describe("DesktopWindows renderer generations", () => {
           end(harness.created.get(rendererId)!);
 
           expect(yield* Deferred.await(observed)).toEqual(expected);
+        }).pipe(Effect.provide(harness.layer));
+      },
+    );
+  }
+});
+
+describe("DesktopWindows document commits", () => {
+  it.effect("keeps the ready generation when navigation is cancelled", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const windows = yield* DesktopWindows;
+      const id = yield* windows.open("game");
+      const contents = harness.created.get(id)!.webContents;
+      contents.emit("did-start-navigation", navigate);
+      contents.emit("did-navigate");
+      yield* windows.markRendererReady(id, 1);
+      const events: DesktopRendererEvent[] = [];
+      yield* windows.observe({}, (event) =>
+        Effect.sync(() => {
+          events.push(event);
+        }),
+      );
+      contents.emit("did-start-navigation", navigate);
+      yield* Effect.yieldNow;
+      expect(yield* windows.describe(id)).toEqual({
+        ...liveInfo(1),
+        ready: true,
+      });
+      expect(events).toEqual([]);
+    }).pipe(Effect.provide(harness.layer));
+  });
+
+  it.effect("keeps a game view ready after bare loading", () => {
+    const harness = makeHarness(true);
+    return Effect.gen(function* () {
+      const windows = yield* DesktopWindows;
+      const id = yield* windows.open("game");
+      yield* windows.markRendererReady(id, 1);
+      harness.created.get(id)!.webContents.emit("did-start-loading");
+      expect((yield* windows.describe(id))?.ready).toBe(true);
+      expect((yield* windows.getGameViewHostState(103)).sessions).toEqual([
+        { id: "104", name: "Tab 1", phase: "ready" },
+      ]);
+    }).pipe(Effect.provide(harness.layer));
+  });
+
+  it.effect(
+    "keeps a sender resolved during navigation current until commit",
+    () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const windows = yield* DesktopWindows;
+        const id = yield* windows.open("game");
+        const contents = harness.created.get(id)!.webContents;
+        contents.emit("did-start-navigation", navigate);
+        contents.emit("did-navigate");
+        contents.emit("did-start-navigation", navigate);
+        const sender = yield* makeDesktopIpcSenders(windows).require(
+          { sender: contents },
+          ["game"],
+        );
+        expect(sender.isCurrent()).toBe(true);
+        expect((yield* windows.describe(id))?.generation).toBe(1);
+        contents.emit("did-navigate");
+        expect(sender.isCurrent()).toBe(false);
+        expect((yield* windows.describe(id))?.generation).toBe(2);
+      }).pipe(Effect.provide(harness.layer));
+    },
+  );
+
+  it.effect(
+    "replaces a generation that crashed before its first commit",
+    () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const windows = yield* DesktopWindows;
+        const id = yield* windows.open("game");
+        const contents = harness.created.get(id)!.webContents;
+        const first = yield* windows.generationGuard(id, 1);
+        contents.emit("render-process-gone", {}, { reason: "crashed" });
+        expect(first()).toBe(false);
+        contents.emit("did-start-navigation", navigate);
+        contents.emit("did-navigate");
+        expect((yield* windows.describe(id))?.generation).toBe(2);
+        expect((yield* windows.generationGuard(id, 2))()).toBe(true);
+        yield* windows.markRendererReady(id, 2);
+        expect((yield* windows.describe(id))?.ready).toBe(true);
+      }).pipe(Effect.provide(harness.layer));
+    },
+  );
+
+  it.effect("keeps a game view ready after an aborted load", () => {
+    const harness = makeHarness(true);
+    return Effect.gen(function* () {
+      const windows = yield* DesktopWindows;
+      const id = yield* windows.open("game");
+      const contents = harness.created.get(id)!.webContents;
+      contents.emit("did-navigate");
+      yield* windows.markRendererReady(id, 1);
+      const events: DesktopRendererEvent[] = [];
+      yield* windows.observe({}, (event) =>
+        Effect.sync(() => {
+          events.push(event);
+        }),
+      );
+      contents.emit(
+        "did-fail-load",
+        {},
+        -3,
+        "ERR_ABORTED",
+        "file:///game",
+        true,
+      );
+      yield* Effect.yieldNow;
+      expect((yield* windows.describe(id))?.generation).toBe(1);
+      expect((yield* windows.describe(id))?.ready).toBe(true);
+      expect((yield* windows.getGameViewHostState(103)).sessions).toEqual([
+        { id: "104", name: "Tab 1", phase: "ready" },
+      ]);
+      expect(events).toEqual([]);
+    }).pipe(Effect.provide(harness.layer));
+  });
+
+  it.effect(
+    "ignores committed subframe errors and uncommitted load failures",
+    () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const windows = yield* DesktopWindows;
+        const id = yield* windows.open("game");
+        const contents = harness.created.get(id)!.webContents;
+        contents.emit("did-navigate");
+        yield* windows.markRendererReady(id, 1);
+        const events: DesktopRendererEvent[] = [];
+        yield* windows.observe({}, (event) =>
+          Effect.sync(() => {
+            events.push(event);
+          }),
+        );
+        contents.emit(
+          "did-fail-provisional-load",
+          {},
+          -324,
+          "ERR_EMPTY_RESPONSE",
+          "file:///frame",
+          false,
+        );
+        contents.emit(
+          "did-fail-load",
+          {},
+          -2,
+          "ERR_FAILED",
+          "file:///game",
+          true,
+        );
+        yield* Effect.yieldNow;
+        expect(yield* windows.describe(id)).toEqual({
+          ...liveInfo(1),
+          ready: true,
+        });
+        expect(events).toEqual([]);
+      }).pipe(Effect.provide(harness.layer));
+    },
+  );
+
+  for (const code of [-324, -3]) {
+    it.effect(
+      `advances for a committed main-frame error page with code ${code}`,
+      () => {
+        const harness = makeHarness();
+        return Effect.gen(function* () {
+          const windows = yield* DesktopWindows;
+          const id = yield* windows.open("game");
+          const contents = harness.created.get(id)!.webContents;
+          contents.emit("did-navigate");
+          yield* windows.markRendererReady(id, 1);
+          const events: DesktopRendererEvent[] = [];
+          yield* windows.observe({}, (event) =>
+            Effect.sync(() => {
+              events.push(event);
+            }),
+          );
+          contents.emit(
+            "did-fail-provisional-load",
+            {},
+            code,
+            "error",
+            "file:///game",
+            true,
+          );
+          contents.emit(
+            "did-fail-load",
+            {},
+            code,
+            "error",
+            "file:///game",
+            true,
+          );
+          yield* Effect.yieldNow;
+          expect((yield* windows.describe(id))?.generation).toBe(2);
+          expect((yield* windows.describe(id))?.ready).toBe(false);
+          expect(events).toEqual([
+            { type: "reloaded", rendererId: 101, kind: "game", generation: 2 },
+          ]);
         }).pipe(Effect.provide(harness.layer));
       },
     );
