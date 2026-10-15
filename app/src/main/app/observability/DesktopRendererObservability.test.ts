@@ -1,17 +1,16 @@
 import { EventEmitter } from "node:events";
-import { app, ipcMain } from "electron";
+import { app } from "electron";
 import { describe, expect, it } from "@effect/vitest";
 import { vi } from "vitest";
 import * as Effect from "effect/Effect";
 import * as Logger from "effect/Logger";
 import * as References from "effect/References";
 
-import { DiagnosticsIpc, GameConsoleIpc } from "../../../shared/ipc";
 import { installDesktopRendererObservability } from "./DesktopRendererObservability";
 
 vi.mock("electron", async () => {
   const { EventEmitter } = await import("node:events");
-  return { app: new EventEmitter(), ipcMain: new EventEmitter() };
+  return { app: new EventEmitter() };
 });
 
 describe("DesktopRendererObservability", () => {
@@ -31,48 +30,6 @@ describe("DesktopRendererObservability", () => {
         yield* Effect.scoped(
           Effect.gen(function* () {
             yield* installDesktopRendererObservability;
-            ipcMain.emit(
-              DiagnosticsIpc.rendererRecord.channel,
-              { sender: contents },
-              { type: "invalid" },
-            );
-            ipcMain.emit(
-              GameConsoleIpc.rendererMessage.channel,
-              { sender: contents },
-              { message: 42 },
-            );
-            ipcMain.emit(
-              GameConsoleIpc.rendererMessage.channel,
-              { sender: contents },
-              { message: "hello" },
-            );
-            ipcMain.emit(
-              DiagnosticsIpc.rendererRecord.channel,
-              { sender: contents },
-              {
-                type: "renderer.error",
-                error: {
-                  name: "TypeError",
-                  message: "bad view",
-                  stack: "renderer stack",
-                },
-                observedAt: "2026-10-12T12:00:00.000Z",
-                view: "game",
-                source: "game.js",
-                lineNumber: 12,
-                columnNumber: 3,
-              },
-            );
-            ipcMain.emit(
-              DiagnosticsIpc.rendererRecord.channel,
-              { sender: contents },
-              {
-                type: "renderer.unhandled-rejection",
-                error: { name: "Error", message: "request failed" },
-                observedAt: "2026-10-12T12:01:00.000Z",
-                view: "game",
-              },
-            );
             app.emit("render-process-gone", {}, contents, {
               reason: "crashed",
               exitCode: 1,
@@ -108,11 +65,6 @@ describe("DesktopRendererObservability", () => {
             Effect.provideService(References.MinimumLogLevel, "Debug"),
           ),
         );
-        ipcMain.emit(
-          GameConsoleIpc.rendererMessage.channel,
-          { sender: contents },
-          { message: "after close" },
-        );
         app.emit(
           "child-process-gone",
           {},
@@ -122,41 +74,6 @@ describe("DesktopRendererObservability", () => {
         yield* Effect.yieldNow;
 
         expect(records).toEqual([
-          {
-            level: "Debug",
-            message: ["Renderer console message"],
-            component: "renderer",
-            data: { message: "hello", rendererId: 42 },
-          },
-          {
-            level: "Error",
-            message: ["Renderer error"],
-            component: "renderer",
-            data: {
-              rendererId: 42,
-              error: {
-                name: "TypeError",
-                message: "bad view",
-                stack: "renderer stack",
-              },
-              observedAt: "2026-10-12T12:00:00.000Z",
-              view: "game",
-              source: "game.js",
-              lineNumber: 12,
-              columnNumber: 3,
-            },
-          },
-          {
-            level: "Error",
-            message: ["Renderer unhandled rejection"],
-            component: "renderer",
-            data: {
-              rendererId: 42,
-              error: { name: "Error", message: "request failed" },
-              observedAt: "2026-10-12T12:01:00.000Z",
-              view: "game",
-            },
-          },
           {
             level: "Error",
             message: ["Renderer process gone"],

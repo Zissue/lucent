@@ -1,9 +1,12 @@
+import { vi } from "vitest";
+import { ipcMain } from "electron";
+import { RendererLogIpc } from "../../../shared/ipc/rendererLog";
 import * as Cause from "effect/Cause";
 import { promises as fs } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
-import { afterEach, describe, expect, it, vi } from "@effect/vitest";
+import { afterEach, describe, expect, it } from "@effect/vitest";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -15,6 +18,11 @@ import {
   DesktopObservability,
   layer as desktopObservabilityLayer,
 } from "./DesktopObservability";
+
+vi.mock("electron", async () => {
+  const { EventEmitter } = await import("node:events");
+  return { ipcMain: new EventEmitter() };
+});
 
 const fixtureDirectories = new Set<string>();
 
@@ -71,6 +79,176 @@ afterEach(async () => {
 });
 
 describe("DesktopObservability", () => {
+  it.effect("writes renderer records and removes the handler on shutdown", () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.promise(makeFixture);
+      yield* Effect.sync(() => {
+        ipcMain.emit(
+          RendererLogIpc.record.channel,
+          { sender: { id: 42 } },
+          {
+            level: "error",
+            message: "Renderer error",
+            component: "renderer",
+            data: { view: "game" },
+            error: [
+              {
+                name: "Error",
+                message: "x",
+                cause: { name: "Error", message: "root" },
+              },
+            ],
+          },
+        );
+      }).pipe(Effect.provide(makeLayer(root, false)));
+      ipcMain.emit(
+        RendererLogIpc.record.channel,
+        { sender: { id: 42 } },
+        { level: "error", message: "After shutdown" },
+      );
+      expect(ipcMain.listenerCount(RendererLogIpc.record.channel)).toBe(0);
+      expect(
+        yield* Effect.promise(() =>
+          readRecords(join(root, "logs", "lucent.log")),
+        ),
+      ).toEqual([
+        {
+          at: "1970-01-01T00:00:00.000Z",
+          level: "error",
+          component: "renderer",
+          message: "Renderer error",
+          data: { view: "game" },
+          annotations: { rendererId: 42 },
+          error: [
+            {
+              name: "Error",
+              message: "x",
+              cause: { name: "Error", message: "root" },
+            },
+          ],
+        },
+      ]);
+    }),
+  );
+
+  for (const debug of [false, true]) {
+    it.effect(
+      `filters renderer debug records with debug=${debug} and drops invalid payloads`,
+      () =>
+        Effect.gen(function* () {
+          const root = yield* Effect.promise(makeFixture);
+          yield* Effect.sync(() => {
+            for (const payload of [
+              { level: "debug", message: "Detail" },
+              { level: "verbose", message: "Invalid level" },
+              { level: "error", message: 42 },
+              {
+                level: "error",
+                message: "Invalid error",
+                error: [
+                  { name: "Error", message: "x", cause: { message: "bad" } },
+                ],
+              },
+              { level: "info", message: "Extra field", extra: true },
+              { level: "info", message: "Ready" },
+            ])
+              ipcMain.emit(
+                RendererLogIpc.record.channel,
+                { sender: { id: 7 } },
+                payload,
+              );
+          }).pipe(Effect.provide(makeLayer(root, debug)));
+          expect(
+            yield* Effect.promise(() =>
+              readRecords(join(root, "logs", "lucent.log")),
+            ),
+          ).toEqual([
+            ...(debug
+              ? [
+                  {
+                    at: "1970-01-01T00:00:00.000Z",
+                    level: "debug",
+                    component: "renderer",
+                    message: "Detail",
+                    annotations: { rendererId: 7 },
+                  },
+                ]
+              : []),
+            {
+              at: "1970-01-01T00:00:00.000Z",
+              level: "info",
+              component: "renderer",
+              message: "Ready",
+              annotations: { rendererId: 7 },
+            },
+          ]);
+        }),
+    );
+  }
+
+  it.effect(
+    "collapses 100 renderer records through the main repeat windows",
+    () =>
+      Effect.gen(function* () {
+        const root = yield* Effect.promise(makeFixture);
+        yield* Effect.gen(function* () {
+          const observability = yield* DesktopObservability;
+          const send = () =>
+            ipcMain.emit(
+              RendererLogIpc.record.channel,
+              { sender: { id: 42 } },
+              {
+                level: "warn",
+                message: "Loop failed",
+                component: "army",
+                data: { attempt: 1 },
+              },
+            );
+          send();
+          yield* TestClock.adjust("10 seconds");
+          for (let i = 0; i < 99; i++) send();
+          yield* observability.flush;
+          expect(
+            yield* Effect.promise(() =>
+              readRecords(join(root, "logs", "lucent.log")),
+            ),
+          ).toEqual([
+            {
+              at: "1970-01-01T00:00:00.000Z",
+              level: "warn",
+              component: "army",
+              message: "Loop failed",
+              data: { attempt: 1 },
+              annotations: { rendererId: 42 },
+            },
+          ]);
+          yield* TestClock.adjust("50 seconds");
+        }).pipe(Effect.provide(makeLayer(root, false)));
+        expect(
+          yield* Effect.promise(() =>
+            readRecords(join(root, "logs", "lucent.log")),
+          ),
+        ).toEqual([
+          {
+            at: "1970-01-01T00:00:00.000Z",
+            level: "warn",
+            component: "army",
+            message: "Loop failed",
+            data: { attempt: 1 },
+            annotations: { rendererId: 42 },
+          },
+          {
+            at: "1970-01-01T00:01:00.000Z",
+            level: "warn",
+            component: "army",
+            message: "Loop failed",
+            suppressed: 99,
+            lastAt: "1970-01-01T00:00:10.000Z",
+          },
+        ]);
+      }),
+  );
+
   it.effect("collapses 100 warnings until the window expires", () =>
     Effect.gen(function* () {
       const root = yield* Effect.promise(makeFixture);
@@ -351,49 +529,40 @@ describe("DesktopObservability", () => {
       }),
   );
 
-  it.effect("never collapses non-string record messages", () =>
-    Effect.gen(function* () {
-      const root = yield* Effect.promise(makeFixture);
-      yield* Effect.gen(function* () {
-        const message = { ready: true };
-        for (let i = 0; i < 2; i++) {
-          yield* Effect.logInfo(message);
-          yield* Effect.logInfo(message, "detail");
-        }
-      }).pipe(Effect.provide(makeLayer(root, false)));
-      expect(
-        yield* Effect.promise(() =>
-          readRecords(join(root, "logs", "lucent.log")),
-        ),
-      ).toEqual([
-        {
-          at: "1970-01-01T00:00:00.000Z",
-          level: "info",
-          component: "effect",
-          message: { ready: true },
-        },
-        {
-          at: "1970-01-01T00:00:00.000Z",
-          level: "info",
-          component: "effect",
-          message: [{ ready: true }, "detail"],
-          error: [{ name: "NonError", message: "detail" }],
-        },
-        {
-          at: "1970-01-01T00:00:00.000Z",
-          level: "info",
-          component: "effect",
-          message: { ready: true },
-        },
-        {
-          at: "1970-01-01T00:00:00.000Z",
-          level: "info",
-          component: "effect",
-          message: [{ ready: true }, "detail"],
-          error: [{ name: "NonError", message: "detail" }],
-        },
-      ]);
-    }),
+  it.effect(
+    "collapses unlabeled messages after retaining non-string arguments",
+    () =>
+      Effect.gen(function* () {
+        const root = yield* Effect.promise(makeFixture);
+        yield* Effect.gen(function* () {
+          yield* Effect.logInfo({ ready: true }, "detail", 42);
+          yield* Effect.logInfo({ ready: false });
+        }).pipe(Effect.provide(makeLayer(root, false)));
+        expect(
+          yield* Effect.promise(() =>
+            readRecords(join(root, "logs", "lucent.log")),
+          ),
+        ).toEqual([
+          {
+            at: "1970-01-01T00:00:00.000Z",
+            level: "info",
+            component: "effect",
+            message: "Unlabeled log message",
+            error: [
+              { name: "NonError", message: '{"ready":true}' },
+              { name: "NonError", message: "42" },
+            ],
+          },
+          {
+            at: "1970-01-01T00:00:00.000Z",
+            level: "info",
+            component: "effect",
+            message: "Unlabeled log message",
+            suppressed: 1,
+            lastAt: "1970-01-01T00:00:00.000Z",
+          },
+        ]);
+      }),
   );
 
   it.effect(
@@ -843,62 +1012,66 @@ describe("DesktopObservability", () => {
     }),
   );
 
-  it.effect(
-    "formats non-error arguments and preserves non-string messages",
-    () =>
-      Effect.gen(function* () {
-        const root = yield* Effect.promise(makeFixture);
-        const circular: { self?: unknown } = {};
-        circular.self = circular;
-        const unserializable = Object.create(null);
-        unserializable.self = unserializable;
-        yield* Effect.gen(function* () {
-          yield* Effect.logError(
-            "Unexpected values",
-            { code: 42 },
-            undefined,
-            circular,
-            unserializable,
-            42n,
-            "x".repeat(1_025),
-          );
-          yield* Effect.logInfo({ ready: true });
-          yield* Effect.logInfo({ ready: false }, 42);
-        }).pipe(Effect.provide(makeLayer(root, false)));
+  it.effect("formats non-error arguments and labels non-string messages", () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.promise(makeFixture);
+      const circular: { self?: unknown } = {};
+      circular.self = circular;
+      const unserializable = Object.create(null);
+      unserializable.self = unserializable;
+      yield* Effect.gen(function* () {
+        yield* Effect.logError(
+          "Unexpected values",
+          { code: 42 },
+          undefined,
+          circular,
+          unserializable,
+          42n,
+          "x".repeat(1_025),
+        );
+        yield* Effect.logInfo({ ready: true });
+        yield* Effect.logInfo({ ready: false }, 42).pipe(
+          Effect.annotateLogs({ component: "second" }),
+        );
+      }).pipe(Effect.provide(makeLayer(root, false)));
 
-        expect(
-          yield* Effect.promise(() =>
-            readRecords(join(root, "logs", "lucent.log")),
-          ),
-        ).toEqual([
-          {
-            at: expect.any(String),
-            component: "effect",
-            level: "error",
-            message: "Unexpected values",
-            error: [
-              { name: "NonError", message: '{"code":42}' },
-              { name: "NonError", message: "undefined" },
-              { name: "NonError", message: "[object Object]" },
-              { name: "NonError", message: "[Unserializable]" },
-              { name: "NonError", message: "42" },
-              { name: "NonError", message: "x".repeat(1_024) },
-            ],
-          },
-          {
-            at: expect.any(String),
-            component: "effect",
-            level: "info",
-            message: { ready: true },
-          },
-          {
-            at: expect.any(String),
-            component: "effect",
-            level: "info",
-            message: [{ ready: false }, 42],
-            error: [{ name: "NonError", message: "42" }],
-          },
-        ]);
-      }),
+      expect(
+        yield* Effect.promise(() =>
+          readRecords(join(root, "logs", "lucent.log")),
+        ),
+      ).toEqual([
+        {
+          at: expect.any(String),
+          component: "effect",
+          level: "error",
+          message: "Unexpected values",
+          error: [
+            { name: "NonError", message: '{"code":42}' },
+            { name: "NonError", message: "undefined" },
+            { name: "NonError", message: "[object Object]" },
+            { name: "NonError", message: "[Unserializable]" },
+            { name: "NonError", message: "42" },
+            { name: "NonError", message: "x".repeat(1_024) },
+          ],
+        },
+        {
+          at: expect.any(String),
+          component: "effect",
+          level: "info",
+          message: "Unlabeled log message",
+          error: [{ name: "NonError", message: '{"ready":true}' }],
+        },
+        {
+          at: expect.any(String),
+          component: "second",
+          level: "info",
+          message: "Unlabeled log message",
+          error: [
+            { name: "NonError", message: '{"ready":false}' },
+            { name: "NonError", message: "42" },
+          ],
+        },
+      ]);
+    }),
   );
 });

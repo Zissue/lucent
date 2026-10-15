@@ -1,3 +1,4 @@
+import type { RendererLogRecord } from "./ipc/rendererLog";
 import type { RecentlyClosedGameSession } from "@lucent/core/accounts";
 import type {
   AppSettings,
@@ -278,7 +279,7 @@ export interface DesktopAccountSettingsBridge {
 }
 
 export interface DesktopGameConsoleObservabilityBridge {
-  readonly message: (message: string) => void;
+  readonly message: (method: string, message: string) => void;
 }
 
 export interface DesktopGameRendererBridge {
@@ -510,7 +511,16 @@ export interface DesktopArmyBridge {
   readonly sync: (payload: ArmySyncPayload) => Promise<void>;
 }
 
+export interface DesktopLogBridge {
+  readonly error: (message: string, error?: unknown) => void;
+  readonly warn: (message: string, error?: unknown) => void;
+  readonly info: (message: string, error?: unknown) => void;
+  readonly debug: (message: string, error?: unknown) => void;
+  readonly write: (record: RendererLogRecord) => void;
+}
+
 interface DesktopBridgeBase {
+  readonly log: DesktopLogBridge;
   readonly debug: boolean;
   readonly platform: {
     readonly os: AppPlatform;

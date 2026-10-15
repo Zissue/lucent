@@ -1,6 +1,8 @@
 import { promises as fs } from "fs";
 import { basename, join } from "path";
 
+import { desktopLogErrorDetails } from "../../../shared/logRecord";
+
 const FLUSH_INTERVAL_MS = 250;
 const MAX_LOG_BYTES = 10 * 1024 * 1024;
 const MAX_PENDING_RECORDS = 256;
@@ -38,44 +40,6 @@ const recordLevel = (record: unknown): LogLevel => {
   } catch {
     return "info";
   }
-};
-
-export interface DesktopLogError {
-  readonly name: string;
-  readonly message: string;
-  readonly stack?: string;
-  readonly cause?: DesktopLogError;
-}
-
-export const desktopLogErrorDetails = (
-  value: unknown,
-  depth = 0,
-): DesktopLogError => {
-  if (value instanceof Error) {
-    return {
-      name: value.name,
-      message: value.message,
-      ...(value.stack === undefined ? {} : { stack: value.stack }),
-      ...(value.cause === undefined || depth >= 5
-        ? {}
-        : { cause: desktopLogErrorDetails(value.cause, depth + 1) }),
-    };
-  }
-
-  let message: string;
-  try {
-    message =
-      typeof value === "string"
-        ? value
-        : (JSON.stringify(value) ?? String(value));
-  } catch {
-    try {
-      message = String(value);
-    } catch {
-      message = "[Unserializable]";
-    }
-  }
-  return { name: "NonError", message: message.slice(0, 1_024) };
 };
 
 const fallbackSerializationRecord = () => ({

@@ -1,3 +1,6 @@
+import { ipcMain, type IpcMainEvent } from "electron";
+import * as Clock from "effect/Clock";
+import * as Option from "effect/Option";
 import type { EventEmitter } from "events";
 import { join } from "path";
 import * as Cause from "effect/Cause";
@@ -10,10 +13,12 @@ import * as Layer from "effect/Layer";
 import * as Scope from "effect/Scope";
 
 import { DesktopEnvironment } from "../DesktopEnvironment";
+import { makeBufferedDesktopLogWriter } from "./DesktopLogWriter";
 import {
-  desktopLogErrorDetails,
-  makeBufferedDesktopLogWriter,
-} from "./DesktopLogWriter";
+  desktopLogRecord,
+  type DesktopLogRecord,
+} from "../../../shared/logRecord";
+import { RendererLogIpc } from "../../../shared/ipc/rendererLog";
 
 const REPEAT_WINDOW_MS = 60_000;
 const MAX_REPEAT_WINDOWS = 1_000;
@@ -28,19 +33,9 @@ interface RepeatWindow {
   lastAt: number;
 }
 
-const boundReason = (reason: Cause.Reason<unknown>): Cause.Reason<unknown> => {
-  if (Cause.isFailReason(reason) && reason.error instanceof Error) {
-    return Cause.makeFailReason(desktopLogErrorDetails(reason.error)).annotate(
-      Cause.reasonAnnotations(reason),
-    );
-  }
-  if (Cause.isDieReason(reason) && reason.defect instanceof Error) {
-    return Cause.makeDieReason(desktopLogErrorDetails(reason.defect)).annotate(
-      Cause.reasonAnnotations(reason),
-    );
-  }
-  return reason;
-};
+const decodeRendererRecord = Option.liftThrowable(
+  RendererLogIpc.record.decodePayload,
+);
 
 export interface DesktopObservabilityShape {
   readonly flush: Effect.Effect<void>;
@@ -55,6 +50,7 @@ export class DesktopObservability extends Context.Service<
 
 const makeDesktopObservability = Effect.gen(function* () {
   const env = yield* DesktopEnvironment;
+  const clock = yield* Clock.Clock;
   const logsDir = join(env.appDataDir, "logs");
   const logFilePath = join(logsDir, "lucent.log");
   const bufferedWriter = makeBufferedDesktopLogWriter(logsDir, logFilePath);
@@ -91,66 +87,21 @@ const makeDesktopObservability = Effect.gen(function* () {
     }
   }, Effect.uninterruptible);
 
-  const logger = Logger.make<unknown, void>((options) => {
-    const {
-      component = "effect",
-      data,
-      ...annotations
-    } = options.fiber.getRef(References.CurrentLogAnnotations);
-    const span = options.fiber.cache.span;
-    const messages = Array.isArray(options.message)
-      ? options.message
-      : [options.message];
-    const message =
-      typeof messages[0] === "string" || messages.length === 1
-        ? messages[0]
-        : options.message;
-    const level = options.logLevel.toLowerCase();
-    const at = options.date.getTime();
-    const key =
-      typeof message === "string"
-        ? `${level}\u0000${String(component)}\u0000${message}`
-        : undefined;
-    const window = key === undefined ? undefined : windows.get(key);
-    if (key !== undefined && window !== undefined) {
+  const writeRecord = (record: DesktopLogRecord, at: number): void => {
+    const { level, component, message } = record;
+    const key = `${level}\u0000${String(component)}\u0000${message}`;
+    const window = windows.get(key);
+    if (window !== undefined) {
       if (at - window.startedAt < REPEAT_WINDOW_MS) {
         window.suppressed++;
         window.lastAt = at;
         return;
       }
-      if (window.suppressed > 0) {
-        writeTail(window, options.date);
-      }
+      if (window.suppressed > 0) writeTail(window, new Date(at));
       windows.delete(key);
     }
-    const errors = messages
-      .slice(1)
-      .map((value) => desktopLogErrorDetails(value));
-    if (options.cause.reasons.length > 0) {
-      errors.push(
-        ...Cause.prettyErrors(
-          Cause.fromReasons(options.cause.reasons.map(boundReason)),
-        ).map((error) => desktopLogErrorDetails(error)),
-      );
-    }
-    const kept = bufferedWriter.write({
-      at: options.date.toISOString(),
-      level,
-      component,
-      message,
-      ...(data === undefined ? {} : { data }),
-      ...(Object.keys(annotations).length === 0 ? {} : { annotations }),
-      ...(errors.length === 0 ? {} : { error: errors }),
-      ...(span === undefined
-        ? {}
-        : { traceId: span.traceId, spanId: span.spanId }),
-    });
-    if (
-      kept &&
-      typeof message === "string" &&
-      key !== undefined &&
-      windows.size < MAX_REPEAT_WINDOWS
-    ) {
+    const kept = bufferedWriter.write(record);
+    if (kept && windows.size < MAX_REPEAT_WINDOWS) {
       windows.set(key, {
         level,
         component,
@@ -160,7 +111,31 @@ const makeDesktopObservability = Effect.gen(function* () {
         lastAt: at,
       });
     }
+  };
+
+  const logger = Logger.make<unknown, void>((options) => {
+    writeRecord(desktopLogRecord(options), options.date.getTime());
   });
+
+  const handleRendererRecord = (
+    event: IpcMainEvent,
+    rawPayload: unknown,
+  ): void => {
+    const decoded = decodeRendererRecord(rawPayload);
+    if (Option.isNone(decoded)) return;
+    const { component = "renderer", ...record } = decoded.value;
+    if (record.level === "debug" && !env.debug) return;
+    const at = clock.currentTimeMillisUnsafe();
+    writeRecord(
+      {
+        ...record,
+        at: new Date(at).toISOString(),
+        component,
+        annotations: { rendererId: event.sender.id },
+      },
+      at,
+    );
+  };
 
   const flush: DesktopObservabilityShape["flush"] = Effect.promise(() =>
     bufferedWriter.flush(),
@@ -210,6 +185,19 @@ const makeDesktopObservability = Effect.gen(function* () {
     Effect.delay(REPEAT_WINDOW_MS),
     Effect.forever,
     Effect.forkScoped,
+  );
+
+  yield* Effect.acquireRelease(
+    Effect.sync(() =>
+      ipcMain.on(RendererLogIpc.record.channel, handleRendererRecord),
+    ),
+    () =>
+      Effect.sync(() => {
+        ipcMain.removeListener(
+          RendererLogIpc.record.channel,
+          handleRendererRecord,
+        );
+      }),
   );
 
   return Context.make(
