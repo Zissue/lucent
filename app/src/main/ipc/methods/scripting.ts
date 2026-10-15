@@ -11,6 +11,17 @@ import { DesktopIpc, makeDesktopIpcMethod } from "../DesktopIpc";
 
 const scriptingSenders = ["account-manager", "game"] as const;
 
+export const listPackageLeftovers = makeDesktopIpcMethod({
+  descriptor: ScriptingIpc.listPackageLeftovers,
+  allowedSenders: scriptingSenders,
+  handler: Effect.fn("desktop.ipc.scripting.listPackageLeftovers")(
+    function* () {
+      const packages = yield* ScriptPackageManager;
+      return yield* packages.listLeftovers;
+    },
+  ),
+});
+
 export const listCredentials = makeDesktopIpcMethod({
   descriptor: ScriptingIpc.listCredentials,
   allowedSenders: scriptingSenders,
@@ -55,6 +66,15 @@ export const updatePackage = makeDesktopIpcMethod({
   handler: Effect.fn("desktop.ipc.scripting.updatePackage")(function* (input) {
     const packages = yield* ScriptPackageManager;
     return yield* packages.update(input);
+  }),
+});
+
+export const restorePackage = makeDesktopIpcMethod({
+  descriptor: ScriptingIpc.restorePackage,
+  allowedSenders: scriptingSenders,
+  handler: Effect.fn("desktop.ipc.scripting.restorePackage")(function* (input) {
+    const packages = yield* ScriptPackageManager;
+    return yield* packages.restore(input);
   }),
 });
 
@@ -238,8 +258,10 @@ export const credentialMethods = [
 ] as const;
 
 export const packageMethods = [
+  listPackageLeftovers,
   installPackage,
   updatePackage,
+  restorePackage,
   removePackage,
   checkPackageUpdate,
 ] as const;

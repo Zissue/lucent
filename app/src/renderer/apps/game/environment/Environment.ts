@@ -753,7 +753,7 @@ const makeEnvironment = Effect.gen(function* () {
   const runQuestAutomation = Effect.gen(function* () {
     const state = yield* getState();
     if (!state.automation.quests || state.questIds.length === 0) {
-      return;
+      return yield* automationLogs.reset("environment/quests");
     }
     yield* loadRegisteredQuestData(state);
     const intents = yield* Effect.forEach(
@@ -770,7 +770,7 @@ const makeEnvironment = Effect.gen(function* () {
   const runBoostAutomation = Effect.gen(function* () {
     const state = yield* getState();
     if (!state.automation.boosts) {
-      return;
+      return yield* automationLogs.reset("environment/boosts");
     }
     let selectionFailed = false;
     const key = "environment/boosts";

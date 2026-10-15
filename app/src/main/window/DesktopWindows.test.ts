@@ -9,7 +9,10 @@ import * as Fiber from "effect/Fiber";
 import * as Latch from "effect/Latch";
 import * as Layer from "effect/Layer";
 
-import { DEFAULT_APP_SETTINGS } from "@lucent/core/settings";
+import {
+  DEFAULT_APP_SETTINGS,
+  normalizeAppSettings,
+} from "@lucent/core/settings";
 import { DesktopWindowKindSchema } from "../../shared/ipc/windows";
 import { layer as desktopEnvironmentLayer } from "../app/DesktopEnvironment";
 import { ElectronApp } from "../electron/ElectronApp";
@@ -19,9 +22,8 @@ import { ElectronTheme } from "../electron/ElectronTheme";
 import {
   ElectronWindow,
   ElectronWindowLoadError,
-  type ElectronWindowHandle,
   type ElectronGameViewHandle,
-  type ElectronNativeWindowHandle,
+  type ElectronWindowHandle,
 } from "../electron/ElectronWindow";
 import { RuffleSocketProxy } from "../ruffle/RuffleSocketProxy";
 import { makeDesktopIpcSenders } from "../ipc/DesktopIpcSenders";
@@ -44,23 +46,34 @@ const singleInstanceKinds = DesktopWindowKindSchema.literals.filter(
   (kind) => getDesktopWindowDefinition(kind).singleInstance,
 );
 
-const makeWindow = (id: number) =>
-  Object.assign(new EventEmitter(), {
+const makeWindow = (id: number) => {
+  let visible = false;
+  return Object.assign(new EventEmitter(), {
     id,
-    hide: () => {},
+    hide: () => {
+      visible = false;
+    },
+    show: () => {
+      visible = true;
+    },
+    isVisible: () => visible,
+    contentView: {
+      addChildView: () => undefined,
+      removeChildView: () => undefined,
+    },
+    getContentBounds: () => ({ x: 0, y: 0, width: 1200, height: 800 }),
     isDestroyed: () => false,
     isFocused: () => false,
     setTitle: () => {},
-    contentView: { addChildView: () => {}, removeChildView: () => {} },
-    getContentBounds: () => ({ x: 0, y: 0, width: 1200, height: 830 }),
     webContents: Object.assign(new EventEmitter(), {
       id,
-      focus: () => {},
-      send: () => {},
+      focus: () => undefined,
+      send: () => undefined,
       getZoomFactor: () => 1,
       isDestroyed: () => false,
     }),
   });
+};
 
 const makeHarness = (useGameTabs = false) => {
   let settingsRead: Effect.Effect<void> = Effect.void;
@@ -76,17 +89,26 @@ const makeHarness = (useGameTabs = false) => {
         return window as unknown as ElectronWindowHandle;
       }),
     createHost: () =>
-      Effect.succeed(makeWindow(100) as unknown as ElectronNativeWindowHandle),
+      Effect.sync(() => {
+        const window = makeWindow(nextRendererId++);
+        created.set(window.id, window);
+        return window as unknown as ElectronWindowHandle;
+      }),
     createView: () =>
       Effect.sync(() => {
         const window = makeWindow(nextRendererId++);
         created.set(window.id, window);
+        let bounds = { x: 0, y: 0, width: 0, height: 0 };
         return {
           native: {},
           webContents: window.webContents,
-          getBounds: () => ({ x: 0, y: 0, width: 1200, height: 800 }),
-          setBounds: () => {},
-          setBackgroundColor: () => {},
+          getBounds: () => bounds,
+          setBounds: (
+            value: Parameters<ElectronGameViewHandle["setBounds"]>[0],
+          ) => {
+            bounds = value;
+          },
+          setBackgroundColor: () => undefined,
         } as unknown as ElectronGameViewHandle;
       }),
     loadFile: () =>
@@ -95,7 +117,7 @@ const makeHarness = (useGameTabs = false) => {
         nextLoad = undefined;
         return load;
       }),
-    reveal: () => Effect.void,
+    reveal: (window) => Effect.sync(() => window.show()),
   });
   const dependencies = Layer.mergeAll(
     desktopEnvironmentLayer({
@@ -109,10 +131,7 @@ const makeHarness = (useGameTabs = false) => {
       DesktopSettings,
       DesktopSettings.of({
         get: Effect.suspend(() => settingsRead).pipe(
-          Effect.as({
-            ...DEFAULT_APP_SETTINGS,
-            preferences: { ...DEFAULT_APP_SETTINGS.preferences, useGameTabs },
-          }),
+          Effect.as(normalizeAppSettings({ preferences: { useGameTabs } })),
         ),
         load: Effect.succeed(DEFAULT_APP_SETTINGS),
         onChanged: () => Effect.succeed(() => undefined),
@@ -351,6 +370,72 @@ describe("DesktopWindows.open", () => {
   });
 });
 
+describe("DesktopWindows.getVisibleParentWindowId", () => {
+  it.effect(
+    "uses the native game host and excludes it as soon as close starts",
+    () => {
+      const harness = makeHarness(true);
+      return Effect.gen(function* () {
+        const windows = yield* DesktopWindows;
+        expect(yield* windows.open("game")).toBe(104);
+        expect(yield* windows.getVisibleParentWindowId).toBe(101);
+        expect(yield* windows.isVisibleParentWindow(101)).toBe(true);
+        expect(yield* windows.isVisibleParentWindow(104)).toBe(false);
+        harness.created
+          .get(101)!
+          .emit("close", { preventDefault: () => undefined });
+        expect(yield* windows.getVisibleParentWindowId).toBeUndefined();
+        expect(yield* windows.isVisibleParentWindow(101)).toBe(false);
+      }).pipe(Effect.provide(harness.layer));
+    },
+  );
+  it.effect(
+    "selects a visible top-level window and excludes hidden and closing windows",
+    () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const windows = yield* DesktopWindows;
+        expect(yield* windows.isVisibleParentWindow(101)).toBe(false);
+        yield* windows.open("account-manager");
+        yield* windows.open("game");
+        yield* windows.open("packets", { ownerRendererId: 102 });
+        expect(yield* windows.getVisibleParentWindowId).toBe(101);
+        expect(yield* windows.isVisibleParentWindow(101)).toBe(true);
+        expect(yield* windows.isVisibleParentWindow(102)).toBe(true);
+        expect(yield* windows.isVisibleParentWindow(103)).toBe(false);
+        const manager = harness.created.get(101)!;
+        manager.emit("close", { preventDefault: () => undefined });
+        expect(yield* windows.getVisibleParentWindowId).toBe(102);
+        expect(yield* windows.isVisibleParentWindow(101)).toBe(false);
+        harness.created
+          .get(102)!
+          .emit("close", { preventDefault: () => undefined });
+        expect(yield* windows.getVisibleParentWindowId).toBeUndefined();
+        expect(yield* windows.isVisibleParentWindow(102)).toBe(false);
+        yield* windows.open("account-manager");
+        expect(yield* windows.getVisibleParentWindowId).toBe(101);
+        expect(yield* windows.isVisibleParentWindow(101)).toBe(true);
+      }).pipe(Effect.provide(harness.layer));
+    },
+  );
+
+  it.effect("does not select a window until it is revealed", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const windows = yield* DesktopWindows;
+      yield* windows.open("game", {
+        onCreated: () =>
+          Effect.gen(function* () {
+            expect(yield* windows.getVisibleParentWindowId).toBeUndefined();
+            expect(yield* windows.isVisibleParentWindow(101)).toBe(false);
+          }),
+      });
+      expect(yield* windows.getVisibleParentWindowId).toBe(101);
+      expect(yield* windows.isVisibleParentWindow(101)).toBe(true);
+    }).pipe(Effect.provide(harness.layer));
+  });
+});
+
 const navigate = { isMainFrame: true, isSameDocument: false };
 const liveInfo = (generation: number): DesktopRendererInfo => ({
   rendererId: 101,
@@ -477,8 +562,8 @@ describe("DesktopWindows document commits", () => {
       yield* windows.markRendererReady(id, 1);
       harness.created.get(id)!.webContents.emit("did-start-loading");
       expect((yield* windows.describe(id))?.ready).toBe(true);
-      expect((yield* windows.getGameViewHostState(102)).sessions).toEqual([
-        { id: "103", name: "Tab 1", phase: "ready" },
+      expect((yield* windows.getGameViewHostState(103)).sessions).toEqual([
+        { id: "104", name: "Tab 1", phase: "ready" },
       ]);
     }).pipe(Effect.provide(harness.layer));
   });
@@ -553,8 +638,8 @@ describe("DesktopWindows document commits", () => {
       yield* Effect.yieldNow;
       expect((yield* windows.describe(id))?.generation).toBe(1);
       expect((yield* windows.describe(id))?.ready).toBe(true);
-      expect((yield* windows.getGameViewHostState(102)).sessions).toEqual([
-        { id: "103", name: "Tab 1", phase: "ready" },
+      expect((yield* windows.getGameViewHostState(103)).sessions).toEqual([
+        { id: "104", name: "Tab 1", phase: "ready" },
       ]);
       expect(events).toEqual([]);
     }).pipe(Effect.provide(harness.layer));

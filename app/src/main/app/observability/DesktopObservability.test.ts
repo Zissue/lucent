@@ -18,6 +18,7 @@ import {
   DesktopObservability,
   layer as desktopObservabilityLayer,
 } from "./DesktopObservability";
+import * as DesktopLogWriter from "./DesktopLogWriter";
 
 vi.mock("electron", async () => {
   const { EventEmitter } = await import("node:events");
@@ -70,6 +71,7 @@ const makeLayer = (appDataDir: string, debug: boolean) =>
 
 afterEach(async () => {
   vi.useRealTimers();
+  vi.restoreAllMocks();
   await Promise.all(
     [...fixtureDirectories].map((path) =>
       fs.rm(path, { recursive: true, force: true }),
@@ -79,6 +81,452 @@ afterEach(async () => {
 });
 
 describe("DesktopObservability", () => {
+  it.effect("bounds renderer records before passing them to the writer", () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.promise(makeFixture);
+      const write = vi.fn(() => true);
+      vi.spyOn(
+        DesktopLogWriter,
+        "makeBufferedDesktopLogWriter",
+      ).mockReturnValue({
+        write,
+        flush: async () => {},
+        close: async () => {},
+      });
+      const error = {
+        name: "n".repeat(100_000),
+        message: "e".repeat(100_000),
+        stack: "s".repeat(100_000),
+      };
+      let cause: typeof error & { cause?: unknown } = error;
+      for (let depth = 0; depth < 10; depth++) cause = { ...error, cause };
+      yield* Effect.sync(() => {
+        ipcMain.emit(
+          RendererLogIpc.record.channel,
+          { sender: { id: 42 } },
+          {
+            level: "error",
+            component: "c".repeat(100_000),
+            message: "m".repeat(100_000),
+            error: Array.from({ length: 20 }, () => cause),
+            data: "é".repeat(100_000),
+          },
+        );
+      }).pipe(Effect.provide(makeLayer(root, false)));
+      expect(write.mock.calls).toEqual([
+        [
+          {
+            at: "1970-01-01T00:00:00.000Z",
+            level: "error",
+            component: "c".repeat(64),
+            message: "m".repeat(1_024),
+            annotations: { rendererId: 42 },
+            data: { truncated: 200_002 },
+            error: Array.from({ length: 8 }, () => ({
+              name: "n".repeat(256),
+              message: "e".repeat(1_024),
+              stack: "s".repeat(8_192),
+              cause: {
+                name: "n".repeat(256),
+                message: "e".repeat(1_024),
+                stack: "s".repeat(8_192),
+                cause: {
+                  name: "n".repeat(256),
+                  message: "e".repeat(1_024),
+                  stack: "s".repeat(8_192),
+                  cause: {
+                    name: "n".repeat(256),
+                    message: "e".repeat(1_024),
+                    stack: "s".repeat(8_192),
+                    cause: {
+                      name: "n".repeat(256),
+                      message: "e".repeat(1_024),
+                      stack: "s".repeat(8_192),
+                      cause: {
+                        name: "n".repeat(256),
+                        message: "e".repeat(1_024),
+                        stack: "s".repeat(8_192),
+                      },
+                    },
+                  },
+                },
+              },
+            })),
+          },
+        ],
+      ]);
+    }),
+  );
+
+  it.effect(
+    "bounds renderer messages, components, and repeat keys before collapsing",
+    () =>
+      Effect.gen(function* () {
+        const root = yield* Effect.promise(makeFixture);
+        yield* Effect.sync(() => {
+          for (const suffix of ["first", "second"]) {
+            ipcMain.emit(
+              RendererLogIpc.record.channel,
+              { sender: { id: 42 } },
+              {
+                level: "warn",
+                message: "m".repeat(100_000) + suffix,
+                component: "c".repeat(100_000) + suffix,
+                repeatKey: "r".repeat(100_000) + suffix,
+              },
+            );
+          }
+        }).pipe(Effect.provide(makeLayer(root, false)));
+        expect(
+          yield* Effect.promise(() =>
+            readRecords(join(root, "logs", "lucent.log")),
+          ),
+        ).toEqual([
+          {
+            at: "1970-01-01T00:00:00.000Z",
+            level: "warn",
+            component: "c".repeat(64),
+            message: "m".repeat(1_024),
+            annotations: { rendererId: 42 },
+          },
+          {
+            at: "1970-01-01T00:00:00.000Z",
+            level: "warn",
+            component: "c".repeat(64),
+            message: "m".repeat(1_024),
+            annotations: { rendererId: 42 },
+            repeatKey: "r".repeat(256),
+            suppressed: 1,
+            lastAt: "1970-01-01T00:00:00.000Z",
+          },
+        ]);
+      }),
+  );
+
+  it.effect("bounds renderer data by UTF-8 JSON bytes in main", () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.promise(makeFixture);
+      const write = vi.fn(() => true);
+      vi.spyOn(
+        DesktopLogWriter,
+        "makeBufferedDesktopLogWriter",
+      ).mockReturnValue({
+        write,
+        flush: async () => {},
+        close: async () => {},
+      });
+      const circular: { self?: unknown } = {};
+      circular.self = circular;
+      yield* Effect.sync(() => {
+        for (const [index, data] of [
+          "x".repeat(16_382),
+          "x".repeat(16_383),
+          { data: "x".repeat(20_000) },
+          circular,
+        ].entries()) {
+          ipcMain.emit(
+            RendererLogIpc.record.channel,
+            { sender: { id: 42 } },
+            { level: "info", message: `data-${index}`, data },
+          );
+        }
+      }).pipe(Effect.provide(makeLayer(root, false)));
+      expect(write.mock.calls).toEqual([
+        [
+          {
+            at: "1970-01-01T00:00:00.000Z",
+            level: "info",
+            component: "renderer",
+            message: "data-0",
+            annotations: { rendererId: 42 },
+            data: "x".repeat(16_382),
+          },
+        ],
+        [
+          {
+            at: "1970-01-01T00:00:00.000Z",
+            level: "info",
+            component: "renderer",
+            message: "data-1",
+            annotations: { rendererId: 42 },
+            data: { truncated: 16_385 },
+          },
+        ],
+        [
+          {
+            at: "1970-01-01T00:00:00.000Z",
+            level: "info",
+            component: "renderer",
+            message: "data-2",
+            annotations: { rendererId: 42 },
+            data: { truncated: 20_011 },
+          },
+        ],
+        [
+          {
+            at: "1970-01-01T00:00:00.000Z",
+            level: "info",
+            component: "renderer",
+            message: "data-3",
+            annotations: { rendererId: 42 },
+            data: { self: "[Circular]" },
+          },
+        ],
+      ]);
+    }),
+  );
+
+  it.effect(
+    "keeps renderer tuple fields separate when they contain NUL characters",
+    () =>
+      Effect.gen(function* () {
+        const root = yield* Effect.promise(makeFixture);
+        yield* Effect.sync(() => {
+          for (const payload of [
+            { level: "warn", component: "a\u0000b", message: "c" },
+            { level: "warn", component: "a", message: "b\u0000c" },
+          ]) {
+            ipcMain.emit(
+              RendererLogIpc.record.channel,
+              { sender: { id: 42 } },
+              payload,
+            );
+          }
+        }).pipe(Effect.provide(makeLayer(root, false)));
+        expect(
+          yield* Effect.promise(() =>
+            readRecords(join(root, "logs", "lucent.log")),
+          ),
+        ).toEqual([
+          {
+            at: "1970-01-01T00:00:00.000Z",
+            level: "warn",
+            component: "a\u0000b",
+            message: "c",
+            annotations: { rendererId: 42 },
+          },
+          {
+            at: "1970-01-01T00:00:00.000Z",
+            level: "warn",
+            component: "a",
+            message: "b\u0000c",
+            annotations: { rendererId: 42 },
+          },
+        ]);
+      }),
+  );
+
+  it.effect("keeps renderer records separate from main process failures", () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.promise(makeFixture);
+      yield* Effect.gen(function* () {
+        ipcMain.emit(
+          RendererLogIpc.record.channel,
+          { sender: { id: 42 } },
+          {
+            level: "error",
+            component: "process",
+            message: "Uncaught exception",
+          },
+        );
+        yield* Effect.logError(
+          "Uncaught exception",
+          new Error("main failure"),
+        ).pipe(Effect.annotateLogs({ component: "process" }));
+      }).pipe(Effect.provide(makeLayer(root, false)));
+      expect(
+        yield* Effect.promise(() =>
+          readRecords(join(root, "logs", "lucent.log")),
+        ),
+      ).toEqual([
+        {
+          at: "1970-01-01T00:00:00.000Z",
+          level: "error",
+          component: "process",
+          message: "Uncaught exception",
+          annotations: { rendererId: 42 },
+        },
+        {
+          at: "1970-01-01T00:00:00.000Z",
+          level: "error",
+          component: "process",
+          message: "Uncaught exception",
+          error: [
+            {
+              name: "Error",
+              message: "main failure",
+              stack: expect.any(String),
+            },
+          ],
+        },
+      ]);
+    }),
+  );
+
+  it.effect(
+    "keeps renderer windows separate and identifies their repeat tails",
+    () =>
+      Effect.gen(function* () {
+        const root = yield* Effect.promise(makeFixture);
+        yield* Effect.sync(() => {
+          for (const id of [42, 43, 42]) {
+            ipcMain.emit(
+              RendererLogIpc.record.channel,
+              { sender: { id } },
+              { level: "warn", component: "army", message: "Loop failed" },
+            );
+          }
+        }).pipe(Effect.provide(makeLayer(root, false)));
+        expect(
+          yield* Effect.promise(() =>
+            readRecords(join(root, "logs", "lucent.log")),
+          ),
+        ).toEqual([
+          {
+            at: "1970-01-01T00:00:00.000Z",
+            level: "warn",
+            component: "army",
+            message: "Loop failed",
+            annotations: { rendererId: 42 },
+          },
+          {
+            at: "1970-01-01T00:00:00.000Z",
+            level: "warn",
+            component: "army",
+            message: "Loop failed",
+            annotations: { rendererId: 43 },
+          },
+          {
+            at: "1970-01-01T00:00:00.000Z",
+            level: "warn",
+            component: "army",
+            message: "Loop failed",
+            annotations: { rendererId: 42 },
+            suppressed: 1,
+            lastAt: "1970-01-01T00:00:00.000Z",
+          },
+        ]);
+      }),
+  );
+
+  for (const renderer of [false, true]) {
+    it.effect(
+      `separates repeatKey details and names the key only in tails for renderer=${renderer}`,
+      () =>
+        Effect.gen(function* () {
+          const root = yield* Effect.promise(makeFixture);
+          yield* Effect.gen(function* () {
+            for (const key of ["first", "second", "first", "second"]) {
+              if (renderer) {
+                ipcMain.emit(
+                  RendererLogIpc.record.channel,
+                  { sender: { id: 42 } },
+                  {
+                    level: "warn",
+                    component: "environment",
+                    message: "Automation failed",
+                    repeatKey: key,
+                    data: { key },
+                  },
+                );
+              } else {
+                yield* Effect.logWarning("Automation failed").pipe(
+                  Effect.annotateLogs({
+                    component: "environment",
+                    repeatKey: key,
+                    data: { key },
+                  }),
+                );
+              }
+            }
+          }).pipe(Effect.provide(makeLayer(root, false)));
+          expect(
+            yield* Effect.promise(() =>
+              readRecords(join(root, "logs", "lucent.log")),
+            ),
+          ).toEqual([
+            {
+              at: "1970-01-01T00:00:00.000Z",
+              level: "warn",
+              component: "environment",
+              message: "Automation failed",
+              data: { key: "first" },
+              ...(renderer ? { annotations: { rendererId: 42 } } : {}),
+            },
+            {
+              at: "1970-01-01T00:00:00.000Z",
+              level: "warn",
+              component: "environment",
+              message: "Automation failed",
+              data: { key: "second" },
+              ...(renderer ? { annotations: { rendererId: 42 } } : {}),
+            },
+            ...["first", "second"].map((repeatKey) => ({
+              at: "1970-01-01T00:00:00.000Z",
+              level: "warn",
+              component: "environment",
+              message: "Automation failed",
+              repeatKey,
+              suppressed: 1,
+              lastAt: "1970-01-01T00:00:00.000Z",
+              ...(renderer ? { annotations: { rendererId: 42 } } : {}),
+            })),
+          ]);
+        }),
+    );
+  }
+
+  it.effect(
+    "keeps collapsing main records after renderers fill their windows",
+    () =>
+      Effect.gen(function* () {
+        const root = yield* Effect.promise(makeFixture);
+        yield* Effect.gen(function* () {
+          const observability = yield* DesktopObservability;
+          for (let i = 0; i < 1_100; i++) {
+            ipcMain.emit(
+              RendererLogIpc.record.channel,
+              { sender: { id: 42 } },
+              { level: "warn", message: `Renderer flood ${i}` },
+            );
+            if (i % 200 === 199) yield* observability.flush;
+          }
+          for (let i = 0; i < 2; i++) {
+            yield* Effect.logWarning("Retrying").pipe(
+              Effect.annotateLogs({ component: "relay" }),
+            );
+          }
+        }).pipe(Effect.provide(makeLayer(root, false)));
+        const records = yield* Effect.promise(() =>
+          readRecords(join(root, "logs", "lucent.log")),
+        );
+        expect(
+          records.filter(
+            (record) =>
+              typeof record === "object" &&
+              record !== null &&
+              "component" in record &&
+              record.component === "relay",
+          ),
+        ).toEqual([
+          {
+            at: "1970-01-01T00:00:00.000Z",
+            level: "warn",
+            component: "relay",
+            message: "Retrying",
+          },
+          {
+            at: "1970-01-01T00:00:00.000Z",
+            level: "warn",
+            component: "relay",
+            message: "Retrying",
+            suppressed: 1,
+            lastAt: "1970-01-01T00:00:00.000Z",
+          },
+        ]);
+      }),
+  );
+
   it.effect("writes renderer records and removes the handler on shutdown", () =>
     Effect.gen(function* () {
       const root = yield* Effect.promise(makeFixture);
@@ -242,6 +690,7 @@ describe("DesktopObservability", () => {
             level: "warn",
             component: "army",
             message: "Loop failed",
+            annotations: { rendererId: 42 },
             suppressed: 99,
             lastAt: "1970-01-01T00:00:10.000Z",
           },

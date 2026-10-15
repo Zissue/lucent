@@ -64,8 +64,10 @@ import type {
   ScriptCatalogPage,
   ScriptCatalogPageRequest,
   ScriptPackageInstallRequest,
+  ScriptPackageLeftoverCopy,
   ScriptPackageMutationResult,
   ScriptPackageRemoveRequest,
+  ScriptPackageRestoreRequest,
   ScriptPackageUpdateRequest,
   ScriptReference,
 } from "@lucent/core/scriptPackages";
@@ -178,11 +180,14 @@ export interface DesktopScriptingBridge {
   readonly getInputValues: (
     definition: ScriptInputsDefinition,
   ) => Promise<ScriptInputValues>;
-  readonly loadReference: (reference: ScriptReference) => Promise<ScriptFile>;
   readonly installPackage: (
     request: ScriptPackageInstallRequest,
   ) => Promise<ScriptPackageMutationResult>;
   readonly listCredentials: () => Promise<readonly GitHubCredentialSummary[]>;
+  readonly listPackageLeftovers: () => Promise<
+    readonly ScriptPackageLeftoverCopy[]
+  >;
+  readonly loadReference: (reference: ScriptReference) => Promise<ScriptFile>;
   readonly openFile: () => Promise<ScriptOpenFileResult>;
   readonly openPath: (path: string) => Promise<boolean>;
   readonly openRepository: (repositoryUrl: string) => Promise<boolean>;
@@ -192,6 +197,9 @@ export interface DesktopScriptingBridge {
   readonly readFile: (path: string) => Promise<ScriptFile>;
   readonly readReference: (reference: ScriptReference) => Promise<ScriptFile>;
   readonly refreshCatalog: () => Promise<ScriptCatalogOverview>;
+  readonly restorePackage: (
+    request: ScriptPackageRestoreRequest,
+  ) => Promise<ScriptPackageMutationResult>;
   readonly removePackage: (
     request: ScriptPackageRemoveRequest,
   ) => Promise<ScriptPackageMutationResult>;

@@ -28,6 +28,7 @@ export const makeFailureTransitions = Effect.fnUntraced(function* (options: {
       yield* logFailure(options.failed, cause, { failure: "warning" }).pipe(
         Effect.annotateLogs({
           component: options.component,
+          repeatKey: key,
           data: { ...data, key },
         }),
       );
@@ -50,11 +51,23 @@ export const makeFailureTransitions = Effect.fnUntraced(function* (options: {
       yield* Effect.logInfo(options.recovered).pipe(
         Effect.annotateLogs({
           component: options.component,
+          repeatKey: key,
           data: { ...data, key },
         }),
       );
     }
   });
 
-  return { failed, recovered };
+  const reset = (prefix: string) =>
+    Ref.update(
+      failingKeys,
+      (keys) =>
+        new Set(
+          [...keys].filter(
+            (key) => key !== prefix && !key.startsWith(`${prefix}/`),
+          ),
+        ),
+    );
+
+  return { failed, recovered, reset };
 });
