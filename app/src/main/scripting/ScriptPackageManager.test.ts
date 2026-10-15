@@ -10,6 +10,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import { create as createTar } from "tar";
 
 import { DesktopEnvironment } from "../app/DesktopEnvironment";
@@ -22,6 +23,7 @@ import {
 import {
   layer as scriptPackageCatalogLayer,
   ScriptPackageCatalog,
+  ScriptPackageCatalogError,
 } from "./ScriptPackageCatalog";
 import { scriptPackageDirectorySlug } from "./ScriptPackageDirectories";
 import { hashDirectory } from "./ScriptPackageFileSystem";
@@ -95,7 +97,9 @@ const refuseRenamesInto = (
 const makeManagerHarness = (options: {
   readonly archivePath?: string;
   readonly directoryTree?: string | Effect.Effect<string>;
-  readonly onRemove?: (name: string) => Effect.Effect<void>;
+  readonly onRemove?: (
+    name: string,
+  ) => Effect.Effect<void, ScriptPackageStateError>;
   readonly onSave?: (
     value: ManagedScriptPackage,
   ) => Effect.Effect<void, ScriptPackageStateError>;
@@ -1656,6 +1660,280 @@ describe("script package update check races", () => {
         expect(checked.packages).toEqual([]);
         expect(yield* state.get(PACKAGE_NAME)).toBeUndefined();
         expect((yield* catalog.getOverview).packages).toEqual([]);
+      }),
+  );
+});
+
+describe("script package removal failures", () => {
+  const failStateRemoval = () =>
+    Effect.fail(
+      new ScriptPackageStateError({
+        operation: "save",
+        cause: new Error("Disk full."),
+      }),
+    );
+
+  it.effect(
+    "reports a restored package when the rename home moves then throws",
+    () =>
+      Effect.gen(function* () {
+        const { destination, managed, workspaceDir } = yield* installedPackage;
+        const harness = makeManagerHarness({
+          managed,
+          workspaceDir,
+          onRemove: failStateRemoval,
+          resolution: { status: "modified", commit: REMOTE_COMMIT },
+        });
+        const { manager, state } = yield* harness.services;
+        const rename = fs.rename;
+        vi.spyOn(fs, "rename").mockImplementation((from, to) =>
+          rename(from, to).then(() => {
+            if (resolve(String(to)) === destination)
+              throw Object.assign(new Error("EIO"), { code: "EIO" });
+          }),
+        );
+        const error = yield* manager
+          .remove({ packageName: PACKAGE_NAME })
+          .pipe(Effect.flip);
+        expect(error.message).toBe(
+          "Failed to update package state. The package was restored.",
+        );
+        expect(
+          yield* Effect.promise(() =>
+            fs.readFile(join(destination, "index.js"), "utf8"),
+          ),
+        ).toBe(OLD_SOURCE);
+        expect(yield* state.get(PACKAGE_NAME)).toEqual(managed);
+        expect(yield* Effect.promise(() => fs.readdir(workspaceDir))).toEqual([
+          "packages",
+          "scripts",
+        ]);
+      }),
+  );
+
+  it.effect(
+    "reports both possible locations when the removal copy cannot be checked",
+    () =>
+      Effect.gen(function* () {
+        const { destination, managed, workspaceDir } = yield* installedPackage;
+        const harness = makeManagerHarness({
+          managed,
+          workspaceDir,
+          resolution: { status: "modified", commit: REMOTE_COMMIT },
+        });
+        const { manager } = yield* harness.services;
+        let removedPath = "";
+        const rename = fs.rename;
+        vi.spyOn(fs, "rename").mockImplementation((from, to) => {
+          if (resolve(String(from)) !== destination) return rename(from, to);
+          removedPath = String(to);
+          return Promise.reject(
+            Object.assign(new Error("EPERM"), { code: "EPERM" }),
+          );
+        });
+        const lstat = fs.lstat;
+        vi.spyOn(fs, "lstat").mockImplementation(
+          (...args: Parameters<typeof fs.lstat>) =>
+            String(args[0]).includes(".lucent-package-remove-")
+              ? Promise.reject(
+                  Object.assign(new Error("EACCES"), { code: "EACCES" }),
+                )
+              : lstat(...args),
+        );
+        const error = yield* manager
+          .remove({ packageName: PACKAGE_NAME })
+          .pipe(Effect.flip);
+        expect(error.message).toBe(
+          `Failed to remove the package. Its location could not be checked. Check ${destination} and ${removedPath}.`,
+        );
+        expect(
+          yield* Effect.promise(() =>
+            fs.readFile(join(destination, "index.js"), "utf8"),
+          ),
+        ).toBe(OLD_SOURCE);
+        expect(yield* Effect.promise(() => fs.readdir(workspaceDir))).toContain(
+          dirname(removedPath).split("/").at(-1),
+        );
+      }),
+  );
+
+  it.effect(
+    "keeps a committed removal completed and logs a failed staging cleanup",
+    () =>
+      Effect.gen(function* () {
+        const { managed, workspaceDir } = yield* installedPackage;
+        const harness = makeManagerHarness({
+          managed,
+          workspaceDir,
+          resolution: { status: "modified", commit: REMOTE_COMMIT },
+        });
+        const { manager, state, catalog } = yield* harness.services;
+        let removalFolder = "";
+        const rm = fs.rm;
+        vi.spyOn(fs, "rm").mockImplementation((path, options) => {
+          if (!String(path).includes(".lucent-package-remove-"))
+            return rm(path, options);
+          removalFolder = String(path);
+          return Promise.reject(
+            Object.assign(new Error("EPERM"), { code: "EPERM" }),
+          );
+        });
+        const logs: { level: string; message: unknown }[] = [];
+        const result = yield* manager
+          .remove({ packageName: PACKAGE_NAME })
+          .pipe(
+            Effect.withLogger(
+              Logger.make((options) => {
+                logs.push({
+                  level: options.logLevel,
+                  message: options.message,
+                });
+              }),
+            ),
+          );
+        expect(result.status).toBe("completed");
+        expect(yield* state.get(PACKAGE_NAME)).toBeUndefined();
+        expect((yield* catalog.getOverview).packages).toEqual([]);
+        expect(
+          yield* Effect.promise(() =>
+            fs.readFile(join(removalFolder, PACKAGE_NAME, "index.js"), "utf8"),
+          ),
+        ).toBe(OLD_SOURCE);
+        expect(logs).toEqual([
+          expect.objectContaining({
+            level: "Warn",
+            message: expect.arrayContaining([
+              `Failed to clean package removal folder at ${removalFolder}.`,
+            ]),
+          }),
+        ]);
+      }),
+  );
+
+  it.effect("preserves the catalog error after a removal has committed", () =>
+    Effect.gen(function* () {
+      const { destination, managed, workspaceDir } = yield* installedPackage;
+      const harness = makeManagerHarness({
+        managed,
+        workspaceDir,
+        resolution: { status: "modified", commit: REMOTE_COMMIT },
+      });
+      const { manager, state, catalog } = yield* harness.services;
+      vi.spyOn(catalog, "removePackage").mockReturnValue(
+        Effect.fail(
+          new ScriptPackageCatalogError({
+            operation: "scan",
+            cause: new Error("Catalog failed"),
+          }),
+        ),
+      );
+      const error = yield* manager
+        .remove({ packageName: PACKAGE_NAME })
+        .pipe(Effect.flip);
+      expect(error.operation).toBe("validate");
+      expect(error.message).toBe("Failed to update the script catalog.");
+      expect(yield* state.get(PACKAGE_NAME)).toBeUndefined();
+      expect(yield* Effect.promise(() => fs.readdir(workspaceDir))).toEqual([
+        "packages",
+        "scripts",
+      ]);
+      expect(
+        yield* Effect.promise(() => fs.readdir(dirname(destination))),
+      ).toEqual([]);
+    }),
+  );
+
+  it.effect(
+    "names the saved removal copy when state and restoration fail",
+    () =>
+      Effect.gen(function* () {
+        const { destination, managed, workspaceDir } = yield* installedPackage;
+        const harness = makeManagerHarness({
+          managed,
+          workspaceDir,
+          onRemove: failStateRemoval,
+          resolution: { status: "modified", commit: REMOTE_COMMIT },
+        });
+        const { manager } = yield* harness.services;
+        refuseRenamesInto(destination);
+        const error = yield* manager
+          .remove({ packageName: PACKAGE_NAME })
+          .pipe(Effect.flip);
+        const copies = yield* Effect.promise(() =>
+          findFiles(workspaceDir, OLD_SOURCE),
+        );
+        expect(copies).toHaveLength(1);
+        expect(copies[0]).toContain(".lucent-package-remove-");
+        expect(error.message).toContain(dirname(copies[0] ?? ""));
+        expect(
+          yield* Effect.promise(() => hashDirectory(dirname(copies[0] ?? ""))),
+        ).toEqual(managed.files);
+      }),
+  );
+
+  it.effect(
+    "names the removal copy when its rename moves then throws EIO",
+    () =>
+      Effect.gen(function* () {
+        const { destination, managed, workspaceDir } = yield* installedPackage;
+        const harness = makeManagerHarness({
+          managed,
+          workspaceDir,
+          resolution: { status: "modified", commit: REMOTE_COMMIT },
+        });
+        const { manager } = yield* harness.services;
+        const rename = fs.rename;
+        vi.spyOn(fs, "rename").mockImplementation((from, to) =>
+          rename(from, to).then(() => {
+            if (resolve(String(from)) === destination)
+              throw Object.assign(new Error("EIO: input/output error"), {
+                code: "EIO",
+              });
+          }),
+        );
+        const error = yield* manager
+          .remove({ packageName: PACKAGE_NAME })
+          .pipe(Effect.flip);
+        const copies = yield* Effect.promise(() =>
+          findFiles(workspaceDir, OLD_SOURCE),
+        );
+        expect(copies).toHaveLength(1);
+        expect(copies[0]).toContain(".lucent-package-remove-");
+        expect(error.message).toContain(dirname(copies[0] ?? ""));
+        expect(
+          yield* Effect.promise(() => hashDirectory(dirname(copies[0] ?? ""))),
+        ).toEqual(managed.files);
+      }),
+  );
+
+  it.effect(
+    "removes empty removal staging after state fails and restore succeeds",
+    () =>
+      Effect.gen(function* () {
+        const { destination, managed, workspaceDir } = yield* installedPackage;
+        const harness = makeManagerHarness({
+          managed,
+          workspaceDir,
+          onRemove: failStateRemoval,
+          resolution: { status: "modified", commit: REMOTE_COMMIT },
+        });
+        const { manager, state } = yield* harness.services;
+        const error = yield* manager
+          .remove({ packageName: PACKAGE_NAME })
+          .pipe(Effect.flip);
+        expect(error.message).toBe(
+          "Failed to update package state. The package was restored.",
+        );
+        expect(
+          yield* Effect.promise(() =>
+            fs.readFile(join(destination, "index.js"), "utf8"),
+          ),
+        ).toBe(OLD_SOURCE);
+        expect(yield* state.get(PACKAGE_NAME)).toEqual(managed);
+        expect(yield* Effect.promise(() => fs.readdir(workspaceDir))).toEqual([
+          "packages",
+          "scripts",
+        ]);
       }),
   );
 });
