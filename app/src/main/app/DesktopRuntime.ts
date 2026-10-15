@@ -53,30 +53,40 @@ export const installDesktopNativeAppearanceSync = (
     yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
   });
 
-const checkForUpdatesAtStartup = Effect.gen(function* () {
-  const dialog = yield* ElectronDialog;
-  const updates = yield* DesktopUpdates;
-  const updateState = yield* updates.checkNow();
-  yield* Effect.logInfo("Startup update check completed").pipe(
-    Effect.annotateLogs({
-      component: "updates",
-      data: {
-        status: updateState.status,
-      },
-    }),
-  );
-  yield* showUpdateCheckDialog(updateState, {
-    mode: "automatic",
-    dialog,
-    updates,
-  }).pipe(
-    Effect.catch((cause) =>
-      Effect.logWarning("Failed to show startup update dialog").pipe(
-        Effect.annotateLogs({ component: "updates", data: { cause } }),
+const checkForUpdatesAtStartup = Effect.fn("checkForUpdatesAtStartup")(
+  function* (rendererId: number) {
+    const dialog = yield* ElectronDialog;
+    const lifecycle = yield* DesktopLifecycle;
+    const updates = yield* DesktopUpdates;
+    const windows = yield* DesktopWindows;
+    const updateState = yield* updates.checkNow();
+    yield* Effect.logInfo("Startup update check completed").pipe(
+      Effect.annotateLogs({
+        component: "updates",
+        data: {
+          status: updateState.status,
+        },
+      }),
+    );
+    const parent = yield* windows.describe(rendererId);
+    if (parent === undefined || (yield* lifecycle.isQuitting)) {
+      return;
+    }
+    yield* showUpdateCheckDialog(updateState, {
+      mode: "automatic",
+      parentWindowId: parent.windowId,
+      isQuitting: lifecycle.isQuitting,
+      dialog,
+      updates,
+    }).pipe(
+      Effect.catch((cause) =>
+        Effect.logWarning("Failed to show startup update dialog").pipe(
+          Effect.annotateLogs({ component: "updates", data: { cause } }),
+        ),
       ),
-    ),
-  );
-});
+    );
+  },
+);
 
 export const makeDesktopRuntime = <ROut, E>(
   cliOptions: CliOptions,
@@ -123,13 +133,16 @@ export const makeDesktopRuntime = <ROut, E>(
 
       const requestedLaunchMode =
         cliOptions.launchMode ?? settings.preferences.launchMode;
-      yield* windows.open(
+      const rendererId = yield* windows.open(
         requestedLaunchMode === "account-manager" ? "account-manager" : "game",
       );
       yield* installDesktopDevRendererReload;
 
       if (settings.preferences.checkForUpdates) {
-        yield* Effect.raceFirst(lifecycle.awaitQuit, checkForUpdatesAtStartup);
+        yield* Effect.raceFirst(
+          lifecycle.awaitQuit,
+          checkForUpdatesAtStartup(rendererId),
+        );
       }
 
       yield* lifecycle.awaitQuit;

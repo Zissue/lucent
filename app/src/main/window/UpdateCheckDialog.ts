@@ -14,6 +14,8 @@ interface UpdateCheckDialogPresentation {
 
 interface ShowUpdateCheckDialogOptions {
   readonly mode: "automatic" | "manual";
+  readonly parentWindowId?: number;
+  readonly isQuitting: Effect.Effect<boolean>;
   readonly dialog: Pick<ElectronDialogShape, "showMessageBox">;
   readonly updates: Pick<
     DesktopUpdatesShape,
@@ -65,8 +67,6 @@ export const makeUpdateCheckDialog = (
           title: "Update available",
           message: `Lucent ${state.latestVersion} is available.`,
           detail: `You are currently using Lucent ${state.currentVersion}. You will be notified again when a newer version is available.`,
-          // Escape and window close intentionally choose "Not now" to suppress
-          // repeated automatic prompts for this version; newer versions still prompt.
           buttons: ["View release", "Not now"],
           defaultId: 0,
           cancelId: 1,
@@ -108,7 +108,13 @@ export const showUpdateCheckDialog = Effect.fn("showUpdateCheckDialog")(
       return;
     }
 
-    const response = yield* options.dialog.showMessageBox(presentation.options);
+    const response = yield* options.dialog.showMessageBox(
+      presentation.options,
+      options.parentWindowId,
+    );
+    if (yield* options.isQuitting) {
+      return;
+    }
     if (
       presentation.viewReleaseButtonIndex !== undefined &&
       response.response === presentation.viewReleaseButtonIndex

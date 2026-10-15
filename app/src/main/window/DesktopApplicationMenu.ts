@@ -31,6 +31,7 @@ import { DesktopSettings } from "../settings/DesktopSettings";
 import { DesktopUpdates } from "../updates/DesktopUpdates";
 import { DesktopWindows } from "./DesktopWindows";
 import { showUpdateCheckDialog } from "./UpdateCheckDialog";
+import { DesktopLifecycle } from "../app/DesktopLifecycle";
 
 export interface DesktopApplicationMenuShape {
   readonly install: Effect.Effect<void, never, Scope.Scope>;
@@ -75,6 +76,7 @@ const reloadContents = (target: WebContents, bypassCache: boolean): void => {
 
 const makeDesktopApplicationMenu = Effect.gen(function* () {
   const electronApp = yield* ElectronApp;
+  const lifecycle = yield* DesktopLifecycle;
   const electronSession = yield* ElectronSession;
   const chromiumPerformanceRecording =
     yield* DesktopChromiumPerformanceRecording;
@@ -181,6 +183,7 @@ const makeDesktopApplicationMenu = Effect.gen(function* () {
         Effect.flatMap((state) =>
           showUpdateCheckDialog(state, {
             mode: "manual",
+            isQuitting: lifecycle.isQuitting,
             dialog,
             updates,
           }),
