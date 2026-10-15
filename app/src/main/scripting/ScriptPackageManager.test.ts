@@ -1937,3 +1937,202 @@ describe("script package removal failures", () => {
       }),
   );
 });
+
+describe("script package integrity rows", () => {
+  it.effect(
+    "marks reverted edits verified on update without scanning packages again",
+    () =>
+      Effect.gen(function* () {
+        const { destination, managed, workspaceDir } = yield* installedPackage;
+        const harness = makeManagerHarness({
+          managed,
+          workspaceDir,
+          resolution: { status: "modified", commit: INSTALLED_COMMIT },
+        });
+        const { manager, catalog } = yield* harness.services;
+        yield* catalog.getOverview;
+        yield* Effect.promise(() =>
+          write(join(destination, "index.js"), "edited"),
+        );
+        expect((yield* catalog.refresh).packages[0]).toMatchObject({
+          name: PACKAGE_NAME,
+          integrity: "modified",
+        });
+        yield* Effect.promise(() =>
+          write(join(destination, "index.js"), OLD_SOURCE),
+        );
+        const reads = vi.spyOn(fs, "readdir");
+        const result = yield* manager.update({ packageName: PACKAGE_NAME });
+        expect(result.status).toBe("unchanged");
+        expect((yield* catalog.getOverview).packages[0]).toMatchObject({
+          name: PACKAGE_NAME,
+          integrity: "verified",
+          update: { status: "current" },
+        });
+        expect(
+          reads.mock.calls.filter(
+            ([path]) =>
+              resolve(String(path)) === join(workspaceDir, "packages"),
+          ),
+        ).toEqual([]);
+        expect(harness.downloadCount()).toBe(0);
+      }),
+  );
+
+  for (const operation of ["remove", "update"] as const) {
+    it.effect(
+      `marks a rejected ${operation} modified without another package scan`,
+      () =>
+        Effect.gen(function* () {
+          const { archivePath, destination, managed, workspaceDir } =
+            yield* installedPackage;
+          const harness = makeManagerHarness({
+            archivePath,
+            managed,
+            workspaceDir,
+            resolution: { status: "modified", commit: REMOTE_COMMIT },
+          });
+          const { manager, catalog } = yield* harness.services;
+          expect((yield* catalog.getOverview).packages[0]).toMatchObject({
+            integrity: "verified",
+          });
+          const reads = vi.spyOn(fs, "readdir");
+          yield* Effect.promise(() =>
+            write(join(destination, "index.js"), "edited"),
+          );
+          const result = yield* manager[operation]({
+            packageName: PACKAGE_NAME,
+          });
+          expect(result).toEqual({
+            status: "confirmation-required",
+            packageName: PACKAGE_NAME,
+            reason: "local-modifications",
+          });
+          expect((yield* catalog.getOverview).packages[0]).toMatchObject({
+            integrity: "modified",
+            ...(operation === "update"
+              ? {
+                  update: {
+                    status: "available",
+                    revision: { kind: "commit", sha: REMOTE_COMMIT },
+                  },
+                }
+              : {}),
+          });
+          expect(
+            reads.mock.calls.filter(
+              ([path]) =>
+                resolve(String(path)) === join(workspaceDir, "packages"),
+            ),
+          ).toEqual([]);
+        }),
+    );
+
+    it.effect(
+      `reinserts the modified row after a refresh during ${operation}'s moved-copy hash`,
+      () =>
+        Effect.gen(function* () {
+          const { archivePath, destination, managed, workspaceDir } =
+            yield* installedPackage;
+          const harness = makeManagerHarness({
+            archivePath,
+            managed,
+            workspaceDir,
+            resolution: { status: "modified", commit: REMOTE_COMMIT },
+          });
+          const { manager, catalog } = yield* harness.services;
+          yield* catalog.getOverview;
+          const rename = fs.rename;
+          vi.spyOn(fs, "rename").mockImplementation((from, to) =>
+            resolve(String(from)) === destination
+              ? write(join(destination, "index.js"), "edited").then(() =>
+                  rename(from, to),
+                )
+              : rename(from, to),
+          );
+          const readdir = fs.readdir;
+          let refreshed = false;
+          const hashStarted = Promise.withResolvers<void>();
+          const finishHash = Promise.withResolvers<void>();
+          const reads = vi
+            .spyOn(fs, "readdir")
+            .mockImplementation((path, options) => {
+              const result = readdir(path, options);
+              if (
+                !refreshed &&
+                String(path).includes(
+                  `.lucent-package-${operation === "remove" ? "remove" : "backup"}-`,
+                )
+              ) {
+                refreshed = true;
+                return result.then((entries) => {
+                  hashStarted.resolve();
+                  return finishHash.promise.then(() => entries);
+                });
+              }
+              return result;
+            });
+          const running = yield* manager[operation]({
+            packageName: PACKAGE_NAME,
+          }).pipe(Effect.forkScoped);
+          yield* Effect.promise(() => hashStarted.promise);
+          const during = yield* catalog.refresh;
+          expect(during.packages).toEqual([]);
+          finishHash.resolve();
+          const result = yield* Fiber.join(running);
+          expect(result).toEqual({
+            status: "confirmation-required",
+            packageName: PACKAGE_NAME,
+            reason: "local-modifications",
+          });
+          expect(refreshed).toBe(true);
+          expect((yield* catalog.getOverview).packages[0]).toMatchObject({
+            name: PACKAGE_NAME,
+            integrity: "modified",
+            ...(operation === "update"
+              ? { update: { status: "available" } }
+              : {}),
+          });
+          expect(
+            reads.mock.calls.filter(
+              ([path]) =>
+                resolve(String(path)) === join(workspaceDir, "packages"),
+            ),
+          ).toHaveLength(1);
+        }),
+    );
+  }
+
+  it.effect("keeps invalid edited manifests invalid after rejection", () =>
+    Effect.gen(function* () {
+      const { destination, managed, workspaceDir } = yield* installedPackage;
+      const harness = makeManagerHarness({
+        managed,
+        workspaceDir,
+        resolution: { status: "modified", commit: REMOTE_COMMIT },
+      });
+      const { manager, catalog } = yield* harness.services;
+      yield* catalog.getOverview;
+      yield* Effect.promise(() =>
+        write(join(destination, "package.json"), '{"name":"different"}'),
+      );
+      const result = yield* manager.remove({ packageName: PACKAGE_NAME });
+      expect(result).toEqual({
+        status: "confirmation-required",
+        packageName: PACKAGE_NAME,
+        reason: "local-modifications",
+      });
+      expect((yield* catalog.getOverview).packages[0]).toMatchObject({
+        status: "invalid",
+        path: destination,
+        diagnostic:
+          'The installed package name is "example", but package.json declares "different".',
+      });
+      expect(
+        yield* Effect.promise(() =>
+          fs.readFile(join(destination, "package.json"), "utf8"),
+        ),
+      ).toBe('{"name":"different"}');
+    }),
+  );
+});

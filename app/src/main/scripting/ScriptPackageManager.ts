@@ -13,6 +13,7 @@ import { list as listTar, extract as extractTar } from "tar";
 import type {
   ScriptCatalogOverview,
   ScriptPackageMutationResult,
+  ScriptPackageIntegrity,
   ScriptPackageRevision,
 } from "@lucent/core/scriptPackages";
 import {
@@ -27,6 +28,7 @@ import {
 } from "./GitHubScriptPackageClient";
 import {
   inspectScriptPackageDirectory,
+  inspectManagedPackageFolder,
   integrityFor,
   ScriptPackageCatalog,
   type ScriptPackageCatalogReplacement,
@@ -363,6 +365,26 @@ export const layer = Layer.effect(
     const mapCatalogError = (cause: unknown) =>
       managerError("validate", "Failed to update the script catalog.", cause);
 
+    const refreshPackageIntegrity = Effect.fnUntraced(function* (
+      name: string,
+      rootPath: string,
+      integrity: ScriptPackageIntegrity,
+    ) {
+      const managed = yield* state.get(name);
+      if (managed === undefined) return yield* catalog.refresh;
+      const inspected = yield* Effect.tryPromise(() =>
+        inspectManagedPackageFolder(packagesDir, rootPath, managed),
+      ).pipe(Effect.orElseSucceed(() => undefined));
+      if (inspected === undefined) return yield* catalog.refresh;
+      return yield* catalog.replacePackage({
+        inspected,
+        integrity,
+        managed,
+        rootPath,
+        sourceRoot: rootPath,
+      });
+    });
+
     const resolveManagedRevision = Effect.fn(
       "ScriptPackageManager.resolveManagedRevision",
     )(function* (managed: ManagedScriptPackage) {
@@ -616,7 +638,11 @@ export const layer = Layer.effect(
             ),
           );
           yield* removeEmptyBackup;
-          yield* catalog.refresh.pipe(Effect.mapError(mapCatalogError));
+          yield* refreshPackageIntegrity(
+            expected.name,
+            destination,
+            "modified",
+          ).pipe(Effect.mapError(mapCatalogError));
           return localModifications(expected.name);
         }
         yield* movePath(staging, destination).pipe(
@@ -1034,7 +1060,7 @@ export const layer = Layer.effect(
           const nextCatalog = yield* (
             integrity === summary.integrity
               ? catalog.updateManagedPackage(observed)
-              : catalog.refresh
+              : refreshPackageIntegrity(managed.name, savedRoot, integrity)
           ).pipe(Effect.mapError(mapCatalogError));
           if (integrity !== "verified" && input.replaceModified !== true) {
             return localModifications(input.packageName);
@@ -1193,7 +1219,11 @@ export const layer = Layer.effect(
                 ),
               );
               yield* removeEmptyStaging;
-              yield* catalog.refresh.pipe(Effect.mapError(mapCatalogError));
+              yield* refreshPackageIntegrity(
+                input.packageName,
+                root,
+                "modified",
+              ).pipe(Effect.mapError(mapCatalogError));
               return localModifications(input.packageName);
             }
             yield* state.remove(input.packageName).pipe(
