@@ -10,6 +10,7 @@ import {
 
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Scope from "effect/Scope";
@@ -43,6 +44,7 @@ import {
 import { DEFAULT_APP_SETTINGS, type AppSettings } from "@lucent/core/settings";
 import { makeListenerRegistry } from "../app/ListenerRegistry";
 import { DesktopEnvironment } from "../app/DesktopEnvironment";
+import { logFailure } from "../app/observability/logFailure";
 import { ElectronApp } from "../electron/ElectronApp";
 import { ElectronSession } from "../electron/ElectronSession";
 import { ElectronShell } from "../electron/ElectronShell";
@@ -460,10 +462,13 @@ const makeDesktopWindows = Effect.gen(function* () {
             handler(...args);
           } catch (cause) {
             run(
-              Effect.logWarning("Electron event handler failed").pipe(
+              logFailure(
+                "Electron event handler failed",
+                Cause.die(cause),
+              ).pipe(
                 Effect.annotateLogs({
                   component: "window",
-                  data: { cause, event, targetId: target.id },
+                  data: { event, targetId: target.id },
                 }),
               ),
             );
@@ -484,9 +489,9 @@ const makeDesktopWindows = Effect.gen(function* () {
     Scope.close(scope, exit).pipe(
       Effect.uninterruptible,
       Effect.catchCause((cause) =>
-        Effect.logWarning("Failed to clean up a desktop window").pipe(
-          Effect.annotateLogs({ component: "window", data: { cause } }),
-        ),
+        logFailure("Failed to clean up a desktop window", cause, {
+          failure: "warning",
+        }).pipe(Effect.annotateLogs({ component: "window" })),
       ),
     );
   const dispose = (scope: Scope.Closeable): void => {
@@ -511,8 +516,11 @@ const makeDesktopWindows = Effect.gen(function* () {
   const activeBranding = env.isDev ? appBranding.dev : appBranding.production;
   const getBootstrapSettings = settings.get.pipe(
     Effect.catch((cause) =>
-      Effect.logWarning("Falling back to default settings for window bootstrap")
-        .pipe(Effect.annotateLogs({ component: "window", data: { cause } }))
+      Effect.logWarning(
+        "Falling back to default settings for window bootstrap",
+        Cause.fail(cause),
+      )
+        .pipe(Effect.annotateLogs({ component: "window" }))
         .pipe(Effect.as(DEFAULT_APP_SETTINGS)),
     ),
   );
@@ -958,9 +966,8 @@ const makeDesktopWindows = Effect.gen(function* () {
           Effect.catch((cause) =>
             Effect.logWarning(
               "Failed to update desktop window background",
-            ).pipe(
-              Effect.annotateLogs({ component: "window", data: { cause, id } }),
-            ),
+              Cause.fail(cause),
+            ).pipe(Effect.annotateLogs({ component: "window", data: { id } })),
           ),
         );
       },
@@ -1206,7 +1213,16 @@ const makeDesktopWindows = Effect.gen(function* () {
             }),
           ),
           Effect.catch((cause) =>
-            Effect.sync(() => {
+            Effect.gen(function* () {
+              yield* Effect.logWarning(
+                "Failed to load game view",
+                Cause.fail(cause),
+              ).pipe(
+                Effect.annotateLogs({
+                  component: "window",
+                  data: { rendererId },
+                }),
+              );
               updateGameViewPhase(
                 rendererId,
                 "error",
@@ -1230,11 +1246,13 @@ const makeDesktopWindows = Effect.gen(function* () {
             }),
         }).pipe(
           Effect.catch((cause) =>
-            Effect.logWarning("Failed to open game view DevTools").pipe(
+            Effect.logWarning(
+              "Failed to open game view DevTools",
+              Cause.fail(cause),
+            ).pipe(
               Effect.annotateLogs({
                 component: "window",
                 data: {
-                  cause,
                   rendererId,
                 },
               }),
@@ -1884,11 +1902,13 @@ const makeDesktopWindows = Effect.gen(function* () {
               }),
           }).pipe(
             Effect.catch((cause) =>
-              Effect.logWarning("Failed to open DevTools").pipe(
+              Effect.logWarning(
+                "Failed to open DevTools",
+                Cause.fail(cause),
+              ).pipe(
                 Effect.annotateLogs({
                   component: "window",
                   data: {
-                    cause,
                     rendererId,
                     kind,
                   },
@@ -2005,9 +2025,8 @@ const makeDesktopWindows = Effect.gen(function* () {
           Effect.catch((cause) =>
             Effect.logWarning(
               "Failed to restore a primary window after macOS activation",
-            ).pipe(
-              Effect.annotateLogs({ component: "window", data: { cause } }),
-            ),
+              Cause.fail(cause),
+            ).pipe(Effect.annotateLogs({ component: "window" })),
           ),
         ),
       );

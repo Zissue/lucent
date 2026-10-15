@@ -1,6 +1,7 @@
 import { app, session, type Session } from "electron";
 
 import * as Context from "effect/Context";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as FiberSet from "effect/FiberSet";
 import * as Layer from "effect/Layer";
@@ -182,7 +183,7 @@ export const layer = Layer.effect(
           Effect.catch((cause) =>
             Effect.logWarning(
               "Failed to clear a temporary game session",
-              cause,
+              Cause.fail(cause),
             ),
           ),
           Effect.ensuring(

@@ -4,6 +4,7 @@ import { basename, join } from "path";
 
 import type { TraceConfig } from "electron";
 import * as Cause from "effect/Cause";
+import { logFailure } from "./logFailure";
 import * as Clock from "effect/Clock";
 import * as Exit from "effect/Exit";
 import * as Schedule from "effect/Schedule";
@@ -421,10 +422,18 @@ const makeDesktopChromiumPerformanceRecording = Effect.gen(function* () {
         cause === undefined ? message : `${message}: ${errorMessage(cause)}`,
       );
     }
-    yield* Effect.logWarning(message).pipe(
+    yield* logFailure(
+      "Chromium performance recording degraded",
+      cause === undefined
+        ? Cause.empty
+        : Cause.isCause(cause)
+          ? cause
+          : Cause.fail(cause),
+      { failure: "warning" },
+    ).pipe(
       Effect.annotateLogs({
         component: "chromium-performance-recording",
-        data: cause === undefined ? undefined : { cause },
+        data: { message },
       }),
     );
   });
@@ -1027,10 +1036,10 @@ const makeDesktopChromiumPerformanceRecording = Effect.gen(function* () {
           Effect.catch((cause) =>
             Effect.logWarning(
               "Failed to flush Chromium tracing during shutdown",
+              Cause.fail(cause),
             ).pipe(
               Effect.annotateLogs({
                 component: "chromium-performance-recording",
-                data: { cause },
               }),
             ),
           ),

@@ -22,6 +22,7 @@ import {
   type DesktopChromiumPerformanceRecordingState,
 } from "../app/observability/DesktopChromiumPerformanceRecording";
 import { DesktopEnvironment } from "../app/DesktopEnvironment";
+import { logFailure } from "../app/observability/logFailure";
 import { ElectronSession } from "../electron/ElectronSession";
 import { ElectronApp } from "../electron/ElectronApp";
 import { ElectronDialog } from "../electron/ElectronDialog";
@@ -96,20 +97,17 @@ const makeDesktopApplicationMenu = Effect.gen(function* () {
       }),
     );
 
-  const logMenuFailure = (operation: string, cause: unknown) =>
-    Effect.logWarning("Application menu action failed").pipe(
+  const logMenuFailure = (operation: string, cause: Cause.Cause<unknown>) =>
+    logFailure("Application menu action failed", cause).pipe(
       Effect.annotateLogs({
         component: "menu",
         data: {
           operation,
-          cause,
         },
       }),
     );
   const catchMenuFailure = (operation: string) =>
-    Effect.catchCause((cause) =>
-      logMenuFailure(operation, Cause.squash(cause)),
-    );
+    Effect.catchCause((cause) => logMenuFailure(operation, cause));
 
   const toggleDevTools = (): void => {
     const target = webContents.getFocusedWebContents();
@@ -125,7 +123,7 @@ const makeDesktopApplicationMenu = Effect.gen(function* () {
         target.openDevTools({ mode: "detach" });
       }
     } catch (cause) {
-      run(logMenuFailure("toggle-dev-tools", cause));
+      run(logMenuFailure("toggle-dev-tools", Cause.die(cause)));
     }
   };
 
@@ -144,7 +142,7 @@ const makeDesktopApplicationMenu = Effect.gen(function* () {
           run(
             logMenuFailure(
               bypassCache ? "force-reload-renderer" : "reload-renderer",
-              cause,
+              Cause.die(cause),
             ),
           );
         }
@@ -212,8 +210,14 @@ const makeDesktopApplicationMenu = Effect.gen(function* () {
           message: "Unable to start the Chromium performance recording.",
         },
       } as const;
-      yield* Effect.logError(copy[operation].message, Cause.fail(cause)).pipe(
-        Effect.annotateLogs({ component: "chromium-performance-recording" }),
+      yield* Effect.logError(
+        "Chromium performance recording action failed",
+        Cause.fail(cause),
+      ).pipe(
+        Effect.annotateLogs({
+          component: "chromium-performance-recording",
+          data: { operation, message: copy[operation].message },
+        }),
       );
       yield* dialog.showMessageBox({
         type: "warning",
@@ -541,12 +545,12 @@ const makeDesktopApplicationMenu = Effect.gen(function* () {
     }
   }).pipe(
     Effect.catch((cause) =>
-      Effect.logWarning("Failed to rebuild application menu").pipe(
+      Effect.logWarning(
+        "Failed to rebuild application menu",
+        Cause.fail(cause),
+      ).pipe(
         Effect.annotateLogs({
           component: "menu",
-          data: {
-            cause,
-          },
         }),
       ),
     ),
