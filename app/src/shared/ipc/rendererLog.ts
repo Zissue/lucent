@@ -14,6 +14,7 @@ export const RendererLogRecordSchema = Schema.Struct({
   level: Schema.Literals(["error", "warn", "info", "debug"]),
   message: Schema.String,
   component: Schema.optionalKey(Schema.String),
+  repeatKey: Schema.optionalKey(Schema.String),
   data: Schema.optionalKey(Schema.Unknown),
   error: Schema.optionalKey(Schema.Array(DesktopLogErrorSchema)),
 });

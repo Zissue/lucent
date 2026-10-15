@@ -422,6 +422,13 @@ export const ScriptPackageUpdateRequestSchema = Schema.Struct({
 export type ScriptPackageUpdateRequest =
   typeof ScriptPackageUpdateRequestSchema.Type;
 
+export const ScriptPackageRestoreRequestSchema = Schema.Struct({
+  packageName: ScriptPackageNameSchema,
+});
+
+export type ScriptPackageRestoreRequest =
+  typeof ScriptPackageRestoreRequestSchema.Type;
+
 export const ScriptPackageRemoveRequestSchema = Schema.Struct({
   confirmModified: Schema.optionalKey(Schema.Boolean),
   packageName: ScriptPackageNameSchema,
@@ -450,3 +457,11 @@ export const ScriptPackageMutationResultSchema = Schema.Union([
 
 export type ScriptPackageMutationResult =
   typeof ScriptPackageMutationResultSchema.Type;
+
+export const ScriptPackageLeftoverCopySchema = Schema.Struct({
+  path: Schema.String,
+  packageName: Schema.optionalKey(Schema.String),
+});
+
+export type ScriptPackageLeftoverCopy =
+  typeof ScriptPackageLeftoverCopySchema.Type;

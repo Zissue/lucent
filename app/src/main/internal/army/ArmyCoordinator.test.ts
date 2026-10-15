@@ -21,6 +21,8 @@ import {
   type ArmySessionEndedEvent,
 } from "./ArmyCoordinator";
 
+import { noEffects } from "./ArmyLoopTauntState";
+
 let nextParticipantId = 1;
 
 const makeParticipant = (): number => nextParticipantId++;
@@ -290,9 +292,17 @@ describe("ArmyCoordinator", () => {
         { concurrency: "unbounded" },
       );
 
-      expect(
-        yield* coordinator.requireParticipant(alice.sessionId, aliceWindow),
-      ).toEqual({
+      const [seat] = yield* coordinator.loopTaunt(
+        alice.sessionId,
+        aliceWindow,
+        (slot, seat) => ({
+          effects: noEffects(),
+          result: Result.succeed(seat),
+          slot,
+        }),
+      );
+      expect(seat).toEqual({
+        id: aliceWindow,
         playerCount: 2,
         playerName: "Alice",
         playerNumber: 1,

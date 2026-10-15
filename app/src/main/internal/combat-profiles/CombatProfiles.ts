@@ -139,9 +139,10 @@ const makeCombatProfiles = Effect.gen(function* () {
   const env = yield* DesktopEnvironment;
   const jsonFile = makeJsonFile(yield* FileSystem);
   const path = join(env.appDataDir, "combat-profiles.json");
-  const libraryRef = yield* SynchronizedRef.make<CombatProfileLibrary | null>(
-    null,
-  );
+  const libraryRef = yield* SynchronizedRef.make<{
+    readonly value: CombatProfileLibrary | null;
+    readonly publicationRevision: number;
+  }>({ value: null, publicationRevision: 0 });
   const libraryChanges = makeListenerRegistry<CombatProfileLibrary>();
 
   const readLibraryFromFile = Effect.gen(function* () {
@@ -183,30 +184,61 @@ const makeCombatProfiles = Effect.gen(function* () {
       .pipe(Effect.mapError(wrapDataError), Effect.as(normalized));
   };
 
+  const publishCurrent = SynchronizedRef.get(libraryRef).pipe(
+    Effect.flatMap(({ value, publicationRevision }) =>
+      value === null || publicationRevision === 0
+        ? Effect.void
+        : libraryChanges.publishLatest(publicationRevision, value),
+    ),
+  );
   const get = SynchronizedRef.modifyEffect(libraryRef, (current) =>
-    (current === null ? readLibraryFromFile : Effect.succeed(current)).pipe(
-      Effect.map((library) => [library, library] as const),
+    (current.value === null
+      ? readLibraryFromFile
+      : Effect.succeed(current.value)
+    ).pipe(
+      Effect.map(
+        (library) => [library, { ...current, value: library }] as const,
+      ),
     ),
   );
-  const load = SynchronizedRef.modifyEffect(libraryRef, () =>
+  const load = SynchronizedRef.modifyEffect(libraryRef, (current) =>
     readLibraryFromFile.pipe(
-      Effect.tap(libraryChanges.publish),
-      Effect.map((library) => [library, library] as const),
+      Effect.map(
+        (library) =>
+          [
+            library,
+            {
+              value: library,
+              publicationRevision: current.publicationRevision + 1,
+            },
+          ] as const,
+      ),
     ),
-  );
+  ).pipe(Effect.ensuring(publishCurrent));
   const update = (
     modify: (
       current: CombatProfileLibrary,
     ) => Effect.Effect<CombatProfileLibrary, CombatProfilesError>,
   ) =>
     SynchronizedRef.modifyEffect(libraryRef, (current) =>
-      (current === null ? readLibraryFromFile : Effect.succeed(current)).pipe(
+      (current.value === null
+        ? readLibraryFromFile
+        : Effect.succeed(current.value)
+      ).pipe(
         Effect.flatMap(modify),
         Effect.flatMap(writeLibraryFile),
-        Effect.tap(libraryChanges.publish),
-        Effect.map((saved) => [saved, saved] as const),
+        Effect.map(
+          (saved) =>
+            [
+              saved,
+              {
+                value: saved,
+                publicationRevision: current.publicationRevision + 1,
+              },
+            ] as const,
+        ),
       ),
-    );
+    ).pipe(Effect.ensuring(publishCurrent));
 
   const deleteProfile: CombatProfilesShape["deleteProfile"] = (profileId) =>
     update((current) => deleteProfileFromLibrary(current, profileId));

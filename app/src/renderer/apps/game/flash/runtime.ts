@@ -35,13 +35,15 @@ export const loggingLayer = Layer.mergeAll(
         const level = rendererLogLevels[options.logLevel];
         if (level === undefined) return;
         try {
-          const { message, component, data, error } = desktopLogRecord(options);
+          const { message, component, data, error, repeatKey } =
+            desktopLogRecord(options);
           window.desktop.log.write({
             level,
             message,
             component: typeof component === "string" ? component : "renderer",
             ...(data === undefined ? {} : { data }),
             ...(error === undefined ? {} : { error }),
+            ...(repeatKey === undefined ? {} : { repeatKey }),
           });
         } catch {}
       }),

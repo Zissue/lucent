@@ -22,6 +22,7 @@ import {
   type DesktopChromiumPerformanceRecordingState,
 } from "../app/observability/DesktopChromiumPerformanceRecording";
 import { DesktopEnvironment } from "../app/DesktopEnvironment";
+import { DesktopLifecycle } from "../app/DesktopLifecycle";
 import { logFailure } from "../../shared/logFailure";
 import { ElectronSession } from "../electron/ElectronSession";
 import { ElectronApp } from "../electron/ElectronApp";
@@ -75,6 +76,7 @@ const reloadContents = (target: WebContents, bypassCache: boolean): void => {
 
 const makeDesktopApplicationMenu = Effect.gen(function* () {
   const electronApp = yield* ElectronApp;
+  const lifecycle = yield* DesktopLifecycle;
   const electronSession = yield* ElectronSession;
   const chromiumPerformanceRecording =
     yield* DesktopChromiumPerformanceRecording;
@@ -181,6 +183,7 @@ const makeDesktopApplicationMenu = Effect.gen(function* () {
         Effect.flatMap((state) =>
           showUpdateCheckDialog(state, {
             mode: "manual",
+            dismissedWithoutAnswer: lifecycle.isQuitting,
             dialog,
             updates,
           }),

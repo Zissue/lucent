@@ -15,6 +15,7 @@ export interface DesktopLogRecord {
   readonly level: string;
   readonly component: unknown;
   readonly message: string;
+  readonly repeatKey?: string;
   readonly data?: unknown;
   readonly annotations?: Record<string, unknown>;
   readonly error?: readonly DesktopLogError[];
@@ -73,6 +74,7 @@ export const desktopLogRecord = (
   const {
     component = "effect",
     data,
+    repeatKey,
     ...annotations
   } = options.fiber.getRef(References.CurrentLogAnnotations);
   const span = options.fiber.cache.span;
@@ -98,6 +100,7 @@ export const desktopLogRecord = (
     level: options.logLevel.toLowerCase(),
     component,
     message,
+    ...(typeof repeatKey === "string" ? { repeatKey } : {}),
     ...(data === undefined ? {} : { data }),
     ...(Object.keys(annotations).length === 0 ? {} : { annotations }),
     ...(errors.length === 0 ? {} : { error: errors }),
@@ -111,23 +114,18 @@ const MAX_DATA_BYTES = 16 * 1024;
 const utf8 = new TextEncoder();
 
 export const desktopLogJsonSafe = (value: unknown): unknown => {
-  const ancestors: object[] = [];
-  const source = JSON.stringify(
-    value,
-    function (this: unknown, _key, part: unknown) {
-      if (typeof part === "bigint") return part.toString();
-      if (part instanceof Error) return desktopLogErrorDetails(part);
-      if (typeof part === "function" || typeof part === "symbol")
-        return undefined;
-      if (typeof part === "object" && part !== null) {
-        while (ancestors.length > 0 && ancestors.at(-1) !== this)
-          ancestors.pop();
-        if (ancestors.includes(part)) return "[Circular]";
-        ancestors.push(part);
-      }
-      return part;
-    },
-  );
+  const seen = new WeakSet<object>();
+  const source = JSON.stringify(value, (_key, part: unknown) => {
+    if (typeof part === "bigint") return part.toString();
+    if (part instanceof Error) return desktopLogErrorDetails(part);
+    if (typeof part === "function" || typeof part === "symbol")
+      return undefined;
+    if (typeof part === "object" && part !== null) {
+      if (seen.has(part)) return "[Circular]";
+      seen.add(part);
+    }
+    return part;
+  });
   if (source === undefined) return undefined;
   const safe: unknown = JSON.parse(source);
   if (
