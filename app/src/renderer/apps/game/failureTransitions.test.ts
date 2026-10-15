@@ -119,4 +119,29 @@ describe("failure transitions", () => {
       }).pipe(Effect.provideService(Logger.CurrentLoggers, new Set([logger])));
     },
   );
+
+  it.effect("logs a new failure after its keys are reset", () => {
+    const messages: unknown[] = [];
+    const logger = Logger.make((options) => {
+      messages.push(options.message);
+    });
+
+    return Effect.gen(function* () {
+      const logs = yield* makeFailureTransitions({
+        component: "environment",
+        failed: "Environment automation failed",
+        recovered: "Environment automation recovered",
+      });
+      yield* logs.failed("environment/quests/load", Cause.fail("offline"));
+      yield* logs.failed("environment/boosts", Cause.fail("offline"));
+      yield* logs.reset("environment/quests");
+      yield* logs.failed("environment/quests/load", Cause.fail("offline"));
+      yield* logs.failed("environment/boosts", Cause.fail("offline"));
+      expect(messages).toEqual([
+        ["Environment automation failed"],
+        ["Environment automation failed"],
+        ["Environment automation failed"],
+      ]);
+    }).pipe(Effect.provide(Logger.layer([logger])));
+  });
 });

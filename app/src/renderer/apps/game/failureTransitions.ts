@@ -56,5 +56,16 @@ export const makeFailureTransitions = Effect.fnUntraced(function* (options: {
     }
   });
 
-  return { failed, recovered };
+  const reset = (prefix: string) =>
+    Ref.update(
+      failingKeys,
+      (keys) =>
+        new Set(
+          [...keys].filter(
+            (key) => key !== prefix && !key.startsWith(`${prefix}/`),
+          ),
+        ),
+    );
+
+  return { failed, recovered, reset };
 });
