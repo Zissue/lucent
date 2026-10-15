@@ -1,3 +1,4 @@
+import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import * as DesktopEnvironment from "./DesktopEnvironment";
@@ -52,13 +53,24 @@ import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
 export const makeDesktopLayer = (
   envConfig: DesktopEnvironment.DesktopEnvironmentConfig,
 ) => {
-  const diagnostics = DesktopObservability.layer.pipe(
+  const diagnostics = Layer.effectDiscard(
+    Effect.flatMap(
+      DesktopLifecycle.DesktopLifecycle,
+      (lifecycle) => lifecycle.attachObservability,
+    ),
+  ).pipe(
     Layer.provideMerge(
-      Layer.mergeAll(NodeFileSystem.layer, DesktopEnvironment.layer(envConfig)),
+      DesktopObservability.layer.pipe(
+        Layer.provideMerge(
+          Layer.mergeAll(
+            NodeFileSystem.layer,
+            DesktopEnvironment.layer(envConfig),
+          ),
+        ),
+      ),
     ),
   );
   const platform = Layer.mergeAll(
-    DesktopLifecycle.layer,
     ElectronApp.layer,
     ElectronChromiumPerformance.layer,
     ElectronDialog.layer,

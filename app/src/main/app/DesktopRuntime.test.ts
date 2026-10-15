@@ -56,7 +56,7 @@ import { DesktopApplicationMenu } from "../window/DesktopApplicationMenu";
 import { DesktopWindows } from "../window/DesktopWindows";
 import { DesktopEnvironment } from "./DesktopEnvironment";
 import { DesktopGameRendererRecovery } from "./DesktopGameRendererRecovery";
-import { layer as desktopLifecycleLayer } from "./DesktopLifecycle";
+import { DesktopLifecycle } from "./DesktopLifecycle";
 import { makeDesktopRuntime } from "./DesktopRuntime";
 import { DesktopObservability } from "./observability/DesktopObservability";
 
@@ -155,21 +155,45 @@ const makeStartup = (options: {
       }),
     whenReady: Effect.void,
   });
+  const diagnostics = Layer.effectDiscard(
+    Effect.flatMap(
+      DesktopLifecycle,
+      (lifecycle) => lifecycle.attachObservability,
+    ),
+  ).pipe(
+    Layer.provideMerge(
+      Layer.mergeAll(
+        Logger.layer([
+          Logger.make((log) => {
+            if (
+              String(log.message) === "Failed to show startup update dialog"
+            ) {
+              events.push("dialog-failed");
+              Deferred.doneUnsafe(dialogFailed, Exit.void);
+            }
+            if (log.logLevel === "Error") {
+              events.push(`error:${String(log.message)}`);
+            }
+          }),
+        ]),
+        Layer.succeed(
+          DesktopObservability,
+          DesktopObservability.of({
+            flush: Effect.sync(() => {
+              events.push("flush");
+            }),
+            installProcessHooks: Effect.void,
+            logFilePath: join(directory, "lucent.log"),
+          }),
+        ),
+      ),
+    ),
+  );
+
   const layer = Layer.mergeAll(
-    desktopLifecycleLayer,
     servicesStartupNeverCalls,
     NodeFileSystem.layer,
-    Logger.layer([
-      Logger.make((log) => {
-        if (String(log.message) === "Failed to show startup update dialog") {
-          events.push("dialog-failed");
-          Deferred.doneUnsafe(dialogFailed, Exit.void);
-        }
-        if (log.logLevel === "Error") {
-          events.push(`error:${String(log.message)}`);
-        }
-      }),
-    ]),
+    diagnostics,
     Layer.effectDiscard(
       Effect.addFinalizer(() =>
         Effect.sync(() => {
@@ -178,16 +202,8 @@ const makeStartup = (options: {
       ),
     ),
     appLayer,
-    Layer.effectDiscard(options.build ?? Effect.void),
-    Layer.succeed(
-      DesktopObservability,
-      DesktopObservability.of({
-        flush: Effect.sync(() => {
-          events.push("flush");
-        }),
-        installProcessHooks: Effect.void,
-        logFilePath: join(directory, "lucent.log"),
-      }),
+    Layer.effectDiscard(options.build ?? Effect.void).pipe(
+      Layer.provide(diagnostics),
     ),
     Layer.succeed(
       DesktopEnvironment,
@@ -270,6 +286,7 @@ const makeStartup = (options: {
   const quitDuringStartup = (
     waitingOn: Deferred.Deferred<void>,
     onReady: Effect.Effect<void> = Effect.void,
+    afterDeadline?: Effect.Effect<void>,
   ) =>
     Effect.gen(function* () {
       const runtime = yield* Effect.forkDetach(
@@ -296,6 +313,10 @@ const makeStartup = (options: {
             .catch(() => undefined),
         );
         yield* Effect.promise(() => vi.advanceTimersByTimeAsync(1_500));
+        if (afterDeadline !== undefined) {
+          yield* afterDeadline;
+          yield* Fiber.join(runtime);
+        }
         return [...events];
       }).pipe(Effect.ensuring(Fiber.interrupt(runtime)));
     }).pipe(
@@ -327,6 +348,35 @@ afterEach(() => {
 });
 
 describe("makeDesktopRuntime", () => {
+  it.live("logs and flushes the deadline during unfinished layer cleanup", () =>
+    Effect.gen(function* () {
+      const building = yield* Deferred.make<void>();
+      const releaseCleanup = yield* Deferred.make<void>();
+      const startup = makeStartup({
+        build: Effect.addFinalizer(() => Deferred.await(releaseCleanup)).pipe(
+          Effect.andThen(Deferred.succeed(building, undefined)),
+          Effect.andThen(Effect.never),
+        ),
+        checkNow: Effect.never,
+        showMessageBox: Effect.never,
+      });
+
+      const events = yield* startup.quitDuringStartup(
+        building,
+        Effect.void,
+        Deferred.succeed(releaseCleanup, undefined).pipe(Effect.asVoid),
+      );
+
+      expect(events).toEqual([
+        "error:Lucent quit timed out; forcing exit",
+        "flush",
+        "exit:0",
+        "cleanup",
+        "runtime-settled",
+      ]);
+    }),
+  );
+
   it.live("guards quit while the desktop layer is still building", () =>
     Effect.gen(function* () {
       const building = yield* Deferred.make<void>();

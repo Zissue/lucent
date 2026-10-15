@@ -15,7 +15,6 @@ import {
 import {
   DesktopLifecycle,
   layer as desktopLifecycleLayer,
-  provideInsideQuitGuard,
 } from "./DesktopLifecycle";
 import { DesktopObservability } from "./observability/DesktopObservability";
 
@@ -126,6 +125,7 @@ describe("DesktopLifecycle", () => {
     return Effect.gen(function* () {
       const lifecycle = yield* DesktopLifecycle;
       yield* lifecycle.register;
+      yield* lifecycle.attachObservability;
       expect(yield* lifecycle.isQuitting).toBe(false);
       harness.emitBeforeQuit();
       expect(yield* lifecycle.isQuitting).toBe(true);
@@ -141,6 +141,7 @@ describe("DesktopLifecycle", () => {
         Effect.gen(function* () {
           const lifecycle = yield* DesktopLifecycle;
           yield* lifecycle.register;
+          yield* lifecycle.attachObservability;
           yield* Effect.addFinalizer(() =>
             Effect.sync(() => {
               harness.events.push("cleanup");
@@ -167,6 +168,7 @@ describe("DesktopLifecycle", () => {
           Effect.gen(function* () {
             const lifecycle = yield* DesktopLifecycle;
             yield* lifecycle.register;
+            yield* lifecycle.attachObservability;
             yield* Effect.addFinalizer(() => Deferred.await(releaseCleanup));
             yield* Deferred.succeed(registered, undefined);
             yield* lifecycle.awaitQuit;
@@ -207,6 +209,7 @@ describe("DesktopLifecycle", () => {
         Effect.gen(function* () {
           const lifecycle = yield* DesktopLifecycle;
           yield* lifecycle.register;
+          yield* lifecycle.attachObservability;
           findInstalledSignalListener(previousListeners)(TEST_SIGNAL);
 
           yield* Effect.promise(() => vi.advanceTimersByTimeAsync(1_500));
@@ -232,6 +235,7 @@ describe("DesktopLifecycle", () => {
         Effect.gen(function* () {
           const lifecycle = yield* DesktopLifecycle;
           yield* lifecycle.register;
+          yield* lifecycle.attachObservability;
           findInstalledSignalListener(previousListeners)(TEST_SIGNAL);
 
           yield* Effect.promise(() => vi.advanceTimersByTimeAsync(1_500));
@@ -266,6 +270,7 @@ describe("DesktopLifecycle", () => {
         Effect.gen(function* () {
           const lifecycle = yield* DesktopLifecycle;
           yield* lifecycle.register;
+          yield* lifecycle.attachObservability;
           const installed = process
             .rawListeners(TEST_SIGNAL)
             .find((candidate) => !previousListeners.has(candidate));
@@ -300,9 +305,12 @@ describe("DesktopLifecycle", () => {
         Effect.gen(function* () {
           const lifecycle = yield* DesktopLifecycle;
           yield* lifecycle.register;
-          yield* Deferred.succeed(registered, undefined);
-          yield* lifecycle.awaitQuit;
-        }).pipe(provideInsideQuitGuard(Layer.merge(harness.layer, slowLayer))),
+          yield* lifecycle.attachObservability;
+          yield* Effect.gen(function* () {
+            yield* Deferred.succeed(registered, undefined);
+            yield* lifecycle.awaitQuit;
+          }).pipe(Effect.provide(slowLayer), Effect.scoped);
+        }).pipe(Effect.provide(harness.layer), Effect.scoped),
       );
       yield* Deferred.await(registered);
       harness.emitWillQuit();
@@ -328,6 +336,7 @@ describe("DesktopLifecycle", () => {
           Effect.gen(function* () {
             const lifecycle = yield* DesktopLifecycle;
             yield* lifecycle.register;
+            yield* lifecycle.attachObservability;
             yield* Effect.addFinalizer(() => Deferred.await(releaseCleanup));
             yield* Deferred.succeed(registered, undefined);
             yield* lifecycle.awaitQuit;
