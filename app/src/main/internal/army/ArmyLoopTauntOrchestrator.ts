@@ -1,10 +1,8 @@
 import { makeListenerRegistry } from "../../app/ListenerRegistry";
-import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
 import * as Scope from "effect/Scope";
 
@@ -26,23 +24,17 @@ import {
   type ArmyLoopTauntCommandEvent,
   COMMAND_CONFIRMATION_TIMEOUT_MS,
   commandForPublication,
-  endLoopTaunt,
-  initialLoopTauntSlot,
   isReadinessCurrent,
   leaveRun,
-  type LoopTauntSlot,
-  type LoopTauntStep,
-  loopError,
-  mergeMutationEffects,
   type MutationEffects,
   noEffects,
   onTimer as advanceTimer,
   registerRun,
   REGISTRATION_TIMEOUT_MS,
-  rejectRegistration,
   reportRun,
   runForPayload,
   type ScheduledTimer,
+  terminalReadinessError,
 } from "./ArmyLoopTauntState";
 
 export type { ArmyLoopTauntCommandEvent } from "./ArmyLoopTauntState";
@@ -98,34 +90,16 @@ export const makeArmyLoopTauntOrchestrator = (): Effect.Effect<
   Effect.gen(function* () {
     const coordinator = yield* ArmyCoordinator;
     const scope = yield* Effect.scope;
-    const stateRef = yield* Ref.make(new Map<string, LoopTauntSlot>());
     const commandEvents = makeListenerRegistry<ArmyLoopTauntCommandEvent>();
 
-    const modifySlot = <A>(
-      sessionId: string,
-      step: (slot: LoopTauntSlot) => LoopTauntStep<A>,
-    ) =>
-      Ref.modify(stateRef, (state) => {
-        const slot = state.get(sessionId) ?? initialLoopTauntSlot;
-        const outcome = step(slot);
-        return [
-          outcome,
-          outcome.slot === slot
-            ? state
-            : new Map(state).set(sessionId, outcome.slot),
-        ] as const;
-      });
-
-    // State mutations publish effects after releasing stateRef. A newer report
-    // or teardown can stale an effect before it crosses IPC.
+    // State mutations publish effects after the coordinator commits. A newer
+    // report or teardown can stale an effect before it crosses IPC.
     const currentCommand = (
       event: ArmyLoopTauntCommandEvent,
     ): Effect.Effect<ArmyLoopTauntCommandEvent | undefined> =>
-      Ref.get(stateRef).pipe(
-        Effect.map((state) =>
-          commandForPublication(state.get(event.command.sessionId), event),
-        ),
-      );
+      coordinator
+        .getLoopTauntSlot(event.command.sessionId)
+        .pipe(Effect.map((slot) => commandForPublication(slot, event)));
 
     const publishCommands = (commands: readonly ArmyLoopTauntCommandEvent[]) =>
       Effect.forEach(
@@ -143,12 +117,12 @@ export const makeArmyLoopTauntOrchestrator = (): Effect.Effect<
 
     const onTimer = (timer: ScheduledTimer) =>
       Effect.gen(function* () {
-        const now = yield* Clock.currentTimeMillis;
-        const outcome = yield* modifySlot(timer.sessionId, (slot) =>
-          advanceTimer(slot, timer, now),
+        const effects = yield* coordinator.updateLoopTaunt(
+          timer.sessionId,
+          (slot, now) => advanceTimer(slot, timer, now),
         );
-        yield* applyEffects(outcome.effects);
-      });
+        yield* applyEffects(effects);
+      }).pipe(Effect.uninterruptible);
 
     const scheduleTimer = (timer: ScheduledTimer) => {
       let delayMs: number;
@@ -185,15 +159,17 @@ export const makeArmyLoopTauntOrchestrator = (): Effect.Effect<
                 Effect.asVoid,
               );
             }
-            return Ref.get(stateRef).pipe(
-              Effect.flatMap((state) =>
-                isReadinessCurrent(state.get(readiness.sessionId), readiness)
-                  ? Deferred.succeed(readiness.gate, readiness.result).pipe(
-                      Effect.asVoid,
-                    )
-                  : Effect.void,
-              ),
-            );
+            return coordinator
+              .getLoopTauntSlot(readiness.sessionId)
+              .pipe(
+                Effect.flatMap((slot) =>
+                  isReadinessCurrent(slot, readiness)
+                    ? Deferred.succeed(readiness.gate, readiness.result).pipe(
+                        Effect.asVoid,
+                      )
+                    : Effect.void,
+                ),
+              );
           },
           { concurrency: "unbounded", discard: true },
         );
@@ -208,68 +184,54 @@ export const makeArmyLoopTauntOrchestrator = (): Effect.Effect<
       senderId,
     ) =>
       Effect.gen(function* () {
-        const identity = yield* coordinator.requireParticipant(
-          payload.sessionId,
-          senderId,
-        );
-        const now = yield* Clock.currentTimeMillis;
         const readinessGate = yield* Deferred.make<
           ArmyLoopTauntRegisterResult,
           ArmyLoopTauntError
         >();
         const terminalGate =
           yield* Deferred.make<ArmyLoopTauntTerminalResult>();
-        const outcome = yield* modifySlot(payload.sessionId, (slot) =>
-          registerRun(
-            slot,
-            payload,
-            { ...identity, id: senderId },
-            { readinessGate, terminalGate },
-            now,
-          ),
+        const [result, effects] = yield* coordinator.loopTaunt(
+          payload.sessionId,
+          senderId,
+          (slot, participant, now) =>
+            registerRun(
+              slot,
+              payload,
+              participant,
+              { readinessGate, terminalGate },
+              now,
+            ),
         );
-        if (Result.isFailure(outcome.result))
-          return yield* outcome.result.failure;
-        const result = outcome.result.success;
-        // Coordinator teardown and orchestrator registration commit under
-        // separate locks, so authenticate again before publishing activation.
-        const reauthenticated = yield* coordinator
-          .requireParticipant(payload.sessionId, senderId)
-          .pipe(Effect.result);
-        if (Result.isFailure(reauthenticated)) {
-          const cleanup = yield* modifySlot(payload.sessionId, (slot) =>
-            rejectRegistration(slot, result.runId, senderId),
-          );
-          yield* applyEffects(
-            mergeMutationEffects(outcome.effects, cleanup.effects),
-          );
-          return yield* reauthenticated.failure;
-        }
-        yield* applyEffects(outcome.effects);
+        yield* applyEffects(effects);
         return result;
-      });
+      }).pipe(Effect.uninterruptible);
+
+    const requireRun = (
+      payload: ArmyLoopTauntRunPayload,
+      senderId: ArmyParticipantId,
+    ) =>
+      coordinator
+        .loopTaunt(payload.sessionId, senderId, (slot) => {
+          const run = runForPayload(slot, payload, senderId);
+          return {
+            effects: noEffects(),
+            result:
+              run instanceof ArmyLoopTauntError
+                ? Result.fail(run)
+                : Result.succeed(run),
+            slot,
+          };
+        })
+        .pipe(Effect.map(([run]) => run));
 
     const ready: ArmyLoopTauntOrchestratorShape["ready"] = (
       payload,
       senderId,
     ) =>
       Effect.gen(function* () {
-        yield* coordinator.requireParticipant(payload.sessionId, senderId);
-        const run = yield* Ref.get(stateRef).pipe(
-          Effect.map((state) =>
-            runForPayload(state.get(payload.sessionId), payload, senderId),
-          ),
-        );
-        if (run instanceof ArmyLoopTauntError) return yield* run;
+        const run = yield* requireRun(payload, senderId);
         if (run.status === "terminal") {
-          return yield* loopError(
-            "registration-failed",
-            run.terminal?.status === "failed"
-              ? run.terminal.reason
-              : "Loop taunt registration was superseded",
-            run.sessionId,
-            run.runId,
-          );
+          return yield* terminalReadinessError(run, run.terminal);
         }
         yield* Deferred.await(run.readinessGate);
       });
@@ -279,13 +241,7 @@ export const makeArmyLoopTauntOrchestrator = (): Effect.Effect<
       senderId,
     ) =>
       Effect.gen(function* () {
-        yield* coordinator.requireParticipant(payload.sessionId, senderId);
-        const run = yield* Ref.get(stateRef).pipe(
-          Effect.map((state) =>
-            runForPayload(state.get(payload.sessionId), payload, senderId),
-          ),
-        );
-        if (run instanceof ArmyLoopTauntError) return yield* run;
+        const run = yield* requireRun(payload, senderId);
         return yield* Deferred.await(run.terminalGate);
       });
 
@@ -294,56 +250,25 @@ export const makeArmyLoopTauntOrchestrator = (): Effect.Effect<
       senderId,
     ) =>
       Effect.gen(function* () {
-        yield* coordinator.requireParticipant(payload.sessionId, senderId);
-        const now = yield* Clock.currentTimeMillis;
-        const outcome = yield* modifySlot(payload.sessionId, (slot) =>
-          reportRun(slot, payload, senderId, now),
+        const [, effects] = yield* coordinator.loopTaunt(
+          payload.sessionId,
+          senderId,
+          (slot, _, now) => reportRun(slot, payload, senderId, now),
         );
-        if (Result.isFailure(outcome.result))
-          return yield* outcome.result.failure;
-        yield* applyEffects(outcome.effects);
-      });
+        yield* applyEffects(effects);
+      }).pipe(Effect.uninterruptible);
 
     const leave: ArmyLoopTauntOrchestratorShape["leave"] = (
       payload,
       senderId,
     ) =>
       Effect.gen(function* () {
-        const now = yield* Clock.currentTimeMillis;
-        const outcome = yield* modifySlot(payload.sessionId, (slot) =>
-          leaveRun(slot, payload, senderId, now),
+        const effects = yield* coordinator.updateLoopTaunt(
+          payload.sessionId,
+          (slot, now) => leaveRun(slot, payload, senderId, now),
         );
-        yield* applyEffects(outcome.effects);
-      });
-
-    const endSession = (
-      sessionId: string,
-      reason: string,
-    ): Effect.Effect<void> =>
-      Effect.gen(function* () {
-        const effects = yield* Ref.modify(stateRef, (state) => {
-          const slot = state.get(sessionId);
-          if (slot === undefined) return [noEffects(), state] as const;
-          const next = new Map(state);
-          next.delete(sessionId);
-          return [endLoopTaunt(slot, reason), next] as const;
-        });
         yield* applyEffects(effects);
-      });
-
-    const unsubscribe = yield* coordinator.onSessionEnded((event) =>
-      endSession(event.sessionId, event.reason),
-    );
-
-    yield* Effect.addFinalizer(() =>
-      Effect.gen(function* () {
-        unsubscribe();
-        const state = yield* Ref.get(stateRef);
-        for (const sessionId of state.keys()) {
-          yield* endSession(sessionId, "Application is quitting");
-        }
-      }),
-    );
+      }).pipe(Effect.uninterruptible);
 
     return ArmyLoopTauntOrchestrator.of({
       await: awaitRun,

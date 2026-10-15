@@ -220,7 +220,7 @@ export const noEffects = (): MutationEffects => ({
   timers: [],
 });
 
-export const mergeMutationEffects = (
+const mergeMutationEffects = (
   left: MutationEffects,
   right: MutationEffects,
 ): MutationEffects => ({
@@ -230,7 +230,7 @@ export const mergeMutationEffects = (
   timers: [...left.timers, ...right.timers],
 });
 
-export const loopError = (
+const loopError = (
   reason: typeof LoopTauntReasons.Type,
   detail: string,
   sessionId: string,
@@ -1081,6 +1081,44 @@ const matchesMessage = (actual: string, configured: string): boolean => {
   return expected !== "" && normalizeMessage(actual).includes(expected);
 };
 
+export const terminalReadinessError = (
+  run: Pick<RunState, "sessionId" | "runId">,
+  result: ArmyLoopTauntTerminalResult | undefined,
+): ArmyLoopTauntError =>
+  loopError(
+    "registration-failed",
+    result?.status === "failed"
+      ? result.reason
+      : "Loop taunt registration was superseded",
+    run.sessionId,
+    run.runId,
+  );
+
+interface RunGateSettlement {
+  readonly readiness: Extract<ReadinessEffect, { readonly type: "fail" }>;
+  readonly terminal: MutationEffects["terminals"][number];
+}
+
+const runGateSettlement = (
+  run: RunState,
+  result: ArmyLoopTauntTerminalResult,
+): RunGateSettlement => ({
+  readiness: {
+    error: terminalReadinessError(run, result),
+    gate: run.readinessGate,
+    type: "fail",
+  },
+  terminal: { gate: run.terminalGate, result },
+});
+
+export const endLoopTaunt = (
+  slot: LoopTauntSlot,
+  reason: string,
+): readonly RunGateSettlement[] =>
+  [...slot.runs.values()].map((run) =>
+    runGateSettlement(run, run.terminal ?? { reason, status: "failed" }),
+  );
+
 const terminalize = (
   run: RunState,
   result: ArmyLoopTauntTerminalResult,
@@ -1094,30 +1132,17 @@ const terminalize = (
       { ...assignment, turn: undefined },
     ]),
   );
-  const readiness: ReadinessEffect[] = [
-    {
-      error: loopError(
-        "registration-failed",
-        result.status === "failed"
-          ? result.reason
-          : "Loop taunt registration was superseded",
-        run.sessionId,
-        run.runId,
-      ),
-      gate: run.readinessGate,
-      type: "fail",
-    },
-  ];
+  const settlement = runGateSettlement(run, result);
   return {
     commands: [],
-    readiness,
+    readiness: [settlement.readiness],
     run: {
       ...run,
       assignments,
       status: "terminal",
       terminal: result,
     },
-    terminals: [{ gate: run.terminalGate, result }],
+    terminals: [settlement.terminal],
     timers: [],
   };
 };
@@ -1564,11 +1589,11 @@ const storeRun = (slot: LoopTauntSlot, run: RunState): LoopTauntSlot => {
 };
 
 export const runForPayload = (
-  state: LoopTauntSlot | undefined,
+  state: LoopTauntSlot,
   payload: ArmyLoopTauntRunPayload,
   senderId: ArmyParticipantId,
 ): RunState | ArmyLoopTauntError => {
-  const run = state?.runs.get(payload.runId);
+  const run = state.runs.get(payload.runId);
   if (run === undefined || run.sessionId !== payload.sessionId) {
     return loopError(
       "inactive-run",
@@ -1896,31 +1921,6 @@ export const registerRun = (
   };
 };
 
-export const rejectRegistration = (
-  slot: LoopTauntSlot,
-  runId: string,
-  senderId: ArmyParticipantId,
-): LoopTauntStep<void> => {
-  const run = slot.runs.get(runId);
-  if (run === undefined || !run.participants.has(senderId)) {
-    return { effects: noEffects(), result: Result.succeed(undefined), slot };
-  }
-  const participants = new Map(run.participants);
-  participants.delete(senderId);
-  const mutation = terminalize(
-    { ...run, participants },
-    {
-      reason: "Army session ended during Loop Taunt registration",
-      status: "failed",
-    },
-  );
-  return {
-    effects: mutation,
-    result: Result.succeed(undefined),
-    slot: storeRun(slot, mutation.run),
-  };
-};
-
 export const reportRun = (
   slot: LoopTauntSlot,
   payload: ArmyLoopTauntReportPayload,
@@ -2023,22 +2023,6 @@ export const onTimer = (
     result: Result.succeed(undefined),
     slot: transition[1],
   };
-};
-
-export const endLoopTaunt = (
-  slot: LoopTauntSlot,
-  reason: string,
-): MutationEffects => {
-  let effects = noEffects();
-  for (const run of slot.runs.values()) {
-    if (run.status !== "terminal") {
-      effects = mergeMutationEffects(
-        effects,
-        terminalize(run, { reason, status: "failed" }),
-      );
-    }
-  }
-  return effects;
 };
 
 export const commandForPublication = (
