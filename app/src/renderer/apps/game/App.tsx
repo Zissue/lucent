@@ -2578,6 +2578,10 @@ export function App(props: {
     }
   };
 
+  const reportScriptLoadFailure = (error: unknown) => {
+    console.error("[game:script]", "load failed", error);
+  };
+
   const chooseScriptFile = async (replaceRunning = false): Promise<void> => {
     if (scriptBusy()) {
       return;
@@ -2645,7 +2649,7 @@ export function App(props: {
       return;
     }
 
-    void chooseScriptFile(false);
+    void chooseScriptFile(false).catch(reportScriptLoadFailure);
   };
 
   const toggleScriptsDialog = (): void => {
@@ -4775,7 +4779,9 @@ export function App(props: {
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              onClick={() => void chooseScriptFile(true)}
+              onClick={() =>
+                void chooseScriptFile(true).catch(reportScriptLoadFailure)
+              }
               variant="destructive"
             >
               Choose replacement
