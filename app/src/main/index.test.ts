@@ -3,12 +3,14 @@ import * as Effect from "effect/Effect";
 
 const state = vi.hoisted(() => ({
   locked: false,
+  lockData: undefined as unknown,
   events: [] as string[],
 }));
 
 vi.mock("electron", () => ({
   app: {
-    requestSingleInstanceLock: () => {
+    requestSingleInstanceLock: (data: unknown) => {
+      state.lockData = data;
       state.events.push("lock");
       return state.locked;
     },
@@ -37,6 +39,7 @@ vi.mock("./app/DesktopRuntime", () => ({
 beforeEach(() => {
   vi.resetModules();
   state.events.length = 0;
+  state.lockData = undefined;
 });
 
 describe("main process single-instance lock", () => {
@@ -52,6 +55,7 @@ describe("main process single-instance lock", () => {
           ? ["preflight", "lock", "layer", "runtime", "exit:0"]
           : ["preflight", "lock", "exit:0"],
       );
+      expect(state.lockData).toEqual({ argv: process.argv });
     });
   }
 });

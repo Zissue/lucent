@@ -75,6 +75,20 @@ const availableUpdate: UpdateCheckState = {
 };
 
 const unsubscribe = Effect.succeed(() => undefined);
+const originalSecondArgv = [
+  "/Electron",
+  "/Lucent",
+  "--launch-mode",
+  "account-manager",
+];
+const reorderedSecondArgv = [
+  "/Electron",
+  "--launch-mode",
+  "--allow-file-access-from-files",
+  "--no-sandbox",
+  "/Lucent",
+  "account-manager",
+];
 
 const servicesStartupNeverCalls = Layer.mergeAll(
   AccountSessions.layer,
@@ -292,8 +306,8 @@ const makeStartup = (options: {
       ),
     );
 
-  const secondInstance = (argv: readonly string[]) =>
-    appEvents.emit("second-instance", {}, argv);
+  const secondInstance = (argv: readonly string[], additionalData?: unknown) =>
+    appEvents.emit("second-instance", {}, argv, "/tmp", additionalData);
   return {
     quitDuringStartup,
     dialogParents,
@@ -325,7 +339,9 @@ describe("makeDesktopRuntime", () => {
         showMessageBox: Effect.never,
       });
       const launch = Effect.gen(function* () {
-        startup.secondInstance(["lucent", "--launch-mode", "account-manager"]);
+        startup.secondInstance(reorderedSecondArgv, {
+          argv: originalSecondArgv,
+        });
         yield* Deferred.succeed(built, undefined);
         yield* Effect.promise(() =>
           vi
@@ -356,7 +372,9 @@ describe("makeDesktopRuntime", () => {
         showMessageBox: Effect.never,
       });
       const launch = Effect.gen(function* () {
-        startup.secondInstance(["lucent", "--launch-mode", "account-manager"]);
+        startup.secondInstance(reorderedSecondArgv, {
+          argv: originalSecondArgv,
+        });
         yield* Effect.yieldNow;
         expect(startup.openedWindows).toEqual([]);
         yield* Deferred.succeed(ready, undefined);
@@ -377,22 +395,38 @@ describe("makeDesktopRuntime", () => {
     }),
   );
 
-  for (const argv of [
-    ["lucent", "--launch-mode", "account-manager"],
-    ["lucent"],
+  for (const { name, argv, additionalData, launchMode } of [
+    {
+      name: "original arguments after Chromium reorders switches",
+      argv: reorderedSecondArgv,
+      additionalData: { argv: originalSecondArgv },
+      launchMode: "game" as const,
+    },
+    {
+      name: "saved preference with no launch flag",
+      argv: ["/Electron", "/Lucent"],
+      additionalData: undefined,
+      launchMode: "account-manager" as const,
+    },
+    {
+      name: "fallback argv when additional data is not a string array",
+      argv: ["/Electron", "--launch-mode=account-manager", "/Lucent"],
+      additionalData: { argv: [123] },
+      launchMode: "game" as const,
+    },
   ]) {
-    it.live(`opens a second launch with ${argv.join(" ")}`, () =>
+    it.live(`opens a second launch using ${name}`, () =>
       Effect.gen(function* () {
         const checking = yield* Deferred.make<void>();
         const startup = makeStartup({
-          launchMode: argv.length > 1 ? "game" : "account-manager",
+          launchMode,
           checkNow: Deferred.succeed(checking, undefined).pipe(
             Effect.andThen(Effect.never),
           ),
           showMessageBox: Effect.never,
         });
         const launch = Effect.gen(function* () {
-          startup.secondInstance(argv);
+          startup.secondInstance(argv, additionalData);
           yield* Effect.promise(() =>
             vi
               .waitUntil(() => startup.openedWindows.length === 2, {
@@ -411,6 +445,30 @@ describe("makeDesktopRuntime", () => {
       }),
     );
   }
+
+  it.live("ignores second launches after before-quit", () =>
+    Effect.gen(function* () {
+      const checking = yield* Deferred.make<void>();
+      const startup = makeStartup({
+        checkNow: Deferred.succeed(checking, undefined).pipe(
+          Effect.andThen(Effect.never),
+        ),
+        showMessageBox: Effect.never,
+      });
+      const launch = Effect.gen(function* () {
+        startup.appEvents.emit("before-quit");
+        startup.secondInstance([
+          "/Electron",
+          "--launch-mode=account-manager",
+          "/Lucent",
+        ]);
+        yield* Effect.promise(() => yieldToEventLoop());
+      });
+      const events = yield* startup.quitDuringStartup(checking, launch);
+      expect(startup.openedWindows).toEqual(["game"]);
+      expect(events).toEqual(["cleanup", "runtime-settled"]);
+    }),
+  );
 
   it.live(
     "skips the automatic prompt when its parent closed during the check",
