@@ -95,7 +95,9 @@ const refuseRenamesInto = (
 const makeManagerHarness = (options: {
   readonly archivePath?: string;
   readonly directoryTree?: string | Effect.Effect<string>;
-  readonly onRemove?: (name: string) => Effect.Effect<void>;
+  readonly onRemove?: (
+    name: string,
+  ) => Effect.Effect<void, ScriptPackageStateError>;
   readonly onSave?: (
     value: ManagedScriptPackage,
   ) => Effect.Effect<void, ScriptPackageStateError>;
@@ -1656,6 +1658,108 @@ describe("script package update check races", () => {
         expect(checked.packages).toEqual([]);
         expect(yield* state.get(PACKAGE_NAME)).toBeUndefined();
         expect((yield* catalog.getOverview).packages).toEqual([]);
+      }),
+  );
+});
+
+describe("script package removal failures", () => {
+  const failStateRemoval = () =>
+    Effect.fail(
+      new ScriptPackageStateError({
+        operation: "save",
+        cause: new Error("Disk full."),
+      }),
+    );
+
+  it.effect(
+    "names the saved removal copy when state and restoration fail",
+    () =>
+      Effect.gen(function* () {
+        const { destination, managed, workspaceDir } = yield* installedPackage;
+        const harness = makeManagerHarness({
+          managed,
+          workspaceDir,
+          onRemove: failStateRemoval,
+          resolution: { status: "modified", commit: REMOTE_COMMIT },
+        });
+        const { manager } = yield* harness.services;
+        refuseRenamesInto(destination);
+        const error = yield* manager
+          .remove({ packageName: PACKAGE_NAME })
+          .pipe(Effect.flip);
+        const copies = yield* Effect.promise(() =>
+          findFiles(workspaceDir, OLD_SOURCE),
+        );
+        expect(copies).toHaveLength(1);
+        expect(copies[0]).toContain(".lucent-package-remove-");
+        expect(error.message).toContain(dirname(copies[0] ?? ""));
+        expect(
+          yield* Effect.promise(() => hashDirectory(dirname(copies[0] ?? ""))),
+        ).toEqual(managed.files);
+      }),
+  );
+
+  it.effect(
+    "names the removal copy when its rename moves then throws EIO",
+    () =>
+      Effect.gen(function* () {
+        const { destination, managed, workspaceDir } = yield* installedPackage;
+        const harness = makeManagerHarness({
+          managed,
+          workspaceDir,
+          resolution: { status: "modified", commit: REMOTE_COMMIT },
+        });
+        const { manager } = yield* harness.services;
+        const rename = fs.rename;
+        vi.spyOn(fs, "rename").mockImplementation((from, to) =>
+          rename(from, to).then(() => {
+            if (resolve(String(from)) === destination)
+              throw Object.assign(new Error("EIO: input/output error"), {
+                code: "EIO",
+              });
+          }),
+        );
+        const error = yield* manager
+          .remove({ packageName: PACKAGE_NAME })
+          .pipe(Effect.flip);
+        const copies = yield* Effect.promise(() =>
+          findFiles(workspaceDir, OLD_SOURCE),
+        );
+        expect(copies).toHaveLength(1);
+        expect(copies[0]).toContain(".lucent-package-remove-");
+        expect(error.message).toContain(dirname(copies[0] ?? ""));
+        expect(
+          yield* Effect.promise(() => hashDirectory(dirname(copies[0] ?? ""))),
+        ).toEqual(managed.files);
+      }),
+  );
+
+  it.effect(
+    "removes empty removal staging after state fails and restore succeeds",
+    () =>
+      Effect.gen(function* () {
+        const { destination, managed, workspaceDir } = yield* installedPackage;
+        const harness = makeManagerHarness({
+          managed,
+          workspaceDir,
+          onRemove: failStateRemoval,
+          resolution: { status: "modified", commit: REMOTE_COMMIT },
+        });
+        const { manager, state } = yield* harness.services;
+        const error = yield* manager
+          .remove({ packageName: PACKAGE_NAME })
+          .pipe(Effect.flip);
+        expect(error.message).toBe("Failed to update package state.");
+        expect(
+          yield* Effect.promise(() =>
+            fs.readFile(join(destination, "index.js"), "utf8"),
+          ),
+        ).toBe(OLD_SOURCE);
+        expect(yield* state.get(PACKAGE_NAME)).toEqual(managed);
+        expect(yield* Effect.promise(() => fs.readdir(workspaceDir))).toEqual([
+          "packages",
+          "scripts",
+        ]);
       }),
   );
 });
