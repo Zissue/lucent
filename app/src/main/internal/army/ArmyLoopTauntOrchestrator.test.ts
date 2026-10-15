@@ -13,6 +13,7 @@ import type {
 import {
   ArmyCoordinator,
   type ArmyCoordinatorError,
+  ArmySessionError,
   makeArmyCoordinator,
 } from "./ArmyCoordinator";
 import {
@@ -43,6 +44,10 @@ interface Harness {
 const makeHarness = Effect.fn("ArmyLoopTauntOrchestrator.test.makeHarness")(
   function* (
     players: readonly string[],
+    wrapCoordinator: (
+      coordinator: ArmyCoordinator["Service"],
+      ids: readonly number[],
+    ) => ArmyCoordinator["Service"] = (coordinator) => coordinator,
   ): Effect.fn.Return<Harness, ArmyCoordinatorError, Scope.Scope> {
     const coordinator = yield* makeArmyCoordinator();
     const ids = players.map(() => nextParticipantId++);
@@ -57,7 +62,7 @@ const makeHarness = Effect.fn("ArmyLoopTauntOrchestrator.test.makeHarness")(
       { concurrency: "unbounded" },
     );
     const orchestrator = yield* makeArmyLoopTauntOrchestrator().pipe(
-      Effect.provideService(ArmyCoordinator, coordinator),
+      Effect.provideService(ArmyCoordinator, wrapCoordinator(coordinator, ids)),
     );
     const events: ArmyLoopTauntCommandEvent[] = [];
     yield* orchestrator.onCommand((event) =>
@@ -805,7 +810,7 @@ describe("ArmyLoopTauntOrchestrator", () => {
   );
 
   it.effect(
-    "makes active leave idempotent and completes after the last leave",
+    "makes active leave idempotent and completes and retires after the last leave",
     () =>
       Effect.gen(function* () {
         const harness = yield* makeHarness(["Alice", "Bob"]);
@@ -837,6 +842,128 @@ describe("ArmyLoopTauntOrchestrator", () => {
           status: "completed",
         });
         yield* harness.orchestrator.leave(leave, harness.ids[1]!);
+        expect(
+          yield* harness.orchestrator
+            .await(leave, harness.ids[1]!)
+            .pipe(Effect.result),
+        ).toMatchObject({
+          _tag: "Failure",
+          failure: { reason: "inactive-run", runId },
+        });
+      }),
+  );
+
+  it.effect(
+    "serves a finished run's result to late awaits and retires it after every participant leaves",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* makeHarness(["Alice", "Bob"]);
+        const { runId } = yield* registerAll(
+          harness,
+          makeRegistration(harness.sessionId),
+        );
+        const run = { runId, sessionId: harness.sessionId };
+
+        yield* report(harness, runId, harness.ids[0]!, {
+          reason: "Alice changed maps",
+          type: "failed",
+        });
+        yield* harness.orchestrator.leave(run, harness.ids[0]!);
+
+        expect(yield* harness.orchestrator.await(run, harness.ids[1]!)).toEqual(
+          {
+            reason: "Alice changed maps",
+            status: "failed",
+          },
+        );
+        expect(
+          yield* harness.orchestrator
+            .ready(run, harness.ids[1]!)
+            .pipe(Effect.flip),
+        ).toMatchObject({
+          message: "Alice changed maps",
+          reason: "registration-failed",
+        });
+
+        yield* harness.orchestrator.leave(run, harness.ids[1]!);
+
+        const afterRetirement = yield* Effect.forEach(harness.ids, (senderId) =>
+          harness.orchestrator.await(run, senderId).pipe(Effect.result),
+        );
+        expect(afterRetirement).toMatchObject([
+          { _tag: "Failure", failure: { reason: "inactive-run", runId } },
+          { _tag: "Failure", failure: { reason: "inactive-run", runId } },
+        ]);
+      }),
+  );
+
+  it.effect(
+    "drops a registrant that fails re-authentication so its finished run still retires",
+    () =>
+      Effect.gen(function* () {
+        let orchestrator: ArmyLoopTauntOrchestratorShape | undefined;
+        let bobRunId = "";
+        let aliceAuthentications = 0;
+        const harness = yield* makeHarness(
+          ["Alice", "Bob"],
+          (coordinator, [aliceId, bobId]) => ({
+            ...coordinator,
+            requireParticipant: (sessionId, participantId) => {
+              if (participantId !== aliceId || ++aliceAuthentications !== 2) {
+                return coordinator.requireParticipant(sessionId, participantId);
+              }
+              return orchestrator!
+                .register(makeRegistration(sessionId), bobId!)
+                .pipe(
+                  Effect.tap(({ runId }) =>
+                    orchestrator!.report(
+                      {
+                        report: { reason: "Bob changed maps", type: "failed" },
+                        runId,
+                        sessionId,
+                      },
+                      bobId!,
+                    ),
+                  ),
+                  Effect.orDie,
+                  Effect.flatMap(({ runId }) => {
+                    bobRunId = runId;
+                    return Effect.fail(
+                      new ArmySessionError({
+                        detail: "Army session is not active",
+                        reason: "inactive",
+                        sessionId,
+                      }),
+                    );
+                  }),
+                );
+            },
+          }),
+        );
+        orchestrator = harness.orchestrator;
+
+        const rejected = yield* harness.orchestrator
+          .register(makeRegistration(harness.sessionId), harness.ids[0]!)
+          .pipe(Effect.flip);
+        expect(rejected).toMatchObject({ reason: "inactive" });
+
+        const run = { runId: bobRunId, sessionId: harness.sessionId };
+        expect(yield* harness.orchestrator.await(run, harness.ids[1]!)).toEqual(
+          {
+            reason: "Bob changed maps",
+            status: "failed",
+          },
+        );
+        yield* harness.orchestrator.leave(run, harness.ids[1]!);
+
+        expect(
+          yield* harness.orchestrator
+            .await(run, harness.ids[1]!)
+            .pipe(Effect.result),
+        ).toMatchObject({
+          _tag: "Failure",
+          failure: { reason: "inactive-run", runId: bobRunId },
+        });
       }),
   );
 
