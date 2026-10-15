@@ -18,11 +18,12 @@ type QuitSource = "will-quit" | (typeof TERMINATION_SIGNALS)[number];
 export interface DesktopLifecycleShape {
   readonly awaitQuit: Effect.Effect<void>;
   readonly isQuitting: Effect.Effect<boolean>;
-  readonly register: Effect.Effect<
+  readonly attachObservability: Effect.Effect<
     void,
     never,
-    DesktopObservability | Scope.Scope | ElectronApp
+    DesktopObservability
   >;
+  readonly register: Effect.Effect<void, never, Scope.Scope | ElectronApp>;
 }
 
 export class DesktopLifecycle extends Context.Service<
@@ -45,23 +46,24 @@ const addProcessSignalListener = (
       }),
   ).pipe(Effect.asVoid);
 
-export const provideInsideQuitGuard =
-  <ROut, LayerError>(layer: Layer.Layer<ROut, LayerError>) =>
-  <A, E, R>(self: Effect.Effect<A, E, R>) =>
-    self.pipe(Effect.provide(layer), Effect.scoped);
-
 export const layer = Layer.effect(
   DesktopLifecycle,
   Effect.gen(function* () {
     const quitRequested = yield* Deferred.make<void>();
     let isQuitting = false;
+    let diagnosticContext = Context.empty();
+    let flush = Effect.void;
+
+    const attachObservability = Effect.gen(function* () {
+      const observability = yield* DesktopObservability;
+      diagnosticContext = yield* Effect.context();
+      flush = observability.flush;
+    });
 
     const register = Effect.gen(function* () {
       const app = yield* ElectronApp;
-      const observability = yield* DesktopObservability;
-      const context = yield* Effect.context<
-        DesktopObservability | Scope.Scope | ElectronApp
-      >();
+      const context = yield* Effect.context<Scope.Scope | ElectronApp>();
+      diagnosticContext = context;
       const runFork = Effect.runForkWith(context);
       let deadline: NodeJS.Timeout | undefined;
 
@@ -71,7 +73,8 @@ export const layer = Layer.effect(
             component: "lifecycle",
             data: { source, timeoutMs: QUIT_DEADLINE_MS },
           }),
-          Effect.andThen(observability.flush),
+          Effect.andThen(flush),
+          Effect.provideContext(diagnosticContext),
           Effect.timeoutOption(FORCED_EXIT_FLUSH_TIMEOUT_MS),
           Effect.asVoid,
           Effect.ensuring(app.exit(0)),
@@ -115,19 +118,36 @@ export const layer = Layer.effect(
       });
       yield* Effect.addFinalizer(() => Effect.sync(disposeWindowAllClosed));
 
-      for (const signal of TERMINATION_SIGNALS) {
-        yield* addProcessSignalListener(signal, () => {
+      const signalListeners = TERMINATION_SIGNALS.map((signal) => ({
+        signal,
+        listener: () => {
           if (!beginShutdown(signal)) {
             return;
           }
           runFork(
             Effect.logWarning("Received termination signal").pipe(
               Effect.annotateLogs({ component: "lifecycle", data: { signal } }),
+              Effect.provideContext(diagnosticContext),
             ),
           );
           runFork(app.quit);
-        });
+          Deferred.doneUnsafe(quitRequested, Effect.void);
+        },
+      }));
+      for (const { signal, listener } of signalListeners) {
+        yield* addProcessSignalListener(signal, listener);
       }
+      yield* app.whenReady.pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            for (const { signal, listener } of signalListeners) {
+              (process as EventEmitter).removeListener(signal, listener);
+              (process as EventEmitter).on(signal, listener);
+            }
+          }),
+        ),
+        Effect.forkScoped,
+      );
     });
 
     const awaitQuit: DesktopLifecycleShape["awaitQuit"] =
@@ -136,6 +156,7 @@ export const layer = Layer.effect(
     return DesktopLifecycle.of({
       awaitQuit,
       isQuitting: Effect.sync(() => isQuitting),
+      attachObservability,
       register,
     });
   }),

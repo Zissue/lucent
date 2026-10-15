@@ -56,7 +56,7 @@ import { DesktopApplicationMenu } from "../window/DesktopApplicationMenu";
 import { DesktopWindows } from "../window/DesktopWindows";
 import { DesktopEnvironment } from "./DesktopEnvironment";
 import { DesktopGameRendererRecovery } from "./DesktopGameRendererRecovery";
-import { layer as desktopLifecycleLayer } from "./DesktopLifecycle";
+import { DesktopLifecycle } from "./DesktopLifecycle";
 import { makeDesktopRuntime } from "./DesktopRuntime";
 import { DesktopObservability } from "./observability/DesktopObservability";
 
@@ -110,6 +110,7 @@ const servicesStartupNeverCalls = Layer.mergeAll(
 );
 
 const makeStartup = (options: {
+  readonly captureSignals?: boolean;
   readonly launchMode?: "game" | "account-manager";
   readonly initialize?: Effect.Effect<void>;
   readonly build?: Effect.Effect<void, never, Scope.Scope>;
@@ -127,6 +128,7 @@ const makeStartup = (options: {
   const parentWindowId = options.parentWindowId ?? Effect.succeed(42);
   const appEvents = new EventEmitter();
   const openedWindows: string[] = [];
+  const ipcHandlers = new Set<string>();
 
   const emitWillQuit = (): void => {
     let defaultPrevented = false;
@@ -154,22 +156,53 @@ const makeStartup = (options: {
         };
       }),
     whenReady: Effect.void,
+    quit: Effect.void,
   });
+  const diagnostics = Layer.effectDiscard(
+    Effect.flatMap(
+      DesktopLifecycle,
+      (lifecycle) => lifecycle.attachObservability,
+    ),
+  ).pipe(
+    Layer.provideMerge(
+      Layer.mergeAll(
+        Logger.layer([
+          Logger.make((log) => {
+            if (
+              String(log.message) === "Failed to show startup update dialog"
+            ) {
+              events.push("dialog-failed");
+              Deferred.doneUnsafe(dialogFailed, Exit.void);
+            }
+            if (
+              options.captureSignals &&
+              String(log.message) === "Received termination signal"
+            ) {
+              events.push("termination-signal");
+            }
+            if (log.logLevel === "Error") {
+              events.push(`error:${String(log.message)}`);
+            }
+          }),
+        ]),
+        Layer.succeed(
+          DesktopObservability,
+          DesktopObservability.of({
+            flush: Effect.sync(() => {
+              events.push("flush");
+            }),
+            installProcessHooks: Effect.void,
+            logFilePath: join(directory, "lucent.log"),
+          }),
+        ),
+      ),
+    ),
+  );
+
   const layer = Layer.mergeAll(
-    desktopLifecycleLayer,
     servicesStartupNeverCalls,
     NodeFileSystem.layer,
-    Logger.layer([
-      Logger.make((log) => {
-        if (String(log.message) === "Failed to show startup update dialog") {
-          events.push("dialog-failed");
-          Deferred.doneUnsafe(dialogFailed, Exit.void);
-        }
-        if (log.logLevel === "Error") {
-          events.push(`error:${String(log.message)}`);
-        }
-      }),
-    ]),
+    diagnostics,
     Layer.effectDiscard(
       Effect.addFinalizer(() =>
         Effect.sync(() => {
@@ -178,16 +211,8 @@ const makeStartup = (options: {
       ),
     ),
     appLayer,
-    Layer.effectDiscard(options.build ?? Effect.void),
-    Layer.succeed(
-      DesktopObservability,
-      DesktopObservability.of({
-        flush: Effect.sync(() => {
-          events.push("flush");
-        }),
-        installProcessHooks: Effect.void,
-        logFilePath: join(directory, "lucent.log"),
-      }),
+    Layer.effectDiscard(options.build ?? Effect.void).pipe(
+      Layer.provide(diagnostics),
     ),
     Layer.succeed(
       DesktopEnvironment,
@@ -202,7 +227,14 @@ const makeStartup = (options: {
     Layer.succeed(
       DesktopIpc,
       makeDesktopIpc(
-        { handle: () => undefined, removeHandler: () => undefined },
+        {
+          handle: (channel) => {
+            ipcHandlers.add(channel);
+          },
+          removeHandler: (channel) => {
+            ipcHandlers.delete(channel);
+          },
+        },
         { getAllWebContents: () => [], fromId: () => undefined },
       ),
     ),
@@ -270,6 +302,8 @@ const makeStartup = (options: {
   const quitDuringStartup = (
     waitingOn: Deferred.Deferred<void>,
     onReady: Effect.Effect<void> = Effect.void,
+    afterDeadline?: Effect.Effect<void>,
+    requestQuit: () => void = emitWillQuit,
   ) =>
     Effect.gen(function* () {
       const runtime = yield* Effect.forkDetach(
@@ -286,7 +320,7 @@ const makeStartup = (options: {
         yield* Deferred.await(waitingOn);
         yield* Effect.promise(() => yieldToEventLoop());
         yield* onReady;
-        emitWillQuit();
+        requestQuit();
         yield* Effect.promise(() =>
           vi
             .waitUntil(() => events.includes("runtime-settled"), {
@@ -296,6 +330,10 @@ const makeStartup = (options: {
             .catch(() => undefined),
         );
         yield* Effect.promise(() => vi.advanceTimersByTimeAsync(1_500));
+        if (afterDeadline !== undefined) {
+          yield* afterDeadline;
+          yield* Fiber.join(runtime);
+        }
         return [...events];
       }).pipe(Effect.ensuring(Fiber.interrupt(runtime)));
     }).pipe(
@@ -315,6 +353,8 @@ const makeStartup = (options: {
     dialogFailed,
     secondInstance,
     appEvents,
+    emitWillQuit,
+    ipcHandlers,
   };
 };
 
@@ -327,6 +367,160 @@ afterEach(() => {
 });
 
 describe("makeDesktopRuntime", () => {
+  it.live(
+    "releases startup handlers before layer cleanup and guards repeated quit during cleanup",
+    () =>
+      Effect.gen(function* () {
+        const checking = yield* Deferred.make<void>();
+        const cleanupStarted = yield* Deferred.make<void>();
+        const releaseCleanup = yield* Deferred.make<void>();
+        const handlersDuringCleanup: boolean[] = [];
+        const startup = makeStartup({
+          build: Effect.addFinalizer(() =>
+            Effect.gen(function* () {
+              handlersDuringCleanup.push(
+                startup.ipcHandlers.has("desktop:settings:get"),
+              );
+              yield* Deferred.succeed(cleanupStarted, undefined);
+              yield* Deferred.await(releaseCleanup);
+            }),
+          ),
+          checkNow: Deferred.succeed(checking, undefined).pipe(
+            Effect.andThen(Effect.never),
+          ),
+          showMessageBox: Effect.never,
+        });
+        const watchCleanup = Effect.gen(function* () {
+          expect(startup.ipcHandlers.has("desktop:settings:get")).toBe(true);
+          yield* Effect.gen(function* () {
+            yield* Deferred.await(cleanupStarted);
+            startup.emitWillQuit();
+            yield* Deferred.succeed(releaseCleanup, undefined);
+          }).pipe(Effect.forkChild);
+        });
+        const events = yield* startup.quitDuringStartup(checking, watchCleanup);
+        expect(handlersDuringCleanup).toEqual([false]);
+        expect(events).toEqual(["cleanup", "runtime-settled"]);
+        expect(startup.ipcHandlers.size).toBe(0);
+      }),
+  );
+
+  it.live(
+    "cancels a layer build on a signal without waiting for will-quit",
+    () =>
+      Effect.gen(function* () {
+        const previous = new Set(process.listeners("SIGTERM"));
+        const building = yield* Deferred.make<void>();
+        const startup = makeStartup({
+          captureSignals: true,
+          build: Deferred.succeed(building, undefined).pipe(
+            Effect.andThen(Effect.never),
+          ),
+          checkNow: Effect.never,
+          showMessageBox: Effect.never,
+        });
+        const signal = () => {
+          const listener = process
+            .listeners("SIGTERM")
+            .find((entry) => !previous.has(entry));
+          if (listener === undefined)
+            throw new Error("SIGTERM listener is missing");
+          listener("SIGTERM");
+        };
+
+        const events = yield* startup.quitDuringStartup(
+          building,
+          Effect.void,
+          undefined,
+          signal,
+        );
+
+        expect(events).toEqual([
+          "termination-signal",
+          "cleanup",
+          "runtime-settled",
+        ]);
+        expect(startup.appEvents.listenerCount("will-quit")).toBe(0);
+      }),
+  );
+
+  it.live("logs and flushes the deadline during unfinished layer cleanup", () =>
+    Effect.gen(function* () {
+      const building = yield* Deferred.make<void>();
+      const releaseCleanup = yield* Deferred.make<void>();
+      const startup = makeStartup({
+        build: Effect.addFinalizer(() => Deferred.await(releaseCleanup)).pipe(
+          Effect.andThen(Deferred.succeed(building, undefined)),
+          Effect.andThen(Effect.never),
+        ),
+        checkNow: Effect.never,
+        showMessageBox: Effect.never,
+      });
+
+      const events = yield* startup.quitDuringStartup(
+        building,
+        Effect.void,
+        Deferred.succeed(releaseCleanup, undefined).pipe(Effect.asVoid),
+      );
+
+      expect(events).toEqual([
+        "error:Lucent quit timed out; forcing exit",
+        "flush",
+        "exit:0",
+        "cleanup",
+        "runtime-settled",
+      ]);
+    }),
+  );
+
+  it.live("guards quit while the desktop layer is still building", () =>
+    Effect.gen(function* () {
+      const building = yield* Deferred.make<void>();
+      let buildCleanedUp = false;
+      const startup = makeStartup({
+        build: Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            buildCleanedUp = true;
+          }),
+        ).pipe(
+          Effect.andThen(Deferred.succeed(building, undefined)),
+          Effect.andThen(Effect.never),
+        ),
+        checkNow: Effect.never,
+        showMessageBox: Effect.never,
+      });
+
+      const events = yield* startup.quitDuringStartup(building);
+
+      expect(events).toEqual(["cleanup", "runtime-settled"]);
+      expect(buildCleanedUp).toBe(true);
+    }),
+  );
+
+  it.live("interrupts a pending workspace initialization on quit", () =>
+    Effect.gen(function* () {
+      const initializing = yield* Deferred.make<void>();
+      let initializeCleanedUp = false;
+      const startup = makeStartup({
+        initialize: Deferred.succeed(initializing, undefined).pipe(
+          Effect.andThen(Effect.never),
+          Effect.ensuring(
+            Effect.sync(() => {
+              initializeCleanedUp = true;
+            }),
+          ),
+        ),
+        checkNow: Effect.never,
+        showMessageBox: Effect.never,
+      });
+
+      const events = yield* startup.quitDuringStartup(initializing);
+
+      expect(events).toEqual(["cleanup", "runtime-settled"]);
+      expect(initializeCleanedUp).toBe(true);
+    }),
+  );
+
   it.live("captures a second launch while the desktop layer builds", () =>
     Effect.gen(function* () {
       const building = yield* Deferred.make<void>();

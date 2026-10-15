@@ -1,3 +1,4 @@
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
@@ -9,7 +10,10 @@ import { parseCliOptions, type CliOptions } from "../cli";
 import { installDesktopDevRendererReload } from "./DesktopDevRendererReload";
 import { DesktopGameRendererRecovery } from "./DesktopGameRendererRecovery";
 import { DesktopEnvironment } from "./DesktopEnvironment";
-import { DesktopLifecycle, provideInsideQuitGuard } from "./DesktopLifecycle";
+import {
+  DesktopLifecycle,
+  layer as desktopLifecycleLayer,
+} from "./DesktopLifecycle";
 import { DesktopObservability } from "./observability/DesktopObservability";
 import { installDesktopRendererObservability } from "./observability/DesktopRendererObservability";
 import { ElectronApp } from "../electron/ElectronApp";
@@ -101,9 +105,11 @@ const checkForUpdatesAtStartup = Effect.fn("checkForUpdatesAtStartup")(
 
 export const makeDesktopRuntime = <ROut, E>(
   cliOptions: CliOptions,
-  layer: Layer.Layer<ROut, E>,
+  layer: Layer.Layer<ROut, E, DesktopLifecycle>,
 ) =>
   Effect.gen(function* () {
+    const lifecycle = yield* DesktopLifecycle;
+    yield* lifecycle.register;
     const app = yield* ElectronApp;
     const pendingLaunches = yield* Effect.acquireRelease(
       Queue.unbounded<CliOptions>(),
@@ -120,13 +126,11 @@ export const makeDesktopRuntime = <ROut, E>(
     );
     yield* Effect.addFinalizer(() => Effect.sync(disposeSecondInstance));
 
-    yield* Effect.gen(function* () {
-      const lifecycle = yield* DesktopLifecycle;
-      const observability = yield* DesktopObservability;
-      yield* observability.installProcessHooks;
-      yield* lifecycle.register;
-
-      yield* Effect.gen(function* () {
+    yield* Effect.raceFirst(
+      lifecycle.awaitQuit,
+      Effect.gen(function* () {
+        const observability = yield* DesktopObservability;
+        yield* observability.installProcessHooks;
         const applicationMenu = yield* DesktopApplicationMenu;
         const env = yield* DesktopEnvironment;
         const gameRendererRecovery = yield* DesktopGameRendererRecovery;
@@ -187,23 +191,24 @@ export const makeDesktopRuntime = <ROut, E>(
         ).pipe(Effect.forkScoped);
 
         if (settings.preferences.checkForUpdates) {
-          yield* Effect.raceFirst(
-            lifecycle.awaitQuit,
-            checkForUpdatesAtStartup(),
-          );
+          yield* checkForUpdatesAtStartup();
         }
 
-        yield* lifecycle.awaitQuit;
-      }).pipe(Effect.scoped);
-    }).pipe(
-      Effect.catchCause((cause) =>
-        Effect.gen(function* () {
-          yield* Effect.logError("Lucent desktop runtime failed", cause).pipe(
-            Effect.annotateLogs({ component: "startup" }),
-          );
-          return yield* Effect.failCause(cause);
-        }),
+        return yield* Effect.never;
+      }).pipe(
+        Effect.scoped,
+        Effect.catchCause((cause) =>
+          Effect.gen(function* () {
+            if (Cause.hasInterruptsOnly(cause)) {
+              return yield* Effect.failCause(cause);
+            }
+            yield* Effect.logError("Lucent desktop runtime failed", cause).pipe(
+              Effect.annotateLogs({ component: "startup" }),
+            );
+            return yield* Effect.failCause(cause);
+          }),
+        ),
+        Effect.provide(layer),
       ),
-      provideInsideQuitGuard(layer),
     );
-  }).pipe(Effect.scoped);
+  }).pipe(Effect.scoped, Effect.provide(desktopLifecycleLayer));
