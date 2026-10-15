@@ -1046,7 +1046,7 @@ const makeDesktopWindows = Effect.gen(function* () {
       const commitDocument = (): void => {
         if (!initialDocumentCommitted) {
           initialDocumentCommitted = true;
-          return;
+          if (record.unavailableGeneration === undefined) return;
         }
         record.generation += 1;
         record.rendererReady = false;
@@ -1067,12 +1067,12 @@ const makeDesktopWindows = Effect.gen(function* () {
         "did-fail-provisional-load",
         (
           _event: ElectronEvent,
-          code: number,
+          _code: number,
           _description: string,
           _url: string,
           isMainFrame: boolean,
         ) => {
-          if (isMainFrame && code !== -3) commitDocument();
+          if (isMainFrame) commitDocument();
         },
       );
       if (host === undefined || !isGameViewRecord(record)) return;
