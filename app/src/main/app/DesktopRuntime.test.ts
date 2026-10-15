@@ -1,11 +1,14 @@
+import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setImmediate as yieldToEventLoop } from "node:timers/promises";
 
 import { afterEach, beforeEach, describe, expect, it } from "@effect/vitest";
 import { vi } from "vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
@@ -18,7 +21,10 @@ import {
   ElectronApp,
   type ElectronWillQuitEvent,
 } from "../electron/ElectronApp";
-import { ElectronDialog } from "../electron/ElectronDialog";
+import {
+  ElectronDialog,
+  ElectronDialogMessageBoxError,
+} from "../electron/ElectronDialog";
 import { ElectronShell } from "../electron/ElectronShell";
 import { ElectronTheme } from "../electron/ElectronTheme";
 import { GitHubCredentials } from "../scripting/GitHubCredentials";
@@ -90,11 +96,18 @@ const servicesStartupNeverCalls = Layer.mergeAll(
 
 const makeStartup = (options: {
   readonly checkNow: Effect.Effect<UpdateCheckState>;
-  readonly showMessageBox: Effect.Effect<MessageBoxReturnValue>;
+  readonly parentWindowId?: Effect.Effect<number | undefined>;
+  readonly showMessageBox: Effect.Effect<
+    MessageBoxReturnValue,
+    ElectronDialogMessageBoxError
+  >;
 }) => {
   const events: string[] = [];
+  const dialogParents: (number | undefined)[] = [];
+  const dialogFailed = Deferred.makeUnsafe<void>();
   const directory = mkdtempSync(join(tmpdir(), "lucent-runtime-"));
   const willQuitListeners = new Set<(event: ElectronWillQuitEvent) => void>();
+  const parentWindowId = options.parentWindowId ?? Effect.succeed(42);
 
   const emitWillQuit = (): void => {
     let defaultPrevented = false;
@@ -117,6 +130,10 @@ const makeStartup = (options: {
     NodeFileSystem.layer,
     Logger.layer([
       Logger.make((log) => {
+        if (String(log.message) === "Failed to show startup update dialog") {
+          events.push("dialog-failed");
+          Deferred.doneUnsafe(dialogFailed, Exit.void);
+        }
         if (log.logLevel === "Error") {
           events.push(`error:${String(log.message)}`);
         }
@@ -183,9 +200,17 @@ const makeStartup = (options: {
       checkNow: () => options.checkNow,
       onStateChanged: () => unsubscribe,
       shouldPromptForAvailableRelease: () => Effect.succeed(true),
+      skipAvailableRelease: (version) =>
+        Effect.sync(() => {
+          events.push(`skip:${version}`);
+          return true;
+        }),
     }),
     Layer.mock(ElectronDialog, {
-      showMessageBox: () => options.showMessageBox,
+      showMessageBox: (_, parentWindowId) => {
+        dialogParents.push(parentWindowId);
+        return options.showMessageBox;
+      },
     }),
     Layer.mock(ElectronTheme, {
       setThemeMode: () => Effect.void,
@@ -194,6 +219,9 @@ const makeStartup = (options: {
     Layer.mock(DesktopWindows, {
       observe: () => Effect.void,
       open: () => Effect.succeed(1),
+      getVisibleParentWindowId: parentWindowId,
+      isVisibleParentWindow: (windowId) =>
+        parentWindowId.pipe(Effect.map((id) => id === windowId)),
       setBackgroundColor: () => Effect.void,
     }),
     Layer.mock(DesktopApplicationMenu, { install: Effect.void }),
@@ -222,6 +250,7 @@ const makeStartup = (options: {
       );
       return yield* Effect.gen(function* () {
         yield* Deferred.await(waitingOn);
+        yield* Effect.promise(() => yieldToEventLoop());
         emitWillQuit();
         yield* Effect.promise(() =>
           vi
@@ -242,7 +271,7 @@ const makeStartup = (options: {
       ),
     );
 
-  return { quitDuringStartup };
+  return { quitDuringStartup, dialogParents, dialogFailed };
 };
 
 beforeEach(() => {
@@ -254,6 +283,129 @@ afterEach(() => {
 });
 
 describe("makeDesktopRuntime", () => {
+  it.live(
+    "skips the automatic prompt when its parent closed during the check",
+    () =>
+      Effect.gen(function* () {
+        const resolved = yield* Deferred.make<void>();
+        const startup = makeStartup({
+          checkNow: Deferred.succeed(resolved, undefined).pipe(
+            Effect.as(availableUpdate),
+          ),
+          parentWindowId: Effect.succeed(undefined),
+          showMessageBox: Effect.never,
+        });
+
+        const events = yield* startup.quitDuringStartup(resolved);
+
+        expect(events).toEqual(["cleanup", "runtime-settled"]);
+        expect(startup.dialogParents).toEqual([]);
+      }),
+  );
+
+  it.live("uses another visible window after the startup window closes", () =>
+    Effect.gen(function* () {
+      const dialogOpen = yield* Deferred.make<void>();
+      const startup = makeStartup({
+        checkNow: Effect.succeed(availableUpdate),
+        parentWindowId: Effect.succeed(84),
+        showMessageBox: Deferred.succeed(dialogOpen, undefined).pipe(
+          Effect.andThen(Effect.never),
+        ),
+      });
+      const events = yield* startup.quitDuringStartup(dialogOpen);
+      expect(startup.dialogParents).toEqual([84]);
+      expect(events).toEqual(["cleanup", "runtime-settled"]);
+    }),
+  );
+
+  it.live(
+    "settles without a skip when the parent closes before the dialog shows",
+    () =>
+      Effect.gen(function* () {
+        const startup = makeStartup({
+          checkNow: Effect.succeed(availableUpdate),
+          showMessageBox: Effect.fail(
+            new ElectronDialogMessageBoxError({
+              cause: new Error("Browser window is not open: 42"),
+            }),
+          ),
+        });
+        const events = yield* startup.quitDuringStartup(startup.dialogFailed);
+        expect(startup.dialogParents).toEqual([42]);
+        expect(events).toEqual(["dialog-failed", "cleanup", "runtime-settled"]);
+      }),
+  );
+
+  it.live("does not skip an update when its sheet parent starts closing", () =>
+    Effect.gen(function* () {
+      const parent = new EventEmitter();
+      let parentWindowId: number | undefined = 42;
+      parent.on("close", () => {
+        parentWindowId = undefined;
+      });
+      const answered = yield* Deferred.make<void>();
+      const startup = makeStartup({
+        checkNow: Effect.succeed(availableUpdate),
+        parentWindowId: Effect.sync(() => parentWindowId),
+        showMessageBox: Effect.sync(() => {
+          parent.emit("close");
+          return { response: 1, checkboxChecked: false };
+        }).pipe(Effect.tap(() => Deferred.succeed(answered, undefined))),
+      });
+
+      const events = yield* startup.quitDuringStartup(answered);
+
+      expect(startup.dialogParents).toEqual([42]);
+      expect(events).toEqual(["cleanup", "runtime-settled"]);
+    }),
+  );
+
+  it.live(
+    "does not skip the update when its sheet parent closes and another window remains",
+    () =>
+      Effect.gen(function* () {
+        const parent = new EventEmitter();
+        let parentWindowId = 42;
+        parent.on("close", () => {
+          parentWindowId = 84;
+        });
+        const answered = yield* Deferred.make<void>();
+        const startup = makeStartup({
+          checkNow: Effect.succeed(availableUpdate),
+          parentWindowId: Effect.sync(() => parentWindowId),
+          showMessageBox: Effect.sync(() => {
+            parent.emit("close");
+            return { response: 1, checkboxChecked: false };
+          }).pipe(Effect.tap(() => Deferred.succeed(answered, undefined))),
+        });
+
+        const events = yield* startup.quitDuringStartup(answered);
+
+        expect(startup.dialogParents).toEqual([42]);
+        expect(events).toEqual(["cleanup", "runtime-settled"]);
+      }),
+  );
+
+  it.live(
+    "skips the update when its visible sheet parent receives a cancel response",
+    () =>
+      Effect.gen(function* () {
+        const answered = yield* Deferred.make<void>();
+        const startup = makeStartup({
+          checkNow: Effect.succeed(availableUpdate),
+          showMessageBox: Deferred.succeed(answered, undefined).pipe(
+            Effect.as({ response: 1, checkboxChecked: false }),
+          ),
+        });
+
+        const events = yield* startup.quitDuringStartup(answered);
+
+        expect(startup.dialogParents).toEqual([42]);
+        expect(events).toEqual(["skip:1.1.0", "cleanup", "runtime-settled"]);
+      }),
+  );
+
   it.live("cleans up when quit arrives during the startup update check", () =>
     Effect.gen(function* () {
       const checking = yield* Deferred.make<void>();
@@ -283,6 +435,7 @@ describe("makeDesktopRuntime", () => {
       const events = yield* startup.quitDuringStartup(dialogOpen);
 
       expect(events).toEqual(["cleanup", "runtime-settled"]);
+      expect(startup.dialogParents).toEqual([42]);
     }),
   );
 });

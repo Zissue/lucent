@@ -122,6 +122,8 @@ export interface DesktopWindowsShape {
   readonly describe: (
     rendererId: number,
   ) => Effect.Effect<DesktopRendererInfo | undefined>;
+  readonly getVisibleParentWindowId: Effect.Effect<number | undefined>;
+  readonly isVisibleParentWindow: (windowId: number) => Effect.Effect<boolean>;
   readonly generationGuard: (
     rendererId: number,
     generation: number,
@@ -528,6 +530,7 @@ const makeDesktopWindows = Effect.gen(function* () {
   let showGameUsernameInWindowTitle =
     initialSettings.preferences.showGameUsernameInWindowTitle;
   const renderers = new Map<number, DesktopRendererRecord>();
+  const closingWindows = new WeakSet<ElectronNativeWindowHandle>();
   const getWindowRenderer = (id: number): DesktopWindowRecord | undefined => {
     const record = renderers.get(id);
     return record !== undefined && !("host" in record) ? record : undefined;
@@ -740,6 +743,48 @@ const makeDesktopWindows = Effect.gen(function* () {
             id: String(nativeWindowId),
           }),
       });
+
+  const getVisibleParentWindow = (
+    record: DesktopRendererRecord,
+  ): ElectronNativeWindowHandle | undefined => {
+    if (
+      "host" in record
+        ? record.kind !== "game-host"
+        : isGameViewRecord(record) ||
+          getDesktopWindowDefinition(record.kind).scope === "game-child"
+    ) {
+      return undefined;
+    }
+    const scope = "host" in record ? record.host.scope : record.scope;
+    const window =
+      "host" in record ? record.host.window : nativeWindowForRenderer(record);
+    return scope.state._tag !== "Closed" &&
+      !closingWindows.has(window) &&
+      isElectronWindowUsable(window) &&
+      window.isVisible()
+      ? window
+      : undefined;
+  };
+
+  const getVisibleParentWindowId = Effect.sync(() => {
+    for (const record of renderers.values()) {
+      const window = getVisibleParentWindow(record);
+      if (window !== undefined) {
+        return window.id;
+      }
+    }
+    return undefined;
+  });
+
+  const isVisibleParentWindow: DesktopWindowsShape["isVisibleParentWindow"] = (
+    windowId,
+  ) =>
+    Effect.sync(() => {
+      for (const record of renderers.values()) {
+        if (getVisibleParentWindow(record)?.id === windowId) return true;
+      }
+      return false;
+    });
 
   const describe: DesktopWindowsShape["describe"] = (rendererId) =>
     Effect.sync(() => {
@@ -1281,6 +1326,9 @@ const makeDesktopWindows = Effect.gen(function* () {
         snapshot,
       ),
     );
+    yield* listen(window, "close", () => {
+      closingWindows.add(window);
+    });
     const createChromeView = Effect.fn(function* (
       kind: DesktopChromeRendererRecord["kind"],
     ) {
@@ -1861,20 +1909,22 @@ const makeDesktopWindows = Effect.gen(function* () {
         };
         yield* track(record);
 
-        if (definition.closeBehavior === "hide") {
-          yield* listen(window, "close", (event: ElectronEvent) => {
-            if (appIsQuitting || window.isDestroyed()) {
-              return;
-            }
-
+        yield* listen(window, "close", (event: ElectronEvent) => {
+          if (
+            definition.closeBehavior === "hide" &&
+            !appIsQuitting &&
+            !window.isDestroyed()
+          ) {
             preventWindowClose(event);
             window.hide();
             if (isTopLevelWindow) {
               record.hidden = true;
               quitIfNoTopLevelWindow();
             }
-          });
-        }
+            return;
+          }
+          closingWindows.add(window);
+        });
 
         window.once("closed", () => dispose(scope));
 
@@ -2041,6 +2091,8 @@ const makeDesktopWindows = Effect.gen(function* () {
     closeGameView,
     getRendererIds,
     describe,
+    getVisibleParentWindowId,
+    isVisibleParentWindow,
     generationGuard,
     getGameViewHostState,
     getGameViewPresentation,

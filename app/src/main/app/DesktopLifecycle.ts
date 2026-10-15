@@ -17,6 +17,7 @@ type QuitSource = "will-quit" | (typeof TERMINATION_SIGNALS)[number];
 
 export interface DesktopLifecycleShape {
   readonly awaitQuit: Effect.Effect<void>;
+  readonly isQuitting: Effect.Effect<boolean>;
   readonly register: Effect.Effect<
     void,
     never,
@@ -53,6 +54,7 @@ export const layer = Layer.effect(
   DesktopLifecycle,
   Effect.gen(function* () {
     const quitRequested = yield* Deferred.make<void>();
+    let isQuitting = false;
 
     const register = Effect.gen(function* () {
       const app = yield* ElectronApp;
@@ -76,6 +78,7 @@ export const layer = Layer.effect(
         );
 
       const beginShutdown = (source: QuitSource): boolean => {
+        isQuitting = true;
         if (deadline !== undefined) {
           return false;
         }
@@ -92,6 +95,11 @@ export const layer = Layer.effect(
           clearTimeout(deadline);
         }),
       );
+
+      const disposeBeforeQuit = yield* app.on("before-quit", () => {
+        isQuitting = true;
+      });
+      yield* Effect.addFinalizer(() => Effect.sync(disposeBeforeQuit));
 
       const disposeWillQuit = yield* app.on("will-quit", (event) => {
         event.preventDefault();
@@ -127,6 +135,7 @@ export const layer = Layer.effect(
 
     return DesktopLifecycle.of({
       awaitQuit,
+      isQuitting: Effect.sync(() => isQuitting),
       register,
     });
   }),
