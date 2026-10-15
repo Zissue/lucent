@@ -12,6 +12,7 @@ import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
+import type * as Scope from "effect/Scope";
 import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
 
 import { normalizeAppSettings } from "@lucent/core/settings";
@@ -95,6 +96,9 @@ const servicesStartupNeverCalls = Layer.mergeAll(
 );
 
 const makeStartup = (options: {
+  readonly launchMode?: "game" | "account-manager";
+  readonly initialize?: Effect.Effect<void>;
+  readonly build?: Effect.Effect<void, never, Scope.Scope>;
   readonly checkNow: Effect.Effect<UpdateCheckState>;
   readonly parentWindowId?: Effect.Effect<number | undefined>;
   readonly showMessageBox: Effect.Effect<
@@ -106,8 +110,9 @@ const makeStartup = (options: {
   const dialogParents: (number | undefined)[] = [];
   const dialogFailed = Deferred.makeUnsafe<void>();
   const directory = mkdtempSync(join(tmpdir(), "lucent-runtime-"));
-  const willQuitListeners = new Set<(event: ElectronWillQuitEvent) => void>();
   const parentWindowId = options.parentWindowId ?? Effect.succeed(42);
+  const appEvents = new EventEmitter();
+  const openedWindows: string[] = [];
 
   const emitWillQuit = (): void => {
     let defaultPrevented = false;
@@ -116,14 +121,26 @@ const makeStartup = (options: {
         defaultPrevented = true;
       },
     };
-    for (const listener of willQuitListeners) {
-      listener(event);
-    }
+    appEvents.emit("will-quit", event);
     if (!defaultPrevented) {
       events.push("electron-terminated");
     }
   };
 
+  const appLayer = Layer.mock(ElectronApp, {
+    exit: (code) =>
+      Effect.sync(() => {
+        events.push(`exit:${code}`);
+      }),
+    on: (eventName, listener) =>
+      Effect.sync(() => {
+        appEvents.on(eventName, listener);
+        return () => {
+          appEvents.removeListener(eventName, listener);
+        };
+      }),
+    whenReady: Effect.void,
+  });
   const layer = Layer.mergeAll(
     desktopLifecycleLayer,
     servicesStartupNeverCalls,
@@ -146,23 +163,8 @@ const makeStartup = (options: {
         }),
       ),
     ),
-    Layer.mock(ElectronApp, {
-      exit: (code) =>
-        Effect.sync(() => {
-          events.push(`exit:${code}`);
-        }),
-      on: (eventName, listener) =>
-        Effect.sync(() => {
-          if (eventName !== "will-quit") {
-            return () => undefined;
-          }
-          willQuitListeners.add(listener);
-          return () => {
-            willQuitListeners.delete(listener);
-          };
-        }),
-      whenReady: Effect.void,
-    }),
+    appLayer,
+    Layer.effectDiscard(options.build ?? Effect.void),
     Layer.succeed(
       DesktopObservability,
       DesktopObservability.of({
@@ -194,6 +196,14 @@ const makeStartup = (options: {
       load: Effect.succeed(
         normalizeAppSettings({ preferences: { checkForUpdates: true } }),
       ),
+      get: Effect.sync(() =>
+        normalizeAppSettings({
+          preferences: {
+            checkForUpdates: true,
+            launchMode: options.launchMode ?? "game",
+          },
+        }),
+      ),
       onChanged: () => unsubscribe,
     }),
     Layer.mock(DesktopUpdates, {
@@ -218,7 +228,11 @@ const makeStartup = (options: {
     }),
     Layer.mock(DesktopWindows, {
       observe: () => Effect.void,
-      open: () => Effect.succeed(1),
+      open: (kind) =>
+        Effect.sync(() => {
+          openedWindows.push(kind);
+          return 1;
+        }),
       getVisibleParentWindowId: parentWindowId,
       isVisibleParentWindow: (windowId) =>
         parentWindowId.pipe(Effect.map((id) => id === windowId)),
@@ -226,7 +240,9 @@ const makeStartup = (options: {
     }),
     Layer.mock(DesktopApplicationMenu, { install: Effect.void }),
     Layer.mock(DesktopGameRendererRecovery, { install: Effect.void }),
-    Layer.mock(ScriptWorkspace, { initialize: Effect.void }),
+    Layer.mock(ScriptWorkspace, {
+      initialize: options.initialize ?? Effect.void,
+    }),
     Layer.mock(ScriptPackageCatalog, {
       onChanged: () => unsubscribe,
       refresh: Effect.succeed({ packages: [], revision: "r0", scriptCount: 0 }),
@@ -237,10 +253,14 @@ const makeStartup = (options: {
     Layer.mock(ArmyLoopTauntOrchestrator, { onCommand: () => unsubscribe }),
   );
 
-  const quitDuringStartup = (waitingOn: Deferred.Deferred<void>) =>
+  const quitDuringStartup = (
+    waitingOn: Deferred.Deferred<void>,
+    onReady: Effect.Effect<void> = Effect.void,
+  ) =>
     Effect.gen(function* () {
       const runtime = yield* Effect.forkDetach(
         makeDesktopRuntime({}, layer).pipe(
+          Effect.provide(appLayer),
           Effect.ensuring(
             Effect.sync(() => {
               events.push("runtime-settled");
@@ -251,6 +271,7 @@ const makeStartup = (options: {
       return yield* Effect.gen(function* () {
         yield* Deferred.await(waitingOn);
         yield* Effect.promise(() => yieldToEventLoop());
+        yield* onReady;
         emitWillQuit();
         yield* Effect.promise(() =>
           vi
@@ -271,7 +292,16 @@ const makeStartup = (options: {
       ),
     );
 
-  return { quitDuringStartup, dialogParents, dialogFailed };
+  const secondInstance = (argv: readonly string[]) =>
+    appEvents.emit("second-instance", {}, argv);
+  return {
+    quitDuringStartup,
+    dialogParents,
+    openedWindows,
+    dialogFailed,
+    secondInstance,
+    appEvents,
+  };
 };
 
 beforeEach(() => {
@@ -283,6 +313,105 @@ afterEach(() => {
 });
 
 describe("makeDesktopRuntime", () => {
+  it.live("captures a second launch while the desktop layer builds", () =>
+    Effect.gen(function* () {
+      const building = yield* Deferred.make<void>();
+      const built = yield* Deferred.make<void>();
+      const startup = makeStartup({
+        build: Deferred.succeed(building, undefined).pipe(
+          Effect.andThen(Deferred.await(built)),
+        ),
+        checkNow: Effect.never,
+        showMessageBox: Effect.never,
+      });
+      const launch = Effect.gen(function* () {
+        startup.secondInstance(["lucent", "--launch-mode", "account-manager"]);
+        yield* Deferred.succeed(built, undefined);
+        yield* Effect.promise(() =>
+          vi
+            .waitUntil(() => startup.openedWindows.length === 2, {
+              timeout: 100,
+              interval: 5,
+            })
+            .catch(() => undefined),
+        );
+      });
+
+      const events = yield* startup.quitDuringStartup(building, launch);
+
+      expect(startup.openedWindows).toEqual(["game", "account-manager"]);
+      expect(events).toEqual(["cleanup", "runtime-settled"]);
+    }),
+  );
+
+  it.live("queues a second launch until startup can open windows", () =>
+    Effect.gen(function* () {
+      const initializing = yield* Deferred.make<void>();
+      const ready = yield* Deferred.make<void>();
+      const startup = makeStartup({
+        initialize: Deferred.succeed(initializing, undefined).pipe(
+          Effect.andThen(Deferred.await(ready)),
+        ),
+        checkNow: Effect.never,
+        showMessageBox: Effect.never,
+      });
+      const launch = Effect.gen(function* () {
+        startup.secondInstance(["lucent", "--launch-mode", "account-manager"]);
+        yield* Effect.yieldNow;
+        expect(startup.openedWindows).toEqual([]);
+        yield* Deferred.succeed(ready, undefined);
+        yield* Effect.promise(() =>
+          vi
+            .waitUntil(() => startup.openedWindows.length === 2, {
+              timeout: 100,
+              interval: 5,
+            })
+            .catch(() => undefined),
+        );
+      });
+
+      const events = yield* startup.quitDuringStartup(initializing, launch);
+
+      expect(startup.openedWindows).toEqual(["game", "account-manager"]);
+      expect(events).toEqual(["cleanup", "runtime-settled"]);
+    }),
+  );
+
+  for (const argv of [
+    ["lucent", "--launch-mode", "account-manager"],
+    ["lucent"],
+  ]) {
+    it.live(`opens a second launch with ${argv.join(" ")}`, () =>
+      Effect.gen(function* () {
+        const checking = yield* Deferred.make<void>();
+        const startup = makeStartup({
+          launchMode: argv.length > 1 ? "game" : "account-manager",
+          checkNow: Deferred.succeed(checking, undefined).pipe(
+            Effect.andThen(Effect.never),
+          ),
+          showMessageBox: Effect.never,
+        });
+        const launch = Effect.gen(function* () {
+          startup.secondInstance(argv);
+          yield* Effect.promise(() =>
+            vi
+              .waitUntil(() => startup.openedWindows.length === 2, {
+                timeout: 100,
+                interval: 5,
+              })
+              .catch(() => undefined),
+          );
+        });
+
+        const events = yield* startup.quitDuringStartup(checking, launch);
+
+        expect(startup.openedWindows).toEqual(["game", "account-manager"]);
+        expect(events).toEqual(["cleanup", "runtime-settled"]);
+        expect(startup.appEvents.listenerCount("second-instance")).toBe(0);
+      }),
+    );
+  }
+
   it.live(
     "skips the automatic prompt when its parent closed during the check",
     () =>
