@@ -19,6 +19,7 @@ import type {
   ScriptPackageDependencyIssue,
   ScriptPackageDependencyStatus,
   ScriptPackageDirectory,
+  ScriptPackageIntegrity,
   ScriptPackageName,
   ScriptPackageSummary,
   ScriptReference,
@@ -137,6 +138,7 @@ export interface DiscoveredScriptCatalog {
 }
 
 export interface ScriptPackageCatalogReplacement {
+  readonly integrity?: ScriptPackageIntegrity;
   readonly inspected: InspectedScriptPackageDirectory;
   readonly managed: ManagedScriptPackage;
   readonly rootPath: string;
@@ -894,7 +896,7 @@ const replaceDiscoveredPackage = (
     ...(inspected.manifest.description === undefined
       ? {}
       : { description: inspected.manifest.description }),
-    integrity: "verified",
+    integrity: replacement.integrity ?? "verified",
     name: managed.name,
     path: rootPath,
     source: managed.source,

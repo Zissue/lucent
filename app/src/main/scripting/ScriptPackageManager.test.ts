@@ -2012,6 +2012,8 @@ describe("script package integrity rows", () => {
           );
           const readdir = fs.readdir;
           let refreshed = false;
+          const hashStarted = Promise.withResolvers<void>();
+          const finishHash = Promise.withResolvers<void>();
           const reads = vi
             .spyOn(fs, "readdir")
             .mockImplementation((path, options) => {
@@ -2023,18 +2025,21 @@ describe("script package integrity rows", () => {
                 )
               ) {
                 refreshed = true;
-                return result.then((entries) =>
-                  Effect.runPromise(catalog.refresh).then((overview) => {
-                    expect(overview.packages).toEqual([]);
-                    return entries;
-                  }),
-                );
+                return result.then((entries) => {
+                  hashStarted.resolve();
+                  return finishHash.promise.then(() => entries);
+                });
               }
               return result;
             });
-          const result = yield* manager[operation]({
+          const running = yield* manager[operation]({
             packageName: PACKAGE_NAME,
-          });
+          }).pipe(Effect.forkScoped);
+          yield* Effect.promise(() => hashStarted.promise);
+          const during = yield* catalog.refresh;
+          expect(during.packages).toEqual([]);
+          finishHash.resolve();
+          const result = yield* Fiber.join(running);
           expect(result).toEqual({
             status: "confirmation-required",
             packageName: PACKAGE_NAME,
@@ -2058,3 +2063,36 @@ describe("script package integrity rows", () => {
     );
   }
 });
+
+it.effect("keeps invalid edited manifests invalid after rejection", () =>
+  Effect.gen(function* () {
+    const { destination, managed, workspaceDir } = yield* installedPackage;
+    const harness = makeManagerHarness({
+      managed,
+      workspaceDir,
+      resolution: { status: "modified", commit: REMOTE_COMMIT },
+    });
+    const { manager, catalog } = yield* harness.services;
+    yield* catalog.getOverview;
+    yield* Effect.promise(() =>
+      write(join(destination, "package.json"), '{"name":"different"}'),
+    );
+    const result = yield* manager.remove({ packageName: PACKAGE_NAME });
+    expect(result).toEqual({
+      status: "confirmation-required",
+      packageName: PACKAGE_NAME,
+      reason: "local-modifications",
+    });
+    expect((yield* catalog.getOverview).packages[0]).toMatchObject({
+      status: "invalid",
+      path: destination,
+      diagnostic:
+        'The installed package name is "example", but package.json declares "different".',
+    });
+    expect(
+      yield* Effect.promise(() =>
+        fs.readFile(join(destination, "package.json"), "utf8"),
+      ),
+    ).toBe('{"name":"different"}');
+  }),
+);

@@ -13,6 +13,7 @@ import { list as listTar, extract as extractTar } from "tar";
 import type {
   ScriptCatalogOverview,
   ScriptPackageMutationResult,
+  ScriptPackageIntegrity,
   ScriptPackageRevision,
 } from "@lucent/core/scriptPackages";
 import {
@@ -31,7 +32,7 @@ import {
   ScriptPackageCatalog,
   type ScriptPackageCatalogReplacement,
 } from "./ScriptPackageCatalog";
-import { hashDirectory } from "./ScriptPackageFileSystem";
+import { hashDirectory, isPathInside } from "./ScriptPackageFileSystem";
 import {
   allocatePackageDirectory,
   packageDirectoryPath,
@@ -363,6 +364,46 @@ export const layer = Layer.effect(
     const mapCatalogError = (cause: unknown) =>
       managerError("validate", "Failed to update the script catalog.", cause);
 
+    const refreshPackageIntegrity = Effect.fnUntraced(function* (
+      name: string,
+      rootPath: string,
+      integrity: ScriptPackageIntegrity,
+    ) {
+      const managed = yield* state.get(name);
+      if (managed === undefined) return yield* catalog.refresh;
+      const inspected = yield* Effect.tryPromise(async () => {
+        const directory = await fs.lstat(rootPath);
+        if (!directory.isDirectory() || directory.isSymbolicLink()) {
+          throw new Error("The package folder is not a regular directory.");
+        }
+        const inspected = await inspectScriptPackageDirectory(rootPath);
+        if (inspected.manifest.name !== managed.name) {
+          throw new Error(
+            "The package manifest name differs from its saved name.",
+          );
+        }
+        if (
+          !isPathInside(
+            await fs.realpath(packagesDir),
+            await fs.realpath(rootPath),
+          )
+        ) {
+          throw new Error(
+            "The package points outside Lucent's packages folder.",
+          );
+        }
+        return inspected;
+      }).pipe(Effect.orElseSucceed(() => undefined));
+      if (inspected === undefined) return yield* catalog.refresh;
+      return yield* catalog.replacePackage({
+        inspected,
+        integrity,
+        managed,
+        rootPath,
+        sourceRoot: rootPath,
+      });
+    });
+
     const resolveManagedRevision = Effect.fn(
       "ScriptPackageManager.resolveManagedRevision",
     )(function* (managed: ManagedScriptPackage) {
@@ -616,7 +657,11 @@ export const layer = Layer.effect(
             ),
           );
           yield* removeEmptyBackup;
-          yield* catalog.refresh.pipe(Effect.mapError(mapCatalogError));
+          yield* refreshPackageIntegrity(
+            expected.name,
+            destination,
+            "modified",
+          ).pipe(Effect.mapError(mapCatalogError));
           return localModifications(expected.name);
         }
         yield* movePath(staging, destination).pipe(
@@ -1034,7 +1079,7 @@ export const layer = Layer.effect(
           const nextCatalog = yield* (
             integrity === summary.integrity
               ? catalog.updateManagedPackage(observed)
-              : catalog.refresh
+              : refreshPackageIntegrity(managed.name, savedRoot, integrity)
           ).pipe(Effect.mapError(mapCatalogError));
           if (integrity !== "verified" && input.replaceModified !== true) {
             return localModifications(input.packageName);
@@ -1193,7 +1238,11 @@ export const layer = Layer.effect(
                 ),
               );
               yield* removeEmptyStaging;
-              yield* catalog.refresh.pipe(Effect.mapError(mapCatalogError));
+              yield* refreshPackageIntegrity(
+                input.packageName,
+                root,
+                "modified",
+              ).pipe(Effect.mapError(mapCatalogError));
               return localModifications(input.packageName);
             }
             yield* state.remove(input.packageName).pipe(
