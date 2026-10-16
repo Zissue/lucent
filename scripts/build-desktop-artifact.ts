@@ -126,13 +126,13 @@ const main = Effect.gen(function* () {
 
   console.log("Cleaning app/build");
   yield* fs.remove(BUILD_OUTPUT_DIR, { recursive: true, force: true });
-  yield* run("pnpm", ["run", "typecheck"]);
   yield* run("pnpm", [
     "--filter",
     "@lucent/electron^...",
     "--if-present",
     "build",
   ]);
+  yield* run("pnpm", ["run", "typecheck"]);
   yield* run("pnpm", ["--dir", "app", "build"]);
   yield* run("pnpm", [
     "--dir",
