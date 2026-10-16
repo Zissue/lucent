@@ -144,11 +144,14 @@ const rateLimitError = (
   rateLimit: RateLimitState,
   statusCode?: number,
 ): GitHubApiClientError => {
-  const retryAt = new Date(rateLimit.until).toISOString();
+  const retryAt = new Date(rateLimit.until);
+  const retryTime = retryAt.toLocaleTimeString(undefined, {
+    timeStyle: "short",
+  });
   return new GitHubApiClientError({
     kind: "rate-limited",
-    detail: `GitHub's request limit has been reached. Try again after ${retryAt}.`,
-    retryAt,
+    detail: `GitHub's request limit has been reached. Try again after ${retryTime}.`,
+    retryAt: retryAt.toISOString(),
     ...(statusCode === undefined ? {} : { statusCode }),
   });
 };

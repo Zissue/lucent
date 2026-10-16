@@ -18,6 +18,10 @@ describe("hotkeys", () => {
       "X",
     ]);
     expect(formatHotkeyDisplay("Mod+Shift+X", "windows")).toBe("Ctrl+Shift+X");
+    expect(formatHotkeyDisplay("Control+Shift+ArrowDown", "windows")).toBe(
+      "Ctrl+Shift+↓",
+    );
+    expect(formatHotkeyDisplay("Alt+ArrowLeft", "mac")).toBe("⌥ ←");
   });
 
   it("resolves Mod to the platform modifier for matching", () => {

@@ -47,7 +47,9 @@ const desktopWindowCatalog: ReadonlyMap<
     {
       kind: "settings",
       width: 651,
-      height: 654,
+      height: 500,
+      minWidth: 520,
+      minHeight: 400,
       closeBehavior: "hide",
       scope: "application",
       singleInstance: true,

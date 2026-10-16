@@ -2,18 +2,20 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import {
-  DEFAULT_APP_SETTINGS,
+  DEFAULT_MONO_FONT,
+  DEFAULT_SANS_FONT,
+  DEFAULT_THEME_COLORS,
   MotionModeSchema,
   ThemeFontSchema,
   ThemeFontSizeSchema,
   ThemeRoundingSchema,
-  ThemeTokenValuesSchema,
+  ThemeColorsSchema,
   ThemeVariantSchema,
   UnknownRecordSchema,
   normalizeAppSettings,
   type AppSettings,
   type ThemeRgb,
-  type ThemeTokenValues,
+  type ThemeColorName,
   type ThemeVariant,
 } from "./settings";
 
@@ -25,7 +27,7 @@ export const AppearanceSnapshotSchema = Schema.Struct({
   rounding: ThemeRoundingSchema,
   sansFont: ThemeFontSchema,
   sansFontSize: ThemeFontSizeSchema,
-  tokens: ThemeTokenValuesSchema,
+  colors: ThemeColorsSchema,
   useCursorPointers: Schema.Boolean,
   variant: ThemeVariantSchema,
 });
@@ -106,13 +108,36 @@ export const resolveThemeVariant = (
   return systemPrefersDark ? "dark" : "light";
 };
 
-export const resolveThemeTokens = (
+export const resolveThemeColors = (
   settings: AppSettings,
   variant: ThemeVariant,
-): ThemeTokenValues => ({
-  ...DEFAULT_APP_SETTINGS.appearance.themes[variant].tokens,
-  ...settings.appearance.themes[variant].tokens,
+): Record<ThemeColorName, ThemeRgb> => ({
+  ...DEFAULT_THEME_COLORS[variant],
+  ...settings.appearance.themes[variant].colors,
 });
+
+const linearizeChannel = (channel: number): number => {
+  const value = channel / 255;
+  return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+};
+
+const relativeLuminance = (rgb: ThemeRgb): number =>
+  0.2126 * linearizeChannel(rgb[0]) +
+  0.7152 * linearizeChannel(rgb[1]) +
+  0.0722 * linearizeChannel(rgb[2]);
+
+const ON_ACCENT_DARK: ThemeRgb = [25, 25, 28];
+const ON_ACCENT_LIGHT: ThemeRgb = [255, 255, 255];
+const ON_ACCENT_DARK_LUMINANCE = relativeLuminance(ON_ACCENT_DARK);
+
+export const pickOnAccentColor = (accent: ThemeRgb): ThemeRgb => {
+  const luminance = relativeLuminance(accent);
+  const lightContrast = 1.05 / (luminance + 0.05);
+  const darkContrast =
+    (Math.max(luminance, ON_ACCENT_DARK_LUMINANCE) + 0.05) /
+    (Math.min(luminance, ON_ACCENT_DARK_LUMINANCE) + 0.05);
+  return lightContrast >= darkContrast ? ON_ACCENT_LIGHT : ON_ACCENT_DARK;
+};
 
 export const createAppearanceSnapshot = (
   settings: AppSettings,
@@ -120,17 +145,17 @@ export const createAppearanceSnapshot = (
 ): AppearanceSnapshot => {
   const variant = resolveThemeVariant(settings, systemPrefersDark);
   const profile = settings.appearance.themes[variant];
-  const tokens = resolveThemeTokens(settings, variant);
+  const colors = resolveThemeColors(settings, variant);
 
   return {
-    backgroundColor: rgbToHex(tokens.background),
-    monoFont: profile.monoFont,
+    backgroundColor: rgbToHex(colors.background),
+    monoFont: profile.monoFont ?? DEFAULT_MONO_FONT,
     monoFontSize: profile.monoFontSize,
     reduceMotion: settings.appearance.reduceMotion,
     rounding: profile.rounding,
-    sansFont: profile.sansFont,
+    sansFont: profile.sansFont ?? DEFAULT_SANS_FONT,
     sansFontSize: profile.sansFontSize,
-    tokens,
+    colors: profile.colors,
     useCursorPointers: settings.appearance.useCursorPointers,
     variant,
   };

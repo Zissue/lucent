@@ -8,6 +8,7 @@ import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import {
   DEFAULT_APP_SETTINGS,
+  THEME_COLOR_NAMES,
   normalizeAppSettings,
   serializeAppSettings,
   type AppearancePatch,
@@ -15,9 +16,7 @@ import {
   type PreferencesPatch,
   type ThemeProfile,
   type ThemeProfilePatch,
-  type ThemeRgb,
-  type ThemeTokenName,
-  type ThemeVariant,
+  type ThemeColors,
 } from "@lucent/core/settings";
 import {
   DEFAULT_HOTKEYS,
@@ -90,26 +89,28 @@ const wrapDataError = (error: JsonFileError): DesktopSettingsError =>
   });
 
 const mergeThemeProfile = (
-  variant: ThemeVariant,
   current: ThemeProfile,
   patch: ThemeProfilePatch,
 ): ThemeProfile => {
-  const defaults = DEFAULT_APP_SETTINGS.appearance.themes[variant];
-  const tokens: Record<ThemeTokenName, ThemeRgb> = {
-    ...current.tokens,
-  };
-
-  if (patch.tokens !== undefined) {
-    for (const [name, value] of Object.entries(patch.tokens)) {
-      const tokenName = name as ThemeTokenName;
-      tokens[tokenName] = value ?? defaults.tokens[tokenName];
+  const colors: ThemeColors = { ...current.colors };
+  for (const name of THEME_COLOR_NAMES) {
+    const value = patch.colors?.[name];
+    if (value === null) {
+      delete colors[name];
+    } else if (value !== undefined) {
+      colors[name] = value;
     }
   }
 
+  const sansFont =
+    patch.sansFont === undefined ? current.sansFont : patch.sansFont;
+  const monoFont =
+    patch.monoFont === undefined ? current.monoFont : patch.monoFont;
+
   return {
-    tokens,
-    sansFont: patch.sansFont ?? current.sansFont,
-    monoFont: patch.monoFont ?? current.monoFont,
+    colors,
+    ...(sansFont ? { sansFont } : {}),
+    ...(monoFont ? { monoFont } : {}),
     sansFontSize: patch.sansFontSize ?? current.sansFontSize,
     monoFontSize: patch.monoFontSize ?? current.monoFontSize,
     rounding: patch.rounding ?? current.rounding,
@@ -127,7 +128,6 @@ const applyAppearancePatch = (
         continue;
       }
       themes[variant] = mergeThemeProfile(
-        variant,
         current.appearance.themes[variant],
         profilePatch,
       );

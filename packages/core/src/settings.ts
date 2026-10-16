@@ -8,7 +8,7 @@ import {
   type HotkeysSettings,
 } from "./hotkeys";
 
-const APP_SETTINGS_VERSION = 1;
+export const APP_SETTINGS_VERSION = 2;
 
 export const AppLaunchModeSchema = Schema.Literals(["game", "account-manager"]);
 export const ThemeModeSchema = Schema.Literals(["system", "light", "dark"]);
@@ -23,35 +23,12 @@ export type MotionMode = typeof MotionModeSchema.Type;
 export type ThemeVariant = typeof ThemeVariantSchema.Type;
 export type ThemeRgb = readonly [number, number, number];
 
-export const THEME_TOKEN_NAMES = [
+export const THEME_COLOR_NAMES = [
+  "accent",
   "background",
   "foreground",
-  "card",
-  "cardForeground",
-  "popover",
-  "popoverForeground",
-  "primary",
-  "primaryForeground",
-  "secondary",
-  "secondaryForeground",
-  "muted",
-  "mutedForeground",
-  "accent",
-  "accentForeground",
-  "destructive",
-  "destructiveForeground",
-  "success",
-  "successForeground",
-  "warning",
-  "warningForeground",
-  "info",
-  "infoForeground",
-  "border",
-  "input",
-  "ring",
 ] as const;
 
-export const ThemeTokenNameSchema = Schema.Literals(THEME_TOKEN_NAMES);
 export const ThemeRgbSchema = Schema.Tuple([
   Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 255 })),
   Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 255 })),
@@ -67,6 +44,9 @@ export const THEME_ROUNDING_MAX = 2;
 export const ThemeFontSchema = Schema.String.check(
   Schema.isBetweenLength(THEME_FONT_MIN_LENGTH, THEME_FONT_MAX_LENGTH),
 );
+const ThemeFontPatchSchema = Schema.NullOr(
+  Schema.Union([ThemeFontSchema, Schema.Literal("")]),
+);
 export const ThemeFontSizeSchema = Schema.Int.check(
   Schema.isBetween({
     minimum: THEME_FONT_SIZE_MIN,
@@ -80,54 +60,33 @@ export const ThemeRoundingSchema = Schema.Finite.check(
   }),
 );
 
-export const ThemeTokenValuesSchema = Schema.Record(
-  ThemeTokenNameSchema,
-  ThemeRgbSchema,
-);
+export const ThemeColorsSchema = Schema.Struct({
+  accent: Schema.optionalKey(ThemeRgbSchema),
+  background: Schema.optionalKey(ThemeRgbSchema),
+  foreground: Schema.optionalKey(ThemeRgbSchema),
+});
 const OptionalThemeRgbSchema = Schema.optionalKey(
   Schema.NullOr(ThemeRgbSchema),
 );
-const ThemeTokenPatchSchema = Schema.Struct({
+const ThemeColorsPatchSchema = Schema.Struct({
+  accent: OptionalThemeRgbSchema,
   background: OptionalThemeRgbSchema,
   foreground: OptionalThemeRgbSchema,
-  card: OptionalThemeRgbSchema,
-  cardForeground: OptionalThemeRgbSchema,
-  popover: OptionalThemeRgbSchema,
-  popoverForeground: OptionalThemeRgbSchema,
-  primary: OptionalThemeRgbSchema,
-  primaryForeground: OptionalThemeRgbSchema,
-  secondary: OptionalThemeRgbSchema,
-  secondaryForeground: OptionalThemeRgbSchema,
-  muted: OptionalThemeRgbSchema,
-  mutedForeground: OptionalThemeRgbSchema,
-  accent: OptionalThemeRgbSchema,
-  accentForeground: OptionalThemeRgbSchema,
-  destructive: OptionalThemeRgbSchema,
-  destructiveForeground: OptionalThemeRgbSchema,
-  success: OptionalThemeRgbSchema,
-  successForeground: OptionalThemeRgbSchema,
-  warning: OptionalThemeRgbSchema,
-  warningForeground: OptionalThemeRgbSchema,
-  info: OptionalThemeRgbSchema,
-  infoForeground: OptionalThemeRgbSchema,
-  border: OptionalThemeRgbSchema,
-  input: OptionalThemeRgbSchema,
-  ring: OptionalThemeRgbSchema,
 });
 
 export const ThemeProfileSchema = Schema.Struct({
-  tokens: ThemeTokenValuesSchema,
-  sansFont: ThemeFontSchema,
-  monoFont: ThemeFontSchema,
+  colors: ThemeColorsSchema,
+  sansFont: Schema.optionalKey(ThemeFontSchema),
+  monoFont: Schema.optionalKey(ThemeFontSchema),
   sansFontSize: ThemeFontSizeSchema,
   monoFontSize: ThemeFontSizeSchema,
   rounding: ThemeRoundingSchema,
 });
 
 export const ThemeProfilePatchSchema = Schema.Struct({
-  tokens: Schema.optionalKey(ThemeTokenPatchSchema),
-  sansFont: Schema.optionalKey(ThemeFontSchema),
-  monoFont: Schema.optionalKey(ThemeFontSchema),
+  colors: Schema.optionalKey(ThemeColorsPatchSchema),
+  sansFont: Schema.optionalKey(ThemeFontPatchSchema),
+  monoFont: Schema.optionalKey(ThemeFontPatchSchema),
   sansFontSize: Schema.optionalKey(ThemeFontSizeSchema),
   monoFontSize: Schema.optionalKey(ThemeFontSizeSchema),
   rounding: Schema.optionalKey(ThemeRoundingSchema),
@@ -152,8 +111,8 @@ export const AppearancePatchSchema = Schema.Struct({
   ),
 });
 
-export type ThemeTokenName = (typeof THEME_TOKEN_NAMES)[number];
-export type ThemeTokenValues = Record<ThemeTokenName, ThemeRgb>;
+export type ThemeColorName = (typeof THEME_COLOR_NAMES)[number];
+export type ThemeColors = Partial<Record<ThemeColorName, ThemeRgb>>;
 export interface PreferencesPatch {
   readonly checkForUpdates?: boolean;
   readonly launchMode?: AppLaunchMode;
@@ -161,12 +120,12 @@ export interface PreferencesPatch {
   readonly useGameTabs?: boolean;
 }
 export interface ThemeProfilePatch {
-  readonly monoFont?: string;
+  readonly monoFont?: string | null;
   readonly monoFontSize?: number;
   readonly rounding?: number;
-  readonly sansFont?: string;
+  readonly sansFont?: string | null;
   readonly sansFontSize?: number;
-  readonly tokens?: Partial<Record<ThemeTokenName, ThemeRgb | null>>;
+  readonly colors?: Partial<Record<ThemeColorName, ThemeRgb | null>>;
 }
 export interface AppearancePatch {
   readonly reduceMotion?: MotionMode;
@@ -176,9 +135,9 @@ export interface AppearancePatch {
 }
 
 export interface ThemeProfile {
-  readonly tokens: ThemeTokenValues;
-  readonly sansFont: string;
-  readonly monoFont: string;
+  readonly colors: ThemeColors;
+  readonly sansFont?: string;
+  readonly monoFont?: string;
   readonly sansFontSize: number;
   readonly monoFontSize: number;
   readonly rounding: number;
@@ -221,83 +180,54 @@ export const AppSettingsSchema = Schema.Struct({
   hotkeys: HotkeysSettingsSchema,
 });
 
-const DEFAULT_SANS_FONT =
+export const DEFAULT_SANS_FONT =
   '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
-const DEFAULT_MONO_FONT =
+export const DEFAULT_MONO_FONT =
   'ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace';
 const DEFAULT_SANS_FONT_SIZE = 14;
 const DEFAULT_MONO_FONT_SIZE = 12;
 
-const DEFAULT_THEME_TOKENS: Record<ThemeVariant, ThemeTokenValues> = {
+export const DEFAULT_THEME_COLORS: Record<
+  ThemeVariant,
+  Record<ThemeColorName, ThemeRgb>
+> = {
+  light: {
+    background: [248, 248, 250],
+    foreground: [25, 25, 28],
+    accent: [25, 25, 28],
+  },
+  dark: {
+    background: [14, 14, 16],
+    foreground: [243, 243, 245],
+    accent: [243, 243, 245],
+  },
+};
+
+const LEGACY_THEME_DEFAULTS: Record<
+  ThemeVariant,
+  Record<"background" | "foreground" | "primary", ThemeRgb>
+> = {
   light: {
     background: [255, 255, 255],
     foreground: [38, 38, 38],
-    card: [255, 255, 255],
-    cardForeground: [38, 38, 38],
-    popover: [255, 255, 255],
-    popoverForeground: [38, 38, 38],
     primary: [38, 38, 38],
-    primaryForeground: [250, 250, 250],
-    secondary: [245, 245, 245],
-    secondaryForeground: [38, 38, 38],
-    muted: [245, 245, 245],
-    mutedForeground: [92, 92, 92],
-    accent: [245, 245, 245],
-    accentForeground: [38, 38, 38],
-    destructive: [239, 68, 68],
-    destructiveForeground: [185, 28, 28],
-    success: [16, 185, 129],
-    successForeground: [4, 120, 87],
-    warning: [245, 158, 11],
-    warningForeground: [180, 83, 9],
-    info: [59, 130, 246],
-    infoForeground: [29, 78, 216],
-    border: [235, 235, 235],
-    input: [229, 229, 229],
-    ring: [163, 163, 163],
   },
   dark: {
     background: [14, 14, 15],
     foreground: [245, 245, 245],
-    card: [18, 18, 20],
-    cardForeground: [245, 245, 245],
-    popover: [22, 22, 24],
-    popoverForeground: [245, 245, 245],
     primary: [245, 245, 245],
-    primaryForeground: [38, 38, 38],
-    secondary: [32, 32, 34],
-    secondaryForeground: [245, 245, 245],
-    muted: [32, 32, 34],
-    mutedForeground: [166, 166, 166],
-    accent: [32, 32, 34],
-    accentForeground: [245, 245, 245],
-    destructive: [248, 113, 113],
-    destructiveForeground: [248, 113, 113],
-    success: [52, 211, 153],
-    successForeground: [52, 211, 153],
-    warning: [251, 191, 36],
-    warningForeground: [251, 191, 36],
-    info: [96, 165, 250],
-    infoForeground: [96, 165, 250],
-    border: [38, 38, 40],
-    input: [46, 46, 49],
-    ring: [115, 115, 115],
   },
 };
 
 const DEFAULT_LIGHT_THEME_PROFILE: ThemeProfile = {
-  tokens: DEFAULT_THEME_TOKENS.light,
-  sansFont: DEFAULT_SANS_FONT,
-  monoFont: DEFAULT_MONO_FONT,
+  colors: {},
   sansFontSize: DEFAULT_SANS_FONT_SIZE,
   monoFontSize: DEFAULT_MONO_FONT_SIZE,
   rounding: 1,
 };
 
 const DEFAULT_DARK_THEME_PROFILE: ThemeProfile = {
-  tokens: DEFAULT_THEME_TOKENS.dark,
-  sansFont: DEFAULT_SANS_FONT,
-  monoFont: DEFAULT_MONO_FONT,
+  colors: {},
   sansFontSize: DEFAULT_SANS_FONT_SIZE,
   monoFontSize: DEFAULT_MONO_FONT_SIZE,
   rounding: 1,
@@ -326,12 +256,12 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
 const decodeAppLaunchMode = Schema.decodeUnknownOption(AppLaunchModeSchema);
 const decodeThemeMode = Schema.decodeUnknownOption(ThemeModeSchema);
 const decodeMotionMode = Schema.decodeUnknownOption(MotionModeSchema);
-const decodeThemeTokenName = Schema.decodeUnknownOption(ThemeTokenNameSchema);
 const decodeThemeRgb = Schema.decodeUnknownOption(ThemeRgbSchema);
 const decodeRecord = Schema.decodeUnknownOption(UnknownRecordSchema);
 const decodeBoolean = Schema.decodeUnknownOption(Schema.Boolean);
 const decodeFinite = Schema.decodeUnknownOption(Schema.Finite);
 const decodeString = Schema.decodeUnknownOption(Schema.String);
+const isThemeFont = Schema.is(ThemeFontSchema);
 
 const decodeOrElse = <A>(
   decode: (value: unknown) => Option.Option<A>,
@@ -349,9 +279,6 @@ const decodeRecordOrEmpty = (value: unknown): Record<string, unknown> => {
 
 export const isAppLaunchMode = (value: unknown): value is AppLaunchMode =>
   Option.isSome(decodeAppLaunchMode(value));
-
-const isThemeTokenName = (value: string): value is ThemeTokenName =>
-  Option.isSome(decodeThemeTokenName(value));
 
 const normalizeRgb = (value: unknown): ThemeRgb | undefined => {
   const stringValue = decodeString(value);
@@ -374,23 +301,23 @@ const normalizeRgb = (value: unknown): ThemeRgb | undefined => {
   }
 
   const tupleValue = decodeThemeRgb(value);
-  return Option.isSome(tupleValue) ? (tupleValue.value as ThemeRgb) : undefined;
+  return Option.isSome(tupleValue) ? tupleValue.value : undefined;
 };
 
 const rgbToHex = (rgb: ThemeRgb): string =>
   `#${rgb.map((channel) => channel.toString(16).padStart(2, "0")).join("")}`;
 
-const normalizeFont = (value: unknown, fallback: string): string => {
+const normalizeFont = (
+  value: unknown,
+  defaultFont: string,
+): string | undefined => {
   const decoded = decodeString(value);
   if (Option.isNone(decoded)) {
-    return fallback;
+    return undefined;
   }
 
   const font = decoded.value.trim();
-  return font.length >= THEME_FONT_MIN_LENGTH &&
-    font.length <= THEME_FONT_MAX_LENGTH
-    ? font
-    : fallback;
+  return font !== defaultFont && isThemeFont(font) ? font : undefined;
 };
 
 const normalizeFontSize = (value: unknown, fallback: number): number => {
@@ -417,43 +344,59 @@ const normalizeRounding = (value: unknown, fallback: number): number => {
   );
 };
 
-const normalizeThemeTokens = (
+const normalizeThemeColors = (value: unknown): ThemeColors => {
+  const record = decodeRecordOrEmpty(value);
+  const colors: ThemeColors = {};
+  for (const name of THEME_COLOR_NAMES) {
+    const color = normalizeRgb(record[name]);
+    if (color !== undefined) {
+      colors[name] = color;
+    }
+  }
+  return colors;
+};
+
+// V1 -> V2
+const migrateThemeColors = (
   value: unknown,
-  fallback: ThemeTokenValues,
-): ThemeTokenValues => {
-  const tokenRecord = decodeRecord(value);
-  if (Option.isNone(tokenRecord)) {
-    return fallback;
-  }
-
-  const tokens: Partial<Record<ThemeTokenName, ThemeRgb>> = {};
-  for (const [key, rawToken] of Object.entries(tokenRecord.value)) {
-    if (!isThemeTokenName(key)) {
-      continue;
-    }
-
-    const token = normalizeRgb(rawToken);
-    if (token !== undefined) {
-      tokens[key] = token;
+  variant: ThemeVariant,
+): ThemeColors => {
+  const tokens = decodeRecordOrEmpty(value);
+  const colors: ThemeColors = {};
+  for (const name of THEME_COLOR_NAMES) {
+    const legacyName = name === "accent" ? "primary" : name;
+    const color = normalizeRgb(tokens[legacyName]);
+    const fallback = LEGACY_THEME_DEFAULTS[variant][legacyName];
+    if (
+      color !== undefined &&
+      color.some((channel, index) => channel !== fallback[index])
+    ) {
+      colors[name] = color;
     }
   }
-
-  return { ...fallback, ...tokens };
+  return colors;
 };
 
 const normalizeThemeProfile = (
   value: unknown,
-  fallback: ThemeProfile,
+  variant: ThemeVariant,
+  isCurrentVersion: boolean,
 ): ThemeProfile => {
+  const fallback = DEFAULT_APP_SETTINGS.appearance.themes[variant];
   const profile = decodeRecord(value);
   if (Option.isNone(profile)) {
     return fallback;
   }
 
+  const sansFont = normalizeFont(profile.value["sansFont"], DEFAULT_SANS_FONT);
+  const monoFont = normalizeFont(profile.value["monoFont"], DEFAULT_MONO_FONT);
+
   return {
-    tokens: normalizeThemeTokens(profile.value["tokens"], fallback.tokens),
-    sansFont: normalizeFont(profile.value["sansFont"], fallback.sansFont),
-    monoFont: normalizeFont(profile.value["monoFont"], fallback.monoFont),
+    colors: isCurrentVersion
+      ? normalizeThemeColors(profile.value["colors"])
+      : migrateThemeColors(profile.value["tokens"], variant),
+    ...(sansFont === undefined ? {} : { sansFont }),
+    ...(monoFont === undefined ? {} : { monoFont }),
     sansFontSize: normalizeFontSize(
       profile.value["sansFontSize"],
       fallback.sansFontSize,
@@ -515,11 +458,13 @@ export const normalizeAppSettings = (value: unknown): AppSettings => {
       themes: {
         light: normalizeThemeProfile(
           themes["light"],
-          DEFAULT_APP_SETTINGS.appearance.themes.light,
+          "light",
+          settings["version"] === APP_SETTINGS_VERSION,
         ),
         dark: normalizeThemeProfile(
           themes["dark"],
-          DEFAULT_APP_SETTINGS.appearance.themes.dark,
+          "dark",
+          settings["version"] === APP_SETTINGS_VERSION,
         ),
       },
     },
@@ -527,15 +472,14 @@ export const normalizeAppSettings = (value: unknown): AppSettings => {
   };
 };
 
-const serializeTokens = (
-  tokens: ThemeTokenValues,
-): Record<ThemeTokenName, string> => {
-  const serialized = {} as Record<ThemeTokenName, string>;
-  for (const [name, value] of Object.entries(tokens)) {
-    const tokenName = name as ThemeTokenName;
-    const rgb = normalizeRgb(value);
-    if (rgb !== undefined) {
-      serialized[tokenName] = rgbToHex(rgb);
+const serializeColors = (
+  colors: ThemeColors,
+): Partial<Record<ThemeColorName, string>> => {
+  const serialized: Partial<Record<ThemeColorName, string>> = {};
+  for (const name of THEME_COLOR_NAMES) {
+    const color = colors[name];
+    if (color !== undefined) {
+      serialized[name] = rgbToHex(color);
     }
   }
   return serialized;
@@ -543,12 +487,12 @@ const serializeTokens = (
 
 const serializeThemeProfile = (
   profile: ThemeProfile,
-): Omit<ThemeProfile, "tokens"> & {
-  readonly tokens: Partial<Record<ThemeTokenName, string>>;
+): Omit<ThemeProfile, "colors"> & {
+  readonly colors: Partial<Record<ThemeColorName, string>>;
 } => ({
-  tokens: serializeTokens(profile.tokens),
-  sansFont: profile.sansFont,
-  monoFont: profile.monoFont,
+  colors: serializeColors(profile.colors),
+  ...(profile.sansFont === undefined ? {} : { sansFont: profile.sansFont }),
+  ...(profile.monoFont === undefined ? {} : { monoFont: profile.monoFont }),
   sansFontSize: profile.sansFontSize,
   monoFontSize: profile.monoFontSize,
   rounding: profile.rounding,

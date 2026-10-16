@@ -162,7 +162,10 @@ const rendererViews = [
       '    <script src="lucent-asset://assets/ruffle/ruffle.js"></script>',
     ].join("\n"),
   }),
-  createRendererView("settings", "Settings", { startsPending: true }),
+  createRendererView("settings", "Settings", {
+    framework: "react",
+    startsPending: true,
+  }),
   createRendererView("about", "About", {
     framework: "react",
     startsPending: true,

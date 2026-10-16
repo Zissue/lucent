@@ -3,31 +3,87 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   createAppearanceSnapshot,
   hexToRgb,
+  resolveThemeColors,
   readAppearanceSnapshotArgument,
   rgbEquals,
   rgbToCssValue,
   rgbToHex,
   serializeAppearanceSnapshotArgument,
 } from "./appearance";
-import { DEFAULT_APP_SETTINGS } from "./settings";
+import { DEFAULT_APP_SETTINGS, normalizeAppSettings } from "./settings";
 
 describe("appearance bootstrap", () => {
   it("creates a dark fallback snapshot", () => {
     const snapshot = createAppearanceSnapshot(DEFAULT_APP_SETTINGS, true);
 
-    expect(snapshot.backgroundColor).toBe(
-      rgbToHex(DEFAULT_APP_SETTINGS.appearance.themes.dark.tokens.background),
-    );
+    expect(snapshot.backgroundColor).toBe("#0e0e10");
     expect(snapshot.variant).toBe("dark");
-    expect(snapshot.tokens.background).toEqual(
-      DEFAULT_APP_SETTINGS.appearance.themes.dark.tokens.background,
+    expect(snapshot.colors).toEqual({});
+    expect(snapshot.sansFont).toBe(
+      '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
     );
-    expect(snapshot.sansFontSize).toBe(
-      DEFAULT_APP_SETTINGS.appearance.themes.dark.sansFontSize,
+    expect(snapshot.monoFont).toBe(
+      'ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
     );
-    expect(snapshot.monoFontSize).toBe(
-      DEFAULT_APP_SETTINGS.appearance.themes.dark.monoFontSize,
-    );
+    expect(snapshot.sansFontSize).toBe(14);
+    expect(snapshot.monoFontSize).toBe(12);
+  });
+
+  it("resolves each font independently for the selected theme", () => {
+    const settings = normalizeAppSettings({
+      version: 2,
+      appearance: {
+        themeMode: "system",
+        themes: {
+          light: { sansFont: "Custom Sans" },
+          dark: { monoFont: "Custom Mono" },
+        },
+      },
+    });
+
+    expect(createAppearanceSnapshot(settings, false)).toMatchObject({
+      sansFont: "Custom Sans",
+      monoFont:
+        'ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
+    });
+    expect(createAppearanceSnapshot(settings, true)).toMatchObject({
+      sansFont: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+      monoFont: "Custom Mono",
+    });
+  });
+
+  it("resolves defaults separately from sparse snapshot overrides", () => {
+    const settings = normalizeAppSettings({
+      version: 2,
+      appearance: {
+        themeMode: "system",
+        themes: {
+          light: { colors: { accent: "#123456" } },
+          dark: { colors: { background: "#010203" } },
+        },
+      },
+    });
+
+    expect(resolveThemeColors(settings, "light")).toEqual({
+      background: [248, 248, 250],
+      foreground: [25, 25, 28],
+      accent: [18, 52, 86],
+    });
+    expect(resolveThemeColors(settings, "dark")).toEqual({
+      background: [1, 2, 3],
+      foreground: [243, 243, 245],
+      accent: [243, 243, 245],
+    });
+    expect(createAppearanceSnapshot(settings, false)).toMatchObject({
+      variant: "light",
+      colors: { accent: [18, 52, 86] },
+      backgroundColor: "#f8f8fa",
+    });
+    expect(createAppearanceSnapshot(settings, true)).toMatchObject({
+      variant: "dark",
+      colors: { background: [1, 2, 3] },
+      backgroundColor: "#010203",
+    });
   });
 
   it("formats, parses, and compares theme colors", () => {
@@ -51,7 +107,7 @@ describe("appearance bootstrap", () => {
     expect(
       readAppearanceSnapshotArgument([
         `--lucent__appearance=${encodeURIComponent(
-          JSON.stringify({ ...snapshot, tokens: {} }),
+          JSON.stringify({ ...snapshot, colors: { accent: [256, 0, 0] } }),
         )}`,
       ]),
     ).toBeNull();

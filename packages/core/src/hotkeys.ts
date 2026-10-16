@@ -438,7 +438,15 @@ export const findDuplicateHotkeyBinding = (
   return null;
 };
 
+const arrowDisplayAliases: Readonly<Record<string, string>> = {
+  arrowdown: "↓",
+  arrowleft: "←",
+  arrowright: "→",
+  arrowup: "↑",
+};
+
 const macDisplayAliases: Readonly<Record<string, string>> = {
+  ...arrowDisplayAliases,
   alt: "⌥",
   cmd: "⌘",
   command: "⌘",
@@ -455,6 +463,7 @@ const macDisplayAliases: Readonly<Record<string, string>> = {
 };
 
 const nonMacDisplayAliases: Readonly<Record<string, string>> = {
+  ...arrowDisplayAliases,
   alt: "Alt",
   control: "Ctrl",
   ctrl: "Ctrl",
