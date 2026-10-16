@@ -1,6 +1,9 @@
 .settings {
+  --settings-inset: max(calc(var(--spacing) * 6), calc((100cqi - 46rem) / 2));
+
   background: var(--color-bg);
   box-sizing: border-box;
+  container-type: inline-size;
   gap: 0;
   height: 100%;
 }
@@ -13,13 +16,12 @@
   flex-wrap: wrap-reverse;
   gap: 0.75rem;
   justify-content: space-between;
-  padding: 0.5rem
-    max(calc(1rem + var(--scrollbar-size)), calc((100% - 46rem) / 2)) 0;
+  padding: 0.5rem var(--settings-inset) 0;
 }
 
 .settings__tabs {
   border-block-end: 0;
-  margin-inline-start: -0.5rem;
+  margin-inline-start: calc(var(--spacing) * -2);
 }
 
 .settings__tabs > [role="tab"] {
@@ -59,11 +61,13 @@
 }
 
 .settings-pane {
+  --panel-gutter: calc((100cqi - 100%) / 2);
+
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
   gap: 1rem;
-  padding: 1rem max(1rem, calc((100% - 46rem) / 2)) 1.5rem;
+  padding: 1rem calc(var(--settings-inset) - var(--panel-gutter)) 1.5rem;
 }
 
 .settings-pane__description {
