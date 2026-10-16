@@ -16,8 +16,10 @@ import {
   ScriptCatalogPageRequestSchema,
   ScriptCatalogPageSchema,
   ScriptPackageInstallRequestSchema,
+  ScriptPackageLeftoverCopySchema,
   ScriptPackageMutationResultSchema,
   ScriptPackageRemoveRequestSchema,
+  ScriptPackageRestoreRequestSchema,
   ScriptPackageUpdateRequestSchema,
   ScriptReferenceSchema,
 } from "@lucent/core/scriptPackages";
@@ -51,6 +53,12 @@ export const ScriptingIpc = {
     payload: Schema.Void,
     result: ScriptCatalogOverviewSchema,
   }),
+  listPackageLeftovers: defineInvoke({
+    channel: `${namespace}:list-package-leftovers`,
+    name: "scripting.listPackageLeftovers",
+    payload: Schema.Void,
+    result: Schema.Array(ScriptPackageLeftoverCopySchema),
+  }),
   listCredentials: defineInvoke({
     channel: `${namespace}:list-github-credentials`,
     name: "scripting.listCredentials",
@@ -79,6 +87,12 @@ export const ScriptingIpc = {
     channel: `${namespace}:update-package`,
     name: "scripting.updatePackage",
     payload: ScriptPackageUpdateRequestSchema,
+    result: ScriptPackageMutationResultSchema,
+  }),
+  restorePackage: defineInvoke({
+    channel: `${namespace}:restore-package`,
+    name: "scripting.restorePackage",
+    payload: ScriptPackageRestoreRequestSchema,
     result: ScriptPackageMutationResultSchema,
   }),
   removePackage: defineInvoke({

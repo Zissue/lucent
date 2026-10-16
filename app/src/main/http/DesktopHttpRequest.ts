@@ -1,8 +1,8 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import { HttpBody, HttpClient, HttpClientRequest } from "effect/unstable/http";
-import type { HttpClientResponse } from "effect/unstable/http/HttpClientResponse";
-import type { HttpMethod } from "effect/unstable/http/HttpMethod";
+import { HttpBody, HttpClient, HttpClientRequest } from "effect/http";
+import type { HttpClientResponse } from "effect/http/HttpClientResponse";
+import type { HttpMethod } from "effect/http/HttpMethod";
 import { NodeHttpIncomingMessage } from "@effect/platform-node/NodeHttpIncomingMessage";
 import {
   clientError,

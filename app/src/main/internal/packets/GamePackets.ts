@@ -34,14 +34,15 @@ export const makeGamePackets = Effect.gen(function* () {
   const statuses = new Map<number, PacketsStatusPayload>();
 
   const getStatus: GamePacketsShape["getStatus"] = (gameRendererId) =>
-    windows.isRendererReady(gameRendererId).pipe(
-      Effect.map((rendererReady) =>
-        rendererReady
-          ? (statuses.get(gameRendererId) ?? stoppedStatus())
-          : stoppedStatus(),
-      ),
-      Effect.orElseSucceed(() => stoppedStatus("The game is unavailable")),
-    );
+    windows
+      .describe(gameRendererId)
+      .pipe(
+        Effect.map((info) =>
+          info?.ready
+            ? (statuses.get(gameRendererId) ?? stoppedStatus())
+            : stoppedStatus(),
+        ),
+      );
 
   const publishStatus: GamePacketsShape["publishStatus"] = Effect.fn(
     "GamePackets.publishStatus",
@@ -54,34 +55,26 @@ export const makeGamePackets = Effect.gen(function* () {
     yield* ipc.sendToRendererIds(targets, PacketsIpc.status, next);
   });
 
-  const stopGame = (
-    event: { readonly kind: string; readonly rendererId: number },
-    stoppedReason?: string,
-  ) =>
-    event.kind === "game"
-      ? publishStatus(event.rendererId, stoppedStatus(stoppedReason))
-      : Effect.void;
-  const unavailableReason =
-    "Packet activity stopped because the game closed or crashed";
-  const unsubscribers = yield* Effect.all([
-    windows.onClosed((event) =>
-      event.kind === "game"
-        ? Effect.sync(() => statuses.delete(event.rendererId))
-        : Effect.void,
-    ),
-    windows.onRendererDestroyed((event) => stopGame(event, unavailableReason)),
-    windows.onRendererUnavailable((event) =>
-      stopGame(event, unavailableReason),
-    ),
-    windows.onRendererReloaded((event) => stopGame(event)),
-  ]);
-  yield* Effect.addFinalizer(() =>
-    Effect.sync(() => {
-      for (const unsubscribe of unsubscribers) {
-        unsubscribe();
-      }
-    }),
-  );
+  yield* windows.observe({ kind: "game" }, (event) => {
+    switch (event.type) {
+      case "closed":
+        return Effect.sync(() => {
+          statuses.delete(event.rendererId);
+        });
+      case "crashed":
+      case "reloaded":
+        return publishStatus(
+          event.rendererId,
+          stoppedStatus(
+            event.type === "crashed"
+              ? "Packet activity stopped because the game closed or crashed"
+              : undefined,
+          ),
+        );
+      default:
+        return Effect.void;
+    }
+  });
 
   return GamePackets.of({ getStatus, publishStatus });
 });

@@ -7,13 +7,14 @@
  * `ReadableStream` adapter that uses Bun's `readMany` reader method to pull
  * batches of values into an Effect `Stream`.
  *
+ * @stability unstable
  * @since 4.0.0
  */
 import * as Arr from "effect/Array"
 import * as Cause from "effect/Cause"
 import * as Channel from "effect/Channel"
 import * as Effect from "effect/Effect"
-import type { LazyArg } from "effect/Function"
+import { constVoid, type LazyArg } from "effect/Function"
 import type * as Pull from "effect/Pull"
 import * as Scope from "effect/Scope"
 import * as Stream from "effect/Stream"
@@ -27,6 +28,7 @@ export * from "@effect/platform-node-shared/NodeStream"
  * Creates a stream from a `ReadableStream` using Bun's optimized `.readMany`
  * API.
  *
+ * @stability unstable
  * @category constructors
  * @since 4.0.0
  */
@@ -41,10 +43,19 @@ export const fromReadableStream = <A, E>(
     const reader = options.evaluate().getReader()
     yield* Scope.addFinalizer(
       scope,
-      options.releaseLockOnEnd ? Effect.sync(() => reader.releaseLock()) : Effect.promise(() => reader.cancel())
+      options.releaseLockOnEnd
+        ? Effect.sync(() => reader.releaseLock())
+        : Effect.promise(() => reader.cancel().catch(constVoid))
     )
     function readMany(): Pull.Pull<Arr.NonEmptyReadonlyArray<A>, E> {
-      const result = reader.readMany()
+      let result:
+        | Bun.ReadableStreamDefaultReadManyResult<A>
+        | Promise<Bun.ReadableStreamDefaultReadManyResult<A>>
+      try {
+        result = reader.readMany()
+      } catch (error) {
+        return Effect.fail(options.onError(error))
+      }
       if ("then" in result) {
         return Effect.callback<Arr.NonEmptyReadonlyArray<A>, E | Cause.Done>((resume) => {
           result.then((_) => resume(handleResult(_)), (e) => resume(Effect.fail(options.onError(e))))

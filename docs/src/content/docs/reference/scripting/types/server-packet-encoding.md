@@ -15,4 +15,4 @@ Alias of <a href="/reference/scripting/types/packet-encoding/"><code>PacketEncod
 type ServerPacketEncoding = "string" | "json"
 ```
 
-<p class="source-reference">Defined in <a class="source-reference__link" href="https://github.com/toommyliu/lucent/blob/main/app/src/renderer/apps/game/flash/bridge/Gateway.ts#L37" aria-label="Open source: app/src/renderer/apps/game/flash/bridge/Gateway.ts:37" title="app/src/renderer/apps/game/flash/bridge/Gateway.ts:37" target="_blank" rel="noreferrer"><code class="source-reference__path">Gateway.ts:37</code></a></p>
+<p class="source-reference">Defined in <a class="source-reference__link" href="https://github.com/toommyliu/lucent/blob/main/app/src/renderer/apps/game/flash/bridge/Gateway.ts#L36" aria-label="Open source: app/src/renderer/apps/game/flash/bridge/Gateway.ts:36" title="app/src/renderer/apps/game/flash/bridge/Gateway.ts:36" target="_blank" rel="noreferrer"><code class="source-reference__path">Gateway.ts:36</code></a></p>

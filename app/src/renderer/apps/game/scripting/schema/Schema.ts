@@ -344,7 +344,7 @@ export class SchemaImpl<Output = unknown> {
       throw new SchemaUsageError("Expected a synchronous schema callback.");
     return definitionOf(this).backend.pipe(
       Native.decodeTo(Native.Unknown, {
-        decode: Getter.transformOrFail((value, options) => {
+        decode: Getter.transformEffect((value, options) => {
           const state = stateOf(options);
           const issues: Issue[] = [];
           let active = true;

@@ -11,9 +11,12 @@ import { ElectronDialog } from "../../electron/ElectronDialog";
 import { Accounts } from "../../internal/accounts/Accounts";
 import { AccountSessions } from "../../internal/accounts/AccountSessions";
 import { DesktopScriptLibrary } from "../../scripting/DesktopScriptLibrary";
+import { parseGameViewTabId } from "../../window/DesktopGameHost";
 import {
   DesktopWindowError,
   DesktopWindows,
+  type GameViewHostChange,
+  requireRenderer,
 } from "../../window/DesktopWindows";
 import { DesktopIpc, makeDesktopIpcMethod } from "../DesktopIpc";
 
@@ -36,7 +39,10 @@ const confirmClose = Effect.fn("desktop.ipc.gameViews.confirmClose")(function* (
     return true;
   const dialog = yield* ElectronDialog;
   const windows = yield* DesktopWindows;
-  const parentWindowId = yield* windows.getNativeWindowId(rendererId);
+  const { windowId: parentWindowId } = yield* requireRenderer(
+    windows,
+    rendererId,
+  );
   const result = yield* dialog.showMessageBox(
     {
       type: "question",
@@ -53,6 +59,11 @@ const confirmClose = Effect.fn("desktop.ipc.gameViews.confirmClose")(function* (
   return result.response === 1;
 });
 
+const updateHost = (rendererId: number, change: GameViewHostChange) =>
+  Effect.flatMap(DesktopWindows, (windows) =>
+    windows.updateGameViewHost(rendererId, change),
+  );
+
 export const getRecentlyClosed = makeDesktopIpcMethod({
   descriptor: GameViewsIpc.getRecentlyClosed,
   allowedSenders: gameHostSenders,
@@ -60,7 +71,10 @@ export const getRecentlyClosed = makeDesktopIpcMethod({
     function* (_payload, sender) {
       const accounts = yield* Accounts;
       const windows = yield* DesktopWindows;
-      const groupId = yield* windows.getNativeWindowId(sender.rendererId);
+      const { windowId: groupId } = yield* requireRenderer(
+        windows,
+        sender.rendererId,
+      );
       return yield* accounts.getRecentlyClosed(groupId);
     },
   ),
@@ -82,8 +96,9 @@ export const reopen = makeDesktopIpcMethod({
         detail: "Close a tab before reopening another.",
       });
     }
-    const gameWindowId = yield* windows.getRendererId(state.selectedId);
-    const gameWindowGroupId = yield* windows.getNativeWindowId(
+    const gameWindowId = parseGameViewTabId(state.selectedId);
+    const { windowId: gameWindowGroupId } = yield* requireRenderer(
+      windows,
       sender.rendererId,
     );
     yield* accounts.reopenGameWindow({
@@ -118,15 +133,12 @@ export const add = makeDesktopIpcMethod({
 export const select = makeDesktopIpcMethod({
   descriptor: GameViewsIpc.select,
   allowedSenders: hostSenders,
-  handler: Effect.fn("desktop.ipc.gameViews.select")(
-    function* (payload, sender) {
-      const windows = yield* DesktopWindows;
-      return yield* windows.selectGameView(
-        sender.rendererId,
-        payload.id,
-        payload.focus,
-      );
-    },
+  handler: Effect.fn("desktop.ipc.gameViews.select")((payload, sender) =>
+    updateHost(sender.rendererId, {
+      type: "select",
+      id: parseGameViewTabId(payload.id),
+      focus: payload.focus,
+    }),
   ),
 });
 
@@ -143,9 +155,9 @@ export const close = makeDesktopIpcMethod({
           detail: "This tab no longer belongs to this window.",
         });
       }
-      const rendererId = yield* windows.getRendererId(payload.id);
+      const rendererId = parseGameViewTabId(payload.id);
       if (!(yield* confirmClose(rendererId))) return;
-      return yield* windows.closeGameView(sender.rendererId, payload.id);
+      return yield* windows.closeGameView(sender.rendererId, rendererId);
     },
   ),
 });
@@ -153,25 +165,22 @@ export const close = makeDesktopIpcMethod({
 export const reorder = makeDesktopIpcMethod({
   descriptor: GameViewsIpc.reorder,
   allowedSenders: hostSenders,
-  handler: Effect.fn("desktop.ipc.gameViews.reorder")(
-    function* (payload, sender) {
-      const windows = yield* DesktopWindows;
-      return yield* windows.reorderGameViews(sender.rendererId, payload.ids);
-    },
+  handler: Effect.fn("desktop.ipc.gameViews.reorder")((payload, sender) =>
+    updateHost(sender.rendererId, {
+      type: "reorder",
+      ids: payload.ids.map(parseGameViewTabId),
+    }),
   ),
 });
 
 export const setLayout = makeDesktopIpcMethod({
   descriptor: GameViewsIpc.setLayout,
   allowedSenders: hostSenders,
-  handler: Effect.fn("desktop.ipc.gameViews.setLayout")(
-    function* (payload, sender) {
-      const windows = yield* DesktopWindows;
-      return yield* windows.setGameViewLayout(
-        sender.rendererId,
-        payload.layout,
-      );
-    },
+  handler: Effect.fn("desktop.ipc.gameViews.setLayout")((payload, sender) =>
+    updateHost(sender.rendererId, {
+      type: "layout",
+      layout: payload.layout,
+    }),
   ),
 });
 
@@ -179,13 +188,11 @@ export const setGroupControlsOpen = makeDesktopIpcMethod({
   descriptor: GameViewsIpc.setGroupControlsOpen,
   allowedSenders: hostSenders,
   handler: Effect.fn("desktop.ipc.gameViews.setGroupControlsOpen")(
-    function* (payload, sender) {
-      const windows = yield* DesktopWindows;
-      return yield* windows.setGameViewGroupControlsOpen(
-        sender.rendererId,
-        payload.open,
-      );
-    },
+    (payload, sender) =>
+      updateHost(sender.rendererId, {
+        type: "group-controls",
+        open: payload.open,
+      }),
   ),
 });
 
@@ -193,13 +200,11 @@ export const setTabMenuOpen = makeDesktopIpcMethod({
   descriptor: GameViewsIpc.setTabMenuOpen,
   allowedSenders: gameHostSenders,
   handler: Effect.fn("desktop.ipc.gameViews.setTabMenuOpen")(
-    function* (payload, sender) {
-      const windows = yield* DesktopWindows;
-      return yield* windows.setGameViewTabMenuOpen(
-        sender.rendererId,
-        payload.open,
-      );
-    },
+    (payload, sender) =>
+      updateHost(sender.rendererId, {
+        type: "tab-menu",
+        open: payload.open,
+      }).pipe(Effect.as(payload.open)),
   ),
 });
 
@@ -207,10 +212,10 @@ export const syncTabBarLayout = makeDesktopIpcMethod({
   descriptor: GameViewsIpc.syncTabBarLayout,
   allowedSenders: gameHostSenders,
   handler: Effect.fn("desktop.ipc.gameViews.syncTabBarLayout")(
-    function* (_payload, sender) {
-      const windows = yield* DesktopWindows;
-      return yield* windows.syncGameViewTabBarLayout(sender.rendererId);
-    },
+    (_payload, sender) =>
+      updateHost(sender.rendererId, {
+        type: "tab-bar-layout",
+      }).pipe(Effect.asVoid),
   ),
 });
 
@@ -218,13 +223,11 @@ export const setGroupTargets = makeDesktopIpcMethod({
   descriptor: GameViewsIpc.setGroupTargets,
   allowedSenders: hostSenders,
   handler: Effect.fn("desktop.ipc.gameViews.setGroupTargets")(
-    function* (payload, sender) {
-      const windows = yield* DesktopWindows;
-      return yield* windows.setGameViewGroupTargets(
-        sender.rendererId,
-        payload.ids,
-      );
-    },
+    (payload, sender) =>
+      updateHost(sender.rendererId, {
+        type: "group-targets",
+        ids: payload.ids.map(parseGameViewTabId),
+      }),
   ),
 });
 
@@ -247,8 +250,8 @@ export const dispatchGroupCommand = makeDesktopIpcMethod({
         state,
         request.targetIds,
       );
-      let rendererIds = yield* Effect.forEach(readySessions, (session) =>
-        windows.getRendererId(session.id),
+      let rendererIds = readySessions.map((session) =>
+        parseGameViewTabId(session.id),
       );
 
       if (rendererIds.length === 0) {
@@ -284,8 +287,8 @@ export const dispatchGroupCommand = makeDesktopIpcMethod({
           latestState,
           request.targetIds,
         ));
-        rendererIds = yield* Effect.forEach(readySessions, (session) =>
-          windows.getRendererId(session.id),
+        rendererIds = readySessions.map((session) =>
+          parseGameViewTabId(session.id),
         );
         if (rendererIds.length === 0) {
           return {
@@ -344,10 +347,7 @@ export const dispatchGroupOptionHotkey = makeDesktopIpcMethod({
     function* ({ commandId }, sender) {
       const ipc = yield* DesktopIpc;
       const windows = yield* DesktopWindows;
-      const hostRendererId = yield* windows.getGameViewHostRendererId(
-        sender.rendererId,
-      );
-      const state = yield* windows.getGameViewHostState(hostRendererId);
+      const state = yield* windows.getGameViewHostState(sender.rendererId);
       if (state.layout !== "grid") {
         return {
           recipientCount: 0,
@@ -360,8 +360,8 @@ export const dispatchGroupOptionHotkey = makeDesktopIpcMethod({
         state,
         state.groupTargetIds,
       );
-      const rendererIds = yield* Effect.forEach(readySessions, (session) =>
-        windows.getRendererId(session.id),
+      const rendererIds = readySessions.map((session) =>
+        parseGameViewTabId(session.id),
       );
       if (rendererIds.length > 0) {
         const envelope: GameViewGroupCommandEnvelope = {
@@ -401,7 +401,6 @@ export const closeCurrent = makeDesktopIpcMethod({
   handler: Effect.fn("desktop.ipc.gameViews.closeCurrent")(
     function* (_payload, sender) {
       const windows = yield* DesktopWindows;
-      if (!(yield* confirmClose(sender.rendererId))) return;
       yield* windows.closeRenderer(sender.rendererId);
     },
   ),

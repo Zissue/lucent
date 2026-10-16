@@ -1,13 +1,11 @@
 import { promises as fs, type Dirent } from "fs";
 import { basename, extname, join, relative, resolve, sep } from "path";
 
-import * as Cache from "effect/Cache";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
-import * as Semaphore from "effect/Semaphore";
+import * as SynchronizedRef from "effect/SynchronizedRef";
 import { satisfies, valid, validRange } from "semver";
 
 import type {
@@ -21,6 +19,8 @@ import type {
   ScriptPackageDependencyIssue,
   ScriptPackageDependencyStatus,
   ScriptPackageDirectory,
+  ScriptPackageIntegrity,
+  ScriptPackageName,
   ScriptPackageSummary,
   ScriptReference,
 } from "@lucent/core/scriptPackages";
@@ -30,8 +30,7 @@ import {
   ScriptRelativePathSchema,
 } from "@lucent/core/scriptPackages";
 import { DesktopEnvironment } from "../app/DesktopEnvironment";
-import { invariant } from "../../shared/invariant";
-import { makeListenerRegistry } from "../app/ListenerRegistry";
+import { makeListenerRegistry, type Listener } from "../app/ListenerRegistry";
 import { ElectronApp } from "../electron/ElectronApp";
 import {
   hashDirectory,
@@ -42,7 +41,7 @@ import {
   sha256Revision,
 } from "./ScriptPackageFileSystem";
 import {
-  formatScriptByteLimit,
+  formatBytes,
   SCRIPT_PACKAGE_MANIFEST_MAX_BYTES,
   SCRIPT_PACKAGE_MAX_FILES,
 } from "./ScriptLimits";
@@ -126,7 +125,9 @@ export interface DiscoveredScriptPackage {
 export interface InspectedScriptPackageDirectory {
   readonly files: readonly string[];
   readonly mainPath: string | null;
-  readonly manifest: ScriptPackageManifest;
+  readonly manifest: ScriptPackageManifest & {
+    readonly name: ScriptPackageName;
+  };
 }
 
 export interface DiscoveredScriptCatalog {
@@ -137,6 +138,7 @@ export interface DiscoveredScriptCatalog {
 }
 
 export interface ScriptPackageCatalogReplacement {
+  readonly integrity?: ScriptPackageIntegrity;
   readonly inspected: InspectedScriptPackageDirectory;
   readonly managed: ManagedScriptPackage;
   readonly rootPath: string;
@@ -168,7 +170,7 @@ export interface ScriptPackageCatalogShape {
     request: ScriptCatalogPageRequest,
   ) => Effect.Effect<ScriptCatalogPage, ScriptPackageCatalogError>;
   readonly onChanged: (
-    listener: (change: ScriptCatalogChange) => void,
+    listener: Listener<ScriptCatalogChange>,
   ) => Effect.Effect<() => void>;
   readonly referenceForPath: (
     path: string,
@@ -203,14 +205,12 @@ export const readScriptPackageManifest = async (
   path: string,
 ): Promise<ScriptPackageManifest> => {
   const stat = await fs.lstat(path);
-  invariant(
-    stat.isFile() && !stat.isSymbolicLink(),
-    "package.json must be a file.",
-  );
-  invariant(
-    stat.size <= SCRIPT_PACKAGE_MANIFEST_MAX_BYTES,
-    `package.json exceeds the ${formatScriptByteLimit(SCRIPT_PACKAGE_MANIFEST_MAX_BYTES)} limit.`,
-  );
+  if (!stat.isFile()) throw new Error("package.json must be a file.");
+  if (stat.size > SCRIPT_PACKAGE_MANIFEST_MAX_BYTES) {
+    throw new Error(
+      `package.json exceeds the ${formatBytes(SCRIPT_PACKAGE_MANIFEST_MAX_BYTES)} limit.`,
+    );
+  }
 
   const record = parseManifestJson(await fs.readFile(path, "utf8"));
   const lucentVersion = optionalString(record.lucent?.version);
@@ -260,9 +260,9 @@ export const readScriptPackageManifest = async (
   };
 };
 
-const assertPackageName = (name: string): void => {
+const parsePackageName = (name: string): ScriptPackageName => {
   try {
-    decodePackageName(name);
+    return decodePackageName(name);
   } catch {
     throw new Error("The package name contains unsupported characters.");
   }
@@ -275,7 +275,9 @@ const compatibilityFor = (
   if (requiredVersion === undefined) {
     return { status: "unknown", currentVersion };
   }
-  const normalizedRange = validRange(requiredVersion);
+  const normalizedRange = validRange(requiredVersion, {
+    includePrerelease: true,
+  });
   if (normalizedRange === null) {
     return {
       status: "unknown",
@@ -284,7 +286,9 @@ const compatibilityFor = (
     };
   }
   return {
-    status: satisfies(currentVersion, normalizedRange)
+    status: satisfies(currentVersion, normalizedRange, {
+      includePrerelease: true,
+    })
       ? "compatible"
       : "incompatible",
     currentVersion,
@@ -397,7 +401,7 @@ export const inspectScriptPackageDirectory = async (
   const manifest = await readScriptPackageManifest(
     join(rootPath, "package.json"),
   );
-  assertPackageName(manifest.name);
+  const name = parsePackageName(manifest.name);
   const [mainPath, inventory] = await Promise.all([
     resolveMainPath(rootPath, manifest.main),
     listRegularFilePaths(rootPath, { maxFiles: SCRIPT_PACKAGE_MAX_FILES }),
@@ -407,7 +411,7 @@ export const inspectScriptPackageDirectory = async (
       .filter((file) => isJavaScriptFile(file.relativePath))
       .map((file) => file.absolutePath),
     mainPath,
-    manifest,
+    manifest: { ...manifest, name },
   };
 };
 
@@ -423,7 +427,29 @@ const hashesMatch = (
   );
 };
 
-const integrityFor = async (
+export const inspectManagedPackageFolder = async (
+  packagesDir: string,
+  rootPath: string,
+  managed: ManagedScriptPackage | undefined,
+): Promise<InspectedScriptPackageDirectory> => {
+  if (!(await fs.lstat(rootPath)).isDirectory()) {
+    throw new Error("The package folder is not a regular directory.");
+  }
+  const inspected = await inspectScriptPackageDirectory(rootPath);
+  if (managed !== undefined && managed.name !== inspected.manifest.name) {
+    throw new Error(
+      `The installed package name is ${JSON.stringify(managed.name)}, but package.json declares ${JSON.stringify(inspected.manifest.name)}.`,
+    );
+  }
+  if (
+    !isPathInside(await fs.realpath(packagesDir), await fs.realpath(rootPath))
+  ) {
+    throw new Error("The package points outside Lucent's packages folder.");
+  }
+  return inspected;
+};
+
+export const integrityFor = async (
   rootPath: string,
   managed: ManagedScriptPackage | undefined,
 ): Promise<"modified" | "unmanaged" | "verified"> => {
@@ -724,7 +750,7 @@ export const discoverScriptCatalog = async (
 
   const scannedPackages: ScannedPackage[] = [];
   for (const entry of packageDirectories) {
-    if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+    if (!entry.isDirectory()) continue;
     const directory = join(options.packagesDir, entry.name);
     let parsedName: string | undefined;
     let validatedName: string | undefined;
@@ -734,20 +760,13 @@ export const discoverScriptCatalog = async (
         await readScriptPackageManifest(join(directory, "package.json"))
       ).name;
       validatedName = decodePackageName(parsedName);
-      const inspected = await inspectScriptPackageDirectory(directory);
-      const { mainPath, manifest } = inspected;
       const managed = managedPackages.get(directoryName);
-      if (managed !== undefined && managed.name !== manifest.name) {
-        throw new Error(
-          `The installed package name is ${JSON.stringify(managed.name)}, but package.json declares ${JSON.stringify(manifest.name)}.`,
-        );
-      }
-
-      const packageRealPath = await fs.realpath(directory);
-      const packagesRealPath = await fs.realpath(options.packagesDir);
-      if (!isPathInside(packagesRealPath, packageRealPath)) {
-        throw new Error("The package points outside Lucent's packages folder.");
-      }
+      const inspected = await inspectManagedPackageFolder(
+        options.packagesDir,
+        directory,
+        managed,
+      );
+      const { mainPath, manifest } = inspected;
       const compatibility = compatibilityFor(
         options.currentVersion,
         manifest.lucentVersion,
@@ -868,8 +887,18 @@ const replaceDiscoveredPackage = (
   current: DiscoveredScriptCatalog,
   replacement: ScriptPackageCatalogReplacement,
   currentVersion: string,
-): DiscoveredScriptCatalog => {
+): DiscoveredScriptCatalog | undefined => {
   const { inspected, managed, rootPath, sourceRoot } = replacement;
+  const normalizedRoot = resolve(rootPath);
+  if (
+    current.catalog.packages.some(
+      (entry) =>
+        entry.status === "valid" &&
+        entry.name === managed.name &&
+        resolve(entry.path) !== normalizedRoot,
+    )
+  )
+    return undefined;
   const remapPath = (path: string): string =>
     resolve(rootPath, relative(sourceRoot, path));
   const files = inspected.files.map(remapPath);
@@ -892,7 +921,7 @@ const replaceDiscoveredPackage = (
     ...(inspected.manifest.description === undefined
       ? {}
       : { description: inspected.manifest.description }),
-    integrity: "verified",
+    integrity: replacement.integrity ?? "verified",
     name: managed.name,
     path: rootPath,
     source: managed.source,
@@ -937,11 +966,8 @@ const replaceDiscoveredPackage = (
     });
   }
 
-  const normalizedRoot = resolve(rootPath);
   const packages = current.catalog.packages.filter(
-    (entry) =>
-      resolve(entry.path) !== normalizedRoot &&
-      !(entry.status === "valid" && entry.name === managed.name),
+    (entry) => resolve(entry.path) !== normalizedRoot,
   );
   packages.push(summary);
   const packageIndex = new Map(current.packages);
@@ -1003,83 +1029,92 @@ export const layer = Layer.effect(
       env.workspaceDir,
     );
     const changes = makeListenerRegistry<ScriptCatalogChange>();
-    const scanGate = yield* Semaphore.make(1);
-    const lastScanRef = yield* Ref.make<DiscoveredScriptCatalog | null>(null);
-    const cacheKey = "catalog" as const;
-
-    const scan = scanGate.withPermits(1)(
-      Effect.gen(function* () {
-        const managedPackages = yield* state.getAll;
-        return yield* Effect.tryPromise({
-          try: async () => {
-            await Promise.all([
-              fs.mkdir(scriptsDir, { recursive: true }),
-              fs.mkdir(packagesDir, { recursive: true }),
-            ]);
-            return discoverScriptCatalog({
-              currentVersion,
-              managedPackages,
-              packagesDir,
-              scriptsDir,
-            });
-          },
-          catch: (cause) =>
-            new ScriptPackageCatalogError({ operation: "scan", cause }),
-        });
-      }).pipe(Effect.tap((discovery) => Ref.set(lastScanRef, discovery))),
-    );
-
-    const discoveryCache = yield* Cache.make<
-      typeof cacheKey,
-      DiscoveredScriptCatalog,
-      ScriptPackageCatalogError
-    >({
-      capacity: 1,
-      lookup: () => scan,
+    const discoveryRef = yield* SynchronizedRef.make<{
+      readonly value: DiscoveredScriptCatalog | null;
+      readonly publicationRevision: number;
+    }>({ value: null, publicationRevision: 0 });
+    const scan = Effect.gen(function* () {
+      const managedPackages = yield* state.getAll;
+      return yield* Effect.tryPromise({
+        try: async () => {
+          await Promise.all([
+            fs.mkdir(scriptsDir, { recursive: true }),
+            fs.mkdir(packagesDir, { recursive: true }),
+          ]);
+          return discoverScriptCatalog({
+            currentVersion,
+            managedPackages,
+            packagesDir,
+            scriptsDir,
+          });
+        },
+        catch: (cause) =>
+          new ScriptPackageCatalogError({ operation: "scan", cause }),
+      });
     });
-    // Cache owns the sole lazy scan. Only refresh below asks it to run lookup again.
-    const getDiscovery = Cache.get(discoveryCache, cacheKey);
-
-    const refreshDiscovery = Cache.refresh(discoveryCache, cacheKey).pipe(
-      Effect.catch((cause) =>
-        Effect.gen(function* () {
-          const lastScan = yield* Ref.get(lastScanRef);
-          if (lastScan === null) {
-            yield* Cache.invalidate(discoveryCache, cacheKey);
-          } else {
-            yield* Cache.set(discoveryCache, cacheKey, lastScan);
-          }
-          return yield* cause;
-        }),
+    const publishCurrent = SynchronizedRef.get(discoveryRef).pipe(
+      Effect.flatMap(({ value, publicationRevision }) =>
+        value === null || publicationRevision === 0
+          ? Effect.void
+          : changes.publishLatest(publicationRevision, {
+              revision: value.catalog.revision,
+            }),
       ),
     );
-
-    const refresh = refreshDiscovery.pipe(
-      Effect.tap((discovery) =>
-        changes.publish({ revision: discovery.catalog.revision }),
+    const getDiscovery = SynchronizedRef.modifyEffect(discoveryRef, (current) =>
+      (current.value === null ? scan : Effect.succeed(current.value)).pipe(
+        Effect.map((next) => [next, { ...current, value: next }] as const),
       ),
-      Effect.map(catalogOverview),
     );
-
+    const refresh = SynchronizedRef.modifyEffect(discoveryRef, (current) =>
+      scan.pipe(
+        Effect.map(
+          (next) =>
+            [
+              next,
+              {
+                value: next,
+                publicationRevision: current.publicationRevision + 1,
+              },
+            ] as const,
+        ),
+      ),
+    ).pipe(Effect.ensuring(publishCurrent), Effect.map(catalogOverview));
     const updateDiscovery = Effect.fn("ScriptPackageCatalog.updateDiscovery")(
       function* (
         transform: (
           current: DiscoveredScriptCatalog,
-        ) => DiscoveredScriptCatalog,
+        ) => DiscoveredScriptCatalog | undefined,
       ) {
-        yield* getDiscovery;
-        return yield* scanGate.withPermits(1)(
-          Effect.gen(function* () {
-            const current = yield* Cache.get(discoveryCache, cacheKey);
-            const next = transform(current);
-            if (next !== current) {
-              yield* Cache.set(discoveryCache, cacheKey, next);
-              yield* Ref.set(lastScanRef, next);
-              yield* changes.publish({ revision: next.catalog.revision });
-            }
-            return catalogOverview(next);
-          }),
-        );
+        const next = yield* SynchronizedRef.modifyEffect(
+          discoveryRef,
+          (current) =>
+            (current.value === null
+              ? scan
+              : Effect.succeed(current.value)
+            ).pipe(
+              Effect.flatMap((previous) => {
+                const transformed = transform(previous);
+                return (
+                  transformed === undefined ? scan : Effect.succeed(transformed)
+                ).pipe(
+                  Effect.map(
+                    (next) =>
+                      [
+                        next,
+                        {
+                          value: next,
+                          publicationRevision:
+                            current.publicationRevision +
+                            (previous === next ? 0 : 1),
+                        },
+                      ] as const,
+                  ),
+                );
+              }),
+            ),
+        ).pipe(Effect.ensuring(publishCurrent));
+        return catalogOverview(next);
       },
     );
 

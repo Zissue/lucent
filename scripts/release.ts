@@ -4,23 +4,24 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Cause from "effect/Cause";
 import * as Console from "effect/Console";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
-import { Argument, Command, Flag } from "effect/unstable/cli";
+import { Argument, Command, Flag } from "effect/cli";
 import { commandOutput, runCommand as executeCommand } from "./process.mjs";
 
 import {
-  findFirstStableRelease,
+  findLatestRelease,
   formatReleaseTag,
-  formatVersion,
   gitCliffChangelogArgs,
+  gitCliffChangelogCommand,
   makeInitialChangelog,
-  parseStableVersion,
+  parseVersion,
   RELEASE_NOTES_PLACEHOLDER_CONTENT,
   releaseNotesAreReady,
   resolveTargetVersion,
-  type StableRelease,
+  type Release,
 } from "./release-logic";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -47,9 +48,6 @@ class ReleaseError extends Data.TaggedError("ReleaseError")<{
   readonly message: string;
   readonly cause?: unknown;
 }> {}
-
-const toErrorMessage = (cause: unknown): string =>
-  cause instanceof Error ? cause.message : String(cause);
 
 const toRelativePath = (path: string): string => {
   const value = relative(REPO_ROOT, path);
@@ -119,12 +117,10 @@ const requireReleaseBranch = (branch: string) =>
         }),
       );
 
-const getLatestStableRelease = () =>
-  runGit(["tag", "--merged", RELEASE_BRANCH, "--sort=-v:refname"]).pipe(
+const getLatestRelease = () =>
+  runGit(["tag", "--merged", RELEASE_BRANCH]).pipe(
     Effect.map((output) =>
-      findFirstStableRelease(
-        output.split(/\r?\n/).map((value) => value.trim()),
-      ),
+      findLatestRelease(output.split(/\r?\n/).map((value) => value.trim())),
     ),
   );
 
@@ -151,17 +147,17 @@ const readAppPackageJson = (): Effect.Effect<AppPackageJson, ReleaseError> =>
 
 const getAppVersion = (packageJson: AppPackageJson) =>
   typeof packageJson.version === "string" &&
-  parseStableVersion(packageJson.version) !== null
+  parseVersion(packageJson.version) !== null
     ? Effect.succeed(packageJson.version)
     : Effect.fail(
         new ReleaseError({
-          message: `${toRelativePath(APP_PACKAGE_JSON_PATH)} must contain a stable semantic version`,
+          message: `${toRelativePath(APP_PACKAGE_JSON_PATH)} must contain a semantic version`,
         }),
       );
 
 const resolveReleaseTargetVersion = (
   bumpOrVersion: string,
-  latestRelease: StableRelease | null,
+  latestRelease: Release | null,
 ): Effect.Effect<string, ReleaseError> => {
   const result = resolveTargetVersion(bumpOrVersion, latestRelease);
   return result.ok
@@ -320,7 +316,7 @@ const runCommand = (command: string, args: readonly string[]) =>
 
 const printPlan = (
   branch: string,
-  latestRelease: StableRelease | null,
+  latestRelease: Release | null,
   appVersion: string,
   targetVersion: string,
   targetTag: string,
@@ -328,7 +324,7 @@ const printPlan = (
   Effect.gen(function* () {
     yield* Console.log(`Current branch: ${branch}`);
     yield* Console.log(
-      `Latest stable release tag: ${latestRelease?.tag ?? "none (first release)"}`,
+      `Latest release tag: ${latestRelease?.tag ?? "none (first release)"}`,
     );
     yield* Console.log(`Current app/package.json version: ${appVersion}`);
     yield* Console.log(`Target version: ${targetVersion}`);
@@ -349,8 +345,7 @@ const printPlan = (
       return;
     }
 
-    const args = gitCliffChangelogArgs(targetTag);
-    yield* Console.log(`git-cliff command: git-cliff ${args.join(" ")}`);
+    yield* Console.log(`git-cliff command: ${gitCliffChangelogCommand(targetTag)}`);
   });
 
 const createReleasePr = Effect.fn("createReleasePr")(function* (
@@ -408,7 +403,7 @@ const release = (input: CliInput) =>
       }
     }
 
-    const latestRelease = yield* getLatestStableRelease();
+    const latestRelease = yield* getLatestRelease();
     const appPackageJson = yield* readAppPackageJson();
     const appVersion = yield* getAppVersion(appPackageJson);
     const targetVersion = yield* resolveReleaseTargetVersion(
@@ -418,10 +413,7 @@ const release = (input: CliInput) =>
     const targetTag = formatReleaseTag(targetVersion);
     yield* requireNewTag(targetTag);
 
-    if (
-      latestRelease !== null &&
-      appVersion !== formatVersion(latestRelease.version)
-    ) {
+    if (latestRelease !== null && appVersion !== latestRelease.version) {
       yield* Console.log(
         `Warning: app/package.json is ${appVersion} but latest release is ${latestRelease.tag}. Bumping from ${latestRelease.tag}.`,
       );
@@ -462,14 +454,16 @@ const release = (input: CliInput) =>
   });
 
 const command = Command.make("release", {
-  bumpOrVersion: Argument.string("bump-or-version").pipe(
-    Argument.withDescription("patch, minor, major, or a stable semver version"),
+  bumpOrVersion: Argument.String("bump-or-version").pipe(
+    Argument.withDescription(
+      "patch, minor, major, prerelease, or a semver version",
+    ),
   ),
-  dryRun: Flag.boolean("dry-run").pipe(
+  dryRun: Flag.Boolean("dry-run").pipe(
     Flag.withDescription("Print the release plan without writing files"),
     Flag.withDefault(false),
   ),
-  allowDirty: Flag.boolean("allow-dirty").pipe(
+  allowDirty: Flag.Boolean("allow-dirty").pipe(
     Flag.withDescription(
       "Allow existing working tree changes when using --dry-run",
     ),
@@ -494,11 +488,7 @@ if (
   })(getCliArgs()).pipe(
     Effect.catch((error) =>
       Effect.gen(function* () {
-        yield* error instanceof ReleaseError
-          ? Console.error(
-              `Release failed: ${error.message}${error.cause ? `\n${toErrorMessage(error.cause)}` : ""}`,
-            )
-          : Console.error(`Release failed: ${toErrorMessage(error)}`);
+        yield* Console.error("Release failed:", Cause.pretty(Cause.fail(error)));
         process.exitCode = 1;
       }),
     ),

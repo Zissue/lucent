@@ -11,13 +11,13 @@ sidebar:
 interface HuntOptions
 ```
 
-<p class="source-reference">Defined in <a class="source-reference__link" href="https://github.com/toommyliu/lucent/blob/main/app/src/renderer/apps/game/flash/api/Combat.ts#L60" aria-label="Open source: app/src/renderer/apps/game/flash/api/Combat.ts:60" title="app/src/renderer/apps/game/flash/api/Combat.ts:60" target="_blank" rel="noreferrer"><code class="source-reference__path">Combat.ts:60</code></a></p>
+<p class="source-reference">Defined in <a class="source-reference__link" href="https://github.com/toommyliu/lucent/blob/main/app/src/renderer/apps/game/flash/api/Combat.ts#L56" aria-label="Open source: app/src/renderer/apps/game/flash/api/Combat.ts:56" title="app/src/renderer/apps/game/flash/api/Combat.ts:56" target="_blank" rel="noreferrer"><code class="source-reference__path">Combat.ts:56</code></a></p>
 
 ## Properties
 
 <a id="property-prefermostmatches"></a>
 
-### `preferMostMatches` <a class="source-reference__heading-link" style="float: right; display: inline-flex; align-items: center; justify-content: center; margin-block: -0.125rem; margin-inline-start: 0.5rem; border-radius: var(--radius-sm); text-decoration: none;" href="https://github.com/toommyliu/lucent/blob/main/app/src/renderer/apps/game/flash/api/Combat.ts#L65" tabindex="-1" aria-hidden="true" title="Open source: app/src/renderer/apps/game/flash/api/Combat.ts:65" target="_blank" rel="noreferrer"><svg class="source-reference__icon" width="16" height="16" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"></path><path d="m6 8-4 4 4 4"></path><path d="m14.5 4-5 16"></path></svg></a>
+### `preferMostMatches` <a class="source-reference__heading-link" style="float: right; display: inline-flex; align-items: center; justify-content: center; margin-block: -0.125rem; margin-inline-start: 0.5rem; border-radius: var(--radius-sm); text-decoration: none;" href="https://github.com/toommyliu/lucent/blob/main/app/src/renderer/apps/game/flash/api/Combat.ts#L61" tabindex="-1" aria-hidden="true" title="Open source: app/src/renderer/apps/game/flash/api/Combat.ts:61" target="_blank" rel="noreferrer"><svg class="source-reference__icon" width="16" height="16" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"></path><path d="m6 8-4 4 4 4"></path><path d="m14.5 4-5 16"></path></svg></a>
 
 Whether to prefer the cell containing the most matches.
 

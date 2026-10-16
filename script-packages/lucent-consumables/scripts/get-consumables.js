@@ -28,7 +28,10 @@ function* run() {
   });
 }
 
-run.inputs = {
+module.exports = run;
+
+/** @satisfies {import("lucent/script").ScriptInputsDefinition} */
+module.exports.inputs = {
   id: "lucent-consumables",
   fields: [
     {
@@ -172,5 +175,3 @@ run.inputs = {
     },
   ],
 };
-
-module.exports = run;

@@ -11,7 +11,7 @@ sidebar:
 type EntityState = 0 | 1 | 2
 ```
 
-<p class="source-reference">Defined in <a class="source-reference__link" href="https://github.com/toommyliu/lucent/blob/main/packages/game/src/entity.ts#L14" aria-label="Open source: packages/game/src/entity.ts:14" title="packages/game/src/entity.ts:14" target="_blank" rel="noreferrer"><code class="source-reference__path">entity.ts:14</code></a></p>
+<p class="source-reference">Defined in <a class="source-reference__link" href="https://github.com/toommyliu/lucent/blob/main/packages/game/src/entity.ts#L21" aria-label="Open source: packages/game/src/entity.ts:21" title="packages/game/src/entity.ts:21" target="_blank" rel="noreferrer"><code class="source-reference__path">entity.ts:21</code></a></p>
 
 ## Named values
 

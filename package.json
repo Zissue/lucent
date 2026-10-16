@@ -31,23 +31,26 @@
     "test": "pnpm test:scripts && pnpm -r --if-present test",
     "test:scripts": "vitest run scripts/release-logic.test.ts scripts/docgen-packages.test.ts scripts/process.test.ts",
     "test:watch": "pnpm -r --if-present test:watch",
-    "typecheck": "tsc -p tsconfig.json --noEmit && pnpm -r typecheck"
+    "typecheck": "tsc -p tsconfig.json --noEmit && pnpm typecheck:script-packages && pnpm -r typecheck",
+    "typecheck:script-packages": "tsc6 -p script-packages/lucent-consumables/jsconfig.repo.json --noEmit && tsc6 -p script-packages/lucent-dailies/jsconfig.repo.json --noEmit"
   },
   "dependencies": {
-    "effect": "4.0.0-rc.112"
+    "effect": "4.0.3"
   },
   "devDependencies": {
-    "@effect/platform-node": "4.0.0-rc.112",
+    "@effect/platform-node": "4.0.3",
     "@effect/tsgo": "0.37.0",
-    "@effect/vitest": "4.0.0-rc.112",
+    "@effect/vitest": "4.0.3",
     "@storybook/addon-themes": "10.5.10",
     "@types/node": "^24.12.2",
+    "@types/semver": "7.7.1",
     "@typescript/native": "npm:typescript@7.0.2",
     "asconfigc": "^1.9.0",
     "git-cliff": "^2.9.1",
     "oxfmt": "^0.55.0",
     "oxlint": "^1.80.0",
     "oxlint-tsgolint": "7.0.2001",
+    "semver": "7.7.4",
     "shiki": "^4.3.1",
     "simple-icons": "^13.0.0",
     "solid-js": "1.9.12",
@@ -58,6 +61,6 @@
     "typescript": "npm:@typescript/typescript6@^6.0.2",
     "vite": "7.3.2",
     "vite-plugin-solid": "2.11.14",
-    "vitest": "^4.1.11"
+    "vitest": "^5.0.4"
   }
 }

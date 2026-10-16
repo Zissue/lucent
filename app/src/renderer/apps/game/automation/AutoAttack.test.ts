@@ -13,6 +13,7 @@ import type { Event, EventSelector } from "../flash/contract/Event";
 import { makeAutoAttack } from "./AutoAttack";
 
 const monster = new LiveMonster({
+  aggressive: false,
   cell: "Enter",
   hp: 100,
   level: 1,
@@ -42,7 +43,7 @@ const apiWith = (
       ...combat,
     },
     events: { on },
-    monsters: { getAvailable: () => Effect.succeed([monster]) },
+    monsterLookup: { getAvailable: () => Effect.succeed([monster]) },
     player: {
       auras: { get: () => Effect.succeed(null) },
       getHp: () => Effect.succeed(100),

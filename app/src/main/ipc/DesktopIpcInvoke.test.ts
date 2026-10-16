@@ -1,11 +1,154 @@
 import { describe, expect, it } from "@effect/vitest";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Logger from "effect/Logger";
+import * as References from "effect/References";
+import * as Schema from "effect/Schema";
 
 import { DEFAULT_APP_SETTINGS } from "@lucent/core/settings";
-import { SettingsIpc } from "../../shared/ipc";
+import { defineInvoke, SettingsIpc } from "../../shared/ipc";
 import { createDesktopIpcInvokeHandler } from "./DesktopIpcInvoke";
+import { DesktopIpcSenderError } from "./DesktopIpcSenders";
+
+const CountIpc = defineInvoke({
+  channel: "test:count",
+  name: "test.count",
+  payload: Schema.Int,
+  result: Schema.Int,
+});
+
+interface LogRecord {
+  readonly annotations: Readonly<Record<string, unknown>>;
+  readonly cause: Cause.Cause<unknown>;
+  readonly level: string;
+  readonly message: unknown;
+}
+
+const invokeWithCapturedLogs = (
+  payload: unknown,
+  handler: () => Effect.Effect<number, unknown>,
+) => {
+  const records: LogRecord[] = [];
+  const capture = Logger.make((options) => {
+    records.push({
+      annotations: options.fiber.getRef(References.CurrentLogAnnotations),
+      cause: options.cause,
+      level: options.logLevel,
+      message: options.message,
+    });
+  });
+
+  return Effect.gen(function* () {
+    const runPromise = Effect.runPromiseWith(yield* Effect.context());
+    const invoke = createDesktopIpcInvokeHandler(CountIpc, handler, runPromise);
+    const envelope = yield* Effect.promise(() => invoke(undefined, payload));
+    return { envelope, records };
+  }).pipe(Effect.provideService(Logger.CurrentLoggers, new Set([capture])));
+};
+
+const logLines = (records: readonly LogRecord[]) =>
+  records.map(({ annotations, level, message }) => ({
+    annotations,
+    level,
+    message,
+  }));
+
+const unexpectedFailureLog = {
+  annotations: { component: "ipc", data: { channel: "test:count" } },
+  level: "Error",
+  message: ["IPC handler failed unexpectedly"],
+};
 
 describe("createDesktopIpcInvokeHandler", () => {
+  it.effect("logs a handler defect with its channel and original cause", () =>
+    Effect.gen(function* () {
+      const defect = new Error("counter store corrupted");
+      const { envelope, records } = yield* invokeWithCapturedLogs(1, () =>
+        Effect.die(defect),
+      );
+
+      expect(envelope).toEqual({
+        ok: false,
+        error: {
+          channel: "test:count",
+          code: "IPC_HANDLER_FAILED",
+          message: "counter store corrupted",
+        },
+      });
+      expect(logLines(records)).toEqual([unexpectedFailureLog]);
+      expect(records.map(({ cause }) => Cause.squash(cause))).toEqual([defect]);
+    }),
+  );
+
+  it.effect("logs a handler interruption with its channel", () =>
+    Effect.gen(function* () {
+      const { records } = yield* invokeWithCapturedLogs(
+        1,
+        () => Effect.interrupt,
+      );
+
+      expect(logLines(records)).toEqual([unexpectedFailureLog]);
+      expect(
+        records.map(({ cause }) => Cause.hasInterruptsOnly(cause)),
+      ).toEqual([true]);
+    }),
+  );
+
+  it.effect("logs a result that fails its own result schema", () =>
+    Effect.gen(function* () {
+      const { envelope, records } = yield* invokeWithCapturedLogs(1, () =>
+        Effect.succeed(1.5),
+      );
+
+      expect(envelope).toEqual({
+        ok: false,
+        error: {
+          channel: "test:count",
+          code: "IPC_HANDLER_FAILED",
+          message: "Expected an integer",
+        },
+      });
+      expect(logLines(records)).toEqual([unexpectedFailureLog]);
+      expect(records.map(({ cause }) => Cause.hasDies(cause))).toEqual([true]);
+    }),
+  );
+
+  it.effect("returns a typed handler failure without logging it", () =>
+    Effect.gen(function* () {
+      const { envelope, records } = yield* invokeWithCapturedLogs(1, () =>
+        Effect.fail(
+          new DesktopIpcSenderError({ detail: "Sender is not allowed." }),
+        ),
+      );
+
+      expect(envelope).toEqual({
+        ok: false,
+        error: {
+          channel: "test:count",
+          code: "IPC_HANDLER_FAILED",
+          message: "Sender is not allowed.",
+        },
+      });
+      expect(records).toEqual([]);
+    }),
+  );
+
+  it.effect("rejects an invalid payload without logging it", () =>
+    Effect.gen(function* () {
+      let handled = 0;
+      const { envelope, records } = yield* invokeWithCapturedLogs("one", () =>
+        Effect.sync(() => {
+          handled += 1;
+          return handled;
+        }),
+      );
+
+      expect(envelope.ok).toBe(false);
+      expect(handled).toBe(0);
+      expect(records).toEqual([]);
+    }),
+  );
+
   it.effect(
     "rejects invalid mutation payloads before running the handler",
     () =>

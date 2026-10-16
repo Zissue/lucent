@@ -6,18 +6,15 @@ import * as Semaphore from "effect/Semaphore";
 import { makeCombatProfileConsumableClaims } from "../../../combatProfileConsumableClaims";
 import { isDirectInventoryConsumable, type Inventory } from "../Inventory";
 import type { Player } from "../Player";
-import type { Wait } from "../Wait";
 
 interface ConsumableSkillItem {
   readonly itemId: number;
-  readonly ready: boolean;
 }
 
 interface Dependencies {
   readonly getConsumableSkillItem: () => Effect.Effect<ConsumableSkillItem | null>;
   readonly inventory: Pick<Inventory, "equip" | "get">;
   readonly player: Pick<Player, "getState">;
-  readonly wait: Pick<Wait, "until">;
 }
 
 export interface CombatProfileConsumablePreparation {
@@ -108,23 +105,6 @@ export const makeCombatProfileConsumables = (deps: Dependencies) => {
             `Could not equip ${item.name}. Check its requirements. Skill 5 will use whichever consumable is equipped.`,
           );
         }
-      }
-
-      const ready = yield* deps.wait.until(
-        deps
-          .getConsumableSkillItem()
-          .pipe(
-            Effect.map(
-              (slot) => slot?.itemId === item.itemId && slot.ready === true,
-            ),
-          ),
-        { timeout: "5 seconds" },
-      );
-      if (!ready) {
-        yield* claim.release;
-        return unavailable(
-          `${item.name} did not finish loading. Skill 5 will use whichever consumable is equipped.`,
-        );
       }
 
       return {

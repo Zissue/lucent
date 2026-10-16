@@ -1,3 +1,4 @@
+import type { RendererLogRecord } from "./ipc/rendererLog";
 import type { RecentlyClosedGameSession } from "@lucent/core/accounts";
 import type {
   AppSettings,
@@ -28,7 +29,6 @@ import type {
 import type {
   ArmyConfigPayload,
   ArmyFailPayload,
-  ArmyLeavePayload,
   ArmyLoopTauntCommandPayload,
   ArmyLoopTauntLeavePayload,
   ArmyLoopTauntRegisterPayload,
@@ -64,8 +64,10 @@ import type {
   ScriptCatalogPage,
   ScriptCatalogPageRequest,
   ScriptPackageInstallRequest,
+  ScriptPackageLeftoverCopy,
   ScriptPackageMutationResult,
   ScriptPackageRemoveRequest,
+  ScriptPackageRestoreRequest,
   ScriptPackageUpdateRequest,
   ScriptReference,
 } from "@lucent/core/scriptPackages";
@@ -178,11 +180,14 @@ export interface DesktopScriptingBridge {
   readonly getInputValues: (
     definition: ScriptInputsDefinition,
   ) => Promise<ScriptInputValues>;
-  readonly loadReference: (reference: ScriptReference) => Promise<ScriptFile>;
   readonly installPackage: (
     request: ScriptPackageInstallRequest,
   ) => Promise<ScriptPackageMutationResult>;
   readonly listCredentials: () => Promise<readonly GitHubCredentialSummary[]>;
+  readonly listPackageLeftovers: () => Promise<
+    readonly ScriptPackageLeftoverCopy[]
+  >;
+  readonly loadReference: (reference: ScriptReference) => Promise<ScriptFile>;
   readonly openFile: () => Promise<ScriptOpenFileResult>;
   readonly openPath: (path: string) => Promise<boolean>;
   readonly openRepository: (repositoryUrl: string) => Promise<boolean>;
@@ -192,6 +197,9 @@ export interface DesktopScriptingBridge {
   readonly readFile: (path: string) => Promise<ScriptFile>;
   readonly readReference: (reference: ScriptReference) => Promise<ScriptFile>;
   readonly refreshCatalog: () => Promise<ScriptCatalogOverview>;
+  readonly restorePackage: (
+    request: ScriptPackageRestoreRequest,
+  ) => Promise<ScriptPackageMutationResult>;
   readonly removePackage: (
     request: ScriptPackageRemoveRequest,
   ) => Promise<ScriptPackageMutationResult>;
@@ -279,7 +287,7 @@ export interface DesktopAccountSettingsBridge {
 }
 
 export interface DesktopGameConsoleObservabilityBridge {
-  readonly message: (message: string) => void;
+  readonly message: (method: string, message: string) => void;
 }
 
 export interface DesktopGameRendererBridge {
@@ -289,8 +297,7 @@ export interface DesktopGameRendererBridge {
   readonly finishScriptExecution: (token: number) => Promise<void>;
   /** Reads the generation assigned to this game document. */
   readonly getGeneration: () => Promise<number>;
-  /** Marks the current game renderer generation ready to receive commands. */
-  readonly ready: (generation: number) => Promise<void>;
+  readonly ready: () => Promise<void>;
 }
 
 export type DesktopFileSystemResult<A> =
@@ -483,7 +490,7 @@ export interface DesktopEnvironmentBridge {
 
 export interface DesktopArmyBridge {
   readonly fail: (payload: ArmyFailPayload) => Promise<void>;
-  readonly leave: (payload: ArmyLeavePayload) => Promise<void>;
+  readonly leave: () => Promise<void>;
   readonly loadConfig: (configName: string) => Promise<ArmyConfigPayload>;
   readonly loopTauntAwait: (
     payload: ArmyLoopTauntRunPayload,
@@ -511,12 +518,20 @@ export interface DesktopArmyBridge {
   readonly sync: (payload: ArmySyncPayload) => Promise<void>;
 }
 
+export interface DesktopLogBridge {
+  readonly error: (message: string, error?: unknown) => void;
+  readonly warn: (message: string, error?: unknown) => void;
+  readonly info: (message: string, error?: unknown) => void;
+  readonly debug: (message: string, error?: unknown) => void;
+  readonly write: (record: RendererLogRecord) => void;
+}
+
 interface DesktopBridgeBase {
+  readonly log: DesktopLogBridge;
   readonly debug: boolean;
   readonly platform: {
     readonly os: AppPlatform;
   };
-  readonly traceProjections: boolean;
 }
 
 interface DesktopBridgeCapabilities {

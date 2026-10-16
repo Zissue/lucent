@@ -1,10 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import {
-  antiCounterDurationMsFromAura,
-  matchAntiCounterAura,
-  matchAntiCounterMessage,
-} from "./AntiCounter";
+import { matchAntiCounterAura, matchAntiCounterMessage } from "./AntiCounter";
 
 describe("AntiCounter", () => {
   it("matches messages and auras through the trigger table", () => {
@@ -21,10 +17,5 @@ describe("AntiCounter", () => {
     });
     expect(matchAntiCounterMessage("Boss prepares an attack")).toBeUndefined();
     expect(matchAntiCounterAura("Focus")).toBeUndefined();
-  });
-
-  it("normalizes aura durations", () => {
-    expect(antiCounterDurationMsFromAura(6)).toBe(6_000);
-    expect(antiCounterDurationMsFromAura(0)).toBeUndefined();
   });
 });

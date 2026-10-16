@@ -1,13 +1,17 @@
 import { mkdtemp, readFile, rm, writeFile } from "fs/promises";
+import { mkdirSync, renameSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
 import { afterEach, describe, expect, it } from "@effect/vitest";
+import { vi } from "vitest";
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as References from "effect/References";
 import * as Stream from "effect/Stream";
+import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import {
   COMBAT_PROFILE_LIBRARY_VERSION,
@@ -24,6 +28,10 @@ import {
   layer as desktopCombatProfilesLayer,
 } from "./CombatProfiles";
 
+vi.mock("effect/SynchronizedRef", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("effect/SynchronizedRef")>()),
+}));
+
 const tempDirs = new Set<string>();
 
 const makeTempDir = async (prefix: string): Promise<string> => {
@@ -33,6 +41,7 @@ const makeTempDir = async (prefix: string): Promise<string> => {
 };
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(
     [...tempDirs].map((path) => rm(path, { force: true, recursive: true })),
   );
@@ -87,6 +96,66 @@ const testProfile: CombatProfile = {
 };
 
 describe("CombatProfiles", () => {
+  it.effect.each(["save", "reload"] as const)(
+    "keeps change events ordered when a %s yields",
+    (operation) =>
+      Effect.gen(function* () {
+        const writeStarted = yield* Deferred.make<void>();
+        let watchWrites = false;
+        const { combatProfiles, path } = yield* makeHarness((fs) => ({
+          ...fs,
+          makeDirectory: (path) =>
+            Effect.sync(() => {
+              mkdirSync(path, { recursive: true });
+            }),
+          writeFile: (path, contents) =>
+            Effect.sync(() => writeFileSync(path, contents)),
+          rename: (from, to) =>
+            Effect.sync(() => renameSync(from, to)).pipe(
+              Effect.tap(() =>
+                watchWrites
+                  ? Deferred.succeed(writeStarted, undefined)
+                  : Effect.void,
+              ),
+            ),
+        }));
+        yield* combatProfiles.load;
+        yield* combatProfiles.saveProfile({ ...testProfile, label: "First" });
+        const labels: string[] = [];
+        yield* combatProfiles.onChanged((library) => {
+          labels.push(library.profiles.at(-1)!.label);
+        });
+
+        watchWrites = true;
+        const first = yield* (
+          operation === "save"
+            ? combatProfiles.saveProfile({ ...testProfile, label: "First" })
+            : combatProfiles.load
+        ).pipe(
+          Effect.provideService(References.MaxOpsBeforeYield, 16),
+          Effect.forkScoped,
+        );
+        yield* Deferred.await(writeStarted);
+        const second = yield* combatProfiles
+          .saveProfile({ ...testProfile, label: "Second" })
+          .pipe(Effect.forkScoped);
+        yield* Fiber.join(first);
+        yield* Fiber.join(second);
+
+        expect(labels).toEqual(
+          operation === "reload" ? ["Second"] : ["First", "Second"],
+        );
+        expect((yield* combatProfiles.get).profiles.at(-1)?.label).toBe(
+          "Second",
+        );
+        expect(
+          JSON.parse(
+            yield* Effect.promise(() => readFile(path, "utf8")),
+          ).profiles.at(-1)?.label,
+        ).toBe("Second");
+      }),
+  );
+
   it.effect("deletes saved profiles from the library", () =>
     Effect.gen(function* () {
       const { combatProfiles } = yield* makeHarness();
@@ -190,7 +259,9 @@ describe("CombatProfiles", () => {
       Effect.gen(function* () {
         const { combatProfiles, path } = yield* makeHarness();
         const changes: CombatProfileLibrary[] = [];
-        yield* combatProfiles.onChanged((library) => changes.push(library));
+        yield* combatProfiles.onChanged((library) => {
+          changes.push(library);
+        });
         yield* Effect.promise(() =>
           writeFile(
             path,
@@ -244,7 +315,9 @@ describe("CombatProfiles", () => {
         }));
         const initial = yield* combatProfiles.load;
         const changes: CombatProfileLibrary[] = [];
-        yield* combatProfiles.onChanged((library) => changes.push(library));
+        yield* combatProfiles.onChanged((library) => {
+          changes.push(library);
+        });
         blockRead = true;
         const loading = yield* combatProfiles.load.pipe(Effect.forkScoped);
         yield* Deferred.await(readStarted);
@@ -270,6 +343,99 @@ describe("CombatProfiles", () => {
             JSON.parse(yield* Effect.promise(() => readFile(path, "utf8"))),
           ),
         ).toEqual(saved);
+      }),
+  );
+
+  it.live.each(["save", "reload"] as const)(
+    "allows a %s listener to read committed combat profiles",
+    (operation) =>
+      Effect.gen(function* () {
+        const { combatProfiles } = yield* makeHarness();
+        yield* combatProfiles.saveProfile(testProfile);
+        const labels: string[] = [];
+        yield* combatProfiles.onChanged(() =>
+          combatProfiles.get.pipe(
+            Effect.tap((library) =>
+              Effect.sync(() => {
+                labels.push(library.profiles.at(-1)?.label ?? "missing");
+              }),
+            ),
+          ),
+        );
+        const result = yield* (
+          operation === "save"
+            ? combatProfiles.saveProfile({ ...testProfile, label: "Committed" })
+            : combatProfiles.load
+        ).pipe(Effect.timeout("2 seconds"));
+        expect(labels).toEqual([
+          operation === "save" ? "Committed" : "Farm Rotation",
+        ]);
+        expect(result.profiles.at(-1)?.label).toBe(
+          operation === "save" ? "Committed" : "Farm Rotation",
+        );
+      }),
+  );
+
+  it.effect.each(["save", "reload"] as const)(
+    "publishes a committed %s even when interrupted after the commit",
+    (operation) =>
+      Effect.gen(function* () {
+        const committed = yield* Deferred.make<void>();
+        const hold = yield* Deferred.make<void>();
+        let armed = false;
+        const modifyEffect = SynchronizedRef.modifyEffect;
+        vi.spyOn(SynchronizedRef, "modifyEffect").mockImplementation(
+          (ref, change) =>
+            modifyEffect(ref, change).pipe(
+              Effect.tap(() => {
+                if (!armed) return Effect.void;
+                armed = false;
+                return Deferred.succeed(committed, undefined).pipe(
+                  Effect.andThen(Deferred.await(hold)),
+                );
+              }),
+            ),
+        );
+        const { combatProfiles, path } = yield* makeHarness();
+        yield* combatProfiles.saveProfile({ ...testProfile, label: "Before" });
+        if (operation === "reload") {
+          const library = yield* combatProfiles.get;
+          yield* Effect.promise(() =>
+            writeFile(
+              path,
+              JSON.stringify({
+                ...library,
+                profiles: [
+                  ...library.profiles.slice(0, -1),
+                  { ...testProfile, label: "Committed" },
+                ],
+              }),
+            ),
+          );
+        }
+        const labels: string[] = [];
+        yield* combatProfiles.onChanged((library) =>
+          combatProfiles.get.pipe(
+            Effect.tap((current) =>
+              Effect.sync(() => {
+                expect(current).toEqual(library);
+                labels.push(library.profiles.at(-1)?.label ?? "missing");
+              }),
+            ),
+          ),
+        );
+        armed = true;
+        const running = yield* (
+          operation === "save"
+            ? combatProfiles.saveProfile({ ...testProfile, label: "Committed" })
+            : combatProfiles.load
+        ).pipe(Effect.forkScoped);
+        yield* Deferred.await(committed);
+        expect((yield* combatProfiles.get).profiles.at(-1)?.label).toBe(
+          "Committed",
+        );
+        yield* Fiber.interrupt(running);
+        expect(labels).toEqual(["Committed"]);
       }),
   );
 });

@@ -700,7 +700,8 @@ export const makeAutoRelogin = Effect.fnUntraced(function* (
       Effect.catchCause((cause) =>
         Cause.hasInterruptsOnly(cause)
           ? Effect.void
-          : Effect.logError("Unexpected auto relogin failure").pipe(
+          : Effect.logError("Unexpected auto relogin failure", cause).pipe(
+              Effect.annotateLogs({ component: "auto-relogin" }),
               Effect.andThen(
                 updateCurrentGeneration(generation, (current) => ({
                   ...current,

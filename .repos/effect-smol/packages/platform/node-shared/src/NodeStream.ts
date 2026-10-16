@@ -7,16 +7,17 @@
  * `Readable`, and collects readable payloads into strings, array buffers, or
  * `Uint8Array`s with optional byte limits.
  *
+ * @stability unstable
  * @since 4.0.0
  */
 import * as Arr from "effect/Array"
+import * as ByteSize from "effect/ByteSize"
 import * as Cause from "effect/Cause"
 import * as Channel from "effect/Channel"
 import * as Context from "effect/Context"
 import * as Effect from "effect/Effect"
 import * as Exit from "effect/Exit"
 import * as Fiber from "effect/Fiber"
-import type { SizeInput } from "effect/FileSystem"
 import { dual, type LazyArg } from "effect/Function"
 import * as Latch from "effect/Latch"
 import * as MutableRef from "effect/MutableRef"
@@ -32,6 +33,7 @@ import { pullIntoWritable } from "./NodeSink.ts"
  * an optional chunk size, mapping stream errors with `onError`, and destroying
  * the readable on completion unless `closeOnDone` is `false`.
  *
+ * @stability unstable
  * @category constructors
  * @since 4.0.0
  */
@@ -39,7 +41,6 @@ export const fromReadable = <A = Uint8Array, E = Cause.UnknownError>(options: {
   readonly evaluate: LazyArg<Readable | NodeJS.ReadableStream>
   readonly onError?: (error: unknown) => E
   readonly chunkSize?: number | undefined
-  readonly bufferSize?: number | undefined
   readonly closeOnDone?: boolean | undefined
 }): Stream.Stream<A, E> => Stream.fromChannel(fromReadableChannel<A, E>(options))
 
@@ -48,6 +49,7 @@ export const fromReadable = <A = Uint8Array, E = Cause.UnknownError>(options: {
  * errors with `onError` and destroying the readable on completion unless
  * `closeOnDone` is `false`.
  *
+ * @stability unstable
  * @category constructors
  * @since 4.0.0
  */
@@ -72,6 +74,7 @@ export const fromReadableChannel = <A = Uint8Array, E = Cause.UnknownError>(opti
  * backpressure while emitting chunks read from the duplex and optionally ending
  * the writable side when upstream completes.
  *
+ * @stability unstable
  * @category constructors
  * @since 4.0.0
  */
@@ -80,7 +83,6 @@ export const fromDuplex = <IE, I = Uint8Array, O = Uint8Array, E = Cause.Unknown
     readonly evaluate: LazyArg<Duplex>
     readonly onError?: (error: unknown) => E
     readonly chunkSize?: number | undefined
-    readonly bufferSize?: number | undefined
     readonly endOnDone?: boolean | undefined
     readonly encoding?: BufferEncoding | undefined
   }
@@ -88,6 +90,7 @@ export const fromDuplex = <IE, I = Uint8Array, O = Uint8Array, E = Cause.Unknown
   Channel.fromTransform((upstream, scope) => {
     const duplex = options.evaluate()
     const exit = MutableRef.make<Exit.Exit<never, IE | E | Cause.Done> | undefined>(undefined)
+    const latch = Latch.makeUnsafe(false)
 
     return pullIntoWritable({
       pull: upstream,
@@ -99,6 +102,7 @@ export const fromDuplex = <IE, I = Uint8Array, O = Uint8Array, E = Cause.Unknown
       Effect.catchCause((cause) => {
         if (Pull.isDoneCause(cause)) return Effect.void
         exit.current = Exit.failCause(cause as Cause.Cause<IE | E | Cause.Done>)
+        latch.openUnsafe()
         return Effect.void
       }),
       Effect.forkIn(scope),
@@ -106,6 +110,7 @@ export const fromDuplex = <IE, I = Uint8Array, O = Uint8Array, E = Cause.Unknown
         readableToPullUnsafe({
           scope,
           exit,
+          latch,
           readable: duplex,
           onError: options.onError ?? defaultOnError as any,
           chunkSize: options.chunkSize
@@ -118,6 +123,7 @@ export const fromDuplex = <IE, I = Uint8Array, O = Uint8Array, E = Cause.Unknown
  * Pipes an Effect `Stream` through a Node `Duplex`, writing the stream's
  * chunks to the duplex and emitting chunks read back from it.
  *
+ * @stability unstable
  * @category combinators
  * @since 4.0.0
  */
@@ -127,7 +133,6 @@ export const pipeThroughDuplex: {
       readonly evaluate: LazyArg<Duplex>
       readonly onError?: (error: unknown) => E2
       readonly chunkSize?: number | undefined
-      readonly bufferSize?: number | undefined
       readonly endOnDone?: boolean | undefined
       readonly encoding?: BufferEncoding | undefined
     }
@@ -138,7 +143,6 @@ export const pipeThroughDuplex: {
       readonly evaluate: LazyArg<Duplex>
       readonly onError?: (error: unknown) => E2
       readonly chunkSize?: number | undefined
-      readonly bufferSize?: number | undefined
       readonly endOnDone?: boolean | undefined
       readonly encoding?: BufferEncoding | undefined
     }
@@ -149,7 +153,6 @@ export const pipeThroughDuplex: {
     readonly evaluate: LazyArg<Duplex>
     readonly onError?: (error: unknown) => E2
     readonly chunkSize?: number | undefined
-    readonly bufferSize?: number | undefined
     readonly endOnDone?: boolean | undefined
     readonly encoding?: BufferEncoding | undefined
   }
@@ -163,6 +166,7 @@ export const pipeThroughDuplex: {
  * Pipes a stream of strings or bytes through a Node `Duplex` using default
  * options and `Cause.UnknownError` for stream failures.
  *
+ * @stability unstable
  * @category combinators
  * @since 4.0.0
  */
@@ -184,6 +188,7 @@ export const pipeThroughSimple: {
  * Effect context to run the stream and destroying the readable if the stream
  * fails.
  *
+ * @stability unstable
  * @category converting
  * @since 4.0.0
  */
@@ -197,6 +202,7 @@ export const toReadable = <E, R>(stream: Stream.Stream<string | Uint8Array, E, R
  * Converts a service-free Effect `Stream` into a Node `Readable` using an
  * empty Effect context.
  *
+ * @stability unstable
  * @category converting
  * @since 4.0.0
  */
@@ -211,6 +217,7 @@ export const toReadableNever = <E>(stream: Stream.Stream<string | Uint8Array, E,
  * failing through `onError` on stream errors or when `maxBytes` is exceeded
  * and destroying the stream on interruption or failure.
  *
+ * @stability unstable
  * @category converting
  * @since 4.0.0
  */
@@ -219,10 +226,10 @@ export const toString = <E = Cause.UnknownError>(
   options?: {
     readonly onError?: (error: unknown) => E
     readonly encoding?: BufferEncoding | undefined
-    readonly maxBytes?: SizeInput | undefined
+    readonly maxBytes?: ByteSize.Input | undefined
   }
 ): Effect.Effect<string, E> => {
-  const maxBytesNumber = options?.maxBytes !== undefined ? Number(options.maxBytes) : undefined
+  const maxBytesNumber = toMaxBytes(options?.maxBytes)
   const onError = options?.onError ?? defaultOnError
   const encoding = options?.encoding ?? "utf8"
   return Effect.callback((resume) => {
@@ -264,6 +271,7 @@ export const toString = <E = Cause.UnknownError>(
  * `onError` on stream errors or when `maxBytes` is exceeded and destroying the
  * stream on interruption or failure.
  *
+ * @stability unstable
  * @category converting
  * @since 4.0.0
  */
@@ -271,10 +279,10 @@ export const toArrayBuffer = <E = Cause.UnknownError>(
   readable: LazyArg<Readable | NodeJS.ReadableStream>,
   options?: {
     readonly onError?: (error: unknown) => E
-    readonly maxBytes?: SizeInput | undefined
+    readonly maxBytes?: ByteSize.Input | undefined
   }
 ): Effect.Effect<ArrayBuffer, E> => {
-  const maxBytesNumber = options?.maxBytes !== undefined ? Number(options.maxBytes) : undefined
+  const maxBytesNumber = toMaxBytes(options?.maxBytes)
   const onError = options?.onError ?? defaultOnError
   return Effect.callback((resume) => {
     const stream = readable() as Readable
@@ -317,6 +325,7 @@ export const toArrayBuffer = <E = Cause.UnknownError>(
  * Consumes a Node readable stream into a `Uint8Array`, using the same error
  * mapping and `maxBytes` handling as `toArrayBuffer`.
  *
+ * @stability unstable
  * @category converting
  * @since 4.0.0
  */
@@ -324,7 +333,7 @@ export const toUint8Array = <E = Cause.UnknownError>(
   readable: LazyArg<Readable | NodeJS.ReadableStream>,
   options?: {
     readonly onError?: (error: unknown) => E
-    readonly maxBytes?: SizeInput | undefined
+    readonly maxBytes?: ByteSize.Input | undefined
   }
 ): Effect.Effect<Uint8Array, E> => Effect.map(toArrayBuffer(readable, options), (buffer) => new Uint8Array(buffer))
 
@@ -335,6 +344,7 @@ export const toUint8Array = <E = Cause.UnknownError>(
 const readableToPullUnsafe = <A, E>(options: {
   readonly scope: Scope.Scope
   readonly exit?: MutableRef.MutableRef<Exit.Exit<never, E | Cause.Done> | undefined> | undefined
+  readonly latch?: Latch.Latch | undefined
   readonly readable: Readable | NodeJS.ReadableStream
   readonly onError: (error: unknown) => E
   readonly chunkSize: number | undefined
@@ -344,7 +354,7 @@ const readableToPullUnsafe = <A, E>(options: {
 
   const closeOnDone = options.closeOnDone ?? true
   const exit = options.exit ?? MutableRef.make(undefined)
-  const latch = Latch.makeUnsafe(false)
+  const latch = options.latch ?? Latch.makeUnsafe(false)
   function onReadable() {
     latch.openUnsafe()
   }
@@ -448,3 +458,6 @@ class StreamAdapter<E, R> extends Readable {
 }
 
 const defaultOnError = (error: unknown): Cause.UnknownError => new Cause.UnknownError(error)
+
+const toMaxBytes = (maxBytes: ByteSize.Input | undefined): number | undefined =>
+  maxBytes === undefined || maxBytes === Infinity ? undefined : Number(ByteSize.fromInputUnsafe(maxBytes))

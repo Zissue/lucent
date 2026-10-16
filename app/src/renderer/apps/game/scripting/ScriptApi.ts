@@ -2,6 +2,7 @@ import type {
   AuraQueryOptions,
   BoostType,
   EntityState,
+  InventoryPool,
   ItemQuery,
   LiveAura,
   LiveFaction,
@@ -80,7 +81,6 @@ import type {
   WaitOptions,
 } from "../flash/contract/Packet";
 import type { TriggeredWaitOptions } from "../flash/protocol/Wait";
-import type { BankView } from "../Types";
 import type { ScriptCallbackResult, ScriptGenerator } from "./api/Callbacks";
 import type {
   ScriptExecutionError,
@@ -208,7 +208,7 @@ export interface ScriptBankApi {
   readonly getAvailableSlots: () => Effect.Effect<number>;
   readonly getSlots: () => Effect.Effect<number>;
   readonly getUsedSlots: () => Effect.Effect<number>;
-  readonly isOpen: (view?: BankView) => Effect.Effect<boolean>;
+  readonly isOpen: () => Effect.Effect<boolean>;
   /** @param force Whether to reload an already loaded bank. */
   readonly load: (
     /** @defaultValue false */
@@ -291,7 +291,6 @@ export interface ScriptCombatApi {
   readonly getSkillCooldownRemainingMs: (
     skill: SkillSlot,
   ) => Effect.Effect<number | null>;
-  /** Finds a matching monster and returns it after reaching its cell, or `null` if the target cannot be found or reached. */
   readonly hunt: (
     query: MonsterQuery,
     options?: HuntOptions,
@@ -301,11 +300,6 @@ export interface ScriptCombatApi {
     options?: CombatKillOptions,
   ) => Effect.Effect<boolean>;
   /**
-   * Fights monsters in the current cell until your inventory has the requested
-   * quantity. Counts items you already own and accepts matching drops.
-   * Keeps trying until the goal is reached or the action is interrupted.
-   * A timeout stops farming; items already collected stay in your inventory.
-   *
    * @example
    * ```js
    * const script = require("lucent/script");
@@ -550,9 +544,18 @@ export interface ScriptInventoryApi {
   ) => Effect.Effect<boolean>;
   readonly get: (query: ItemQuery) => Effect.Effect<LiveItem | null>;
   readonly getAll: () => Effect.Effect<readonly LiveItem[]>;
-  readonly getAvailableSlots: () => Effect.Effect<number>;
-  readonly getSlots: () => Effect.Effect<number>;
-  readonly getUsedSlots: () => Effect.Effect<number>;
+  readonly getAvailableSlots: (
+    /** @defaultValue "bag" */
+    pool?: InventoryPool,
+  ) => Effect.Effect<number>;
+  readonly getSlots: (
+    /** @defaultValue "bag" */
+    pool?: InventoryPool,
+  ) => Effect.Effect<number>;
+  readonly getUsedSlots: (
+    /** @defaultValue "bag" */
+    pool?: InventoryPool,
+  ) => Effect.Effect<number>;
   readonly unequipConsumable: (query: ItemQuery) => Effect.Effect<boolean>;
   /** Uses an eligible item directly from inventory, such as a Tonic, Elixir, or boost. */
   readonly use: (query: ItemQuery) => Effect.Effect<boolean>;

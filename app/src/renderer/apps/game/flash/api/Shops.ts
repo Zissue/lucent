@@ -7,7 +7,7 @@ import * as Schema from "effect/Schema";
 import type { BridgeService } from "../bridge/Bridge";
 import { PositiveWireInt, WireBoolean, WireInt } from "../contract/Coercion";
 import { packetData } from "../contract/Packet";
-import { ItemPayloads, toItem } from "../contract/payload/Items";
+import { ItemPayloads, toBankItems, toItem } from "../contract/payload/Items";
 import type { Store } from "../state/Store";
 import type { Inventory } from "./Inventory";
 import type { Wait } from "./Wait";
@@ -54,9 +54,12 @@ export const makeShops = (
         Option.match({
           onNone: () => Effect.void,
           onSome: (payloads) => {
-            const items = payloads.map((payload) =>
-              toItem(payload, { context: container }),
-            );
+            const items =
+              container === "bank"
+                ? toBankItems(payloads)
+                : payloads.map((payload) =>
+                    toItem(payload, { context: container }),
+                  );
             return store.items.replace(container, items);
           },
         }),
@@ -234,11 +237,12 @@ export const makeShops = (
           );
           if (packet === null || response?.bitSuccess !== true) return false;
 
-          const container = response.bBank
-            ? "bank"
-            : item.houseItem
-              ? "house"
-              : "inventory";
+          const container =
+            response.bBank && item.category !== "Class"
+              ? "bank"
+              : item.houseItem
+                ? "house"
+                : "inventory";
           yield* refreshPurchasedContainer(container);
           const owned = yield* store.items.quantity(container, item.itemId);
           return owned >= startingQuantities[container] + requested;

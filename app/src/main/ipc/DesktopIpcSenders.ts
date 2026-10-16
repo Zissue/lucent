@@ -1,16 +1,16 @@
-import type { IpcMainInvokeEvent, WebContents } from "electron";
+import type { WebContents } from "electron";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
 import type { DesktopRendererKind } from "../window/DesktopWindowCatalog";
-import { DesktopWindows } from "../window/DesktopWindows";
+import {
+  DesktopWindows,
+  type DesktopRendererIdentity,
+} from "../window/DesktopWindows";
 
-export interface DesktopIpcSender {
-  readonly rendererId: number;
-  readonly kind: DesktopRendererKind;
-}
+export type DesktopIpcSender = DesktopRendererIdentity;
 
 export type DesktopIpcSenderKinds = readonly [
   DesktopRendererKind,
@@ -30,7 +30,7 @@ export class DesktopIpcSenderError extends Schema.TaggedError<DesktopIpcSenderEr
 
 export interface DesktopIpcSendersShape {
   readonly require: (
-    event: IpcMainInvokeEvent,
+    event: { readonly sender: Pick<WebContents, "id"> },
     allowedKinds: DesktopIpcSenderKinds,
   ) => Effect.Effect<DesktopIpcSender, DesktopIpcSenderError>;
 }
@@ -40,39 +40,22 @@ export class DesktopIpcSenders extends Context.Service<
   DesktopIpcSendersShape
 >()("lucent/desktop/ipc/DesktopIpcSenders") {}
 
-export interface DesktopIpcSendersOptions {
-  readonly getWebContentsId: (webContents: WebContents) => number;
-}
-
 export const makeDesktopIpcSenders = (
-  windows: DesktopWindows["Service"],
-  options: DesktopIpcSendersOptions = {
-    getWebContentsId: (webContents) => webContents.id,
-  },
+  windows: Pick<DesktopWindows["Service"], "identify">,
 ): DesktopIpcSenders["Service"] => {
   const requireSender = Effect.fn("DesktopIpcSenders.require")(function* (
-    event: IpcMainInvokeEvent,
+    event: { readonly sender: Pick<WebContents, "id"> },
     allowedKinds: DesktopIpcSenderKinds,
   ) {
-    const rendererId = options.getWebContentsId(event.sender);
-    const kind = yield* windows.getRendererKind(rendererId).pipe(
-      Effect.mapError(
-        () =>
-          new DesktopIpcSenderError({
-            detail: `Failed to resolve IPC sender window: ${rendererId}`,
-          }),
-      ),
-    );
-    if (kind === null || !allowedKinds.includes(kind)) {
+    const rendererId = event.sender.id;
+    const identity = yield* windows.identify(rendererId);
+    if (identity === undefined || !allowedKinds.includes(identity.kind)) {
       return yield* new DesktopIpcSenderError({
         detail: `IPC sender must be one of: ${allowedKinds.join(", ")}`,
       });
     }
 
-    return {
-      rendererId,
-      kind,
-    };
+    return identity;
   });
 
   return DesktopIpcSenders.of({
@@ -87,3 +70,21 @@ export const layer = Layer.effect(
     return makeDesktopIpcSenders(windows);
   }),
 );
+
+export const resolveGameRendererId = Effect.fn(
+  "DesktopIpcSenders.resolveGameRendererId",
+)(function* (sender: Pick<DesktopIpcSender, "rendererId" | "kind">) {
+  if (sender.kind === "game") return sender.rendererId;
+  const windows = yield* DesktopWindows;
+  const ownerId = (yield* windows.describe(sender.rendererId))?.ownerId;
+  if (
+    ownerId === undefined ||
+    (yield* windows.describe(ownerId))?.kind !== "game"
+  ) {
+    return yield* new DesktopIpcSenderError({
+      detail:
+        "This window is no longer linked to a game. Reopen it from the game.",
+    });
+  }
+  return ownerId;
+});

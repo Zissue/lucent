@@ -67,6 +67,7 @@ export const toMonsterSelector = (query: MonsterQuery): MonsterSelector => {
 };
 
 export interface Monster extends Entity {
+  readonly aggressive: boolean;
   /** Server-provided drops discovered while sharing a cell with this monster. */
   readonly drops: readonly MonsterDrop[];
   readonly level: number;
@@ -97,6 +98,7 @@ export const orderMonstersByPriority = (
 };
 
 export interface MonsterData extends EntityData {
+  aggressive: boolean;
   level: number;
   monsterId: number;
   monsterMapId: number;
@@ -112,6 +114,9 @@ export type MonsterSnapshot = Readonly<MonsterData> &
 export class LiveMonster extends LiveEntity<MonsterData> implements Monster {
   readonly #drops = new Map<number, MonsterDrop>();
 
+  get aggressive(): boolean {
+    return this.modelData.aggressive;
+  }
   get drops(): readonly MonsterDrop[] {
     return Array.from(this.#drops.values());
   }

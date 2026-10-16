@@ -1,5 +1,11 @@
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
+import type * as LogLevel from "effect/LogLevel";
 import * as ManagedRuntime from "effect/ManagedRuntime";
+import * as References from "effect/References";
+
+import type { RendererLogRecord } from "../../../../shared/ipc/rendererLog";
+import { desktopLogRecord } from "../../../../shared/logRecord";
 
 import * as Army from "../army/Army";
 import * as Automation from "../automation/Automation";
@@ -11,6 +17,43 @@ import * as Api from "./api/Api";
 import * as Bridge from "./bridge/Bridge";
 import * as DiagnosticSink from "./bridge/DiagnosticSink";
 import * as Gateway from "./bridge/Gateway";
+
+const rendererLogLevels: Partial<
+  Record<LogLevel.LogLevel, RendererLogRecord["level"]>
+> = {
+  Fatal: "error",
+  Error: "error",
+  Warn: "warn",
+  Info: "info",
+  Debug: "debug",
+};
+
+export const loggingLayer = Layer.mergeAll(
+  Logger.layer(
+    [
+      Logger.make<unknown, void>((options) => {
+        const level = rendererLogLevels[options.logLevel];
+        if (level === undefined) return;
+        try {
+          const { message, component, data, error, repeatKey } =
+            desktopLogRecord(options);
+          window.desktop.log.write({
+            level,
+            message,
+            component: typeof component === "string" ? component : "renderer",
+            ...(data === undefined ? {} : { data }),
+            ...(error === undefined ? {} : { error }),
+            ...(repeatKey === undefined ? {} : { repeatKey }),
+          });
+        } catch {}
+      }),
+    ],
+    { mergeWithExisting: false },
+  ),
+  Layer.sync(References.MinimumLogLevel, () =>
+    typeof window !== "undefined" && window.desktop.debug ? "Debug" : "Info",
+  ),
+);
 
 const diagnosticLayer =
   typeof window !== "undefined" && window.desktop.debug
@@ -32,4 +75,6 @@ export const liveLayer = Layer.mergeAll(
   Scripting.layer,
 ).pipe(Layer.provideMerge(consumerLayer));
 
-export const flashRuntime = ManagedRuntime.make(liveLayer);
+export const flashRuntime = ManagedRuntime.make(
+  liveLayer.pipe(Layer.provideMerge(loggingLayer)),
+);

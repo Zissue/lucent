@@ -1,0 +1,65 @@
+---
+title: Writing scripts
+description: Learn the basic structure of a script.
+---
+
+## Script environment
+
+Load the focused modules needed by the script:
+
+- `lucent/api` controls the game.
+- `lucent/script` handles lifecycle, inputs, options, logging, and other utilities.
+- [`lucent/schema`](/reference/scripting/schema/) validates and transforms data.
+- [`lucent/http`](/reference/scripting/http/) sends HTTP requests with script cancellation and timeouts.
+- `lucent/filesystem` persists shared files in `Documents/Lucent/data`.
+- `lucent/autozone` controls automatic encounter-zone movement.
+- `lucent/autorelogin` controls automatic login recovery.
+
+```js
+const api = require("lucent/api");
+const script = require("lucent/script");
+```
+
+See the [scripting module reference](/reference/scripting/) for every module.
+Scripts can also use the smaller [`effect` module](/reference/scripting/effect/).
+
+## Create the script
+
+Every script starts with a generator function:
+
+```js
+module.exports = function* run() {
+  // Script body
+};
+```
+
+## Yield every action
+
+Each action is a generator. Call it with `yield*` to run it and receive its
+result before the script continues.
+
+```js
+const api = require("lucent/api");
+const script = require("lucent/script");
+
+module.exports = function* run() {
+  yield* script.options.update({ roomPolicy: { kind: "random-private" } });
+  yield* api.player.joinMap("battleon");
+
+  const me = yield* api.player.get();
+  if (me !== null) {
+    yield* script.log(`Logged in as ${me.username}`);
+  }
+};
+```
+
+:::tip[About `Effect.Effect`]
+You’ll see `Effect.Effect<…>` throughout the docs. It means the call is an
+action that runs with `yield*`. Focus on the function name, its arguments, and
+the value it yields—you usually don’t need to work with `Effect.Effect`
+directly.
+:::
+
+Use the [scripting reference](/reference/scripting) to see what your scripts can
+do. When several scripts share code, put them in a
+[script package](/docs/scripting/script-packages/).

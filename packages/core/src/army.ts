@@ -52,10 +52,6 @@ export interface ArmyStartPayload {
   readonly playerName: string;
 }
 
-export interface ArmyLeavePayload {
-  readonly sessionId: string;
-}
-
 export interface ArmySyncPayload {
   readonly label?: string;
   readonly sessionId: string;
@@ -74,10 +70,8 @@ export interface ArmyProgressResult {
 }
 
 export interface ArmyFailPayload {
-  readonly label?: string;
   readonly reason: string;
   readonly sessionId: string;
-  readonly step?: number;
 }
 
 export interface ArmySessionEndedPayload {

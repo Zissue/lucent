@@ -9,17 +9,21 @@ import * as Scope from "effect/Scope";
 import { DesktopObservability } from "./observability/DesktopObservability";
 import { ElectronApp } from "../electron/ElectronApp";
 
-const SIGNAL_FORCE_EXIT_AFTER_MS = 1_500;
-const SIGNAL_FORCE_EXIT_LOG_FLUSH_TIMEOUT_MS = 250;
+const QUIT_DEADLINE_MS = 1_500;
+const FORCED_EXIT_FLUSH_TIMEOUT_MS = 250;
 const TERMINATION_SIGNALS = ["SIGHUP", "SIGINT", "SIGTERM"] as const;
+
+type QuitSource = "will-quit" | (typeof TERMINATION_SIGNALS)[number];
 
 export interface DesktopLifecycleShape {
   readonly awaitQuit: Effect.Effect<void>;
-  readonly register: Effect.Effect<
+  readonly isQuitting: Effect.Effect<boolean>;
+  readonly attachObservability: Effect.Effect<
     void,
     never,
-    DesktopObservability | Scope.Scope | ElectronApp
+    DesktopObservability
   >;
+  readonly register: Effect.Effect<void, never, Scope.Scope | ElectronApp>;
 }
 
 export class DesktopLifecycle extends Context.Service<
@@ -27,13 +31,14 @@ export class DesktopLifecycle extends Context.Service<
   DesktopLifecycleShape
 >()("lucent/desktop/app/DesktopLifecycle") {}
 
+// Use `on` so a repeated signal cannot reach Node's default handler during cleanup.
 const addProcessSignalListener = (
   signal: NodeJS.Signals,
   listener: () => void,
 ): Effect.Effect<void, never, Scope.Scope> =>
   Effect.acquireRelease(
     Effect.sync(() => {
-      (process as EventEmitter).once(signal, listener);
+      (process as EventEmitter).on(signal, listener);
     }),
     () =>
       Effect.sync(() => {
@@ -45,29 +50,64 @@ export const layer = Layer.effect(
   DesktopLifecycle,
   Effect.gen(function* () {
     const quitRequested = yield* Deferred.make<void>();
+    let isQuitting = false;
+    let diagnosticContext = Context.empty();
+    let flush = Effect.void;
+
+    const attachObservability = Effect.gen(function* () {
+      const observability = yield* DesktopObservability;
+      diagnosticContext = yield* Effect.context();
+      flush = observability.flush;
+    });
 
     const register = Effect.gen(function* () {
       const app = yield* ElectronApp;
-      const observability = yield* DesktopObservability;
-      const context = yield* Effect.context<
-        DesktopObservability | Scope.Scope | ElectronApp
-      >();
+      const context = yield* Effect.context<Scope.Scope | ElectronApp>();
+      diagnosticContext = context;
       const runFork = Effect.runForkWith(context);
-      const runPromise = Effect.runPromiseWith(context);
-      let forceExitTimer: NodeJS.Timeout | undefined;
-      let receivedSignal: NodeJS.Signals | null = null;
+      let deadline: NodeJS.Timeout | undefined;
 
-      const clearForceExitTimer = (): void => {
-        if (forceExitTimer !== undefined) {
-          clearTimeout(forceExitTimer);
-          forceExitTimer = undefined;
+      const forcedExit = (source: QuitSource): Effect.Effect<void> =>
+        Effect.logError("Lucent quit timed out; forcing exit").pipe(
+          Effect.annotateLogs({
+            component: "lifecycle",
+            data: { source, timeoutMs: QUIT_DEADLINE_MS },
+          }),
+          Effect.andThen(flush),
+          Effect.provideContext(diagnosticContext),
+          Effect.timeoutOption(FORCED_EXIT_FLUSH_TIMEOUT_MS),
+          Effect.asVoid,
+          Effect.ensuring(app.exit(0)),
+        );
+
+      const beginShutdown = (source: QuitSource): boolean => {
+        isQuitting = true;
+        if (deadline !== undefined) {
+          return false;
         }
+        deadline = setTimeout(
+          () => runFork(forcedExit(source)),
+          QUIT_DEADLINE_MS,
+        );
+        deadline.unref?.();
+        return true;
       };
-      yield* Effect.addFinalizer(() => Effect.sync(clearForceExitTimer));
 
-      const disposeWillQuit = yield* app.on("will-quit", () => {
-        clearForceExitTimer();
-        runFork(Deferred.succeed(quitRequested, undefined));
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          clearTimeout(deadline);
+        }),
+      );
+
+      const disposeBeforeQuit = yield* app.on("before-quit", () => {
+        isQuitting = true;
+      });
+      yield* Effect.addFinalizer(() => Effect.sync(disposeBeforeQuit));
+
+      const disposeWillQuit = yield* app.on("will-quit", (event) => {
+        event.preventDefault();
+        beginShutdown("will-quit");
+        Deferred.doneUnsafe(quitRequested, Effect.void);
       });
       yield* Effect.addFinalizer(() => Effect.sync(disposeWillQuit));
 
@@ -78,48 +118,36 @@ export const layer = Layer.effect(
       });
       yield* Effect.addFinalizer(() => Effect.sync(disposeWindowAllClosed));
 
-      for (const signal of TERMINATION_SIGNALS) {
-        yield* addProcessSignalListener(signal, () => {
-          if (receivedSignal !== null) {
+      const signalListeners = TERMINATION_SIGNALS.map((signal) => ({
+        signal,
+        listener: () => {
+          if (!beginShutdown(signal)) {
             return;
           }
-
-          receivedSignal = signal;
-          void runPromise(
+          runFork(
             Effect.logWarning("Received termination signal").pipe(
-              Effect.annotateLogs({
-                component: "lifecycle",
-                data: {
-                  signal,
-                },
-              }),
+              Effect.annotateLogs({ component: "lifecycle", data: { signal } }),
+              Effect.provideContext(diagnosticContext),
             ),
-          ).catch(() => undefined);
+          );
           runFork(app.quit);
-
-          forceExitTimer = setTimeout(() => {
-            void runPromise(
-              Effect.logError("Lucent quit timed out; forcing exit")
-                .pipe(
-                  Effect.annotateLogs({
-                    component: "lifecycle",
-                    data: {
-                      signal,
-                      timeoutMs: SIGNAL_FORCE_EXIT_AFTER_MS,
-                    },
-                  }),
-                )
-                .pipe(
-                  Effect.flatMap(() => observability.flush),
-                  Effect.timeoutOption(SIGNAL_FORCE_EXIT_LOG_FLUSH_TIMEOUT_MS),
-                  Effect.asVoid,
-                  Effect.flatMap(() => app.exit(0)),
-                ),
-            ).catch(() => undefined);
-          }, SIGNAL_FORCE_EXIT_AFTER_MS);
-          forceExitTimer.unref?.();
-        });
+          Deferred.doneUnsafe(quitRequested, Effect.void);
+        },
+      }));
+      for (const { signal, listener } of signalListeners) {
+        yield* addProcessSignalListener(signal, listener);
       }
+      yield* app.whenReady.pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            for (const { signal, listener } of signalListeners) {
+              (process as EventEmitter).removeListener(signal, listener);
+              (process as EventEmitter).on(signal, listener);
+            }
+          }),
+        ),
+        Effect.forkScoped,
+      );
     });
 
     const awaitQuit: DesktopLifecycleShape["awaitQuit"] =
@@ -127,6 +155,8 @@ export const layer = Layer.effect(
 
     return DesktopLifecycle.of({
       awaitQuit,
+      isQuitting: Effect.sync(() => isQuitting),
+      attachObservability,
       register,
     });
   }),

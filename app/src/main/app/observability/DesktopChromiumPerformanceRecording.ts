@@ -14,6 +14,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
+import { logFailure } from "../../../shared/logFailure";
 import { ElectronApp } from "../../electron/ElectronApp";
 import {
   ElectronChromiumPerformance,
@@ -38,14 +39,12 @@ import {
   chromiumRecordingTimestamp,
   chromiumTraceRotationReason,
   chromiumTraceSegmentFileName,
+  normalizeChromiumProcessMetric,
+  type ChromiumProcessSample,
   type ChromiumTraceRotationReason,
 } from "./ChromiumPerformanceRecordingModel";
 import { DesktopEnvironment } from "../DesktopEnvironment";
 import { makeListenerRegistry } from "../ListenerRegistry";
-import {
-  normalizePerformanceTraceMetric,
-  type PerformanceTraceProcessSample,
-} from "./DesktopPerformanceTrace";
 
 const PERFORMANCE_RECORDINGS_DIRECTORY_NAME = "chromium-performance-recordings";
 const MANIFEST_FILE_NAME = "manifest.json";
@@ -176,7 +175,7 @@ interface ChromiumResourceSample {
   readonly capturedAt: string;
   readonly elapsedMs: number;
   readonly mainV8Heap: ElectronMainHeapUsage;
-  readonly processes: readonly PerformanceTraceProcessSample[];
+  readonly processes: readonly ChromiumProcessSample[];
 }
 
 interface ChromiumRendererTargetMetadata {
@@ -423,10 +422,18 @@ const makeDesktopChromiumPerformanceRecording = Effect.gen(function* () {
         cause === undefined ? message : `${message}: ${errorMessage(cause)}`,
       );
     }
-    yield* Effect.logWarning(message).pipe(
+    yield* logFailure(
+      "Chromium performance recording degraded",
+      cause === undefined
+        ? Cause.empty
+        : Cause.isCause(cause)
+          ? cause
+          : Cause.fail(cause),
+      { failure: "warning" },
+    ).pipe(
       Effect.annotateLogs({
         component: "chromium-performance-recording",
-        data: cause === undefined ? undefined : { cause },
+        data: { message },
       }),
     );
   });
@@ -436,33 +443,21 @@ const makeDesktopChromiumPerformanceRecording = Effect.gen(function* () {
   )(function* (
     target: ElectronChromiumRendererTarget,
   ): Effect.fn.Return<ChromiumRendererTargetMetadata | undefined> {
-    const kind = yield* windows
-      .getRendererKind(target.rendererId)
-      .pipe(Effect.catch(() => Effect.succeed(null)));
+    const info = yield* windows.describe(target.rendererId);
     if (
-      kind === null ||
-      kind === "game-group-controls" ||
-      kind === "game-host"
+      info === undefined ||
+      info.kind === "game-group-controls" ||
+      info.kind === "game-host"
     ) {
       return undefined;
     }
 
-    const generation = yield* windows
-      .getRendererGeneration(target.rendererId)
-      .pipe(Effect.catch(() => Effect.void));
-    if (generation === undefined) {
-      return undefined;
-    }
-
-    const ownerRendererId = yield* windows
-      .getOwnerRendererId(target.rendererId)
-      .pipe(Effect.catch(() => Effect.succeed(null)));
     return {
       rendererId: target.rendererId,
-      generation,
-      kind,
+      generation: info.generation,
+      kind: info.kind,
       osProcessId: target.osProcessId,
-      ownerRendererId,
+      ownerRendererId: info.ownerId ?? null,
     };
   });
 
@@ -477,7 +472,7 @@ const makeDesktopChromiumPerformanceRecording = Effect.gen(function* () {
         capturedAt: new Date(capturedAtMs).toISOString(),
         elapsedMs: Math.max(0, capturedAtMs - current.startedAtMs),
         mainV8Heap,
-        processes: metrics.map(normalizePerformanceTraceMetric),
+        processes: metrics.map(normalizeChromiumProcessMetric),
       });
     },
     (effect, current) =>
@@ -1041,10 +1036,10 @@ const makeDesktopChromiumPerformanceRecording = Effect.gen(function* () {
           Effect.catch((cause) =>
             Effect.logWarning(
               "Failed to flush Chromium tracing during shutdown",
+              Cause.fail(cause),
             ).pipe(
               Effect.annotateLogs({
                 component: "chromium-performance-recording",
-                data: { cause },
               }),
             ),
           ),

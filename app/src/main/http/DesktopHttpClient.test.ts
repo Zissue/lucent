@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as Effect from "effect/Effect";
 import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
-import { HttpClient, HttpClientResponse } from "effect/unstable/http";
+import { HttpClient, HttpClientResponse } from "effect/http";
 import {
   crossOriginRedirectHeaders,
   firstHttpHeader,

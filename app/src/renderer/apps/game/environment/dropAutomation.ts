@@ -129,10 +129,11 @@ export const makeEnvironmentDropAutomation = Effect.fn(
       );
       const itemIds = failures.filter((itemId) => itemId !== null);
       if (itemIds.length > 0) {
-        yield* Effect.logWarning({
-          itemIds,
-          message: "Environment drop rejection retries exhausted",
-        });
+        yield* Effect.logWarning(
+          "Environment drop rejection retries exhausted",
+        ).pipe(
+          Effect.annotateLogs({ component: "environment", data: { itemIds } }),
+        );
       }
     },
   );

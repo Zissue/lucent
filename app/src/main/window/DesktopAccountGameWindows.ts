@@ -2,11 +2,16 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import type { AccountLaunchWindowTarget } from "@lucent/core/accounts";
+import { ElectronSession } from "../electron/ElectronSession";
 import {
   AccountGameWindows,
   type AccountGameWindowEvent,
 } from "../internal/accounts/AccountGameWindows";
-import { DesktopWindows, type DesktopGameHostTarget } from "./DesktopWindows";
+import {
+  type DesktopGameHostTarget,
+  DesktopWindows,
+  requireRenderer,
+} from "./DesktopWindows";
 
 const resolveGameHostTarget = (
   target: AccountLaunchWindowTarget | undefined,
@@ -21,6 +26,7 @@ export const layer = Layer.effect(
   AccountGameWindows,
   Effect.gen(function* () {
     const windows = yield* DesktopWindows;
+    const electronSession = yield* ElectronSession;
 
     const toAccountGameWindowEvent = Effect.fn(
       "DesktopAccountGameWindows.toAccountGameWindowEvent",
@@ -28,14 +34,8 @@ export const layer = Layer.effect(
       readonly generation: number;
       readonly rendererId: number;
     }): Effect.fn.Return<AccountGameWindowEvent> {
-      const gameWindowGroupId = yield* windows
-        .getNativeWindowId(event.rendererId)
-        .pipe(
-          Effect.match({
-            onFailure: (): undefined => undefined,
-            onSuccess: (groupId): number => groupId,
-          }),
-        );
+      const gameWindowGroupId = (yield* windows.describe(event.rendererId))
+        ?.windowId;
       return {
         ...(gameWindowGroupId === undefined ? {} : { gameWindowGroupId }),
         gameWindowId: event.rendererId,
@@ -48,20 +48,28 @@ export const layer = Layer.effect(
 
     const getGeneration: AccountGameWindows["Service"]["getGeneration"] = (
       gameWindowId,
-    ) => windows.getRendererGeneration(gameWindowId);
+    ) =>
+      Effect.map(
+        requireRenderer(windows, gameWindowId),
+        (info) => info.generation,
+      );
 
     const getGroupId: AccountGameWindows["Service"]["getGroupId"] = (
       gameWindowId,
-    ) => windows.getNativeWindowId(gameWindowId);
+    ) =>
+      Effect.map(
+        requireRenderer(windows, gameWindowId),
+        (info) => info.windowId,
+      );
 
     const onClosed: AccountGameWindows["Service"]["onClosed"] = (listener) =>
-      windows.onClosed((event) =>
-        event.kind === "game" ? listener(event.rendererId) : Effect.void,
+      windows.observe({ kind: "game" }, (event) =>
+        event.type === "closed" ? listener(event.rendererId) : Effect.void,
       );
 
     const onCreated: AccountGameWindows["Service"]["onCreated"] = (listener) =>
-      windows.onCreated((event) =>
-        event.kind === "game"
+      windows.observe({ kind: "game" }, (event) =>
+        event.type === "created"
           ? toAccountGameWindowEvent(event).pipe(Effect.flatMap(listener))
           : Effect.void,
       );
@@ -69,47 +77,37 @@ export const layer = Layer.effect(
     const onReloaded: AccountGameWindows["Service"]["onReloaded"] = (
       listener,
     ) =>
-      windows.onRendererReloaded((event) =>
-        event.kind === "game"
+      windows.observe({ kind: "game" }, (event) =>
+        event.type === "reloaded"
           ? toAccountGameWindowEvent(event).pipe(Effect.flatMap(listener))
           : Effect.void,
       );
 
-    const open: AccountGameWindows["Service"]["open"] = (options) =>
-      Effect.gen(function* () {
-        let gameWindowId: number | undefined;
-        const onCreated = options?.onCreated;
-        const instanceId = yield* windows.open("game", {
-          gameHostTarget: resolveGameHostTarget(options?.windowTarget),
-          ...(options?.managedProfileKey === undefined
-            ? {}
-            : { managedGameProfileKey: options.managedProfileKey }),
-          ...(options?.name === undefined
-            ? {}
-            : { gameViewName: options.name }),
-          ...(options?.tile === undefined ? {} : { tile: options.tile }),
-          ...(onCreated === undefined
-            ? {}
-            : {
-                onCreated: (event) =>
-                  toAccountGameWindowEvent(event).pipe(
-                    Effect.tap((accountEvent) =>
-                      Effect.sync(() => {
-                        gameWindowId = accountEvent.gameWindowId;
-                      }),
-                    ),
-                    Effect.flatMap(onCreated),
-                  ),
-              }),
-        });
-        return gameWindowId ?? (yield* windows.getRendererId(instanceId));
+    const open: AccountGameWindows["Service"]["open"] = (options) => {
+      const onCreated = options?.onCreated;
+      return windows.open("game", {
+        gameHostTarget: resolveGameHostTarget(options?.windowTarget),
+        ...(options?.managedProfileKey === undefined
+          ? {}
+          : { managedGameProfileKey: options.managedProfileKey }),
+        ...(options?.name === undefined ? {} : { gameViewName: options.name }),
+        ...(options?.gameViewLayout === undefined
+          ? {}
+          : { gameViewLayout: options.gameViewLayout }),
+        ...(onCreated === undefined
+          ? {}
+          : {
+              onCreated: (event) =>
+                toAccountGameWindowEvent(event).pipe(Effect.flatMap(onCreated)),
+            }),
       });
+    };
 
     const reveal: AccountGameWindows["Service"]["reveal"] = (gameWindowId) =>
       windows.revealRenderer(gameWindowId);
 
     const retireProfile: AccountGameWindows["Service"]["retireProfile"] =
-      windows.retireManagedGameProfile;
+      electronSession.retireManagedGameProfile;
 
     const setName: AccountGameWindows["Service"]["setName"] = (
       gameWindowId,

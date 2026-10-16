@@ -222,28 +222,23 @@ export const makeGitHubApiClient = (
 ): GitHubApiClientShape => {
   const rateLimits = new Map<string, RateLimitState>();
 
-  const activeRateLimit = (
+  const applyResponse = (
     key: string,
-    now: number,
-  ): RateLimitState | undefined => {
-    const value = rateLimits.get(key);
-    if (value === undefined) return undefined;
-    if (value.until > now) return value;
-    rateLimits.delete(key);
-    return undefined;
-  };
-
-  const recordRateLimit = (
-    key: string,
+    observed: RateLimitState | undefined,
     response: DesktopHttpResponse,
     now: number,
   ): RateLimitState | undefined => {
-    if (!isGitHubRateLimitResponse(response)) return undefined;
-    const previous = rateLimits.get(key);
-    const strikes = (previous?.strikes ?? 0) + 1;
-    const headerTime = retryAtFromGitHubHeaders(response.headers, now);
+    const current = rateLimits.get(key);
+    if (!isGitHubRateLimitResponse(response)) {
+      if (current === observed) rateLimits.delete(key);
+      return undefined;
+    }
+    const superseded = current !== undefined && current !== observed;
+    const strikes = superseded ? current.strikes : (current?.strikes ?? 0) + 1;
     const until =
-      headerTime ?? now + Math.min(15 * 60_000, 60_000 * 2 ** (strikes - 1));
+      retryAtFromGitHubHeaders(response.headers, now) ??
+      now + Math.min(15 * 60_000, 60_000 * 2 ** (strikes - 1));
+    if (superseded && until <= current.until) return current;
     const state = { strikes, until };
     rateLimits.set(key, state);
     return state;
@@ -256,14 +251,19 @@ export const makeGitHubApiClient = (
   ) {
     const key = rateLimitKey(credentialId);
     const requestStartedAt = yield* Clock.currentTimeMillis;
-    const limited = activeRateLimit(key, requestStartedAt);
-    if (limited !== undefined) {
-      return yield* rateLimitError(limited);
+    const observed = rateLimits.get(key);
+    if (observed !== undefined && observed.until > requestStartedAt) {
+      return yield* rateLimitError(observed);
     }
 
     const response = yield* request.pipe(Effect.mapError(httpClientError));
     const responseReceivedAt = yield* Clock.currentTimeMillis;
-    const recordedLimit = recordRateLimit(key, response, responseReceivedAt);
+    const recordedLimit = applyResponse(
+      key,
+      observed,
+      response,
+      responseReceivedAt,
+    );
     if (
       (response.statusCode >= 200 && response.statusCode < 300) ||
       (acceptNotModified && response.statusCode === 304)

@@ -8,7 +8,9 @@
     ".repos/**",
     "dist",
     "build",
-    "scripts",
+    "/scripts",
+    "app/scripts",
+    "packages/*/scripts",
     "*.tsbuildinfo"
   ],
   "plugins": ["eslint", "oxc", "unicorn", "typescript"],
@@ -54,6 +56,12 @@
         "react/jsx-key": "error",
         "react/react-in-jsx-scope": "off",
         "react/rules-of-hooks": "error"
+      }
+    },
+    {
+      "files": ["script-packages/*/scripts/**/*.js"],
+      "rules": {
+        "lucent/static-script-inputs": "error"
       }
     }
   ]

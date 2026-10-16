@@ -4,14 +4,24 @@ import * as Effect from "effect/Effect";
 import { makeDesktopLayer } from "./app/Layers";
 import { makeDesktopRuntime } from "./app/DesktopRuntime";
 import { prepareMainProcess } from "./app/Preflight";
+import { layer as electronAppLayer } from "./electron/ElectronApp";
 
-const bootstrap = prepareMainProcess();
+const { cliOptions, envConfig } = prepareMainProcess();
 
-void Effect.runPromise(
-  makeDesktopRuntime(bootstrap.cliOptions).pipe(
-    Effect.provide(makeDesktopLayer(bootstrap.envConfig)),
-  ),
-).catch((cause) => {
-  console.error("Lucent desktop runtime failed to start.", cause);
-  app.exit(1);
-});
+if (!app.requestSingleInstanceLock({ argv: process.argv })) {
+  app.exit(0);
+} else {
+  void Effect.runPromise(
+    makeDesktopRuntime(cliOptions, makeDesktopLayer(envConfig)).pipe(
+      Effect.provide(electronAppLayer),
+    ),
+  ).then(
+    () => {
+      app.exit(0);
+    },
+    (cause: unknown) => {
+      console.error("Lucent desktop runtime failed.", cause);
+      app.exit(1);
+    },
+  );
+}

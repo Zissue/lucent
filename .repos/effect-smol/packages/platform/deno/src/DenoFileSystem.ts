@@ -1,10 +1,12 @@
 /**
  * Deno implementation of Effect's `FileSystem` service.
  *
+ * @stability unstable
  * @since 4.0.0
  */
 import { copy as denoCopy, expandGlob, walk } from "@std/fs"
 import { relative } from "@std/path"
+import * as ByteSize from "effect/ByteSize"
 import * as Effect from "effect/Effect"
 import * as FileSystem from "effect/FileSystem"
 import * as Layer from "effect/Layer"
@@ -175,18 +177,23 @@ const makeFileInfo = (info: Deno.FileInfo): FileSystem.File.Info => ({
   nlink: Option.fromNullishOr(info.nlink),
   uid: Option.fromNullishOr(info.uid),
   gid: Option.fromNullishOr(info.gid),
-  size: FileSystem.Size(info.size),
-  blksize: Option.map(Option.fromNullishOr(info.blksize), FileSystem.Size),
+  size: ByteSize.bytes(BigInt(info.size)),
+  blksize: Option.map(Option.fromNullishOr(info.blksize), (size) => ByteSize.bytes(BigInt(size))),
   blocks: Option.fromNullishOr(info.blocks)
 })
 
-/** A file handle is stateful and must not be used concurrently. */
+/**
+ * Deno lacks positional reads, so `native` serializes seek + I/O. Cancelled
+ * entries are skipped; started I/O holds the queue until it settles, even
+ * after interruption. Cursor operations must not run concurrently.
+ */
 class FileImpl implements FileSystem.File {
   readonly [FileSystem.FileTypeId]: typeof FileSystem.FileTypeId = FileSystem.FileTypeId
   private readonly file: Deno.FsFile
   private readonly append: boolean
   private position = BigInt(0)
   private nativePosition: bigint | undefined = undefined
+  private nativeQueue: Promise<unknown> = Promise.resolve()
 
   constructor(
     file: Deno.FsFile,
@@ -207,61 +214,92 @@ class FileImpl implements FileSystem.File {
     return tryPromise("sync", undefined, () => this.file.sync())
   }
 
-  seek(offset: FileSystem.SizeInput, from: FileSystem.SeekMode) {
-    const size = FileSystem.Size(offset)
-    return Effect.sync(() => {
-      if (from === "start") {
-        this.position = size
-      } else {
-        this.position += size
+  seek(offset: bigint, from: FileSystem.SeekMode) {
+    return Effect.suspend(() => {
+      const position = from === "start" ? offset : this.position + offset
+      if (position < BigInt(0)) {
+        return Effect.fail(PlatformError.badArgument({
+          module: "FileSystem",
+          method: "seek",
+          description: "Cannot seek before the start of the file"
+        }))
       }
-      return FileSystem.Size(this.position)
+      this.position = position
+      return Effect.succeed(position)
     })
   }
 
-  private readChunk(method: string, buffer: Uint8Array) {
+  private native<A>(signal: AbortSignal, evaluate: () => Promise<A>): Promise<A> {
+    const result = this.nativeQueue.then(() => signal.aborted ? Promise.reject(signal.reason) : evaluate())
+    this.nativeQueue = result.catch(() => undefined)
+    return result
+  }
+
+  private readChunk(method: string, buffer: Uint8Array, explicit: bigint | undefined) {
     return Effect.suspend(() => {
-      const position = this.position
+      if (explicit !== undefined && explicit < BigInt(0)) {
+        return Effect.fail(PlatformError.badArgument({
+          module: "FileSystem",
+          method,
+          description: "Cannot read before the start of the file"
+        }))
+      }
+      const position = explicit ?? this.position
       return Effect.map(
         tryPromise(
           method,
           undefined,
-          async () => {
-            if (this.nativePosition !== position) {
-              this.file.seekSync(position, Deno.SeekMode.Start)
-            }
-            this.nativePosition = undefined
-            return await this.file.read(buffer)
-          }
+          (signal) =>
+            this.native(signal, async () => {
+              if (this.nativePosition !== position) {
+                this.file.seekSync(position, Deno.SeekMode.Start)
+              }
+              this.nativePosition = undefined
+              const bytesRead = (await this.file.read(buffer)) ?? 0
+              this.nativePosition = position + BigInt(bytesRead)
+              return bytesRead
+            })
         ),
         (bytesRead) => {
-          const sizeRead = FileSystem.Size(bytesRead ?? 0)
-          this.position = this.nativePosition = position + sizeRead
-          return sizeRead
+          if (explicit === undefined) {
+            this.position = position + BigInt(bytesRead)
+          }
+          return bytesRead
         }
       )
     })
   }
 
-  read(buffer: Uint8Array) {
-    return this.readChunk("read", buffer)
+  read(buffer: Uint8Array, options?: FileSystem.File.ReadOptions) {
+    return this.readChunk("read", buffer, options?.position)
   }
 
-  readAlloc(size: FileSystem.SizeInput) {
-    const sizeNumber = Number(size)
+  readAlloc(size: number, options?: FileSystem.File.ReadOptions) {
     return Effect.suspend(() => {
-      const buffer = new Uint8Array(sizeNumber)
-      return Effect.map(this.readChunk("readAlloc", buffer), (bytesRead) => {
-        if (bytesRead === BigInt(0)) {
-          return Option.none()
+      try {
+        if (!Number.isInteger(size) || size < 0) {
+          throw new RangeError("size must be a non-negative integer")
         }
-        return Option.some(bytesRead === BigInt(sizeNumber) ? buffer : buffer.subarray(0, Number(bytesRead)))
-      })
+        const buffer = new Uint8Array(size)
+        return Effect.map(this.readChunk("readAlloc", buffer, options?.position), (bytesRead) => {
+          if (bytesRead === 0) {
+            return Option.none()
+          }
+          return Option.some(bytesRead === size ? buffer : buffer.subarray(0, bytesRead))
+        })
+      } catch (cause) {
+        return Effect.fail(PlatformError.badArgument({
+          module: "FileSystem",
+          method: "readAlloc",
+          description: `Could not allocate a buffer of size ${size}`,
+          cause
+        }))
+      }
     })
   }
 
-  truncate(length?: FileSystem.SizeInput) {
-    const size = FileSystem.Size(length ?? 0)
+  truncate(length?: number) {
+    const size = BigInt(length ?? 0)
     return Effect.map(
       tryPromise("truncate", undefined, () => this.file.truncate(Number(size))),
       () => {
@@ -279,22 +317,24 @@ class FileImpl implements FileSystem.File {
         tryPromise(
           method,
           undefined,
-          async () => {
-            if (!this.append && this.nativePosition !== position) {
-              this.file.seekSync(position, Deno.SeekMode.Start)
-            }
-            this.nativePosition = undefined
-            return await this.file.write(buffer)
-          }
+          (signal) =>
+            this.native(signal, async () => {
+              if (!this.append && this.nativePosition !== position) {
+                this.file.seekSync(position, Deno.SeekMode.Start)
+              }
+              this.nativePosition = undefined
+              const bytesWritten = await this.file.write(buffer)
+              if (!this.append) {
+                this.nativePosition = position + BigInt(bytesWritten)
+              }
+              return bytesWritten
+            })
         ),
         (bytesWritten) => {
-          const sizeWritten = FileSystem.Size(bytesWritten)
-          if (this.append) {
-            this.nativePosition = undefined
-          } else {
-            this.position = this.nativePosition = position + sizeWritten
+          if (!this.append) {
+            this.position = position + BigInt(bytesWritten)
           }
-          return sizeWritten
+          return bytesWritten
         }
       )
     })
@@ -306,7 +346,7 @@ class FileImpl implements FileSystem.File {
 
   private writeAllChunk(buffer: Uint8Array): Effect.Effect<void, PlatformError.PlatformError> {
     return Effect.flatMap(this.writeChunk("writeAll", buffer), (bytesWritten) => {
-      if (bytesWritten === BigInt(0)) {
+      if (bytesWritten === 0) {
         return Effect.fail(PlatformError.systemError({
           module: "FileSystem",
           method: "writeAll",
@@ -315,7 +355,7 @@ class FileImpl implements FileSystem.File {
         }))
       }
       return bytesWritten < buffer.length
-        ? this.writeAllChunk(buffer.subarray(Number(bytesWritten)))
+        ? this.writeAllChunk(buffer.subarray(bytesWritten))
         : Effect.void
     })
   }
@@ -326,6 +366,13 @@ class FileImpl implements FileSystem.File {
 }
 
 const open: FileSystem.FileSystem["open"] = (path, options) => {
+  if (options?.noFollow === true) {
+    return Effect.fail(PlatformError.badArgument({
+      module: "FileSystem",
+      method: "open",
+      description: "noFollow is not supported by Deno"
+    }))
+  }
   const append = options?.flag?.startsWith("a") ?? false
   return Effect.map(
     Effect.acquireRelease(
@@ -385,7 +432,7 @@ const symlink: FileSystem.FileSystem["symlink"] = (target, path) =>
   tryPromise("symlink", target, () => Deno.symlink(target, path))
 
 const truncate: FileSystem.FileSystem["truncate"] = (path, length) =>
-  tryPromise("truncate", path, () => Deno.truncate(path, length === undefined ? undefined : Number(length)))
+  tryPromise("truncate", path, () => Deno.truncate(path, length))
 
 const utimes: FileSystem.FileSystem["utimes"] = (path, atime, mtime) =>
   tryPromise("utimes", path, () => Deno.utime(path, atime, mtime))
@@ -441,12 +488,11 @@ const watch = (
 
 const writeFile: FileSystem.FileSystem["writeFile"] = (path, data, options) => {
   const flag = options?.flag ?? "w"
-  if (flag === "w" || flag === "wx" || flag === "a" || flag === "ax") {
+  if (options?.mode === undefined && (flag === "w" || flag === "wx" || flag === "a" || flag === "ax")) {
     return tryPromise("writeFile", path, (signal) =>
       Deno.writeFile(path, data, {
         append: flag.startsWith("a"),
         createNew: flag.includes("x"),
-        ...(options?.mode === undefined ? {} : { mode: options.mode }),
         signal
       }))
   }
@@ -498,6 +544,7 @@ const makeFileSystem = Effect.map(Effect.serviceOption(FileSystem.WatchBackend),
 /**
  * Provides the `FileSystem` service backed by Deno filesystem APIs.
  *
+ * @stability unstable
  * @category layers
  * @since 4.0.0
  */

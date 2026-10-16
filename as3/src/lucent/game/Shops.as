@@ -182,8 +182,9 @@ package lucent.game {
       return true;
     }
 
-    private static function canBuyShopItem(item:Object):Boolean {
+    private static function canBuyShopItem(item:Object, quantity:int = 1):Boolean {
       var game:Object = Main.Game;
+      var categories:Class = Class(Main.getInstance().getGameDomain().getDefinition("InvCat"));
       if (item.bStaff == 1 && game.world.myAvatar.objData.intAccessLevel < 40) {
         return false;
       }
@@ -218,7 +219,12 @@ package lucent.game {
         return false;
       }
       else if (
-          !game.isHouseItem(item) && game.world.myAvatar.items.length >= game.world.myAvatar.objData.iBagSlots ||
+          !game.isHouseItem(item) && categories["isFullFor"](
+            game.world.myAvatar.items,
+            item,
+            game.world.myAvatar.objData.iBagSlots,
+            categories["freedBy"](game.world.myAvatar.items, item, quantity)
+          ) ||
           game.isHouseItem(item) && game.world.myAvatar.houseitems.length >= game.world.myAvatar.objData.iHouseSlots
         ) {
         return false;
@@ -299,7 +305,7 @@ package lucent.game {
         return false;
       }
 
-      if (!canBuyShopItem(item)) {
+      if (!canBuyShopItem(item, quantity)) {
         return false;
       }
 

@@ -5,6 +5,7 @@ import type {
   EnvironmentBankBoost,
   EnvironmentBoostDiscovery,
 } from "../../../../shared/environmentBoosts";
+import { logFailure } from "../../../../shared/logFailure";
 import type { ApiService } from "../flash/api/Api";
 
 export interface EnvironmentBoostApi {
@@ -64,10 +65,16 @@ export const discoverEnvironmentBoosts = Effect.fn(
     return { items: yield* api.bank.getAll(), loaded: true };
   }).pipe(
     Effect.catchCause((cause) =>
-      Effect.logError({
+      logFailure(
+        "Failed to load bank boosts for Environment discovery",
         cause,
-        message: "Failed to load bank boosts for Environment discovery",
-      }).pipe(Effect.as({ items: [] as readonly LiveItem[], loaded: false })),
+        {
+          failure: "warning",
+        },
+      ).pipe(
+        Effect.annotateLogs({ component: "environment" }),
+        Effect.as({ items: [] as readonly LiveItem[], loaded: false }),
+      ),
     ),
   );
 
@@ -103,11 +110,12 @@ export const withdrawEnvironmentBoosts = Effect.fn(
 
     const withdrawn = yield* api.bank.withdraw(itemId).pipe(
       Effect.catchCause((cause) =>
-        Effect.logError({
-          cause,
-          itemId,
-          message: "Failed to withdraw an Environment boost",
-        }).pipe(Effect.as(false)),
+        logFailure("Failed to withdraw an Environment boost", cause, {
+          failure: "warning",
+        }).pipe(
+          Effect.annotateLogs({ component: "environment", data: { itemId } }),
+          Effect.as(false),
+        ),
       ),
     );
     if (withdrawn) {

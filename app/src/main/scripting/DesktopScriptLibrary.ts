@@ -21,7 +21,7 @@ import type {
 import { DesktopEnvironment } from "../app/DesktopEnvironment";
 import { ElectronDialog } from "../electron/ElectronDialog";
 import { ElectronShell } from "../electron/ElectronShell";
-import { ScriptFiles } from "../internal/scripting/ScriptFiles";
+import { ScriptFiles } from "./ScriptFiles";
 import { ScriptPackageCatalog } from "./ScriptPackageCatalog";
 import { normalizeGitHubRepositoryUrl } from "./GitHubScriptPackageClient";
 import { ScriptSourceRegistry } from "./ScriptSourceRegistry";

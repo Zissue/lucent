@@ -1,5 +1,6 @@
 import { EntityState, LiveFaction, LiveOutfit } from "@lucent/game";
 import type { BoostType, ItemQuery, LiveItem, Position } from "@lucent/game";
+import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -10,9 +11,11 @@ import {
   PositiveWireInt,
   WireInt,
 } from "../contract/Coercion";
+import { combatExitCells } from "../domain/CombatExit";
 import { parseMapTarget } from "../domain/MapTarget";
 import type { Store } from "../state/Store";
 import type { Auth } from "./Auth";
+import { stopCombat as stopCombatControl } from "./internal/CombatControl";
 import type { Inventory } from "./Inventory";
 import type { CellPositionOptions, Map } from "./Map";
 import type { Wait } from "./Wait";
@@ -70,6 +73,8 @@ const toFaction = (payload: typeof FactionPayload.Type): LiveFaction =>
 
 const equippedItemId = (value: number | undefined): number | undefined =>
   value === undefined || value === 0 ? undefined : value;
+
+const maxCombatExitJumps = 3;
 
 export interface WalkToOptions {
   /** Movement speed override. */
@@ -401,6 +406,43 @@ export const makePlayer = (
     return settledAtRequestedLocation;
   });
 
+  const stopCombat = stopCombatControl(bridge);
+  const waitUntilIdle = (timeout: Duration.Input) =>
+    wait.until(
+      getState().pipe(
+        Effect.flatMap((state) =>
+          state !== EntityState.Idle
+            ? Effect.succeed(false)
+            : Effect.sleep("500 millis").pipe(
+                Effect.andThen(getState()),
+                Effect.map((confirmed) => confirmed === EntityState.Idle),
+              ),
+        ),
+      ),
+      { interval: "100 millis", timeout },
+    );
+
+  const exitCombat = Effect.fn("Player.exitCombat")(function* () {
+    if ((yield* getState()) === EntityState.Idle) return true;
+    const currentCell = yield* getCell();
+    const currentPad = yield* getPad();
+    const cells = combatExitCells(
+      yield* map.getCells(),
+      yield* store.world.getMonsters,
+      currentCell,
+    );
+
+    for (const cell of cells.slice(0, maxCombatExitJumps)) {
+      yield* stopCombat;
+      yield* jumpToCell(
+        cell,
+        sameText(cell, currentCell) ? currentPad : undefined,
+      );
+      if (yield* waitUntilIdle("2 seconds")) return true;
+    }
+    return false;
+  });
+
   const joinMap = (target: string, options?: CellPositionOptions) =>
     Effect.gen(function* () {
       const { cell, pad } = options ?? {};
@@ -426,6 +468,7 @@ export const makePlayer = (
         return false;
       if (!(yield* wait.until(isAlive(), { timeout: "15 seconds" })))
         return false;
+      if (!(yield* exitCombat())) return false;
       const args: Parameters<Window["swf"]["player.joinMap"]> =
         cell === undefined && pad === undefined
           ? [destination.map]
@@ -516,6 +559,7 @@ export const makePlayer = (
 
   return {
     auras,
+    exitCombat,
     factions,
     get,
     getCell,

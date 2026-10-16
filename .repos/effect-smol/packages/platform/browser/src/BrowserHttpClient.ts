@@ -8,12 +8,22 @@
  * XHR response type, an overridable `XMLHttpRequest` constructor service, and
  * the `layerXMLHttpRequest` layer.
  *
+ * @stability unstable
  * @since 4.0.0
  */
 import * as Cause from "effect/Cause"
 import * as Context from "effect/Context"
 import * as Effect from "effect/Effect"
 import type { LazyArg } from "effect/Function"
+import * as Cookies from "effect/http/Cookies"
+import * as Headers from "effect/http/Headers"
+import * as HttpClient from "effect/http/HttpClient"
+import * as HttpClientError from "effect/http/HttpClientError"
+import type * as HttpClientRequest from "effect/http/HttpClientRequest"
+import * as HttpClientResponse from "effect/http/HttpClientResponse"
+import * as HttpIncomingMessage from "effect/http/HttpIncomingMessage"
+import * as HeaderParser from "effect/http/MultipartParser/HeadersParser"
+import * as UrlParams from "effect/http/UrlParams"
 import * as Inspectable from "effect/Inspectable"
 import type * as Layer from "effect/Layer"
 import * as Option from "effect/Option"
@@ -21,15 +31,6 @@ import { type Pipeable, pipeArguments } from "effect/Pipeable"
 import * as Queue from "effect/Queue"
 import type * as Schema from "effect/Schema"
 import * as Stream from "effect/Stream"
-import * as Cookies from "effect/unstable/http/Cookies"
-import * as Headers from "effect/unstable/http/Headers"
-import * as HttpClient from "effect/unstable/http/HttpClient"
-import * as HttpClientError from "effect/unstable/http/HttpClientError"
-import type * as HttpClientRequest from "effect/unstable/http/HttpClientRequest"
-import * as HttpClientResponse from "effect/unstable/http/HttpClientResponse"
-import * as HttpIncomingMessage from "effect/unstable/http/HttpIncomingMessage"
-import * as HeaderParser from "effect/unstable/http/MultipartParser/HeadersParser"
-import * as UrlParams from "effect/unstable/http/UrlParams"
 
 // =============================================================================
 // Fetch
@@ -39,6 +40,7 @@ export {
   /**
    * Context reference for the `fetch` implementation used by the fetch-based HTTP client.
    *
+   * @stability unstable
    * @category services
    * @since 4.0.0
    */
@@ -46,6 +48,7 @@ export {
   /**
    * Layer that provides an `HttpClient` implementation backed by the configured `Fetch` function.
    *
+   * @stability unstable
    * @category layers
    * @since 4.0.0
    */
@@ -58,11 +61,12 @@ export {
    * Use to provide default credentials, cache, redirect, integrity, or other
    * fetch options for browser HTTP requests.
    *
+   * @stability unstable
    * @category services
    * @since 4.0.0
    */
   RequestInit
-} from "effect/unstable/http/FetchHttpClient"
+} from "effect/http/FetchHttpClient"
 
 // =============================================================================
 // XML Http Request
@@ -71,6 +75,7 @@ export {
 /**
  * Allowed response body modes for the browser XHR HTTP client.
  *
+ * @stability unstable
  * @category models
  * @since 4.0.0
  */
@@ -87,6 +92,7 @@ export type XHRResponseType = "arraybuffer" | "text"
  * @see {@link XHRResponseType} for the allowed response body modes
  * @see {@link withXHRArrayBuffer} for scoping XHR response handling to `ArrayBuffer`
  *
+ * @stability unstable
  * @category services
  * @since 4.0.0
  */
@@ -98,6 +104,7 @@ export const CurrentXHRResponseType: Context.Reference<XHRResponseType> = Contex
 /**
  * Runs an effect with `CurrentXHRResponseType` set to `"arraybuffer"` so the XHR HTTP client receives response bodies as `ArrayBuffer` values.
  *
+ * @stability unstable
  * @category providing services
  * @since 4.0.0
  */
@@ -113,6 +120,7 @@ export const withXHRArrayBuffer = <A, E, R>(
 /**
  * Service tag for the `XMLHttpRequest` constructor used by the browser XHR HTTP client.
  *
+ * @stability unstable
  * @category services
  * @since 4.0.0
  */
@@ -147,7 +155,7 @@ const makeXmlHttpRequest = HttpClient.make(
           const onChange = () => {
             if (!sent && xhr.readyState >= 2) {
               sent = true
-              resume(Effect.succeed(new ClientResponseImpl(request, xhr)))
+              resume(Effect.succeed(new ClientResponseImpl(request, xhr, url.href)))
             }
           }
           xhr.onreadystatechange = onChange
@@ -260,6 +268,13 @@ abstract class IncomingMessageImpl<E> extends Inspectable.Class implements HttpI
     if (this._textEffect) {
       return this._textEffect
     }
+    if (this.source.responseType === "arraybuffer") {
+      return this._textEffect = this.arrayBuffer.pipe(
+        Effect.map((buffer) => new TextDecoder().decode(buffer)),
+        Effect.cached,
+        Effect.runSync
+      )
+    }
     return this._textEffect = Effect.callback<string, E>((resume) => {
       if (this.source.readyState === 4) {
         resume(Effect.succeed(this.source.responseText))
@@ -303,6 +318,9 @@ abstract class IncomingMessageImpl<E> extends Inspectable.Class implements HttpI
   }
 
   get stream(): Stream.Stream<Uint8Array, E> {
+    if (this.source.responseType === "arraybuffer") {
+      return Stream.fromEffect(Effect.map(this.arrayBuffer, (buffer) => new Uint8Array(buffer)))
+    }
     return Stream.callback<Uint8Array, E>((queue) => {
       let offset = 0
       const onReadyStateChange = () => {
@@ -377,10 +395,12 @@ class ClientResponseImpl extends IncomingMessageImpl<HttpClientError.HttpClientE
 {
   readonly [HttpClientResponse.TypeId]: typeof HttpClientResponse.TypeId
   readonly request: HttpClientRequest.HttpClientRequest
+  private readonly requestUrl: string
 
   constructor(
     request: HttpClientRequest.HttpClientRequest,
-    source: globalThis.XMLHttpRequest
+    source: globalThis.XMLHttpRequest,
+    requestUrl: string
   ) {
     super(source, (cause) =>
       new HttpClientError.HttpClientError({
@@ -391,11 +411,16 @@ class ClientResponseImpl extends IncomingMessageImpl<HttpClientError.HttpClientE
         })
       }))
     this.request = request
+    this.requestUrl = requestUrl
     this[HttpClientResponse.TypeId] = HttpClientResponse.TypeId
   }
 
   get status() {
     return this.source.status
+  }
+
+  get url() {
+    return (this.source.responseURL || this.requestUrl).split("#")[0]
   }
 
   get formData(): Effect.Effect<FormData, HttpClientError.HttpClientError> {
@@ -426,6 +451,7 @@ class ClientResponseImpl extends IncomingMessageImpl<HttpClientError.HttpClientE
 /**
  * Layer that provides an `HttpClient` implementation backed by the browser `XMLHttpRequest` API.
  *
+ * @stability unstable
  * @category layers
  * @since 4.0.0
  */

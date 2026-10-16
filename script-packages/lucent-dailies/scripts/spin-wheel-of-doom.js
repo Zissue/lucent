@@ -16,7 +16,10 @@ function* run() {
   return result;
 }
 
-run.inputs = {
+module.exports = run;
+
+/** @satisfies {import("lucent/script").ScriptInputsDefinition} */
+module.exports.inputs = {
   id: "lucent-dailies-spin-wheel-of-doom",
   fields: [
     {
@@ -28,5 +31,3 @@ run.inputs = {
     },
   ],
 };
-
-module.exports = run;

@@ -2,9 +2,8 @@ import { createHash } from "crypto";
 import { createReadStream, promises as fs } from "fs";
 import { relative, resolve, sep } from "path";
 
-import { invariant } from "../../shared/invariant";
 import {
-  formatScriptByteLimit,
+  formatBytes,
   SCRIPT_FILE_MAX_BYTES,
   SCRIPT_PACKAGE_FILE_MAX_BYTES,
   SCRIPT_PACKAGE_MAX_FILES,
@@ -52,10 +51,11 @@ const fingerprint = (stat: Awaited<ReturnType<typeof fs.stat>>): string =>
   [stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(":");
 
 const assertSize = (path: string, size: number, maxBytes: number): void => {
-  invariant(
-    size <= maxBytes,
-    `File exceeds the ${formatScriptByteLimit(maxBytes)} limit: ${path}.`,
-  );
+  if (size > maxBytes) {
+    throw new Error(
+      `File exceeds the ${formatBytes(maxBytes)} limit: ${path}.`,
+    );
+  }
 };
 
 export const readStableFile = async (

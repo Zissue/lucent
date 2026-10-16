@@ -4,13 +4,13 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FiberSet from "effect/FiberSet";
 import * as Layer from "effect/Layer";
-import type * as RpcGroup from "effect/unstable/rpc/RpcGroup";
+import type * as RpcGroup from "effect/rpc/RpcGroup";
 
 import { serveGameRendererRpcPort } from "../../../renderer/apps/game/gameRendererRpc";
 import { GameRendererRpcs } from "../../../shared/gameRendererRpc";
 import {
   DesktopWindows,
-  type DesktopWindowRendererReadyEvent,
+  type DesktopRendererEvent,
 } from "../../window/DesktopWindows";
 import {
   makeGameRendererRpc,
@@ -42,7 +42,7 @@ const unusedHandlers: GameRendererRpcHandlerMap = {
 };
 
 type GameListener = (
-  event: DesktopWindowRendererReadyEvent,
+  event: DesktopRendererEvent,
 ) => Effect.Effect<void, unknown>;
 
 const toMainPort = (port: MessagePort): GameRendererRpcPort => {
@@ -58,13 +58,6 @@ const toMainPort = (port: MessagePort): GameRendererRpcPort => {
   });
 };
 
-const subscribe = (listeners: Set<GameListener>) => (listener: GameListener) =>
-  Effect.sync(() => {
-    listeners.add(listener);
-    return () => listeners.delete(listener);
-  });
-const unsubscribed = () => Effect.succeed(() => undefined);
-
 export const makeTestGameRenderer = Effect.fn(function* (
   handlers: Partial<GameRendererRpcHandlerMap> = {},
 ) {
@@ -74,25 +67,43 @@ export const makeTestGameRenderer = Effect.fn(function* (
   const runServer = yield* FiberSet.makeRuntime<never, never, never>();
   let server: Fiber.Fiber<never> | undefined;
   let rendererReady = false;
-  const readyListeners = new Set<GameListener>();
-  const reloadedListeners = new Set<GameListener>();
+  const listeners = new Set<GameListener>();
+  const observe: DesktopWindows["Service"]["observe"] = (filter, listener) =>
+    Effect.acquireRelease(
+      Effect.sync(() => {
+        const filtered: GameListener = (event) =>
+          filter.kind === undefined || filter.kind === event.kind
+            ? listener(event)
+            : Effect.void;
+        listeners.add(filtered);
+        return filtered;
+      }),
+      (listener) =>
+        Effect.sync(() => {
+          listeners.delete(listener);
+        }),
+    ).pipe(Effect.asVoid);
   const windows = {
     getOwnedRendererIds: (rendererId: number) =>
       Effect.succeed([rendererId + 100]),
-    isRendererReady: () => Effect.sync(() => rendererReady),
-    onClosed: unsubscribed,
-    onRendererDestroyed: unsubscribed,
-    onRendererReady: subscribe(readyListeners),
-    onRendererReloaded: subscribe(reloadedListeners),
-    onRendererUnavailable: unsubscribed,
+    describe: (rendererId: number) =>
+      Effect.sync(() => ({
+        rendererId,
+        kind: "game",
+        windowId: 1,
+        ownerId: undefined,
+        generation: 1,
+        ready: rendererReady,
+      })),
+    observe,
   } as unknown as DesktopWindows["Service"];
-  const emit = (listeners: Set<GameListener>) =>
+  const emit = (type: "ready" | "reloaded") =>
     Effect.forEach(
       listeners,
       (listener) =>
         listener({
+          type,
           generation: 1,
-          id: "game",
           kind: "game",
           rendererId: TEST_GAME_RENDERER_ID,
         }).pipe(Effect.orDie),
@@ -114,11 +125,11 @@ export const makeTestGameRenderer = Effect.fn(function* (
   return {
     ready: Effect.suspend(() => {
       rendererReady = true;
-      return emit(readyListeners);
+      return emit("ready");
     }),
     reload: Effect.suspend(() => {
       rendererReady = false;
-      return emit(reloadedListeners);
+      return emit("reloaded");
     }),
     rpc,
     stopRenderer: Effect.suspend(() =>

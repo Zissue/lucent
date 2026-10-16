@@ -1,3 +1,4 @@
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 
 import { selectDesktopBridge } from "../../../../shared/desktopBridge";
@@ -27,10 +28,10 @@ const finishScriptExecution = (token: number): Effect.Effect<void> =>
     catch: (cause) => cause,
   }).pipe(
     Effect.catch((cause) =>
-      Effect.logWarning({
-        message: "Failed to disarm script renderer recovery.",
-        cause,
-      }),
+      Effect.logWarning(
+        "Failed to disarm script renderer recovery.",
+        Cause.fail(cause),
+      ).pipe(Effect.annotateLogs({ component: "scripting" })),
     ),
   );
 

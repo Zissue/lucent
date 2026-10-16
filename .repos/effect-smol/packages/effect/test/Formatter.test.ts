@@ -13,6 +13,7 @@ import {
   SchemaParser
 } from "effect"
 import { format, formatJson } from "effect/Formatter"
+import { runInNewContext } from "node:vm"
 import { assertFalse, assertTrue, deepStrictEqual, strictEqual } from "./utils/assert.ts"
 
 class SensitiveData implements Redactable.Redactable {
@@ -69,6 +70,35 @@ describe("Formatter", () => {
 
     it("custom toString method", () => {
       strictEqual(format({ toString: () => "custom" }), `custom`)
+    })
+
+    it("handles throwing property getters", () => {
+      const value = Object.defineProperty({ safe: 1 }, "unsafe", {
+        enumerable: true,
+        get() {
+          throw new Error("getter defect")
+        }
+      })
+
+      strictEqual(format(value), `{"safe":1,"unsafe":"[property access threw]"}`)
+    })
+
+    it("handles hostile Proxies", () => {
+      const { proxy, revoke } = Proxy.revocable({}, {})
+      revoke()
+
+      strictEqual(format(proxy), `[inspection threw]`)
+    })
+
+    it("does not expose a value when redaction throws", () => {
+      const value = {
+        toString: () => "secret",
+        [Redactable.symbolRedactable]() {
+          throw new Error("redaction defect")
+        }
+      }
+
+      strictEqual(format(value), `[inspection threw]`)
     })
 
     it("array", () => {
@@ -134,6 +164,13 @@ describe("Formatter", () => {
     it("Error", () => {
       strictEqual(format(new Error("a")), `Error: a`)
       strictEqual(format(new Error("a", { cause: "b" })), `Error: a (cause: "b")`)
+      strictEqual(format(new Error("a", { cause: 0 })), `Error: a (cause: 0)`)
+      strictEqual(format(new Error("a", { cause: false })), `Error: a (cause: false)`)
+      strictEqual(format(new Error("a", { cause: "" })), `Error: a (cause: "")`)
+      strictEqual(format(new Error("a", { cause: null })), `Error: a (cause: null)`)
+      strictEqual(format(new Error("a", { cause: 0n })), `Error: a (cause: 0n)`)
+      strictEqual(format(new Error("a", { cause: Number.NaN })), `Error: a (cause: NaN)`)
+      strictEqual(format(new Error("a", { cause: undefined })), `Error: a`)
     })
 
     it("Date", () => {
@@ -302,10 +339,55 @@ describe("Formatter", () => {
       strictEqual(formatJson({ left: shared, right: shared }), `{"left":{"a":1},"right":{"a":1}}`)
     })
 
+    it.each([
+      ["Number", Object(42), `42`],
+      ["Boolean", Object(false), `false`],
+      ["String", Object("abc"), `"abc"`],
+      ["cross-realm Number", runInNewContext("new Number(42)"), `42`],
+      ["cross-realm Boolean", runInNewContext("new Boolean(false)"), `false`],
+      ["cross-realm String", runInNewContext("new String(\"abc\")"), `"abc"`]
+    ])("should serialize boxed %s values", (_, value, expected) => {
+      strictEqual(formatJson(value), expected)
+      strictEqual(formatJson({ value }), `{"value":${expected}}`)
+      // JSON.stringify unboxes wrappers and ignores their own properties
+      Object.defineProperty(value, "extra", { get: () => 1, enumerable: true })
+      strictEqual(formatJson(value), expected)
+      strictEqual(formatJson({ value }), `{"value":${expected}}`)
+    })
+
     it("should stringify BigInt values", () => {
       strictEqual(formatJson(123n), `"123n"`)
       strictEqual(formatJson({ value: 123n }), `{"value":"123n"}`)
       strictEqual(formatJson([1n, 2n]), `["1n","2n"]`)
+    })
+
+    it("should serialize Error objects with name, message, and enumerable fields", () => {
+      strictEqual(formatJson(new Error("boom")), `{"name":"Error","message":"boom"}`)
+      strictEqual(formatJson({ error: new Error("boom") }), `{"error":{"name":"Error","message":"boom"}}`)
+
+      const nodeErr = Object.assign(new Error("ENOENT: no such file or directory"), {
+        errno: -2,
+        code: "ENOENT",
+        syscall: "open",
+        path: "/tmp/foo"
+      })
+      strictEqual(
+        formatJson(nodeErr),
+        `{"errno":-2,"code":"ENOENT","syscall":"open","path":"/tmp/foo","name":"Error","message":"ENOENT: no such file or directory"}`
+      )
+
+      const circularErr = new Error("boom")
+      ;(circularErr as any).self = circularErr
+      strictEqual(formatJson(circularErr), `{"name":"Error","message":"boom"}`)
+    })
+
+    it("should keep structured serialization for Errors that define toJSON", () => {
+      class Tagged extends Error {
+        toJSON() {
+          return { _tag: "Tagged", message: "boom" }
+        }
+      }
+      strictEqual(formatJson(new Tagged("boom")), `{"_tag":"Tagged","message":"boom"}`)
     })
 
     it("should redact sensitive data", () => {
@@ -317,6 +399,51 @@ describe("Formatter", () => {
       strictEqual(formatJson({ a: data }), `{"a":{"secret":"[REDACTED]"}}`)
       strictEqual(formatJson([data]), `[{"secret":"[REDACTED]"}]`)
       strictEqual(formatJson(date), `"[REDACTED]"`)
+    })
+
+    it("should redact sensitive data returned from a getter", () => {
+      strictEqual(
+        formatJson({
+          get a() {
+            return data
+          }
+        }),
+        `{"a":{"secret":"[REDACTED]"}}`
+      )
+    })
+
+    it("should read getters once with the original receiver", () => {
+      let receiverIsHolder = false
+      let reads = 0
+      const holder = {
+        get a() {
+          receiverIsHolder = Object.is(this, holder)
+          // unstable getter: a second read would leak the raw secret
+          return reads++ === 0 ? data : { secret: "my-secret-key" }
+        }
+      }
+
+      strictEqual(formatJson(holder), `{"a":{"secret":"[REDACTED]"}}`)
+      strictEqual(reads, 1)
+      assertTrue(receiverIsHolder)
+    })
+
+    it("should redact sensitive data returned from a frozen accessor", () => {
+      strictEqual(
+        formatJson(Object.freeze({
+          get a() {
+            return data
+          }
+        })),
+        `{"a":{"secret":"[REDACTED]"}}`
+      )
+    })
+
+    it("should redact sensitive data returned from a non-enumerable array index getter", () => {
+      const array: Array<unknown> = []
+      // JSON.stringify reads array indices regardless of enumerability
+      Object.defineProperty(array, "0", { get: () => data })
+      strictEqual(formatJson(array), `[{"secret":"[REDACTED]"}]`)
     })
   })
 
@@ -468,7 +595,7 @@ describe("Formatter", () => {
     it("allows user-provided transformations to report their input", () => {
       const schema = Schema.String.pipe(
         Schema.decode({
-          decode: SchemaGetter.transformOrFail((input, options) =>
+          decode: SchemaGetter.transformEffect((input, options) =>
             Effect.fail(new SchemaIssue.InvalidValue(undefined, input, options))
           ),
           encode: SchemaGetter.passthrough()
@@ -534,38 +661,42 @@ describe("Formatter", () => {
       strictEqual(formatIssue(oneOf.failure), `Expected exactly one member to match the input "a"`)
     })
 
-    it("respects annotated parse options", () => {
-      const enabled = Schema.String.annotate({ parseOptions: { reportInput: true } })
-      const enabledResult = SchemaParser.decodeUnknownResult(enabled)(1, { reportInput: false })
+    it("runtime reportInput overrides preset options and reaches nested schemas", () => {
+      const enabledResult = SchemaParser.decodeUnknownResult(Schema.String, { reportInput: false })(1, {
+        reportInput: true
+      })
       assertTrue(Result.isFailure(enabledResult))
       strictEqual(enabledResult.failure.input, 1)
 
-      const disabled = Schema.String.annotate({ parseOptions: { reportInput: false } })
-      const disabledResult = SchemaParser.decodeUnknownResult(disabled)(1, { reportInput: true })
+      const disabledResult = SchemaParser.decodeUnknownResult(Schema.String, { reportInput: true })(1, {
+        reportInput: false
+      })
       assertTrue(Result.isFailure(disabledResult))
       assertFalse(SchemaIssue.hasInput(disabledResult.failure))
 
-      const nestedDisabled = Schema.Struct({ value: disabled })
+      const nested = Schema.Struct({ value: Schema.String })
       const nestedInput = { value: 1 }
-      const nestedResult = SchemaParser.decodeUnknownResult(nestedDisabled)(nestedInput, { reportInput: true })
+      const nestedResult = SchemaParser.decodeUnknownResult(nested)(nestedInput, { reportInput: true })
       assertTrue(Result.isFailure(nestedResult))
       assertTrue(nestedResult.failure._tag === "Composite")
       strictEqual(nestedResult.failure.input, nestedInput)
       const pointer = nestedResult.failure.issues[0]
       assertTrue(pointer._tag === "Pointer")
-      assertFalse(SchemaIssue.hasInput(pointer.issue))
+      assertTrue(SchemaIssue.hasInput(pointer.issue))
+      strictEqual(pointer.issue.input, 1)
     })
 
     it.effect("distinguishes present undefined from absent input in forbidden", () =>
       Effect.gen(function*() {
         const getter = SchemaGetter.forbidden<never, undefined>(() => "not allowed")
-        const present = yield* getter.run(Option.some(undefined), { reportInput: true }).pipe(Effect.flip)
+        assertTrue(getter._tag === "TransformOptionalEffect")
+        const present = yield* getter.transform(Option.some(undefined), { reportInput: true }).pipe(Effect.flip)
         assertTrue(present._tag === "Forbidden")
         assertTrue(SchemaIssue.hasInput(present))
         strictEqual(present.input, undefined)
         strictEqual(formatIssue(present), "not allowed")
 
-        const absent = yield* getter.run(Option.none(), { reportInput: true }).pipe(Effect.flip)
+        const absent = yield* getter.transform(Option.none(), { reportInput: true }).pipe(Effect.flip)
         assertTrue(absent._tag === "Forbidden")
         assertFalse(SchemaIssue.hasInput(absent))
       }))

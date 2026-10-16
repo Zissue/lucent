@@ -1,8 +1,4 @@
-import {
-  EntityState,
-  orderMonstersByPriority,
-  toMonsterSelector,
-} from "@lucent/game";
+import { orderMonstersByPriority, toMonsterSelector } from "@lucent/game";
 import type { ItemQuery, LiveMonster, MonsterQuery } from "@lucent/game";
 import {
   normalizeCombatProfile,
@@ -189,7 +185,6 @@ export const makeCombat = (
     getConsumableSkillItem,
     inventory,
     player,
-    wait,
   }).prepare;
 
   const getSkillCooldownRemainingMs = (skill: SkillSlot) =>
@@ -507,10 +502,12 @@ export const makeCombat = (
         },
       );
       if (session.warning !== undefined) {
-        yield* Effect.logWarning({
-          message: session.warning,
-          profile: profile.label,
-        });
+        yield* Effect.logWarning("Combat profile session degraded").pipe(
+          Effect.annotateLogs({
+            component: "combat",
+            data: { profile: profile.label, warning: session.warning },
+          }),
+        );
       }
       return session;
     });
@@ -583,19 +580,39 @@ export const makeCombat = (
         candidate.matches(selector),
       );
       if (monster === undefined) return false;
+      yield* map.setSpawnPoint();
 
-      const death = yield* wait.forEvent(
-        {
-          monsterMapId: monster.monsterMapId,
-          type: "monster-death",
-        },
-        {
-          trigger: Effect.forkScoped(fight(selector, options, runtime)).pipe(
-            Effect.as(true),
+      const death = wait
+        .forEvent(
+          {
+            monsterMapId: monster.monsterMapId,
+            type: "monster-death",
+          },
+          {
+            trigger: Effect.forkScoped(fight(selector, options, runtime)).pipe(
+              Effect.as(true),
+            ),
+          },
+        )
+        .pipe(Effect.map((event) => event !== null));
+      const projectedEnd = wait.untilSome(
+        store.world
+          .getMonster(monster.monsterMapId)
+          .pipe(
+            Effect.map((current) =>
+              current !== monster
+                ? Option.some(false)
+                : current.dead
+                  ? Option.some(true)
+                  : Option.none(),
+            ),
           ),
-        },
+        { interval: "250 millis" },
       );
-      return death !== null;
+      return yield* Effect.raceFirst(
+        death,
+        projectedEnd.pipe(Effect.map((dead) => dead === true)),
+      );
     });
 
   const kill = (selector: MonsterQuery, options?: CombatKillOptions) =>
@@ -643,62 +660,6 @@ export const makeCombat = (
     bridge
       .invoke("combat.cancelTarget", undefined, Schema.Void)
       .pipe(Effect.asVoid);
-
-  const waitUntilIdle = (timeout: Duration.Input) =>
-    wait.until(
-      player.getState().pipe(
-        Effect.flatMap((state) =>
-          state !== EntityState.Idle
-            ? Effect.succeed(false)
-            : Effect.sleep("500 millis").pipe(
-                Effect.andThen(player.getState()),
-                Effect.map((confirmed) => confirmed === EntityState.Idle),
-              ),
-        ),
-      ),
-      { interval: "100 millis", timeout },
-    );
-
-  const exit = () =>
-    Effect.gen(function* () {
-      if ((yield* player.getState()) === EntityState.Idle) return true;
-      const currentCell = yield* player.getCell();
-      const currentPad = yield* player.getPad();
-      const monsterCells = new Set(
-        (yield* monsters.getAll()).map((monster) => monster.cell.toLowerCase()),
-      );
-      const candidateCells = (yield* map.getCells())
-        .filter((cell) => {
-          const normalized = cell.trim().toLowerCase();
-          return (
-            normalized !== "" &&
-            normalized !== "blank" &&
-            normalized !== "wait" &&
-            normalized !== currentCell.trim().toLowerCase()
-          );
-        })
-        .toSorted(
-          (left, right) =>
-            Number(monsterCells.has(left.toLowerCase())) -
-            Number(monsterCells.has(right.toLowerCase())),
-        );
-
-      for (const cell of candidateCells) {
-        yield* stopCombat;
-        if (yield* waitUntilIdle("1 second")) return true;
-        yield* player.jumpToCell(cell);
-        if (yield* waitUntilIdle("2 seconds")) return true;
-      }
-
-      for (let attempt = 0; attempt < 3; attempt += 1) {
-        yield* stopCombat;
-        yield* player.jumpToCell(currentCell, currentPad);
-        if (yield* waitUntilIdle("2 seconds")) return true;
-      }
-
-      yield* stopCombat;
-      return yield* waitUntilIdle("1 second");
-    });
 
   const killForItem = (
     selector: MonsterQuery,
@@ -752,7 +713,7 @@ export const makeCombat = (
     cancelTarget,
     canUseSkill,
     castConsumableOnMonster,
-    exit,
+    exit: player.exitCombat,
     getConsumableSkillItem,
     getSkillCooldownRemainingMs,
     hunt,

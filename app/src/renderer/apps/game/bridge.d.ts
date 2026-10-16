@@ -25,9 +25,9 @@ declare global {
       "bank.getSlots": () => number;
       "bank.getUsedSlots": () => number;
       "bank.isLoaded": () => boolean;
-      "bank.isOpen": (view?: FlashTypes.BankView) => boolean;
+      "bank.isOpen": () => boolean;
       "bank.loadItems": (force?: boolean) => void;
-      "bank.open": (view?: FlashTypes.BankView) => void;
+      "bank.open": () => void;
       "bank.swap": (
         inventorySelector: FlashTypes.InventoryItemSelector,
         bankSelector: FlashTypes.InventoryItemSelector,
@@ -94,6 +94,7 @@ declare global {
         selector: FlashTypes.InventoryItemSelector,
       ) => Record<string, unknown> | null;
       "inventory.getItems": () => unknown[];
+      "inventory.getMiscSlots": () => number;
       "inventory.getSlots": () => number;
       "inventory.getUsedSlots": () => number;
       "inventory.unequipConsumable": (

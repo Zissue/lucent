@@ -23,8 +23,8 @@ import {
   resolveRelativeScriptModulePath,
   scriptModulePathCandidates,
 } from "@lucent/core/scriptPackages";
-import { ScriptFiles } from "../internal/scripting/ScriptFiles";
-import type { ScriptFileAnalysis } from "../internal/scripting/ScriptFileWorkerProtocol";
+import { ScriptFiles } from "./ScriptFiles";
+import type { ScriptFileAnalysis } from "./ScriptFileWorkerProtocol";
 import {
   type DiscoveredScriptPackage,
   ScriptPackageCatalog,
@@ -35,7 +35,7 @@ import {
   sha256Revision,
 } from "./ScriptPackageFileSystem";
 import {
-  formatScriptByteLimit,
+  formatBytes,
   SCRIPT_SNAPSHOT_MAX_BYTES,
   SCRIPT_SOURCE_CACHE_MAX_BYTES,
   SCRIPT_SOURCE_CACHE_MAX_ENTRIES,
@@ -339,7 +339,7 @@ export const layer = Layer.effect(
           totalBytes += loaded.bytes;
           if (totalBytes > SCRIPT_SNAPSHOT_MAX_BYTES) {
             return yield* new ScriptSourceRegistryError({
-              detail: `Script sources exceed the ${formatScriptByteLimit(SCRIPT_SNAPSHOT_MAX_BYTES)} execution limit.`,
+              detail: `Script sources exceed the ${formatBytes(SCRIPT_SNAPSHOT_MAX_BYTES)} execution limit.`,
               path: selectedTarget.absolutePath,
             });
           }
