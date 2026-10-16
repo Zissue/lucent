@@ -219,18 +219,14 @@ export const installEventForwarding = Effect.fn(
   const accounts = yield* Accounts;
   const ipc = yield* DesktopIpc;
   const windows = yield* DesktopWindows;
-  const context = yield* Effect.context<never>();
-  const runPromise = Effect.runPromiseWith(context);
 
   yield* Effect.acquireRelease(
-    accounts.onChanged((state) => {
-      void runPromise(
-        Effect.gen(function* () {
-          const rendererIds = yield* windows.getRendererIds("account-manager");
-          yield* ipc.sendToRendererIds(rendererIds, AccountsIpc.changed, state);
-        }),
-      );
-    }),
+    accounts.onChanged((state) =>
+      Effect.gen(function* () {
+        const rendererIds = yield* windows.getRendererIds("account-manager");
+        yield* ipc.sendToRendererIds(rendererIds, AccountsIpc.changed, state);
+      }),
+    ),
     (unsubscribe) => Effect.sync(unsubscribe),
   );
 });

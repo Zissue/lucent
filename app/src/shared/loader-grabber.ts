@@ -147,9 +147,11 @@ export type GrabbedShop = typeof GrabbedShopSchema.Type;
 const AuraSchema = Schema.Struct({
   category: Schema.optionalKey(Schema.String),
   duration: Schema.Number,
+  expiresAt: Schema.optionalKey(Schema.Number),
   icon: Schema.optionalKey(Schema.String),
   kind: Schema.Literals(["active", "passive"]),
   name: Schema.String,
+  persistent: Schema.Boolean,
   stack: Schema.Number,
   value: Schema.optionalKey(Schema.Union([Schema.Number, Schema.String])),
 });

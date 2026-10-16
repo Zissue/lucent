@@ -1,43 +1,71 @@
+import { ipcMain, type IpcMainEvent } from "electron";
+import * as Clock from "effect/Clock";
+import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import type { EventEmitter } from "events";
 import { join } from "path";
 import * as Cause from "effect/Cause";
 import * as Logger from "effect/Logger";
 import * as References from "effect/References";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 
-import {
-  DesktopTraceSpanSchema,
-  type DesktopTraceResponse,
-  type DesktopTraceSpan,
-} from "../../../shared/ipc";
 import { DesktopEnvironment } from "../DesktopEnvironment";
+import { makeBufferedDesktopLogWriter } from "./DesktopLogWriter";
 import {
-  desktopLogErrorDetails,
-  makeBufferedDesktopLogWriter,
-} from "./DesktopLogWriter";
-import { makeDesktopTraceBuffer } from "./DesktopTraceBuffer";
+  desktopLogJsonSafe,
+  desktopLogRecord,
+  type DesktopLogError,
+  type DesktopLogRecord,
+} from "../../../shared/logRecord";
+import { RendererLogIpc } from "../../../shared/ipc/rendererLog";
 
-export interface DesktopDiagnosticRecord {
-  readonly component: string;
-  readonly event: string;
-  readonly data?: unknown;
-  readonly cause?: unknown;
+const REPEAT_WINDOW_MS = 60_000;
+const MAX_REPEAT_WINDOWS = 1_000;
+const MAX_RENDERER_REPEAT_WINDOWS = 200;
+const TAIL_BATCH_SIZE = 100;
+
+interface RepeatWindow {
+  readonly level: string;
+  readonly component: unknown;
+  readonly message: string;
+  readonly rendererId?: number;
+  readonly repeatKey?: string;
+  readonly startedAt: number;
+  suppressed: number;
+  lastAt: number;
 }
+
+const decodeRendererRecord = Option.liftThrowable(
+  RendererLogIpc.record.decodePayload,
+);
+
+const boundRendererString = (value: string, length: number): string =>
+  value.length <= length
+    ? value
+    : Buffer.from(value.slice(0, length), "utf16le").toString("utf16le");
+
+const boundRendererError = (
+  error: DesktopLogError,
+  depth = 0,
+): DesktopLogError => ({
+  name: boundRendererString(error.name, 256),
+  message: boundRendererString(error.message, 1_024),
+  ...(error.stack === undefined
+    ? {}
+    : { stack: boundRendererString(error.stack, 8_192) }),
+  ...(error.cause === undefined || depth >= 5
+    ? {}
+    : { cause: boundRendererError(error.cause, depth + 1) }),
+});
 
 export interface DesktopObservabilityShape {
   readonly flush: Effect.Effect<void>;
   readonly installProcessHooks: Effect.Effect<void, never, Scope.Scope>;
   readonly logFilePath: string;
-  readonly record: (record: DesktopDiagnosticRecord) => Effect.Effect<void>;
-  readonly recordUnsafe: (record: DesktopDiagnosticRecord) => void;
-  readonly subscribeTrace: (
-    listener: (span: DesktopTraceSpan) => void,
-  ) => () => void;
-  readonly traceSnapshot: () => DesktopTraceResponse;
 }
 
 export class DesktopObservability extends Context.Service<
@@ -47,89 +75,147 @@ export class DesktopObservability extends Context.Service<
 
 const makeDesktopObservability = Effect.gen(function* () {
   const env = yield* DesktopEnvironment;
+  const clock = yield* Clock.Clock;
   const logsDir = join(env.appDataDir, "logs");
   const logFilePath = join(logsDir, "lucent.log");
   const bufferedWriter = makeBufferedDesktopLogWriter(logsDir, logFilePath);
-  const diagnosticRecordingEnabled = env.debug === true;
-  const recordingStartedAt = diagnosticRecordingEnabled
-    ? new Date().toISOString()
-    : null;
-  const traceBuffer = makeDesktopTraceBuffer(recordingStartedAt);
-  const traceListeners = new Set<(span: DesktopTraceSpan) => void>();
-  const isDesktopTraceSpan = Schema.is(DesktopTraceSpanSchema);
+  const mainWindows = new Map<string, RepeatWindow>();
+  const rendererWindows = new Map<string, RepeatWindow>();
+
+  const writeTail = (window: RepeatWindow, at: Date) => {
+    bufferedWriter.write({
+      at: at.toISOString(),
+      level: window.level,
+      component: window.component,
+      message: window.message,
+      ...(window.rendererId === undefined
+        ? {}
+        : { annotations: { rendererId: window.rendererId } }),
+      ...(window.repeatKey === undefined
+        ? {}
+        : { repeatKey: window.repeatKey }),
+      suppressed: window.suppressed,
+      lastAt: DateTime.formatIso(DateTime.makeUnsafe(window.lastAt)),
+    });
+  };
+
+  const drainWindows = Effect.fnUntraced(function* (all: boolean) {
+    yield* Effect.promise(() => bufferedWriter.flush());
+    let now = yield* DateTime.nowAsDate;
+    let emitted = 0;
+    for (const windows of [mainWindows, rendererWindows]) {
+      for (const [key, window] of windows) {
+        if (!all && now.getTime() - window.startedAt < REPEAT_WINDOW_MS) {
+          continue;
+        }
+        windows.delete(key);
+        if (window.suppressed === 0) {
+          continue;
+        }
+        writeTail(window, now);
+        if (++emitted % TAIL_BATCH_SIZE === 0) {
+          yield* Effect.promise(() => bufferedWriter.flush());
+          now = yield* DateTime.nowAsDate;
+        }
+      }
+    }
+  }, Effect.uninterruptible);
+
+  const writeRecord = (
+    record: DesktopLogRecord,
+    at: number,
+    rendererId?: number,
+  ): void => {
+    const { repeatKey, ...output } = record;
+    const { level, component, message } = output;
+    const origin = rendererId === undefined ? "main" : `renderer:${rendererId}`;
+    const key = JSON.stringify([
+      origin,
+      level,
+      String(component),
+      message,
+      repeatKey,
+    ]);
+    const [windows, maxWindows] =
+      rendererId === undefined
+        ? [mainWindows, MAX_REPEAT_WINDOWS]
+        : [rendererWindows, MAX_RENDERER_REPEAT_WINDOWS];
+    const window = windows.get(key);
+    if (window !== undefined) {
+      if (at - window.startedAt < REPEAT_WINDOW_MS) {
+        window.suppressed++;
+        window.lastAt = at;
+        return;
+      }
+      if (window.suppressed > 0) writeTail(window, new Date(at));
+      windows.delete(key);
+    }
+    const kept = bufferedWriter.write(output);
+    if (kept && windows.size < maxWindows) {
+      windows.set(key, {
+        level,
+        component,
+        message,
+        ...(rendererId === undefined ? {} : { rendererId }),
+        ...(repeatKey === undefined ? {} : { repeatKey }),
+        startedAt: at,
+        suppressed: 0,
+        lastAt: at,
+      });
+    }
+  };
 
   const logger = Logger.make<unknown, void>((options) => {
-    const {
-      component = "effect",
-      data,
-      ...annotations
-    } = options.fiber.getRef(References.CurrentLogAnnotations);
-    const span = options.fiber.currentSpan;
-    bufferedWriter.write({
-      at: options.date.toISOString(),
-      level: options.logLevel.toLowerCase(),
-      component,
-      message:
-        Array.isArray(options.message) && options.message.length === 1
-          ? options.message[0]
-          : options.message,
-      ...(data === undefined ? {} : { data }),
-      ...(Object.keys(annotations).length === 0 ? {} : { annotations }),
-      ...(options.cause.reasons.length === 0
-        ? {}
-        : { error: Cause.prettyErrors(options.cause) }),
-      ...(span === undefined
-        ? {}
-        : { traceId: span.traceId, spanId: span.spanId }),
-    });
+    writeRecord(desktopLogRecord(options), options.date.getTime());
   });
+
+  const handleRendererRecord = (
+    event: IpcMainEvent,
+    rawPayload: unknown,
+  ): void => {
+    const decoded = decodeRendererRecord(rawPayload);
+    if (Option.isNone(decoded)) return;
+    const {
+      component = "renderer",
+      data,
+      error,
+      repeatKey,
+      ...record
+    } = decoded.value;
+    if (record.level === "debug" && !env.debug) return;
+    const safeData = desktopLogJsonSafe({ data });
+    const boundedData =
+      Predicate.isObject(safeData) && "data" in safeData
+        ? safeData["data"]
+        : undefined;
+    const at = clock.currentTimeMillisUnsafe();
+    writeRecord(
+      {
+        ...record,
+        at: new Date(at).toISOString(),
+        message: boundRendererString(record.message, 1_024),
+        component: boundRendererString(component, 64),
+        ...(boundedData === undefined ? {} : { data: boundedData }),
+        ...(error === undefined
+          ? {}
+          : {
+              error: error
+                .slice(0, 8)
+                .map((entry) => boundRendererError(entry)),
+            }),
+        ...(repeatKey === undefined
+          ? {}
+          : { repeatKey: boundRendererString(repeatKey, 256) }),
+        annotations: { rendererId: event.sender.id },
+      },
+      at,
+      event.sender.id,
+    );
+  };
 
   const flush: DesktopObservabilityShape["flush"] = Effect.promise(() =>
     bufferedWriter.flush(),
   );
-
-  const recordUnsafe: DesktopObservabilityShape["recordUnsafe"] =
-    diagnosticRecordingEnabled === false
-      ? () => undefined
-      : (diagnostic) => {
-          bufferedWriter.write({
-            at: new Date().toISOString(),
-            level: "debug",
-            component: diagnostic.component,
-            message: diagnostic.event,
-            event: diagnostic.event,
-            ...(diagnostic.data === undefined ? {} : { data: diagnostic.data }),
-            ...(diagnostic.cause === undefined
-              ? {}
-              : { error: desktopLogErrorDetails(diagnostic.cause) }),
-          });
-          if (
-            diagnostic.component === "trace" &&
-            diagnostic.event === "span.completed" &&
-            isDesktopTraceSpan(diagnostic.data)
-          ) {
-            traceBuffer.append(diagnostic.data);
-            for (const listener of traceListeners) {
-              try {
-                listener(diagnostic.data);
-              } catch {}
-            }
-          }
-        };
-
-  const subscribeTrace: DesktopObservabilityShape["subscribeTrace"] = (
-    listener,
-  ) => {
-    traceListeners.add(listener);
-    return () => {
-      traceListeners.delete(listener);
-    };
-  };
-
-  const record: DesktopObservabilityShape["record"] =
-    diagnosticRecordingEnabled === false
-      ? () => Effect.void
-      : (diagnostic) => Effect.sync(() => recordUnsafe(diagnostic));
 
   const installProcessHooks = Effect.gen(function* () {
     const context = yield* Effect.context<never>();
@@ -167,41 +253,27 @@ const makeDesktopObservability = Effect.gen(function* () {
     );
   });
 
-  if (recordingStartedAt !== null) {
-    bufferedWriter.write({
-      at: recordingStartedAt,
-      level: "debug",
-      component: "startup",
-      message: "Diagnostic recording started",
-      event: "recording.started",
-      data: {
-        architecture: process.arch,
-        pid: process.pid,
-        platform: env.platform,
-        runtimeVersions: {
-          chrome: process.versions.chrome ?? "unknown",
-          electron: process.versions.electron ?? "unknown",
-          node: process.versions.node,
-        },
-      },
-    });
-  }
-
   yield* Effect.addFinalizer(() =>
-    Effect.promise(() =>
-      bufferedWriter.close(
-        diagnosticRecordingEnabled
-          ? {
-              at: new Date().toISOString(),
-              level: "debug",
-              component: "startup",
-              message: "Diagnostic recording stopped",
-              event: "recording.stopped",
-              data: { pid: process.pid },
-            }
-          : undefined,
-      ),
+    Effect.promise(() => bufferedWriter.close()),
+  );
+  yield* Effect.addFinalizer(() => drainWindows(true));
+  yield* drainWindows(false).pipe(
+    Effect.delay(REPEAT_WINDOW_MS),
+    Effect.forever,
+    Effect.forkScoped,
+  );
+
+  yield* Effect.acquireRelease(
+    Effect.sync(() =>
+      ipcMain.on(RendererLogIpc.record.channel, handleRendererRecord),
     ),
+    () =>
+      Effect.sync(() => {
+        ipcMain.removeListener(
+          RendererLogIpc.record.channel,
+          handleRendererRecord,
+        );
+      }),
   );
 
   return Context.make(
@@ -210,14 +282,13 @@ const makeDesktopObservability = Effect.gen(function* () {
       flush,
       installProcessHooks,
       logFilePath,
-      record,
-      recordUnsafe,
-      subscribeTrace,
-      traceSnapshot: traceBuffer.snapshot,
     }),
   ).pipe(
-    Context.add(Logger.CurrentLoggers, new Set([logger, Logger.tracerLogger])),
-    Context.add(References.MinimumLogLevel, "Debug"),
+    Context.add(Logger.CurrentLoggers, new Set([logger])),
+    Context.add(
+      References.MinimumLogLevel,
+      env.debug === true ? "Debug" : "Info",
+    ),
   );
 });
 

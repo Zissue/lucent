@@ -37,7 +37,7 @@ export const makeCombatProfileRunner = Effect.fn("makeCombatProfileRunner")(
     const session = yield* makeCombatProfileSession(
       {
         attack: api.combat.attack,
-        getAvailableMonsters: api.monsters.getAvailable,
+        getAvailableMonsters: api.monsterLookup.getAvailable,
         isAttackBlocked: api.combat.isAttackBlocked,
         isPlayerAlive: api.player.isAlive,
         onMessage: (handler) =>

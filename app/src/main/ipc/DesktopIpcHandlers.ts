@@ -31,74 +31,11 @@ export const installDesktopIpcHandlers = Effect.fn(
   yield* ScriptingIpcMethods.installEventForwarding();
   yield* UpdatesIpcMethods.installEventForwarding();
 
-  for (const method of WindowsIpcMethods.methods) {
-    yield* ipc.handle(method);
-  }
-  yield* ipc.handle(AboutIpcMethods.getInfo);
-  yield* ipc.handle(AboutIpcMethods.openFolder);
-  yield* ipc.handle(AboutIpcMethods.openLink);
-  for (const method of AccountsIpcMethods.methods) {
-    yield* ipc.handle(method);
-  }
-  for (const method of AccountSettingsIpcMethods.methods) {
-    yield* ipc.handle(method);
-  }
-  for (const method of ArmyIpcMethods.methods) {
-    yield* ipc.handle(method);
-  }
-  for (const method of CombatProfilesIpcMethods.methods) {
-    yield* ipc.handle(method);
-  }
-  for (const method of EnvironmentIpcMethods.methods) {
-    yield* ipc.handle(method);
-  }
-  for (const method of FollowerIpcMethods.methods) {
-    yield* ipc.handle(method);
-  }
-  for (const method of FileSystemIpcMethods.methods) {
-    yield* ipc.handle(method);
-  }
-  for (const method of HttpIpcMethods.methods) {
-    yield* ipc.handle(method);
-  }
-  yield* ipc.handle(GameRendererIpcMethods.beginScriptExecution);
-  yield* ipc.handle(GameRendererIpcMethods.finishScriptExecution);
-  yield* ipc.handle(GameRendererIpcMethods.getGeneration);
-  yield* ipc.handle(GameRendererIpcMethods.ready);
-  for (const method of GameViewsIpcMethods.methods) {
+  for (const method of desktopIpcMethods) {
     yield* ipc.handle<
       Effect.Error<ReturnType<typeof method.invoke>>,
       Effect.Services<ReturnType<typeof method.invoke>>
     >(method);
-  }
-  for (const method of LoaderGrabberIpcMethods.methods) {
-    yield* ipc.handle(method);
-  }
-  yield* ipc.handle(PacketsIpcMethods.getStatus);
-  yield* ipc.handle(PacketsIpcMethods.startCapture);
-  yield* ipc.handle(PacketsIpcMethods.stopCapture);
-  yield* ipc.handle(PacketsIpcMethods.send);
-  yield* ipc.handle(PacketsIpcMethods.startQueue);
-  yield* ipc.handle(PacketsIpcMethods.stopQueue);
-  yield* ipc.handle(PacketsIpcMethods.publishCaptured);
-  yield* ipc.handle(PacketsIpcMethods.publishStatus);
-  for (const method of SettingsIpcMethods.methods) {
-    yield* ipc.handle(method);
-  }
-  for (const method of ScriptingIpcMethods.libraryMethods) {
-    yield* ipc.handle(method);
-  }
-  for (const method of ScriptingIpcMethods.inputMethods) {
-    yield* ipc.handle(method);
-  }
-  for (const method of ScriptingIpcMethods.credentialMethods) {
-    yield* ipc.handle(method);
-  }
-  for (const method of ScriptingIpcMethods.packageMethods) {
-    yield* ipc.handle(method);
-  }
-  for (const method of UpdatesIpcMethods.methods) {
-    yield* ipc.handle(method);
   }
 });
 

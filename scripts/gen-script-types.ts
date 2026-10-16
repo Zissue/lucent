@@ -1561,13 +1561,29 @@ const validateGeneratedTypes = (content: string): void => {
 
   for (const [name, hidden] of [
     ["LiveModel", ["replaceFrom", "snapshot", "update"]],
-    ["LiveEntity", ["addAura", "clearAuras", "removeAura"]],
+    ["LiveEntity", ["projectAuras", "writeAuraMonsterState"]],
     ["LiveMonster", ["replaceDrops"]],
   ] as const) {
     const members = new Set(interfaceMemberNames(name));
     const leaked = hidden.filter((member) => members.has(member));
     if (leaked.length > 0) {
       fail(`Generated ${name} exposes @internal members: ${leaked.join(", ")}`);
+    }
+  }
+
+  for (const name of [
+    "AuraTiming",
+    "AuraApplication",
+    "AuraSeed",
+    "AuraWithdrawal",
+    "PassiveAuraInput",
+    "AuraMutation",
+    "AuraDelta",
+    "ActiveAuraEdit",
+    "reduceActiveAura",
+  ]) {
+    if (new RegExp(`\\b${name}\\b`, "u").test(content)) {
+      fail(`Generated scripting types expose internal aura symbol ${name}`);
     }
   }
 
@@ -1638,7 +1654,7 @@ if (
 ) {
   main(parseCliOptions(process.argv.slice(2), DEFAULT_REPO_ROOT)).catch(
     (error) => {
-      console.error(error instanceof Error ? error.message : String(error));
+      console.error(error);
       process.exitCode = 1;
     },
   );

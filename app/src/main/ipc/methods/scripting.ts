@@ -1,7 +1,7 @@
 import * as Effect from "effect/Effect";
 
 import { ScriptingIpc } from "../../../shared/ipc";
-import { ScriptInputRepository } from "../../internal/scripting/ScriptInputRepository";
+import { ScriptInputRepository } from "../../scripting/ScriptInputRepository";
 import { GitHubCredentials } from "../../scripting/GitHubCredentials";
 import { ScriptPackageManager } from "../../scripting/ScriptPackageManager";
 import { ScriptPackageCatalog } from "../../scripting/ScriptPackageCatalog";
@@ -10,6 +10,17 @@ import { DesktopWindows } from "../../window/DesktopWindows";
 import { DesktopIpc, makeDesktopIpcMethod } from "../DesktopIpc";
 
 const scriptingSenders = ["account-manager", "game"] as const;
+
+export const listPackageLeftovers = makeDesktopIpcMethod({
+  descriptor: ScriptingIpc.listPackageLeftovers,
+  allowedSenders: scriptingSenders,
+  handler: Effect.fn("desktop.ipc.scripting.listPackageLeftovers")(
+    function* () {
+      const packages = yield* ScriptPackageManager;
+      return yield* packages.listLeftovers;
+    },
+  ),
+});
 
 export const listCredentials = makeDesktopIpcMethod({
   descriptor: ScriptingIpc.listCredentials,
@@ -55,6 +66,15 @@ export const updatePackage = makeDesktopIpcMethod({
   handler: Effect.fn("desktop.ipc.scripting.updatePackage")(function* (input) {
     const packages = yield* ScriptPackageManager;
     return yield* packages.update(input);
+  }),
+});
+
+export const restorePackage = makeDesktopIpcMethod({
+  descriptor: ScriptingIpc.restorePackage,
+  allowedSenders: scriptingSenders,
+  handler: Effect.fn("desktop.ipc.scripting.restorePackage")(function* (input) {
+    const packages = yield* ScriptPackageManager;
+    return yield* packages.restore(input);
   }),
 });
 
@@ -238,8 +258,10 @@ export const credentialMethods = [
 ] as const;
 
 export const packageMethods = [
+  listPackageLeftovers,
   installPackage,
   updatePackage,
+  restorePackage,
   removePackage,
   checkPackageUpdate,
 ] as const;
@@ -257,22 +279,18 @@ export const installEventForwarding = Effect.fn(
   const ipc = yield* DesktopIpc;
   const catalog = yield* ScriptPackageCatalog;
   const windows = yield* DesktopWindows;
-  const context = yield* Effect.context<never>();
-  const runPromise = Effect.runPromiseWith(context);
 
   yield* Effect.acquireRelease(
-    catalog.onChanged((change) => {
-      void runPromise(
-        Effect.gen(function* () {
-          const rendererIds = yield* windows.getRendererIds("game");
-          yield* ipc.sendToRendererIds(
-            rendererIds,
-            ScriptingIpc.catalogChanged,
-            change,
-          );
-        }),
-      );
-    }),
+    catalog.onChanged((change) =>
+      Effect.gen(function* () {
+        const rendererIds = yield* windows.getRendererIds("game");
+        yield* ipc.sendToRendererIds(
+          rendererIds,
+          ScriptingIpc.catalogChanged,
+          change,
+        );
+      }),
+    ),
     (unsubscribe) => Effect.sync(unsubscribe),
   );
 });

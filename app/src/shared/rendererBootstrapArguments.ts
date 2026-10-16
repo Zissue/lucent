@@ -4,7 +4,6 @@ export const DEBUG_MODE_ARGUMENT = "--lucent__debug";
 export const GAME_CONSOLE_OBSERVABILITY_ARGUMENT =
   "--lucent__gameConsoleObservability";
 export const GAME_VIEW_LAYOUT_ARGUMENT = "--lucent__gameViewLayout";
-export const TRACE_PROJECTIONS_ARGUMENT = "--lucent__traceProjections";
 
 export const readArgumentValue = (
   argv: readonly string[],
@@ -32,7 +31,3 @@ export const readGameViewLayoutArgument = (
   const value = readArgumentValue(argv, GAME_VIEW_LAYOUT_ARGUMENT);
   return value === "focused" || value === "grid" ? value : null;
 };
-
-export const readTraceProjectionsArgument = (
-  argv: readonly string[],
-): boolean => argv.includes(TRACE_PROJECTIONS_ARGUMENT);

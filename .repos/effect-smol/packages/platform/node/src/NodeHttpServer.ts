@@ -10,6 +10,7 @@
  * constructors plus layers for the server alone, HTTP support services, the
  * combined server, configurable options, and tests.
  *
+ * @stability unstable
  * @since 4.0.0
  */
 import * as Cause from "effect/Cause"
@@ -17,27 +18,21 @@ import * as Config from "effect/Config"
 import * as Context from "effect/Context"
 import * as Duration from "effect/Duration"
 import * as Effect from "effect/Effect"
+import * as Exit from "effect/Exit"
 import * as Fiber from "effect/Fiber"
 import type * as FileSystem from "effect/FileSystem"
 import { flow, type LazyArg } from "effect/Function"
-import * as Latch from "effect/Latch"
-import * as Layer from "effect/Layer"
-import type * as Option from "effect/Option"
-import type * as Path from "effect/Path"
-import type * as Record from "effect/Record"
-import * as Scope from "effect/Scope"
-import * as Stream from "effect/Stream"
-import * as Cookies from "effect/unstable/http/Cookies"
-import * as Etag from "effect/unstable/http/Etag"
-import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient"
-import type * as Headers from "effect/unstable/http/Headers"
-import type { HttpClient } from "effect/unstable/http/HttpClient"
-import * as HttpEffect from "effect/unstable/http/HttpEffect"
-import * as HttpIncomingMessage from "effect/unstable/http/HttpIncomingMessage"
-import type { HttpMethod } from "effect/unstable/http/HttpMethod"
-import type * as Middleware from "effect/unstable/http/HttpMiddleware"
-import type * as HttpPlatform from "effect/unstable/http/HttpPlatform"
-import * as HttpServer from "effect/unstable/http/HttpServer"
+import * as Cookies from "effect/http/Cookies"
+import * as Etag from "effect/http/Etag"
+import * as FetchHttpClient from "effect/http/FetchHttpClient"
+import type * as Headers from "effect/http/Headers"
+import type { HttpClient } from "effect/http/HttpClient"
+import * as HttpEffect from "effect/http/HttpEffect"
+import * as HttpIncomingMessage from "effect/http/HttpIncomingMessage"
+import type { HttpMethod } from "effect/http/HttpMethod"
+import type * as Middleware from "effect/http/HttpMiddleware"
+import type * as HttpPlatform from "effect/http/HttpPlatform"
+import * as HttpServer from "effect/http/HttpServer"
 import {
   causeResponse,
   ClientAbort,
@@ -45,12 +40,21 @@ import {
   RequestParseError,
   ResponseError,
   ServeError
-} from "effect/unstable/http/HttpServerError"
-import * as Request from "effect/unstable/http/HttpServerRequest"
-import { HttpServerRequest } from "effect/unstable/http/HttpServerRequest"
-import type { HttpServerResponse } from "effect/unstable/http/HttpServerResponse"
-import type * as Multipart from "effect/unstable/http/Multipart"
-import * as Socket from "effect/unstable/socket/Socket"
+} from "effect/http/HttpServerError"
+import * as Request from "effect/http/HttpServerRequest"
+import { HttpServerRequest } from "effect/http/HttpServerRequest"
+import type { HttpServerResponse } from "effect/http/HttpServerResponse"
+import * as Response from "effect/http/HttpServerResponse"
+import type * as Multipart from "effect/http/Multipart"
+import * as Latch from "effect/Latch"
+import * as Layer from "effect/Layer"
+import * as NetAddress from "effect/net/NetAddress"
+import type * as Option from "effect/Option"
+import type * as Path from "effect/Path"
+import type * as Record from "effect/Record"
+import * as Scope from "effect/Scope"
+import * as Socket from "effect/socket/Socket"
+import * as Stream from "effect/Stream"
 import * as Http from "node:http"
 import type * as Net from "node:net"
 import type { Duplex } from "node:stream"
@@ -65,6 +69,7 @@ import { NodeWS } from "./NodeSocket.ts"
 /**
  * Options accepted by the Node `HttpServer` constructors and layers.
  *
+ * @stability unstable
  * @category options
  * @since 4.0.0
  */
@@ -76,6 +81,8 @@ export interface Options extends Net.ListenOptions {
    * wiring options the server manages itself. Use this to enable
    * `permessage-deflate` compression or tune payload limits, e.g.
    * `websocket: { perMessageDeflate: true }`.
+   *
+   * @stability unstable
    */
   readonly websocket?:
     | Omit<NodeWS.ServerOptions, "noServer" | "server" | "host" | "port" | "path">
@@ -87,6 +94,7 @@ export interface Options extends Net.ListenOptions {
  * with the supplied options, registers request and upgrade handling, and closes
  * the server during scope finalization with optional graceful-shutdown control.
  *
+ * @stability unstable
  * @category constructors
  * @since 4.0.0
  */
@@ -131,6 +139,12 @@ export const make = Effect.fnUntraced(function*(
   })
 
   const address = server.address()!
+  const effectAddress = typeof address === "string"
+    ? Effect.succeed(NetAddress.unixPathAddress(address))
+    : Effect.fromResult(NetAddress.inetAddressFromIpString(address.address, address.port)).pipe(
+      Effect.mapError((cause) => new ServeError({ cause }))
+    )
+  const boundAddress = yield* effectAddress
 
   const wss = yield* Effect.acquireRelease(
     Effect.sync(() => new NodeWS.WebSocketServer({ ...options.websocket, noServer: true })),
@@ -144,16 +158,7 @@ export const make = Effect.fnUntraced(function*(
   )
 
   return HttpServer.make({
-    address: typeof address === "string" ?
-      {
-        _tag: "UnixAddress",
-        path: address
-      } :
-      {
-        _tag: "TcpAddress",
-        hostname: address.address === "::" ? "0.0.0.0" : address.address,
-        port: address.port
-      },
+    address: boundAddress,
     serve: Effect.fnUntraced(function*(httpApp, middleware) {
       const serveScope = yield* Effect.scope
       const scope = Scope.forkUnsafe(serveScope, "parallel")
@@ -165,11 +170,14 @@ export const make = Effect.fnUntraced(function*(
         middleware: middleware as any,
         scope
       })
-      yield* Scope.addFinalizerExit(serveScope, () => {
-        server.off("request", handler)
-        server.off("upgrade", upgradeHandler)
-        return preemptiveShutdown
-      })
+      yield* Scope.addFinalizerExit(serveScope, () =>
+        Effect.ensuring(
+          preemptiveShutdown,
+          Effect.sync(() => {
+            server.off("request", handler)
+            server.off("upgrade", upgradeHandler)
+          })
+        ))
       server.on("request", handler)
       server.on("upgrade", upgradeHandler)
     })
@@ -181,6 +189,7 @@ export const make = Effect.fnUntraced(function*(
  * injecting a `HttpServerRequest` and interrupting the request fiber if the
  * client closes the response before it finishes.
  *
+ * @stability unstable
  * @category handlers
  * @since 4.0.0
  */
@@ -208,11 +217,13 @@ export const makeHandler = <
     ) {
       const context = Context.add(services, HttpServerRequest, new ServerRequestImpl(nodeRequest, nodeResponse))
       const fiber = Fiber.runIn(Effect.runForkWith(context as Context.Context<any>)(handled), options.scope)
-      nodeResponse.on("close", () => {
-        if (!nodeResponse.writableEnded) {
-          fiber.interruptUnsafe(parent.id, ClientAbort.annotation)
-        }
-      })
+      if (fiber.pollUnsafe() === undefined) {
+        nodeResponse.on("close", () => {
+          if (!nodeResponse.writableEnded) {
+            fiber.interruptUnsafe(parent.id, ClientAbort.annotation)
+          }
+        })
+      }
     })
   })
 }
@@ -222,6 +233,7 @@ export const makeHandler = <
  * exposing the upgraded WebSocket as the request's `upgrade` effect and
  * interrupting the request fiber when the socket closes early.
  *
+ * @stability unstable
  * @category handlers
  * @since 4.0.0
  */
@@ -253,10 +265,15 @@ export const makeUpgradeHandler = <
       const nodeResponse = () => {
         if (nodeResponse_ === undefined) {
           nodeResponse_ = new Http.ServerResponse(nodeRequest)
-          nodeResponse_.assignSocket(socket as any)
-          nodeResponse_.on("finish", () => {
-            socket.end()
-          })
+          if (request.upgraded || socket.destroyed) {
+            // End without assigning the socket so handleResponse skips HTTP writes.
+            nodeResponse_.end()
+          } else {
+            nodeResponse_.assignSocket(socket as any)
+            nodeResponse_.on("finish", () => {
+              socket.end()
+            })
+          }
         }
         return nodeResponse_
       }
@@ -264,19 +281,30 @@ export const makeUpgradeHandler = <
         lazyWss,
         (wss) =>
           Effect.acquireRelease(
-            Effect.callback<globalThis.WebSocket>((resume) =>
+            Effect.callback<NodeWS.WebSocket, Socket.SocketError>((resume) => {
+              // A refused handshake never invokes the callback, so fail on close instead.
+              const onClose = () =>
+                resume(Effect.fail(
+                  new Socket.SocketError({
+                    reason: new Socket.SocketOpenError({
+                      kind: "Unknown",
+                      cause: new Error("The socket closed before the upgrade")
+                    })
+                  })
+                ))
+              if (socket.destroyed) return onClose()
+              socket.once("close", onClose)
               wss.handleUpgrade(nodeRequest, socket, head, (ws) => {
-                resume(Effect.succeed(ws as any))
+                socket.off("close", onClose)
+                request.upgraded = true
+                resume(Effect.succeed(ws))
               })
-            ),
-            (ws) => Effect.sync(() => ws.close())
+            }),
+            (ws, exit) => Effect.sync(() => ws.close(closeCode(exit)))
           )
       ))
-      const context = Context.add(
-        services,
-        HttpServerRequest,
-        new ServerRequestImpl(nodeRequest, nodeResponse, upgradeEffect)
-      )
+      const request = new ServerRequestImpl(nodeRequest, nodeResponse, upgradeEffect)
+      const context = Context.add(services, HttpServerRequest, request)
       const fiber = Fiber.runIn(Effect.runForkWith(context as Context.Context<any>)(handledApp), options.scope)
       socket.on("error", () => {})
       socket.on("close", () => {
@@ -292,6 +320,7 @@ class ServerRequestImpl extends NodeHttpIncomingMessage<HttpServerError> impleme
   readonly [Request.TypeId]: typeof Request.TypeId
   readonly response: Http.ServerResponse | LazyArg<Http.ServerResponse>
   private upgradeEffect?: Effect.Effect<Socket.Socket, HttpServerError> | undefined
+  upgraded = false
   readonly url: string
   private headersOverride?: Headers.Headers | undefined
 
@@ -413,6 +442,7 @@ class ServerRequestImpl extends NodeHttpIncomingMessage<HttpServerError> impleme
  * Provides an `HttpServer` by creating and managing a scoped Node
  * `http.Server` with the supplied listen and shutdown options.
  *
+ * @stability unstable
  * @category layers
  * @since 4.0.0
  */
@@ -425,6 +455,7 @@ export const layerServer: (
  * Provides the Node HTTP support services used by `NodeHttpServer`, including
  * the HTTP platform, ETag generator, and core Node platform services.
  *
+ * @stability unstable
  * @category layers
  * @since 4.0.0
  */
@@ -440,6 +471,7 @@ export const layerHttpServices: Layer.Layer<
  * Provides a Node `HttpServer` together with the Node HTTP platform, ETag, and
  * core platform services required to serve requests.
  *
+ * @stability unstable
  * @category layers
  * @since 4.0.0
  */
@@ -460,6 +492,7 @@ export const layer = (
  * and core Node platform services, reading the listen and shutdown options from
  * a `Config` value.
  *
+ * @stability unstable
  * @category layers
  * @since 4.0.0
  */
@@ -481,6 +514,7 @@ export const layerConfig = (
  * Provides a test HTTP server listening on an ephemeral port together with a
  * Fetch-backed `HttpClient` configured for server integration tests.
  *
+ * @stability unstable
  * @category testing
  * @since 4.0.0
  */
@@ -506,10 +540,19 @@ export const layerTest: Layer.Layer<
 // Internal
 // -----------------------------------------------------------------------------
 
+const closeCode = (exit: Exit.Exit<unknown, unknown>): number =>
+  Exit.isSuccess(exit) ? 1000 : Cause.hasInterruptsOnly(exit.cause) ? 1001 : 1011
+
+// Reported to middleware in place of the handler's discarded response.
+const upgradedResponse = Response.empty({ status: 101 })
+
 const handleResponse = (
   request: HttpServerRequest,
   response: HttpServerResponse
-): Effect.Effect<void, HttpServerError> => {
+): Effect.Effect<unknown, HttpServerError> => {
+  if ((request as ServerRequestImpl).upgraded) {
+    return Effect.succeed(upgradedResponse)
+  }
   const nodeResponse = (request as ServerRequestImpl).resolvedResponse
   if (nodeResponse.writableEnded) {
     return Effect.void
@@ -526,7 +569,7 @@ const handleResponse = (
   }
 
   if (request.method === "HEAD") {
-    nodeResponse.writeHead(response.status, headers)
+    nodeResponse.writeHead(response.status, response.statusText, headers)
     return Effect.andThen(
       cancelResponseBody(response.body),
       Effect.callback<void>((resume) => {
@@ -545,12 +588,12 @@ const handleResponse = (
   const body = response.body
   switch (body._tag) {
     case "Empty": {
-      nodeResponse.writeHead(response.status, headers)
+      nodeResponse.writeHead(response.status, response.statusText, headers)
       nodeResponse.end()
       return Effect.void
     }
     case "Raw": {
-      nodeResponse.writeHead(response.status, headers)
+      nodeResponse.writeHead(response.status, response.statusText, headers)
       if (
         typeof body.body === "object" && body.body !== null && "pipe" in body.body &&
         typeof body.body.pipe === "function"
@@ -576,20 +619,21 @@ const handleResponse = (
       })
     }
     case "Uint8Array": {
-      nodeResponse.writeHead(response.status, headers)
+      nodeResponse.writeHead(response.status, response.statusText, headers)
       // If the body is less than 1MB, we skip the callback
-      if (body.body.length < 1024 * 1024) {
-        nodeResponse.end(body.body)
+      if (body.contentLength < 1024 * 1024) {
+        // Writing text directly lets Node flush headers and body together.
+        nodeResponse.end(body.text ?? body.body)
         return Effect.void
       }
       return Effect.callback<void>((resume) => {
-        nodeResponse.end(body.body, () => resume(Effect.void))
+        nodeResponse.end(body.text ?? body.body, () => resume(Effect.void))
       })
     }
     case "FormData": {
       return Effect.suspend(() => {
         const r = new globalThis.Response(body.formData)
-        nodeResponse.writeHead(response.status, {
+        nodeResponse.writeHead(response.status, response.statusText, {
           ...headers,
           ...Object.fromEntries(r.headers)
         })
@@ -618,7 +662,7 @@ const handleResponse = (
       })
     }
     case "Stream": {
-      nodeResponse.writeHead(response.status, headers)
+      nodeResponse.writeHead(response.status, response.statusText, headers)
       const drainLatch = Latch.makeUnsafe()
       nodeResponse.on("drain", () => drainLatch.openUnsafe())
       return body.stream.pipe(
@@ -655,7 +699,7 @@ const handleCause = (
   Effect.flatMap(causeResponse(originalCause), ([response, cause]) => {
     const headersSent = nodeResponse.headersSent
     if (!headersSent) {
-      nodeResponse.writeHead(response.status)
+      nodeResponse.writeHead(response.status, response.statusText)
     }
     if (!nodeResponse.writableEnded) {
       nodeResponse.end()

@@ -166,24 +166,23 @@ const startRelay = Effect.gen(function* () {
       resume(Effect.succeed(`ws://${RELAY_HOST}:${address.port}/${token}`));
     });
   });
-}).pipe(
-  Effect.tapError((error) =>
-    Effect.logError(error.message, Cause.fail(error.cause)).pipe(
-      Effect.annotateLogs({ component: "ruffle-socket-relay" }),
-    ),
-  ),
-  Effect.onExit((exit) =>
-    Exit.isFailure(exit)
-      ? Effect.flatMap(Effect.scope, (scope) => Scope.close(scope, exit))
-      : Effect.void,
-  ),
-);
+});
 
 export const layer = Layer.effect(
   RuffleSocketProxy,
   Effect.gen(function* () {
-    const relay = yield* ScopedCache.makeWith({
-      lookup: (_key: void) => startRelay,
+    const relay = yield* ScopedCache.makeWith<
+      void,
+      string,
+      RuffleSocketProxyError
+    >({
+      lookup: Effect.fnUntraced(function* (_key: void) {
+        const scope = yield* Scope.fork(yield* Effect.scope);
+        return yield* startRelay.pipe(
+          Scope.provide(scope),
+          Effect.onError((cause) => Scope.close(scope, Exit.failCause(cause))),
+        );
+      }),
       capacity: 1,
       timeToLive: (exit) =>
         Exit.isSuccess(exit) ? Duration.infinity : Duration.zero,

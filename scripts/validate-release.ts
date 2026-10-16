@@ -46,7 +46,6 @@ const main = async (): Promise<void> => {
 };
 
 main().catch((cause: unknown) => {
-  const message = cause instanceof Error ? cause.message : String(cause);
-  console.error(`Release validation failed: ${message}`);
+  console.error("Release validation failed:", cause);
   process.exitCode = 1;
 });

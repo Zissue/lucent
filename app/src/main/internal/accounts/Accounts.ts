@@ -23,7 +23,10 @@ import {
   type ManagedAccountPatch,
   type RecentlyClosedGameSession,
 } from "@lucent/core/accounts";
-import { makeListenerRegistry } from "../../app/ListenerRegistry";
+import {
+  makeListenerRegistry,
+  type Listener,
+} from "../../app/ListenerRegistry";
 import {
   AccountGameWindows,
   type AccountGameWindowEvent,
@@ -84,7 +87,7 @@ export interface AccountsShape {
   ) => Effect.Effect<AccountLaunchResult, AccountsError>;
   readonly load: Effect.Effect<AccountManagerState, AccountsError>;
   readonly onChanged: (
-    listener: (state: AccountManagerState) => void,
+    listener: Listener<AccountManagerState>,
   ) => Effect.Effect<() => void>;
   readonly refreshServers: Effect.Effect<
     AccountGameServersResult,
@@ -378,14 +381,8 @@ export const makeAccounts = Effect.gen(function* () {
       ),
     );
 
-  const unsubscribeCreated = yield* gameWindows.onCreated(
-    registerWindowSession,
-  );
-  yield* Effect.addFinalizer(() => Effect.sync(unsubscribeCreated));
-
-  const unsubscribeReloaded =
-    yield* gameWindows.onReloaded(reloadWindowSession);
-  yield* Effect.addFinalizer(() => Effect.sync(unsubscribeReloaded));
+  yield* gameWindows.onCreated(registerWindowSession);
+  yield* gameWindows.onReloaded(reloadWindowSession);
 
   const closeWindowSession = Effect.fn("Accounts.closeWindowSession")(
     function* (gameWindowId: number) {
@@ -395,8 +392,7 @@ export const makeAccounts = Effect.gen(function* () {
       }
     },
   );
-  const unsubscribeWindows = yield* gameWindows.onClosed(closeWindowSession);
-  yield* Effect.addFinalizer(() => Effect.sync(unsubscribeWindows));
+  yield* gameWindows.onClosed(closeWindowSession);
 
   const closeGameWindows: AccountsShape["closeGameWindows"] = (
     gameWindowIds,
@@ -581,7 +577,9 @@ export const makeAccounts = Effect.gen(function* () {
           ...(request.windowTarget === undefined
             ? {}
             : { windowTarget: request.windowTarget }),
-          ...(request.tiling === undefined ? {} : { tile: request.tiling }),
+          ...(request.gameViewLayout === undefined
+            ? {}
+            : { gameViewLayout: request.gameViewLayout }),
           onCreated: (event) =>
             Effect.gen(function* () {
               gameWindowId = event.gameWindowId;

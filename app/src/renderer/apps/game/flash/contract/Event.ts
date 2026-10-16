@@ -69,12 +69,30 @@ export type ProjectionEvent =
       readonly type: "players-changed";
     }
   | {
-      /** An aura is added to or refreshed on a player or monster. */
+      /** An aura first appears on a player or monster. */
       readonly type: "aura-added";
       /** The aura duration in seconds, when available. */
       readonly duration?: number;
       readonly icon?: string;
+      readonly kind: "active" | "passive";
       readonly name: string;
+      readonly stack: number;
+      /** The applying entity's map-scoped ID, when known. */
+      readonly sourceId?: number;
+      readonly sourceType?: "monster" | "player";
+      /** The affected entity's map-scoped ID. */
+      readonly targetId: number;
+      readonly targetType: "monster" | "player";
+    }
+  | {
+      /** An existing aura changes stack, timer, or metadata. */
+      readonly type: "aura-updated";
+      /** The aura duration in seconds, when available. */
+      readonly duration?: number;
+      readonly icon?: string;
+      readonly kind: "active" | "passive";
+      readonly name: string;
+      readonly stack: number;
       /** The applying entity's map-scoped ID, when known. */
       readonly sourceId?: number;
       readonly sourceType?: "monster" | "player";
@@ -88,6 +106,7 @@ export type ProjectionEvent =
       /** The aura duration in seconds, when available. */
       readonly duration?: number;
       readonly icon?: string;
+      readonly kind: "active" | "passive";
       readonly name: string;
       /** The applying entity's map-scoped ID, when known. */
       readonly sourceId?: number;
@@ -97,9 +116,9 @@ export type ProjectionEvent =
       readonly targetType: "monster" | "player";
     }
   | {
-      /** A monster's counter attack starts. */
+      /** A monster's counter attack is applied, refreshed, or announced in a combat message. */
       readonly type: "counter-attack-start";
-      /** The expected window duration in milliseconds, when known. */
+      /** The applied aura duration or announced window in milliseconds, when known. */
       readonly durationMs?: number;
       /** The monster's map-scoped ID. */
       readonly monsterMapId: number;
@@ -111,7 +130,7 @@ export type ProjectionEvent =
       readonly triggerText: string;
     }
   | {
-      /** A monster's counter attack ends. */
+      /** A monster's active counter-attack aura is removed, including server state clears. */
       readonly type: "counter-attack-end";
       /** The monster's map-scoped ID. */
       readonly monsterMapId: number;
@@ -228,12 +247,13 @@ export type ProjectionEventSelector =
   | {
       readonly duration?: number;
       readonly icon?: string;
+      readonly kind?: "active" | "passive";
       readonly name?: string;
       readonly sourceId?: number;
       readonly sourceType?: "monster" | "player";
       readonly targetId?: number;
       readonly targetType?: "monster" | "player";
-      readonly type: "aura-added" | "aura-removed";
+      readonly type: "aura-added" | "aura-updated" | "aura-removed";
     }
   | {
       readonly durationMs?: number;

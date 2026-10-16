@@ -3,7 +3,7 @@ import {
   normalizeItemQuantity,
   resolveEnhancementStrategy,
 } from "@lucent/game";
-import type { ItemQuery } from "@lucent/game";
+import type { InventoryPool, ItemQuery, LiveItem } from "@lucent/game";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
@@ -18,6 +18,7 @@ import type { BridgeService } from "../bridge/Bridge";
 import { PositiveWireInt, WireBoolean, WireInt } from "../contract/Coercion";
 import { packetData } from "../contract/Packet";
 import type { Store } from "../state/Store";
+import type { House } from "./House";
 import type { Wait } from "./Wait";
 
 const WearResponse = Schema.Struct({
@@ -63,9 +64,15 @@ const isDirectInventoryUseItem = (category: string, link: string): boolean =>
   category.trim().toLowerCase() === "serveruse" ||
   isDirectInventoryConsumable(link);
 
+const slotMethods = {
+  bag: "inventory.getSlots",
+  misc: "inventory.getMiscSlots",
+} as const satisfies Record<InventoryPool, keyof Window["swf"]>;
+
 export const makeInventory = (
   bridge: BridgeService,
   store: Store,
+  house: House,
   wait: Wait,
 ) => {
   // Consumable equips and unequips mutate the same client action slot.
@@ -90,13 +97,46 @@ export const makeInventory = (
     },
   );
 
-  const getSlots = () =>
-    bridge
-      .invoke("inventory.getSlots", undefined, WireInt)
+  const getSlots = Effect.fn("Inventory.getSlots")(function* (
+    pool: InventoryPool = "bag",
+  ) {
+    if (!(yield* store.items.isHydrated("inventory"))) return 0;
+    return yield* bridge
+      .invoke(slotMethods[pool], undefined, WireInt)
       .pipe(Effect.map(Option.getOrElse(() => 0)));
+  });
 
-  const getUsedSlots = () =>
-    store.items.getAll("inventory").pipe(Effect.map((items) => items.length));
+  const getUsedSlots = (pool: InventoryPool = "bag") =>
+    getAll().pipe(
+      Effect.map((items) => items.filter((item) => item.pool === pool).length),
+    );
+
+  const canAccept = Effect.fn("Inventory.canAccept")(function* (
+    item: LiveItem,
+    replacing?: LiveItem,
+  ) {
+    const pool = item.pool;
+    if (pool === "class") return true;
+    if (
+      replacing !== undefined &&
+      (pool === "house" || replacing.pool === pool)
+    ) {
+      return true;
+    }
+    if (pool === "house") return (yield* house.getAvailableSlots()) > 0;
+
+    const current = yield* get(item.itemId);
+    if (
+      replacing === undefined &&
+      current !== null &&
+      current.quantity < (current.maxStack ?? 1)
+    ) {
+      return true;
+    }
+    if (pool === "misc" && current !== null) return true;
+
+    return (yield* getAvailableSlots(pool)) > 0;
+  });
 
   const contains = (selector: ItemQuery, quantity?: number) =>
     get(selector).pipe(
@@ -349,8 +389,8 @@ export const makeInventory = (
     options?: EquipOptions,
   ) => equipByEnhancementEffect(selector, options);
 
-  const getAvailableSlots = () =>
-    Effect.zipWith(getSlots(), getUsedSlots(), (slots, used) =>
+  const getAvailableSlots = (pool: InventoryPool = "bag") =>
+    Effect.zipWith(getSlots(pool), getUsedSlots(pool), (slots, used) =>
       Math.max(0, slots - used),
     );
 
@@ -377,6 +417,7 @@ export const makeInventory = (
   );
 
   return {
+    canAccept,
     contains,
     equip,
     equipByEnhancement,

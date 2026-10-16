@@ -11,17 +11,16 @@ import {
   AlertDescription,
   Button,
   Checkbox,
+  Empty,
   Icon,
   HelpTooltip,
   IconButton,
   Input,
   PillButton,
-  Switch,
   TooltipButton,
   TooltipButtonContent,
   TooltipButtonTrigger,
   TooltipIconButton,
-  cn,
 } from "@lucent/ui";
 import {
   For,
@@ -33,6 +32,7 @@ import {
   onMount,
   type JSX,
 } from "solid-js";
+import { SectionPanel } from "../../components/SectionPanel";
 import {
   environmentBoostWithdrawalSummary,
   prepareEnvironmentBankBoosts,
@@ -115,218 +115,31 @@ const bucketLabels: Record<EnvironmentItemBucket, string> = {
   "non-ac-non-member": "Non-AC non-member",
 };
 
-type EnvironmentSection = EnvironmentAutomationCapability;
-
-function rewardInputWidth(value: string): string {
-  return `calc(${Math.max(value.length || "itemID".length, 1)}ch + 0.5rem)`;
+function EmptyList(props: { readonly label: string }): JSX.Element {
+  return <Empty class="environment-empty">{props.label}</Empty>;
 }
-type EnvironmentFilter = "all" | EnvironmentSection;
 
-function FilterPill(props: {
-  readonly count: number;
+function AutomationAction(props: {
+  readonly enabled: boolean;
   readonly label: string;
-  readonly onSelect: () => void;
-  readonly pressed: boolean;
+  readonly onChange: (enabled: boolean) => void;
 }): JSX.Element {
-  return (
-    <button
-      type="button"
-      class="environment-filter-pill"
-      aria-pressed={props.pressed}
-      onClick={() => props.onSelect()}
-    >
-      {props.label}
-      <span class="environment-count">{props.count}</span>
-    </button>
-  );
-}
+  const action = () => (props.enabled ? "Stop" : "Start");
 
-function TogglePill(props: {
-  readonly children: JSX.Element;
-  readonly onChange: (pressed: boolean) => void;
-  readonly pressed: boolean;
-  readonly tone?: "destructive";
-}): JSX.Element {
-  return (
-    <button
-      type="button"
-      class={cn(
-        "environment-toggle-pill",
-        props.tone && `environment-toggle-pill--${props.tone}`,
-      )}
-      aria-pressed={props.pressed}
-      onClick={() => props.onChange(!props.pressed)}
-    >
-      <Icon
-        icon={props.pressed ? "check" : "plus"}
-        size="xs"
-        class="environment-toggle-pill__icon"
-      />
-      {props.children}
-    </button>
-  );
-}
-
-function RuleGroup(props: {
-  readonly children: JSX.Element;
-  readonly id: string;
-  readonly label: JSX.Element;
-}): JSX.Element {
-  return (
-    <div class="environment-rules" role="group" aria-labelledby={props.id}>
-      <span id={props.id} class="environment-rules__label">
-        {props.label}
-      </span>
-      <div class="environment-rules__pills">{props.children}</div>
-    </div>
-  );
-}
-
-function AutomationSwitch(props: {
-  readonly checked: boolean;
-  readonly label: string;
-  readonly onChange: (checked: boolean) => void;
-}): JSX.Element {
-  return (
-    <Switch
-      size="sm"
-      class="environment-automation-switch"
-      checked={props.checked}
-      aria-label={`Automate ${props.label}`}
-      onChange={(event) => props.onChange(event.currentTarget.checked)}
-    >
-      Automate
-    </Switch>
-  );
-}
-
-function ClearButton(props: {
-  readonly disabled: boolean;
-  readonly label: string;
-  readonly onClick: () => void;
-}): JSX.Element {
   return (
     <Button
-      size="xs"
-      variant="ghost"
-      class="environment-clear-action"
-      aria-label={`Clear ${props.label}`}
-      disabled={props.disabled}
-      onClick={() => props.onClick()}
+      aria-label={`${action()} ${props.label}`}
+      class="environment-automation-action"
+      size="sm"
+      variant={props.enabled ? "destructive-outline" : "outline"}
+      onClick={() => props.onChange(!props.enabled)}
     >
-      Clear
+      {action()}
     </Button>
   );
 }
 
-function RemoveButton(props: {
-  readonly label: string;
-  readonly onClick: () => void;
-}): JSX.Element {
-  return (
-    <IconButton
-      type="button"
-      size="icon-xs"
-      variant="ghost"
-      class="environment-remove-button"
-      aria-label={props.label}
-      onClick={() => props.onClick()}
-    >
-      <Icon icon="x" size="sm" />
-    </IconButton>
-  );
-}
-
-function SoundToggle(props: {
-  readonly enabled: boolean;
-  readonly item: string;
-  readonly onToggle: () => void;
-}): JSX.Element {
-  return (
-    <TooltipIconButton
-      size="icon-xs"
-      class={cn(
-        "environment-sound-toggle",
-        props.enabled && "environment-sound-toggle--on",
-      )}
-      aria-label={
-        props.enabled
-          ? `Disable drop sound for ${props.item}`
-          : `Enable drop sound for ${props.item}`
-      }
-      aria-pressed={props.enabled}
-      tooltip={
-        props.enabled
-          ? "Stop playing a sound when this drops"
-          : "Play a sound when this drops"
-      }
-      onClick={() => props.onToggle()}
-    >
-      <Icon icon="bell" size="sm" />
-    </TooltipIconButton>
-  );
-}
-
-function EntryForm(props: {
-  readonly label: string;
-  readonly onInput: (value: string) => void;
-  readonly onSubmit: (event: SubmitEvent) => void;
-  readonly placeholder: string;
-  readonly value: string;
-}): JSX.Element {
-  return (
-    <form class="environment-entry" onSubmit={(event) => props.onSubmit(event)}>
-      <Input
-        value={props.value}
-        placeholder={props.placeholder}
-        autocomplete="off"
-        spellcheck={false}
-        aria-label={props.label}
-        onInput={(event) => props.onInput(event.currentTarget.value)}
-      />
-      <TooltipIconButton
-        type="submit"
-        size="icon"
-        class="environment-icon-action"
-        aria-label={props.label}
-        variant="secondary"
-        tooltip={props.label}
-        disabled={!props.value.trim()}
-      >
-        <Icon icon="plus" class="button__icon" />
-      </TooltipIconButton>
-    </form>
-  );
-}
-
-function EmptyTags(props: { readonly children: JSX.Element }): JSX.Element {
-  return <li class="environment-empty">{props.children}</li>;
-}
-
-function SheetSection(props: {
-  readonly actions: JSX.Element;
-  readonly children: JSX.Element;
-  readonly count: number;
-  readonly id: EnvironmentSection;
-  readonly title: string;
-}): JSX.Element {
-  const headingId = () => `environment-section-${props.id}`;
-  return (
-    <section class="environment-section" aria-labelledby={headingId()}>
-      <div class="environment-section__heading">
-        <div class="environment-section__label">
-          <h2 id={headingId()} class="environment-section__title">
-            {props.title}
-          </h2>
-          <span class="environment-count">{props.count}</span>
-        </div>
-        <div class="environment-section__actions">{props.actions}</div>
-      </div>
-      {props.children}
-    </section>
-  );
-}
-
+/** Renders Environment state with optional callbacks for stateful interactions. */
 export function EnvironmentView(props: EnvironmentViewProps): JSX.Element {
   const [state, setState] = createSignal<EnvironmentState>(props.fixture.state);
   const [questInput, setQuestInput] = createSignal("");
@@ -689,99 +502,9 @@ export function EnvironmentView(props: EnvironmentViewProps): JSX.Element {
     }
   });
 
-  const [filter, setFilter] = createSignal<EnvironmentFilter>("all");
-  const showsSection = (section: EnvironmentSection): boolean =>
-    filter() === "all" || filter() === section;
-
-  const soundEnabled = (item: string): boolean =>
-    state().itemNotificationNames.some(
-      (name) => name.toLowerCase() === item.toLowerCase(),
-    );
-
-  const update = (request: Promise<EnvironmentState> | undefined): void => {
-    void runStateUpdate(request ?? Promise.resolve(state()));
-  };
-
-  const questRewardEditor = (questId: number): JSX.Element => (
-    <>
-      <PillButton
-        type="button"
-        class="environment-quest-id-button"
-        aria-label={`Edit reward item ID for quest ${questId}`}
-        title="Double-click to set reward item ID"
-        onDblClick={() => editQuestReward(questId)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" || event.key === " ") {
-            event.preventDefault();
-            editQuestReward(questId);
-          }
-        }}
-      >
-        {questId}
-      </PillButton>
-      <Show when={showQuestRewardInput(questId)}>
-        <span class="environment-quest-separator">:</span>
-        <Input
-          ref={(element) => questRewardInputs.set(questId, element)}
-          class="environment-reward-input"
-          unstyled
-          value={state().questRewards[questId] ?? ""}
-          placeholder="itemID"
-          inputmode="numeric"
-          aria-label={`Reward item ID for quest ${questId}`}
-          style={{
-            width: rewardInputWidth(
-              String(state().questRewards[questId] ?? ""),
-            ),
-          }}
-          onInput={(event) => {
-            event.currentTarget.style.width = rewardInputWidth(
-              event.currentTarget.value,
-            );
-          }}
-          onKeyDown={(event) => cancelQuestRewardEdit(event)}
-          onBlur={(event) => {
-            if (canceledQuestRewardEdit) {
-              canceledQuestRewardEdit = false;
-              return;
-            }
-
-            void commitQuestReward(questId, event.currentTarget.value);
-          }}
-        />
-      </Show>
-    </>
-  );
-
   return (
     <div class="standalone-window environment-root">
-      <header class="standalone-window__header environment-header">
-        <div class="environment-filter" role="group" aria-label="Show sections">
-          <FilterPill
-            label="All"
-            count={totalCount()}
-            pressed={filter() === "all"}
-            onSelect={() => setFilter("all")}
-          />
-          <FilterPill
-            label="Drops"
-            count={state().itemNames.length}
-            pressed={filter() === "drops"}
-            onSelect={() => setFilter("drops")}
-          />
-          <FilterPill
-            label="Quests"
-            count={state().questIds.length}
-            pressed={filter() === "quests"}
-            onSelect={() => setFilter("quests")}
-          />
-          <FilterPill
-            label="Boosts"
-            count={state().boosts.length}
-            pressed={filter() === "boosts"}
-            onSelect={() => setFilter("boosts")}
-          />
-        </div>
+      <header class="standalone-window__header">
         <div class="standalone-window__header-actions">
           <TooltipButton>
             <TooltipButtonTrigger
@@ -817,254 +540,444 @@ export function EnvironmentView(props: EnvironmentViewProps): JSX.Element {
         </div>
       </header>
 
-      <Show when={error()}>
-        {(message) => (
-          <Alert class="environment-error" variant="error">
-            <AlertDescription class="environment-error__message">
-              <Icon icon="circle_alert" aria-hidden="true" />
-              <span>{message()}</span>
-            </AlertDescription>
-          </Alert>
-        )}
-      </Show>
+      <div class="standalone-window__content-frame">
+        <div class="standalone-window__content">
+          <section class="environment-shell" aria-label="Environment controls">
+            <Show when={error()}>
+              {(message) => (
+                <Alert class="environment-error" variant="error">
+                  <AlertDescription>{message()}</AlertDescription>
+                </Alert>
+              )}
+            </Show>
 
-      <div class="environment-sheet">
-        <Show when={showsSection("drops")}>
-          <SheetSection
-            id="drops"
-            title="Drops"
-            count={state().itemNames.length}
-            actions={
-              <>
-                <ClearButton
-                  label="drops"
-                  disabled={state().itemNames.length === 0}
-                  onClick={() => update(props.callbacks?.clearItems?.())}
-                />
-                <AutomationSwitch
-                  label="drops"
-                  checked={state().automation.drops}
-                  onChange={(enabled) =>
-                    void updateAutomation("drops", enabled)
-                  }
-                />
-              </>
-            }
-          >
-            <RuleGroup
-              id="environment-drop-rules"
-              label={
-                <>
-                  Also accept
-                  <HelpTooltip
-                    aria-label="About the unlisted drop policy"
-                    tooltip='Listed drops and drops in selected categories are accepted. Others are ignored unless "Reject others" is on.'
-                  />
-                </>
-              }
-            >
-              <For each={EnvironmentItemBuckets}>
-                {(bucket) => (
-                  <TogglePill
-                    pressed={state().itemRules.buckets.includes(bucket)}
-                    onChange={(pressed) =>
-                      void toggleItemBucket(bucket, pressed)
-                    }
-                  >
-                    {bucketLabels[bucket]}
-                  </TogglePill>
-                )}
-              </For>
-              <TogglePill
-                tone="destructive"
-                pressed={state().itemRules.rejectElse}
-                onChange={(pressed) => void setRejectElse(pressed)}
-              >
-                Reject others
-              </TogglePill>
-            </RuleGroup>
-            <EntryForm
-              label="Add drop"
-              placeholder="Item name; another item"
-              value={itemInput()}
-              onInput={setItemInput}
-              onSubmit={(event) => void addItems(event)}
-            />
-            <ul class="environment-tags">
-              <For
-                each={state().itemNames}
-                fallback={
-                  <EmptyTags>No drops yet. Add item names above.</EmptyTags>
-                }
-              >
-                {(item) => (
-                  <li class="environment-tag">
-                    <span class="environment-tag__label" title={item}>
-                      {item}
-                    </span>
-                    <SoundToggle
-                      item={item}
-                      enabled={soundEnabled(item)}
-                      onToggle={() =>
-                        update(
-                          props.callbacks?.setItemNotification?.(
-                            item,
-                            !soundEnabled(item),
-                          ),
+            <div class="environment-grid">
+              <SectionPanel
+                title="Drops"
+                class="environment-panel environment-panel--item"
+                count={state().itemNames.length}
+                action={
+                  <>
+                    <AutomationAction
+                      enabled={state().automation.drops}
+                      label="Drops"
+                      onChange={(enabled) =>
+                        void updateAutomation("drops", enabled)
+                      }
+                    />
+                    <Button
+                      size="sm"
+                      variant="destructive-outline"
+                      class="environment-clear-action"
+                      aria-label="Clear drops"
+                      disabled={state().itemNames.length === 0}
+                      onClick={() =>
+                        void runStateUpdate(
+                          props.callbacks?.clearItems?.() ??
+                            Promise.resolve(state()),
                         )
                       }
-                    />
-                    <RemoveButton
-                      label={`Remove ${item}`}
-                      onClick={() =>
-                        update(props.callbacks?.removeItem?.(item))
-                      }
-                    />
-                  </li>
-                )}
-              </For>
-            </ul>
-          </SheetSection>
-        </Show>
-
-        <Show when={showsSection("quests")}>
-          <SheetSection
-            id="quests"
-            title="Quests"
-            count={state().questIds.length}
-            actions={
-              <>
-                <ClearButton
-                  label="quests"
-                  disabled={state().questIds.length === 0}
-                  onClick={() => update(props.callbacks?.clearQuests?.())}
-                />
-                <AutomationSwitch
-                  label="quests"
-                  checked={state().automation.quests}
-                  onChange={(enabled) =>
-                    void updateAutomation("quests", enabled)
-                  }
-                />
-              </>
-            }
-          >
-            <RuleGroup id="environment-quest-rules" label="Auto register">
-              <TogglePill
-                pressed={state().questAutoRegister.rewards}
-                onChange={(pressed) =>
-                  void setQuestAutoRegisterOption("rewards", pressed)
+                    >
+                      Clear
+                    </Button>
+                  </>
                 }
               >
-                Rewards
-              </TogglePill>
-              <TogglePill
-                pressed={state().questAutoRegister.requirements}
-                onChange={(pressed) =>
-                  void setQuestAutoRegisterOption("requirements", pressed)
-                }
-              >
-                Requirements
-              </TogglePill>
-            </RuleGroup>
-            <EntryForm
-              label="Add quest"
-              placeholder="Quest ID; quest:itemID"
-              value={questInput()}
-              onInput={setQuestInput}
-              onSubmit={(event) => void addQuests(event)}
-            />
-            <ul class="environment-tags">
-              <For
-                each={state().questIds}
-                fallback={
-                  <EmptyTags>No quests yet. Add quest IDs above.</EmptyTags>
-                }
-              >
-                {(questId) => (
-                  <li class="environment-tag environment-tag--quest">
-                    {questRewardEditor(questId)}
-                    <RemoveButton
-                      label={`Remove quest ${questId}`}
-                      onClick={() =>
-                        update(props.callbacks?.removeQuest?.(questId))
-                      }
-                    />
-                  </li>
-                )}
-              </For>
-            </ul>
-          </SheetSection>
-        </Show>
-
-        <Show when={showsSection("boosts")}>
-          <SheetSection
-            id="boosts"
-            title="Boosts"
-            count={state().boosts.length}
-            actions={
-              <>
-                <Button
-                  size="xs"
-                  variant="ghost"
-                  class="environment-fetch-boosts"
-                  title="Add boosts from your inventory and choose any from your bank"
-                  aria-busy={fetchingBoosts() || withdrawingBoosts()}
-                  disabled={fetchingBoosts() || withdrawingBoosts()}
-                  onClick={() => void fetchBoosts()}
-                >
-                  {withdrawingBoosts()
-                    ? "Withdrawing…"
-                    : fetchingBoosts()
-                      ? "Fetching…"
-                      : "Fetch"}
-                </Button>
-                <ClearButton
-                  label="boosts"
-                  disabled={state().boosts.length === 0}
-                  onClick={() => update(props.callbacks?.clearBoosts?.())}
-                />
-                <AutomationSwitch
-                  label="boosts"
-                  checked={state().automation.boosts}
-                  onChange={(enabled) =>
-                    void updateAutomation("boosts", enabled)
-                  }
-                />
-              </>
-            }
-          >
-            <EntryForm
-              label="Add boost"
-              placeholder="Boost name; another boost"
-              value={boostInput()}
-              onInput={setBoostInput}
-              onSubmit={(event) => void addBoosts(event)}
-            />
-            <ul class="environment-tags">
-              <For
-                each={state().boosts}
-                fallback={
-                  <EmptyTags>No boosts yet. Add names or fetch them.</EmptyTags>
-                }
-              >
-                {(boost) => (
-                  <li class="environment-tag">
-                    <span class="environment-tag__label" title={boost}>
-                      {boost}
+                <div class="environment-drop-rules">
+                  <div class="environment-rule-label">
+                    <span id="environment-bucket-label">
+                      Unlisted drop policy
                     </span>
-                    <RemoveButton
-                      label={`Remove ${boost}`}
-                      onClick={() =>
-                        update(props.callbacks?.removeBoost?.(boost))
+                    <HelpTooltip
+                      aria-label="About the unlisted drop policy"
+                      tooltip='Listed drops and drops in checked categories are accepted. Others are ignored unless "Reject all other drops" is enabled.'
+                    />
+                  </div>
+                  <div
+                    class="environment-bucket-grid"
+                    role="group"
+                    aria-labelledby="environment-bucket-label"
+                  >
+                    <For each={EnvironmentItemBuckets}>
+                      {(bucket) => (
+                        <Checkbox
+                          class="environment-rule-checkbox"
+                          checked={state().itemRules.buckets.includes(bucket)}
+                          onChange={(event) =>
+                            void toggleItemBucket(
+                              bucket,
+                              event.currentTarget.checked,
+                            )
+                          }
+                        >
+                          {bucketLabels[bucket]}
+                        </Checkbox>
+                      )}
+                    </For>
+                    <Checkbox
+                      class="environment-rule-checkbox"
+                      checked={state().itemRules.rejectElse}
+                      onChange={(event) =>
+                        void setRejectElse(event.currentTarget.checked)
+                      }
+                    >
+                      Reject all other drops
+                    </Checkbox>
+                  </div>
+                </div>
+
+                <form
+                  class="environment-entry"
+                  onSubmit={(event) => void addItems(event)}
+                >
+                  <Input
+                    value={itemInput()}
+                    placeholder="Item name; another item"
+                    autocomplete="off"
+                    spellcheck={false}
+                    onInput={(event) => setItemInput(event.currentTarget.value)}
+                  />
+                  <TooltipIconButton
+                    type="submit"
+                    size="icon"
+                    class="environment-icon-action"
+                    aria-label="Add drop"
+                    variant="default"
+                    tooltip="Add drop"
+                    disabled={!itemInput().trim()}
+                  >
+                    <Icon icon="plus" class="button__icon" />
+                  </TooltipIconButton>
+                </form>
+
+                <div class="environment-list environment-list--drops">
+                  <Show
+                    when={state().itemNames.length > 0}
+                    fallback={<EmptyList label="No drops" />}
+                  >
+                    <For each={state().itemNames}>
+                      {(item) => {
+                        const beepEnabled = () =>
+                          state().itemNotificationNames.some(
+                            (name) => name.toLowerCase() === item.toLowerCase(),
+                          );
+                        return (
+                          <div class="environment-chip environment-chip--drop">
+                            <span class="environment-chip__label">{item}</span>
+                            <TooltipButton>
+                              <TooltipButtonTrigger
+                                type="button"
+                                class={
+                                  beepEnabled()
+                                    ? "environment-icon-action environment-beep-button environment-beep-button--active"
+                                    : "environment-icon-action environment-beep-button"
+                                }
+                                size="xs"
+                                variant="secondary"
+                                aria-label={
+                                  beepEnabled()
+                                    ? `Disable drop sound for ${item}`
+                                    : `Enable drop sound for ${item}`
+                                }
+                                aria-pressed={beepEnabled()}
+                                onClick={() =>
+                                  void runStateUpdate(
+                                    props.callbacks?.setItemNotification?.(
+                                      item,
+                                      !beepEnabled(),
+                                    ) ?? Promise.resolve(state()),
+                                  )
+                                }
+                              >
+                                <Icon icon="bell" class="button__icon" />
+                                Sound
+                              </TooltipButtonTrigger>
+                              <TooltipButtonContent>
+                                {beepEnabled()
+                                  ? "Stop playing a sound when this item drops."
+                                  : "Play a sound when this item drops."}
+                              </TooltipButtonContent>
+                            </TooltipButton>
+                            <IconButton
+                              type="button"
+                              class="environment-icon-action environment-remove-button"
+                              size="icon"
+                              variant="ghost"
+                              aria-label={`Remove ${item}`}
+                              onClick={() =>
+                                void runStateUpdate(
+                                  props.callbacks?.removeItem?.(item) ??
+                                    Promise.resolve(state()),
+                                )
+                              }
+                            >
+                              <Icon icon="x" class="button__icon" />
+                            </IconButton>
+                          </div>
+                        );
+                      }}
+                    </For>
+                  </Show>
+                </div>
+              </SectionPanel>
+
+              <SectionPanel
+                title="Quests"
+                class="environment-panel environment-panel--quest"
+                count={state().questIds.length}
+                action={
+                  <>
+                    <AutomationAction
+                      enabled={state().automation.quests}
+                      label="Quests"
+                      onChange={(enabled) =>
+                        void updateAutomation("quests", enabled)
                       }
                     />
-                  </li>
-                )}
-              </For>
-            </ul>
-          </SheetSection>
-        </Show>
+                    <Button
+                      size="sm"
+                      variant="destructive-outline"
+                      class="environment-clear-action"
+                      aria-label="Clear quests"
+                      disabled={state().questIds.length === 0}
+                      onClick={() =>
+                        void runStateUpdate(
+                          props.callbacks?.clearQuests?.() ??
+                            Promise.resolve(state()),
+                        )
+                      }
+                    >
+                      Clear
+                    </Button>
+                  </>
+                }
+              >
+                <div class="environment-quest-rules">
+                  <Checkbox
+                    class="environment-rule-checkbox"
+                    checked={state().questAutoRegister.rewards}
+                    onChange={(event) =>
+                      void setQuestAutoRegisterOption(
+                        "rewards",
+                        event.currentTarget.checked,
+                      )
+                    }
+                  >
+                    Auto register rewards
+                  </Checkbox>
+                  <Checkbox
+                    class="environment-rule-checkbox"
+                    checked={state().questAutoRegister.requirements}
+                    onChange={(event) =>
+                      void setQuestAutoRegisterOption(
+                        "requirements",
+                        event.currentTarget.checked,
+                      )
+                    }
+                  >
+                    Auto register requirements
+                  </Checkbox>
+                </div>
+
+                <form
+                  class="environment-entry"
+                  onSubmit={(event) => void addQuests(event)}
+                >
+                  <Input
+                    value={questInput()}
+                    placeholder="Quest ID; quest:itemID"
+                    autocomplete="off"
+                    onInput={(event) =>
+                      setQuestInput(event.currentTarget.value)
+                    }
+                  />
+                  <TooltipIconButton
+                    type="submit"
+                    size="icon"
+                    class="environment-icon-action"
+                    aria-label="Add quest"
+                    variant="default"
+                    tooltip="Add quest"
+                    disabled={!questInput().trim()}
+                  >
+                    <Icon icon="plus" class="button__icon" />
+                  </TooltipIconButton>
+                </form>
+
+                <div class="environment-list environment-list--quests">
+                  <Show
+                    when={state().questIds.length > 0}
+                    fallback={<EmptyList label="No quests" />}
+                  >
+                    <For each={state().questIds}>
+                      {(questId) => (
+                        <div class="environment-chip environment-chip--quest">
+                          <PillButton
+                            type="button"
+                            class="environment-chip__id environment-quest-id-button"
+                            aria-label={`Edit reward item ID for quest ${questId}`}
+                            title="Double-click to set reward item ID"
+                            onDblClick={() => editQuestReward(questId)}
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter" || event.key === " ") {
+                                event.preventDefault();
+                                editQuestReward(questId);
+                              }
+                            }}
+                          >
+                            {questId}
+                          </PillButton>
+                          <Show when={showQuestRewardInput(questId)}>
+                            <span class="environment-quest-separator">:</span>
+                            <Input
+                              ref={(element) =>
+                                questRewardInputs.set(questId, element)
+                              }
+                              class="environment-reward-input"
+                              unstyled
+                              value={state().questRewards[questId] ?? ""}
+                              placeholder="itemID"
+                              inputmode="numeric"
+                              onKeyDown={(event) =>
+                                cancelQuestRewardEdit(event)
+                              }
+                              onBlur={(event) => {
+                                if (canceledQuestRewardEdit) {
+                                  canceledQuestRewardEdit = false;
+                                  return;
+                                }
+
+                                void commitQuestReward(
+                                  questId,
+                                  event.currentTarget.value,
+                                );
+                              }}
+                            />
+                          </Show>
+                          <IconButton
+                            type="button"
+                            class="environment-icon-action environment-remove-button"
+                            size="icon"
+                            variant="ghost"
+                            aria-label={`Remove quest ${questId}`}
+                            onClick={() =>
+                              void runStateUpdate(
+                                props.callbacks?.removeQuest?.(questId) ??
+                                  Promise.resolve(state()),
+                              )
+                            }
+                          >
+                            <Icon icon="x" class="button__icon" />
+                          </IconButton>
+                        </div>
+                      )}
+                    </For>
+                  </Show>
+                </div>
+              </SectionPanel>
+
+              <SectionPanel
+                title="Boosts"
+                class="environment-panel environment-panel--boost"
+                count={state().boosts.length}
+                action={
+                  <>
+                    <AutomationAction
+                      enabled={state().automation.boosts}
+                      label="Boosts"
+                      onChange={(enabled) =>
+                        void updateAutomation("boosts", enabled)
+                      }
+                    />
+                    <Button
+                      size="sm"
+                      variant="destructive-outline"
+                      class="environment-clear-action"
+                      aria-label="Clear boosts"
+                      disabled={state().boosts.length === 0}
+                      onClick={() =>
+                        void runStateUpdate(
+                          props.callbacks?.clearBoosts?.() ??
+                            Promise.resolve(state()),
+                        )
+                      }
+                    >
+                      Clear
+                    </Button>
+                  </>
+                }
+              >
+                <form
+                  class="environment-entry"
+                  onSubmit={(event) => void addBoosts(event)}
+                >
+                  <Input
+                    value={boostInput()}
+                    placeholder="Boost name; another boost"
+                    autocomplete="off"
+                    spellcheck={false}
+                    onInput={(event) =>
+                      setBoostInput(event.currentTarget.value)
+                    }
+                  />
+                  <TooltipIconButton
+                    type="submit"
+                    size="icon"
+                    class="environment-icon-action"
+                    aria-label="Add boost"
+                    variant="default"
+                    tooltip="Add boost"
+                    disabled={!boostInput().trim()}
+                  >
+                    <Icon icon="plus" class="button__icon" />
+                  </TooltipIconButton>
+                </form>
+
+                <div class="environment-list">
+                  <Show
+                    when={state().boosts.length > 0}
+                    fallback={<EmptyList label="No boosts" />}
+                  >
+                    <For each={state().boosts}>
+                      {(boost) => (
+                        <div class="environment-chip">
+                          <span class="environment-chip__label">{boost}</span>
+                          <IconButton
+                            type="button"
+                            class="environment-icon-action environment-remove-button"
+                            size="icon"
+                            variant="ghost"
+                            aria-label={`Remove ${boost}`}
+                            onClick={() =>
+                              void runStateUpdate(
+                                props.callbacks?.removeBoost?.(boost) ??
+                                  Promise.resolve(state()),
+                              )
+                            }
+                          >
+                            <Icon icon="x" class="button__icon" />
+                          </IconButton>
+                        </div>
+                      )}
+                    </For>
+                  </Show>
+                </div>
+
+                <div class="environment-boost-footer">
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    aria-busy={fetchingBoosts() || withdrawingBoosts()}
+                    disabled={fetchingBoosts() || withdrawingBoosts()}
+                    onClick={() => void fetchBoosts()}
+                  >
+                    {withdrawingBoosts() ? "Withdrawing…" : "Fetch boosts"}
+                  </Button>
+                </div>
+              </SectionPanel>
+            </div>
+          </section>
+        </div>
       </div>
 
       <AlertDialog
@@ -1178,6 +1091,7 @@ export function EnvironmentView(props: EnvironmentViewProps): JSX.Element {
   );
 }
 
+/** Connects the fixture-driven Environment view to the Electron bridge. */
 export function App(): JSX.Element {
   const environment = selectDesktopBridge(
     window.desktop,

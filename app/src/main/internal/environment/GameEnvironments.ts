@@ -109,10 +109,9 @@ export const makeGameEnvironments = Effect.gen(function* () {
       .pipe(Effect.catchCause(() => Effect.succeed([])));
   };
 
-  const unsubscribeClosed = yield* windows.onClosed((event) =>
-    event.kind === "game" ? remove(event.rendererId) : Effect.void,
+  yield* windows.observe({ kind: "game" }, (event) =>
+    event.type === "closed" ? remove(event.rendererId) : Effect.void,
   );
-  yield* Effect.addFinalizer(() => Effect.sync(unsubscribeClosed));
 
   return GameEnvironments.of({
     fetchBoosts,

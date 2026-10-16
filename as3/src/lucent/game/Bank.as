@@ -7,14 +7,8 @@ package lucent.game
   [BridgeNamespace("bank")]
   public class Bank
   {
-    private static var items:Array = [];
     private static var loaded:Boolean = false;
     private static var loading:Boolean = false;
-
-    private static function labelForView(view:String):String
-    {
-      return view == "house" ? "HouseBank" : "Bank";
-    }
 
     private static function failLoad(message:String):void
     {
@@ -36,7 +30,6 @@ package lucent.game
 
         var snapshot:Array = response as Array;
         Main.Game.world.addItemsToBank(snapshot);
-        items = snapshot;
         loading = false;
         loaded = true;
       }
@@ -54,7 +47,8 @@ package lucent.game
     [BridgeExport]
     public static function getItems():Array
     {
-      return items;
+      var game:Object = Main.Game;
+      return game.world.bankinfo.BankArray;
     }
 
     [BridgeTsParamType("selector: FlashTypes.InventoryItemSelector")]
@@ -77,7 +71,7 @@ package lucent.game
         }
       }
 
-      return ItemLookup.find(game.world.bankinfo.items, selector);
+      return ItemLookup.find(game.world.bankinfo.BankArray, selector);
     }
 
     [BridgeTsParamType("selector: FlashTypes.InventoryItemSelector")]
@@ -130,7 +124,15 @@ package lucent.game
     public static function getUsedSlots():int
     {
       var game:Object = Main.Game;
-      return game.world.myAvatar.iBankCount;
+      var usedSlots:int = 0;
+      for each (var item:Object in game.world.bankinfo.BankArray)
+      {
+        if (item.bCoins == 0)
+        {
+          usedSlots++;
+        }
+      }
+      return usedSlots;
     }
 
     [BridgeTsParamType("selector: FlashTypes.InventoryItemSelector")]
@@ -177,46 +179,31 @@ package lucent.game
       }
 
       var game:Object = Main.Game;
-      game.sfc.sendXtMessage(
-        "zm",
-        "bankSwapInv",
-        [invItem.ItemID, invItem.CharItemID, bankItem.ItemID, bankItem.CharItemID],
-        "str",
-        game.world.curRoom
-      );
+      game.world.sendBankSwapInvRequest(bankItem, invItem);
       return true;
     }
 
-    [BridgeTsParamType("view: FlashTypes.BankView")]
     [BridgeExport]
-    public static function open(view:String = "regular"):void
+    public static function open():void
     {
       var game:Object = Main.Game;
-      var label:String = labelForView(view);
-      if (!game.world.uiLock && game.ui.mcPopup.currentLabel != label)
+      if (!game.world.uiLock && game.ui.mcPopup.currentLabel != "Bank")
       {
-        game.ui.mcPopup.fOpen(label);
+        game.ui.mcPopup.fOpen("Bank");
       }
     }
 
-    [BridgeTsParamType("view: FlashTypes.BankView")]
     [BridgeExport]
-    public static function isOpen(view:String = null):Boolean
+    public static function isOpen():Boolean
     {
       var game:Object = Main.Game;
-      var currentLabel:String = game.ui.mcPopup.currentLabel;
-      if (view == null)
-      {
-        return currentLabel == "Bank" || currentLabel == "HouseBank";
-      }
-
-      return currentLabel == labelForView(view);
+      return game.ui.mcPopup.currentLabel == "Bank"
+        && game.ui.mcPopup.getChildByName("mcBank") != null;
     }
 
     [BridgeIgnore]
     public static function onLogout():void
     {
-      items = [];
       loaded = false;
       loading = false;
     }

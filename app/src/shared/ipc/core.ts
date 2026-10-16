@@ -14,8 +14,6 @@ export interface IpcInvokeDescriptor<Payload, Result> {
   readonly name: string;
   readonly payload: IpcSchema<Payload>;
   readonly result: IpcSchema<Result>;
-  /** Controls whether tracing may record user-provided payloads and results. */
-  readonly trace: "full" | "metadata";
 }
 
 export interface IpcEventDescriptor<Payload> {
@@ -68,7 +66,6 @@ export const defineInvoke = <Payload, Result>(descriptor: {
   readonly name: string;
   readonly payload: IpcSchema<Payload>;
   readonly result: IpcSchema<Result>;
-  readonly trace?: "full" | "metadata";
 }): IpcInvokeDescriptor<Payload, Result> => ({
   channel: descriptor.channel,
   decodePayloadEffect: Schema.decodeUnknownEffect(
@@ -81,7 +78,6 @@ export const defineInvoke = <Payload, Result>(descriptor: {
   name: descriptor.name,
   payload: descriptor.payload,
   result: descriptor.result,
-  trace: descriptor.trace ?? "full",
 });
 
 export const defineEvent = <Payload>(descriptor: {

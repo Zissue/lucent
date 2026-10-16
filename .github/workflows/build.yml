@@ -69,9 +69,11 @@ jobs:
         with:
           body_path: ${{ runner.temp }}/release-notes.md
           draft: true
+          prerelease: ${{ contains(env.RELEASE_TAG, '-') }}
           fail_on_unmatched_files: true
           tag_name: ${{ env.RELEASE_TAG }}
           files: |
             ./app/build/Lucent-*-mac-*.dmg
             ./app/build/Lucent-*-win-*.zip
             ./app/build/Lucent-*-linux-*.AppImage
+            ./app/build/Lucent-*-linux-*.zip

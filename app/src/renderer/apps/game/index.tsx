@@ -33,18 +33,16 @@ const gameRendererRpc = flashRuntime.runFork(
     gameRendererRpcListening.resolve,
   ),
 );
-const gameRendererGeneration = desktop.gameRenderer.getGeneration();
 const groupCommandReceiverReady = Promise.withResolvers<void>();
 
 void Promise.all([
   flashRuntime.context(),
-  gameRendererGeneration,
   groupCommandReceiverReady.promise,
   gameRendererRpcListening.promise,
 ])
-  .then(([, generation]) => {
+  .then(() => {
     performance.mark("lucent.game.flash-runtime-ready");
-    return desktop.gameRenderer.ready(generation);
+    return desktop.gameRenderer.ready();
   })
   .then(() => {
     performance.mark("lucent.game.renderer-ready-reported");

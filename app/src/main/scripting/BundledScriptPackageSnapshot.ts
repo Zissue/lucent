@@ -1,15 +1,14 @@
 import { createHash } from "crypto";
 import { promises as fs } from "fs";
-import { dirname, join } from "path";
+import { basename, dirname, join } from "path";
 
-import { invariant } from "../../shared/invariant";
 import {
   listRegularFilePaths,
   readStableFile,
   sha256Revision,
 } from "./ScriptPackageFileSystem";
 import {
-  formatScriptByteLimit,
+  formatBytes,
   SCRIPT_PACKAGE_FILE_MAX_BYTES,
   SCRIPT_PACKAGE_MAX_BYTES,
   SCRIPT_PACKAGE_MAX_FILES,
@@ -51,7 +50,6 @@ const gitTreeHash = (entries: ReadonlyMap<string, GitEntry>): Buffer => {
   );
 };
 
-/** Copies an immutable package snapshot and identifies the exact installed tree. */
 export const copyBundledScriptPackage = async (
   source: string,
   destination: string,
@@ -60,10 +58,11 @@ export const copyBundledScriptPackage = async (
   readonly tree: string;
 }> => {
   const root = await fs.lstat(source);
-  invariant(
-    root.isDirectory() && !root.isSymbolicLink(),
-    "A bundled package must be a directory, not a symbolic link.",
-  );
+  if (!root.isDirectory()) {
+    throw new Error(
+      "A bundled package must be a directory, not a symbolic link.",
+    );
+  }
   const inventory = await listRegularFilePaths(source, {
     maxFiles: SCRIPT_PACKAGE_MAX_FILES,
     rejectSymlinks: true,
@@ -78,15 +77,15 @@ export const copyBundledScriptPackage = async (
       SCRIPT_PACKAGE_FILE_MAX_BYTES,
     );
     totalBytes += contents.byteLength;
-    invariant(
-      totalBytes <= SCRIPT_PACKAGE_MAX_BYTES,
-      `The bundled package exceeds the ${formatScriptByteLimit(SCRIPT_PACKAGE_MAX_BYTES)} limit.`,
-    );
+    if (totalBytes > SCRIPT_PACKAGE_MAX_BYTES) {
+      throw new Error(
+        `The bundled package exceeds the ${formatBytes(SCRIPT_PACKAGE_MAX_BYTES)} limit.`,
+      );
+    }
     const stat = await fs.lstat(file.absolutePath);
-    invariant(
-      stat.isFile() && !stat.isSymbolicLink(),
-      "Bundled packages must contain only regular files.",
-    );
+    if (!stat.isFile()) {
+      throw new Error("Bundled packages must contain only regular files.");
+    }
     const executable = (stat.mode & 0o111) !== 0;
     const target = join(destination, file.relativePath);
     await fs.mkdir(dirname(target), { recursive: true });
@@ -96,13 +95,11 @@ export const copyBundledScriptPackage = async (
     });
     files.set(file.relativePath, `sha256-${sha256Revision(contents)}`);
 
-    const parts = file.relativePath.split("/");
-    const name = parts.pop();
-    invariant(name !== undefined, "The package contains an empty file path.");
+    const parts = file.relativePath.split("/").slice(0, -1);
     let entries = tree;
     for (const part of parts) {
       const entry = entries.get(part);
-      invariant(entry?.kind !== "file", "Conflicting package paths.");
+      if (entry?.kind === "file") throw new Error("Conflicting package paths.");
       const directory = entry ?? {
         kind: "directory" as const,
         entries: new Map<string, GitEntry>(),
@@ -110,7 +107,7 @@ export const copyBundledScriptPackage = async (
       entries.set(part, directory);
       entries = directory.entries;
     }
-    entries.set(name, {
+    entries.set(basename(file.relativePath), {
       kind: "file",
       hash: gitObjectHash("blob", contents),
       executable,

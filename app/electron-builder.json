@@ -45,7 +45,7 @@
     "icon": "../assets/icon.ico",
     "target": {
       "target": "zip",
-      "arch": ["x64"]
+      "arch": ["x64", "arm64"]
     },
     "artifactName": "${productName}-${version}-win-${arch}.${ext}"
   },
@@ -65,11 +65,11 @@
     "target": [
       {
         "target": "AppImage",
-        "arch": ["x64"]
+        "arch": ["x64", "arm64"]
       },
       {
         "target": "zip",
-        "arch": ["x64"]
+        "arch": ["x64", "arm64"]
       }
     ],
     "icon": "../assets/icon.png",

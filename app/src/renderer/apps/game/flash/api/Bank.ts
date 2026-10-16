@@ -5,30 +5,22 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
-import type { BankView } from "../../Types";
 import type { BridgeService } from "../bridge/Bridge";
 import { PositiveWireInt, WireBoolean, WireInt } from "../contract/Coercion";
 import { packetData } from "../contract/Packet";
-import { ItemPayloads, toItem } from "../contract/payload/Items";
+import { ItemPayloads, toBankItems } from "../contract/payload/Items";
 import type { Store } from "../state/Store";
 import type { Auth } from "./Auth";
 import type { House } from "./House";
 import type { Inventory } from "./Inventory";
 import type { Wait } from "./Wait";
 
-export type { BankView } from "../../Types";
-
 export interface BankOpenOptions {
   /**
-   * Whether to reload bank items before opening the view.
+   * Whether to reload bank items before opening the bank.
    * @defaultValue false
    */
   readonly force?: boolean;
-  /**
-   * The bank view to open.
-   * @defaultValue "regular"
-   */
-  readonly view?: BankView;
 }
 
 const TransferResponse = Schema.Struct({
@@ -43,14 +35,14 @@ const SwapResponse = Schema.Struct({
 const decodeTransferResponse = Schema.decodeUnknownOption(TransferResponse);
 const decodeSwapResponse = Schema.decodeUnknownOption(SwapResponse);
 
-const destinationCanAccept = (itemId: number, destination: Inventory | House) =>
-  destination
+const houseCanAccept = (itemId: number, house: House) =>
+  house
     .get(itemId)
     .pipe(
       Effect.flatMap((current) =>
         current !== null
           ? Effect.succeed(true)
-          : destination
+          : house
               .getAvailableSlots()
               .pipe(Effect.map((available) => available > 0)),
       ),
@@ -67,13 +59,9 @@ export const makeBank = Effect.fnUntraced(function* (
   const loads = yield* Semaphore.make(1);
   const opens = yield* Semaphore.make(1);
 
-  const isOpen = (view?: BankView) =>
+  const isOpen = () =>
     bridge
-      .invoke(
-        "bank.isOpen",
-        view === undefined ? undefined : [view],
-        Schema.Boolean,
-      )
+      .invoke("bank.isOpen", undefined, Schema.Boolean)
       .pipe(Effect.map(Option.getOrElse(() => false)));
 
   const getAll = () =>
@@ -100,9 +88,9 @@ export const makeBank = Effect.fnUntraced(function* (
       .pipe(Effect.map(Option.getOrElse(() => 0)));
 
   const getUsedSlots = () =>
-    getAll().pipe(
-      Effect.map((items) => items.filter((item) => !item.coins).length),
-    );
+    bridge
+      .invoke("bank.getUsedSlots", undefined, WireInt)
+      .pipe(Effect.map(Option.getOrElse(() => 0)));
 
   const isLoaded = () =>
     bridge
@@ -137,36 +125,28 @@ export const makeBank = Effect.fnUntraced(function* (
         );
         if (Option.isNone(snapshot)) return false;
 
-        const items = snapshot.value.map((payload) =>
-          toItem(payload, { context: "bank" }),
-        );
-        yield* store.items.replace("bank", items);
+        yield* store.items.replace("bank", toBankItems(snapshot.value));
         return true;
       }),
     );
   };
 
-  const openView = Effect.fn("Bank.openView")(function* (
-    view: BankView,
-    force: boolean,
-  ) {
-    if (!(yield* auth.isLoggedIn())) return false;
-
-    if (!(yield* load(force))) return false;
-
-    const opened = yield* isOpen(view);
-    if (opened) return true;
-
-    if (Option.isNone(yield* bridge.invoke("bank.open", [view], Schema.Void))) {
-      return false;
-    }
-
-    return yield* wait.until(isOpen(view), { timeout: "3 seconds" });
-  });
-
   const open = (options: BankOpenOptions = {}) =>
     opens.withPermits(1)(
-      openView(options.view ?? "regular", options.force ?? false),
+      Effect.gen(function* () {
+        if (!(yield* load(options.force ?? false))) return false;
+        if (yield* isOpen()) return true;
+
+        if (
+          Option.isNone(
+            yield* bridge.invoke("bank.open", undefined, Schema.Void),
+          )
+        ) {
+          return false;
+        }
+
+        return yield* wait.until(isOpen(), { timeout: "3 seconds" });
+      }),
     );
 
   const contains = (selector: ItemQuery, quantity?: number) =>
@@ -177,18 +157,21 @@ export const makeBank = Effect.fnUntraced(function* (
       ),
     );
 
-  const bankCanAccept = (item: LiveItem | null) =>
-    Effect.gen(function* () {
-      if (item === null || item.coins) return item !== null;
-      if ((yield* store.items.get("bank", item.itemId)) !== null) return true;
-      return (yield* getAvailableSlots()) > 0;
-    });
+  const bankCanAccept = (item: LiveItem) =>
+    item.coins
+      ? Effect.succeed(true)
+      : getAvailableSlots().pipe(Effect.map((slots) => slots > 0));
 
   const deposit = (selector: ItemQuery) => {
     return Effect.gen(function* () {
       if (!(yield* open())) return false;
       const inventoryItem = yield* inventory.get(selector);
-      if (inventoryItem === null || !(yield* bankCanAccept(inventoryItem))) {
+      if (
+        inventoryItem === null ||
+        inventoryItem.category === "Class" ||
+        inventoryItem.equipped ||
+        !(yield* bankCanAccept(inventoryItem))
+      ) {
         return false;
       }
       let response: typeof TransferResponse.Type | undefined;
@@ -231,11 +214,11 @@ export const makeBank = Effect.fnUntraced(function* (
       if (!(yield* load())) return false;
       const bankItem = yield* get(selector);
       if (bankItem === null) return false;
-      if (!(yield* open({ view: bankItem.houseItem ? "house" : "regular" }))) {
-        return false;
-      }
-      const destination = bankItem.houseItem ? house : inventory;
-      if (!(yield* destinationCanAccept(bankItem.itemId, destination))) {
+      if (!(yield* open())) return false;
+      const canAccept = bankItem.houseItem
+        ? houseCanAccept(bankItem.itemId, house)
+        : inventory.canAccept(bankItem);
+      if (!(yield* canAccept)) {
         return false;
       }
       let response: typeof TransferResponse.Type | undefined;
@@ -279,9 +262,22 @@ export const makeBank = Effect.fnUntraced(function* (
       if (!(yield* open())) return false;
       const inventoryItem = yield* inventory.get(inventorySelector);
       const bankItem = yield* get(bankSelector);
-      if (inventoryItem === null || bankItem === null) {
+      if (
+        inventoryItem === null ||
+        bankItem === null ||
+        inventoryItem.category === "Class" ||
+        inventoryItem.equipped
+      ) {
         return false;
       }
+      if (
+        !inventoryItem.coins &&
+        bankItem.coins &&
+        !(yield* bankCanAccept(inventoryItem))
+      ) {
+        return false;
+      }
+      if (!(yield* inventory.canAccept(bankItem, inventoryItem))) return false;
       const packet = yield* wait.forPacket(
         {
           command: "bankSwapInv",

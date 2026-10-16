@@ -73,20 +73,35 @@ const makeHarness = (harnessOptions: HarnessOptions = {}) =>
       getGeneration: () => Effect.succeed(1),
       getGroupId: () => Effect.succeed(1),
       onClosed: (listener) =>
-        Effect.sync(() => {
-          closedListeners.add(listener);
-          return () => closedListeners.delete(listener);
-        }),
+        Effect.acquireRelease(
+          Effect.sync(() => {
+            closedListeners.add(listener);
+          }),
+          () =>
+            Effect.sync(() => {
+              closedListeners.delete(listener);
+            }),
+        ),
       onCreated: (listener) =>
-        Effect.sync(() => {
-          createdListeners.add(listener);
-          return () => createdListeners.delete(listener);
-        }),
+        Effect.acquireRelease(
+          Effect.sync(() => {
+            createdListeners.add(listener);
+          }),
+          () =>
+            Effect.sync(() => {
+              createdListeners.delete(listener);
+            }),
+        ),
       onReloaded: (listener) =>
-        Effect.sync(() => {
-          reloadedListeners.add(listener);
-          return () => reloadedListeners.delete(listener);
-        }),
+        Effect.acquireRelease(
+          Effect.sync(() => {
+            reloadedListeners.add(listener);
+          }),
+          () =>
+            Effect.sync(() => {
+              reloadedListeners.delete(listener);
+            }),
+        ),
       open: (openOptions) =>
         Effect.gen(function* () {
           if (harnessOptions.beforeOpen !== undefined)

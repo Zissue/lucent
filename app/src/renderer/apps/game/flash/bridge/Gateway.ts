@@ -20,7 +20,6 @@ import {
   isUnsupportedPacketEnvelope,
   parsePacket,
 } from "../protocol/PacketCodec";
-import type { ProjectionTrace } from "../protocol/Pipeline";
 import { Bridge } from "./Bridge";
 import { DiagnosticSink } from "./DiagnosticSink";
 
@@ -164,13 +163,6 @@ export const makeGateway = (target?: Window) =>
         diagnosticSink.report("projection", operation, cause, args),
       );
 
-    const reportProjectionTrace = (operation: string, trace: ProjectionTrace) =>
-      Effect.sync(() =>
-        diagnosticSink.report("projection-trace", operation, undefined, [
-          trace,
-        ]),
-      );
-
     const dispatch = (
       callback: Callback,
       project: (packet: Packet) => Effect.Effect<void>,
@@ -259,7 +251,6 @@ export const makeGateway = (target?: Window) =>
       rawPackets: Stream.fromPubSub(rawPackets),
       publishEvent,
       reportDiagnostic,
-      reportProjectionTrace,
       sendToClient,
       sendToServer,
       start,

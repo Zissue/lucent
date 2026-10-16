@@ -1,4 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
+import * as Clock from "effect/Clock";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Random from "effect/Random";
@@ -11,6 +13,7 @@ import {
   type DesktopHttpResponse,
 } from "../http/DesktopHttpClient";
 import {
+  type GitHubApiClientError,
   isGitHubRateLimitResponse,
   makeGitHubApiClient,
   retryAtFromGitHubHeaders,
@@ -31,8 +34,33 @@ const response = (options: {
   url: API_URL.href,
 });
 
+const secondaryLimit = (headers: Record<string, string> = {}) =>
+  response({
+    body: "You have exceeded a secondary rate limit.",
+    headers,
+    statusCode: 403,
+  });
+
+const cooldownMillis = (error: GitHubApiClientError, startedAt: number) =>
+  Date.parse(error.retryAt ?? "") - startedAt;
+
+const gatedResponse = Effect.gen(function* () {
+  const started = yield* Deferred.make<void>();
+  const response = yield* Deferred.make<DesktopHttpResponse>();
+  return {
+    request: Deferred.succeed(started, undefined).pipe(
+      Effect.andThen(Deferred.await(response)),
+    ),
+    respond: (value: DesktopHttpResponse) => Deferred.succeed(response, value),
+    started: Deferred.await(started),
+  };
+});
+
 const makeHttpClient = (
-  responses: DesktopHttpResponse[],
+  responses: (
+    | DesktopHttpResponse
+    | Effect.Effect<DesktopHttpResponse, DesktopHttpClientError>
+  )[],
   requestCount: { value: number },
 ): Pick<DesktopHttpClientShape, "get" | "download"> => ({
   get: (options) =>
@@ -46,7 +74,7 @@ const makeHttpClient = (
           url: options.url.href,
         });
       }
-      return next;
+      return Effect.isEffect(next) ? yield* next : next;
     }),
   download: (options) =>
     Effect.fail(
@@ -218,5 +246,241 @@ describe("GitHubApiClient", () => {
       expect(second.retryAt).toBe(first.retryAt);
       expect(requestCount.value).toBe(1);
     }),
+  );
+
+  it.effect(
+    "resets cooldown escalation after a response that is not rate limited",
+    () =>
+      Effect.gen(function* () {
+        const requestCount = { value: 0 };
+        const client = makeGitHubApiClient(
+          makeHttpClient(
+            [secondaryLimit(), response({ statusCode: 200 }), secondaryLimit()],
+            requestCount,
+          ),
+          "Lucent/test",
+        );
+
+        const first = yield* client.get({ url: API_URL }).pipe(Effect.flip);
+        expect(first.kind).toBe("rate-limited");
+        yield* TestClock.adjust("60 seconds");
+        const success = yield* client.get({ url: API_URL });
+        expect(success.statusCode).toBe(200);
+
+        const startedAt = yield* Clock.currentTimeMillis;
+        const second = yield* client.get({ url: API_URL }).pipe(Effect.flip);
+        expect(cooldownMillis(second, startedAt)).toBe(60_000);
+        expect(requestCount.value).toBe(3);
+      }),
+  );
+
+  it.effect(
+    "does not reset escalation when a request admitted before the limit succeeds later",
+    () =>
+      Effect.gen(function* () {
+        const requestCount = { value: 0 };
+        const stale = yield* gatedResponse;
+        const client = makeGitHubApiClient(
+          makeHttpClient(
+            [stale.request, secondaryLimit(), secondaryLimit()],
+            requestCount,
+          ),
+          "Lucent/test",
+        );
+
+        const first = yield* client
+          .get({ url: API_URL })
+          .pipe(Effect.forkChild);
+        yield* stale.started;
+        const secondStartedAt = yield* Clock.currentTimeMillis;
+        const second = yield* client.get({ url: API_URL }).pipe(Effect.flip);
+        expect(cooldownMillis(second, secondStartedAt)).toBe(60_000);
+
+        yield* TestClock.adjust("60 seconds");
+        yield* stale.respond(response({ statusCode: 200 }));
+        const success = yield* Fiber.join(first);
+        expect(success.statusCode).toBe(200);
+
+        const thirdStartedAt = yield* Clock.currentTimeMillis;
+        const third = yield* client.get({ url: API_URL }).pipe(Effect.flip);
+        expect(cooldownMillis(third, thirdStartedAt)).toBe(120_000);
+        expect(requestCount.value).toBe(3);
+      }),
+  );
+
+  it.effect.each([
+    {
+      label: "no retry-after",
+      firstHeaders: {},
+      secondHeaders: {},
+      gap: 0,
+      firstCooldown: 120_000,
+      secondCooldown: 120_000,
+    },
+    {
+      label: "an earlier retry-after",
+      firstHeaders: {},
+      secondHeaders: { "retry-after": "1" },
+      gap: 0,
+      firstCooldown: 120_000,
+      secondCooldown: 120_000,
+    },
+    {
+      label: "a later retry-after",
+      firstHeaders: {},
+      secondHeaders: { "retry-after": "600" },
+      gap: 0,
+      firstCooldown: 120_000,
+      secondCooldown: 600_000,
+    },
+    {
+      label: "no retry-after after the first cooldown expired",
+      firstHeaders: { "retry-after": "1" },
+      secondHeaders: {},
+      gap: 2_000,
+      firstCooldown: 1_000,
+      secondCooldown: 122_000,
+    },
+  ])(
+    "counts concurrent secondary limits once when the later one has $label",
+    ({ firstCooldown, firstHeaders, gap, secondCooldown, secondHeaders }) =>
+      Effect.gen(function* () {
+        const requestCount = { value: 0 };
+        const firstGate = yield* gatedResponse;
+        const secondGate = yield* gatedResponse;
+        const client = makeGitHubApiClient(
+          makeHttpClient(
+            [
+              secondaryLimit(),
+              firstGate.request,
+              secondGate.request,
+              secondaryLimit(),
+            ],
+            requestCount,
+          ),
+          "Lucent/test",
+        );
+
+        yield* client.get({ url: API_URL }).pipe(Effect.flip);
+        yield* TestClock.adjust("60 seconds");
+        const admittedAt = yield* Clock.currentTimeMillis;
+        const first = yield* client
+          .get({ url: API_URL })
+          .pipe(Effect.flip, Effect.forkChild);
+        yield* firstGate.started;
+        const second = yield* client
+          .get({ url: API_URL })
+          .pipe(Effect.flip, Effect.forkChild);
+        yield* secondGate.started;
+
+        yield* firstGate.respond(secondaryLimit(firstHeaders));
+        const firstError = yield* Fiber.join(first);
+        yield* TestClock.adjust(gap);
+        yield* secondGate.respond(secondaryLimit(secondHeaders));
+        const secondError = yield* Fiber.join(second);
+        expect(cooldownMillis(firstError, admittedAt)).toBe(firstCooldown);
+        expect(cooldownMillis(secondError, admittedAt)).toBe(secondCooldown);
+        expect(requestCount.value).toBe(3);
+
+        yield* TestClock.adjust(secondCooldown - gap);
+        const nextStartedAt = yield* Clock.currentTimeMillis;
+        const next = yield* client.get({ url: API_URL }).pipe(Effect.flip);
+        expect(cooldownMillis(next, nextStartedAt)).toBe(240_000);
+        expect(requestCount.value).toBe(4);
+      }),
+  );
+
+  it.effect(
+    "keeps strikes when a concurrent success lands with a zero retry-after limit",
+    () =>
+      Effect.gen(function* () {
+        const requestCount = { value: 0 };
+        const stale = yield* gatedResponse;
+        const client = makeGitHubApiClient(
+          makeHttpClient(
+            [
+              stale.request,
+              secondaryLimit({ "retry-after": "0" }),
+              secondaryLimit(),
+            ],
+            requestCount,
+          ),
+          "Lucent/test",
+        );
+
+        const first = yield* client
+          .get({ url: API_URL })
+          .pipe(Effect.forkChild);
+        yield* stale.started;
+        yield* client.get({ url: API_URL }).pipe(Effect.flip);
+        yield* stale.respond(response({ statusCode: 200 }));
+        yield* Fiber.join(first);
+
+        const startedAt = yield* Clock.currentTimeMillis;
+        const next = yield* client.get({ url: API_URL }).pipe(Effect.flip);
+        expect(cooldownMillis(next, startedAt)).toBe(120_000);
+        expect(requestCount.value).toBe(3);
+      }),
+  );
+
+  it.effect("keeps cooldown escalation after a transport failure", () =>
+    Effect.gen(function* () {
+      const requestCount = { value: 0 };
+      const client = makeGitHubApiClient(
+        makeHttpClient(
+          [
+            secondaryLimit(),
+            Effect.fail(
+              new DesktopHttpClientError({
+                kind: "request-failed",
+                detail: "offline",
+                url: API_URL.href,
+              }),
+            ),
+            secondaryLimit(),
+          ],
+          requestCount,
+        ),
+        "Lucent/test",
+      );
+
+      const first = yield* client.get({ url: API_URL }).pipe(Effect.flip);
+      expect(first.kind).toBe("rate-limited");
+      yield* TestClock.adjust("60 seconds");
+      const unavailable = yield* client.get({ url: API_URL }).pipe(Effect.flip);
+      expect(unavailable.kind).toBe("unavailable");
+
+      const startedAt = yield* Clock.currentTimeMillis;
+      const next = yield* client.get({ url: API_URL }).pipe(Effect.flip);
+      expect(cooldownMillis(next, startedAt)).toBe(120_000);
+      expect(requestCount.value).toBe(3);
+    }),
+  );
+
+  it.effect(
+    "escalates cooldowns across consecutive secondary rate limits",
+    () =>
+      Effect.gen(function* () {
+        const requestCount = { value: 0 };
+        const client = makeGitHubApiClient(
+          makeHttpClient(
+            Array.from({ length: 6 }, () => secondaryLimit()),
+            requestCount,
+          ),
+          "Lucent/test",
+        );
+
+        const cooldownSeconds: number[] = [];
+        for (let attempt = 0; attempt < 6; attempt += 1) {
+          const startedAt = yield* Clock.currentTimeMillis;
+          const error = yield* client.get({ url: API_URL }).pipe(Effect.flip);
+          const cooldown = cooldownMillis(error, startedAt);
+          cooldownSeconds.push(cooldown / 1000);
+          yield* TestClock.adjust(cooldown);
+        }
+
+        expect(cooldownSeconds).toEqual([60, 120, 240, 480, 900, 900]);
+        expect(requestCount.value).toBe(6);
+      }),
   );
 });

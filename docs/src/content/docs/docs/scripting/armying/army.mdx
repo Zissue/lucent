@@ -1,0 +1,135 @@
+---
+title: Army scripts
+description: Coordinate a script across several logged-in accounts.
+---
+
+Each army action coordinates the accounts listed in an army config. Every
+account checks in when it is ready to move on, and Lucent continues once the
+whole group is ready.
+
+## Create an army config
+
+Create `Documents/Lucent/army` if it does not exist, then save this as
+`example.yaml`:
+
+```yaml
+players:
+  - "FirstCharacter"
+  - "SecondCharacter"
+
+room: "8421"
+
+items:
+  bossWeapon: "Weapon used by both characters"
+
+sets:
+  boss:
+    default:
+      class: "Default class"
+      weapon: "bossWeapon"
+    player1:
+      class: "Class for the first character"
+```
+
+- `players` is required. Its order sets the player number, so the first name
+  uses `player1` and the second uses `player2`. The first player is also the
+  army leader.
+- `room` is required. It is the room number used by
+  [`api.army.joinMap()`][join-map].
+- `items` is optional. [`api.army.equipSet()`][equip-set] only uses these aliases
+  when `resolveItems` is `true`. Otherwise, it treats values in a set as actual
+  item names.
+- `sets` is optional, but you need it when the script calls
+  [`api.army.equipSet()`][equip-set]. Most sets use `class`, `weapon`, `cape`,
+  `helm`, `armor`, `pots`, or `scroll`. See the
+  [`ArmyEquipSet` reference][equip-set-type] for more details.
+- Extra top-level key-value pairs are also supported. Read strings with
+  [`api.army.getConfigString()`][get-config-string] and other values with
+  [`api.army.getConfigValue()`][get-config-value].
+
+Calling [`api.army.equipSet()`][equip-set] for `"boss"` merges `default` with the
+matching player entry. `player1` overrides the class but still uses the default
+weapon. `player2` has no entry, so it gets the default class and weapon.
+
+## Start the army
+
+Save this script in `Documents/Lucent/scripts`:
+
+```js
+const api = require("lucent/api");
+
+module.exports = function* run() {
+  yield* api.army.start("example");
+  yield* api.army.joinMap("map-name");
+  yield* api.army.equipSet("boss", { resolveItems: true });
+  yield* api.army.kill("boss-name");
+};
+```
+
+Call [`api.army.start()`][start] before actions that require a started army.
+Those actions fail with `ArmyError` until it runs. It loads `example.yaml` and waits
+for every account under `players` before moving on. Run the script for every
+configured account on the same server.
+
+## Sync account-specific work
+
+Most army actions, including [`api.army.joinMap()`][join-map],
+[`api.army.equipSet()`][equip-set], and [`api.army.kill()`][kill], already wait
+for the roster. You usually need this section only for your own account-specific
+work.
+
+Accounts can arrive at different times, but they must reach the same army
+actions in the same order. The labels must match too.
+
+[`api.army.sync()`][sync] only waits. It does not run or track the work before
+it. Use it after a branch or several account-specific actions. Each account
+stops there until the full roster reaches it:
+
+{/* prettier-ignore */}
+```js
+const playerNumber = yield* api.army.getPlayerNumber();
+
+if (playerNumber === 1) {
+  yield* api.inventory.equip("First item");
+} else {
+  yield* api.inventory.equip("Second item");
+}
+
+yield* api.army.sync("role item equipped");
+```
+
+[`api.army.runStep()`][run-step] combines an action with that wait. Each account
+runs the action it passes in, then waits for the rest. If the action fails,
+Lucent ends the army session so the other accounts do not wait for a timeout:
+
+{/* prettier-ignore */}
+```js
+const playerNumber = yield* api.army.getPlayerNumber();
+const item = playerNumber === 1 ? "First item" : "Second item";
+
+yield* api.army.runStep("equip role item", api.inventory.equip(item));
+```
+
+## Notes
+
+- Army coordination is best effort. Accounts can still fall out of sync.
+- The whole army fails together. If one account stops or fails, or reaches army
+  actions in a different order, Lucent ends the session for every account.
+  Restart the script for the full roster.
+- [`api.army.killForItem()`][kill-for-item] /
+  [`api.army.killForTempItem()`][kill-for-temp-item] farm the target item until
+  every account has the requested quantity.
+- See the [`api.army` reference](/reference/scripting/api/army/) for other army
+  actions.
+
+[equip-set]: /reference/scripting/api/army/#member-api-army-equipset
+[equip-set-type]: /reference/scripting/types/army-equip-set/
+[get-config-string]: /reference/scripting/api/army/#member-api-army-getconfigstring
+[get-config-value]: /reference/scripting/api/army/#member-api-army-getconfigvalue
+[join-map]: /reference/scripting/api/army/#member-api-army-joinmap
+[kill]: /reference/scripting/api/army/#member-api-army-kill
+[kill-for-item]: /reference/scripting/api/army/#member-api-army-killforitem
+[kill-for-temp-item]: /reference/scripting/api/army/#member-api-army-killfortempitem
+[run-step]: /reference/scripting/api/army/#member-api-army-runstep
+[start]: /reference/scripting/api/army/#member-api-army-start
+[sync]: /reference/scripting/api/army/#member-api-army-sync

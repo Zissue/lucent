@@ -71,37 +71,4 @@ describe("account launch request", () => {
       }),
     ).toBe(false);
   });
-
-  it("accepts only complete, valid tiling placements", () => {
-    expect(
-      isAccountLaunchRequest({
-        username: "Hero",
-        tiling: { algorithm: "horizontal", count: 2, index: 1 },
-      }),
-    ).toBe(true);
-    expect(
-      isAccountLaunchRequest({
-        username: "Hero",
-        tiling: { algorithm: "none", count: 2, index: 0 },
-      }),
-    ).toBe(false);
-    expect(
-      isAccountLaunchRequest({
-        username: "Hero",
-        tiling: { algorithm: "horizontal", count: 1, index: 0 },
-      }),
-    ).toBe(false);
-    expect(
-      isAccountLaunchRequest({
-        username: "Hero",
-        tiling: { algorithm: "horizontal", count: 2, index: 2 },
-      }),
-    ).toBe(false);
-    expect(
-      isAccountLaunchRequest({
-        username: "Hero",
-        tiling: { algorithm: "horizontal", count: 2.5, index: 0 },
-      }),
-    ).toBe(false);
-  });
 });

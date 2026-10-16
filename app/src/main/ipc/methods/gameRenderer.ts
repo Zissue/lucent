@@ -2,16 +2,16 @@ import * as Effect from "effect/Effect";
 
 import { GameRendererIpc } from "../../../shared/ipc";
 import { DesktopGameRendererRecovery } from "../../app/DesktopGameRendererRecovery";
-import { DesktopWindows } from "../../window/DesktopWindows";
+import { DesktopWindows, requireRenderer } from "../../window/DesktopWindows";
 import { makeDesktopIpcMethod } from "../DesktopIpc";
 
 export const ready = makeDesktopIpcMethod({
   descriptor: GameRendererIpc.ready,
   allowedSenders: ["game"],
   handler: Effect.fn("desktop.ipc.gameRenderer.ready")(
-    function* (payload, sender) {
+    function* (_payload, sender) {
       const windows = yield* DesktopWindows;
-      yield* windows.markRendererReady(sender.rendererId, payload.generation);
+      yield* windows.markRendererReady(sender.lifetime);
     },
   ),
 });
@@ -22,7 +22,7 @@ export const beginScriptExecution = makeDesktopIpcMethod({
   handler: Effect.fn("desktop.ipc.gameRenderer.beginScriptExecution")(
     function* (_payload, sender) {
       const recovery = yield* DesktopGameRendererRecovery;
-      return yield* recovery.beginScriptExecution(sender.rendererId);
+      return yield* recovery.beginScriptExecution(sender.lifetime);
     },
   ),
 });
@@ -33,7 +33,7 @@ export const finishScriptExecution = makeDesktopIpcMethod({
   handler: Effect.fn("desktop.ipc.gameRenderer.finishScriptExecution")(
     function* (payload, sender) {
       const recovery = yield* DesktopGameRendererRecovery;
-      yield* recovery.finishScriptExecution(sender.rendererId, payload.token);
+      yield* recovery.finishScriptExecution(sender.lifetime, payload.token);
     },
   ),
 });
@@ -44,7 +44,7 @@ export const getGeneration = makeDesktopIpcMethod({
   handler: Effect.fn("desktop.ipc.gameRenderer.getGeneration")(
     function* (_payload, sender) {
       const windows = yield* DesktopWindows;
-      return yield* windows.getRendererGeneration(sender.rendererId);
+      return (yield* requireRenderer(windows, sender.rendererId)).generation;
     },
   ),
 });

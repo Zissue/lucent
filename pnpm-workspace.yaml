@@ -2,7 +2,6 @@ packages:
   - "packages/*"
   - app
   - docs
-  - observability
 
 onlyBuiltDependencies:
   - electron # https://github.com/electron/electron/issues/44008
@@ -22,10 +21,10 @@ allowBuilds:
 overrides:
   "caniuse-lite": "^1.0.30001812"
   "@tanstack/solid-virtual": "3.13.24"
-  "effect": "4.0.0-rc.112"
-  "@effect/platform-node": "4.0.0-rc.112"
-  "@effect/platform-node-shared": "4.0.0-rc.112"
+  "effect": "4.0.3"
+  "@effect/platform-node": "4.0.3"
+  "@effect/platform-node-shared": "4.0.3"
   "fast-uri": "^3.1.2"
   "tmp": "^0.2.6"
   "typescript": "npm:@typescript/typescript6@^6.0.2"
-  "vitest": "^4.1.11"
+  "vitest": "^5.0.4"

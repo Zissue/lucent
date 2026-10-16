@@ -1,18 +1,15 @@
 ---
-import Tooltip from "blume/components/content/Tooltip.astro";
-
 const wrapIcon =
   '<svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"></path><path d="M3 12h15a3 3 0 1 1 0 6h-4"></path><path d="m16 16-2 2 2 2"></path><path d="M3 18h7"></path></svg>';
 ---
 
 <template data-code-wrap-template>
-  <span data-code-wrap-control>
-    <Tooltip tip="Toggle wrap">
-      <button class="code-wrap-toggle" data-code-wrap-toggle type="button">
-        <span class="code-wrap-toggle__icon" set:html={wrapIcon} />
-      </button>
-    </Tooltip>
-  </span>
+  <div data-code-wrap-control>
+    <button class="code-wrap-toggle" data-code-wrap-toggle type="button">
+      <span class="code-wrap-toggle__icon" set:html={wrapIcon} />
+    </button>
+    <div aria-hidden="true" class="code-wrap-tooltip">Toggle wrap</div>
+  </div>
 </template>
 
 <lucent-code-block-controller hidden></lucent-code-block-controller>
@@ -26,7 +23,7 @@ const wrapIcon =
     observedWidth: number | undefined;
     readonly onKeydown: (event: KeyboardEvent) => void;
     readonly onScroll: () => void;
-    readonly onToggleWrap: (event: MouseEvent) => void;
+    readonly onToggleWrap: () => void;
     readonly originalCodeTabIndex: string | null;
     readonly originalPreTabIndex: string | null;
     readonly pre: HTMLPreElement;
@@ -42,6 +39,19 @@ const wrapIcon =
     }
   };
 
+  // scrollWidth is unreliable here: Chrome reports different values for the
+  // same unwrapped line before and after a white-space round trip.
+  const linesOverflow = (code: HTMLElement): boolean => {
+    const range = document.createRange();
+    range.selectNodeContents(code);
+    const style = getComputedStyle(code);
+    const available =
+      code.clientWidth -
+      Number.parseFloat(style.paddingLeft) -
+      Number.parseFloat(style.paddingRight);
+    return range.getBoundingClientRect().width > available + OVERFLOW_EPSILON_PX;
+  };
+
   const writeWrapPreference = (wrap: boolean): void => {
     try {
       localStorage.setItem(CODE_WRAP_STORAGE_KEY, String(wrap));
@@ -55,7 +65,6 @@ const wrapIcon =
     #entries = new Map<HTMLElement, CodeBlockEntry>();
     #measureFrame: number | undefined;
     #mutationObserver: MutationObserver | null = null;
-    #nextTooltipId = 0;
     #pendingMeasurements = new Set<CodeBlockEntry>();
     #wrapLines = readWrapPreference();
 
@@ -131,15 +140,12 @@ const wrapIcon =
       // Measure the intrinsic line width before applying the saved wrap mode.
       pre.removeAttribute("data-code-overflow");
       pre.removeAttribute("data-code-wrap");
-      const canWrap =
-        code.scrollWidth > code.clientWidth + OVERFLOW_EPSILON_PX;
+      const canWrap = linesOverflow(code);
+      const wrap = canWrap && this.#wrapLines;
 
       pre.toggleAttribute("data-code-can-wrap", canWrap);
-      pre.toggleAttribute("data-code-wrap", canWrap && this.#wrapLines);
-
-      const overflowing =
-        code.scrollWidth > code.clientWidth + OVERFLOW_EPSILON_PX;
-      pre.toggleAttribute("data-code-overflow", overflowing);
+      pre.toggleAttribute("data-code-wrap", wrap);
+      pre.toggleAttribute("data-code-overflow", canWrap && !wrap);
       this.#syncTabIndex(entry, canWrap);
       this.#syncWrapControl(entry);
       this.#syncEdges(entry);
@@ -207,31 +213,14 @@ const wrapIcon =
       const wrapControl = fragment.querySelector<HTMLElement>(
         "[data-code-wrap-control]",
       );
-      const tooltipTrigger = fragment.querySelector<HTMLElement>(
-        "[data-blume-tooltip-trigger]",
-      );
       const wrapButton = fragment.querySelector<HTMLButtonElement>(
         "[data-code-wrap-toggle]",
       );
-      const wrapPanel = fragment.querySelector<HTMLElement>(
-        "[data-blume-tooltip-panel]",
-      );
-      if (
-        wrapControl === null ||
-        tooltipTrigger === null ||
-        wrapButton === null ||
-        wrapPanel === null
-      ) {
+      if (wrapControl === null || wrapButton === null) {
         return;
       }
 
-      this.#nextTooltipId += 1;
-      const tooltipId = `lucent-code-wrap-tooltip-${this.#nextTooltipId}`;
       wrapControl.classList.add("code-wrap-control");
-      tooltipTrigger.removeAttribute("aria-describedby");
-      tooltipTrigger.removeAttribute("tabindex");
-      wrapButton.setAttribute("aria-describedby", tooltipId);
-      wrapPanel.id = tooltipId;
 
       const entry: CodeBlockEntry = {
         code,
@@ -267,14 +256,7 @@ const wrapIcon =
           code.scrollLeft = scrollTarget;
         },
         onScroll: () => this.#syncEdges(entry),
-        onToggleWrap: (event) => {
-          this.#setWrapLines(!this.#wrapLines);
-
-          // Pointer clicks should not pin the tooltip after the pointer leaves.
-          if (event.detail > 0) {
-            wrapButton.blur();
-          }
-        },
+        onToggleWrap: () => this.#setWrapLines(!this.#wrapLines),
         originalCodeTabIndex: code.getAttribute("tabindex"),
         originalPreTabIndex: pre.getAttribute("tabindex"),
         pre,
@@ -341,9 +323,18 @@ const wrapIcon =
       }
     };
 
+    #measureAll = (): void => {
+      for (const entry of this.#entries.values()) {
+        this.#queueMeasurement(entry);
+      }
+    };
+
     connectedCallback(): void {
       this.#attachAll();
       document.addEventListener("astro:page-load", this.#attachAll);
+      // Line widths change when web fonts replace their fallbacks.
+      document.fonts.addEventListener("loadingdone", this.#measureAll);
+      void document.fonts.ready.then(this.#measureAll);
 
       this.#mutationObserver = new MutationObserver(this.#attachAll);
       this.#mutationObserver.observe(document.body, {
@@ -354,6 +345,7 @@ const wrapIcon =
 
     disconnectedCallback(): void {
       document.removeEventListener("astro:page-load", this.#attachAll);
+      document.fonts.removeEventListener("loadingdone", this.#measureAll);
       this.#mutationObserver?.disconnect();
       this.#mutationObserver = null;
       this.#resizeObserver.disconnect();

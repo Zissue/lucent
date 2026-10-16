@@ -11,4 +11,4 @@ sidebar:
 type ClientPacketEncoding = "string" | "json" | "xml"
 ```
 
-<p class="source-reference">Defined in <a class="source-reference__link" href="https://github.com/toommyliu/lucent/blob/main/app/src/renderer/apps/game/flash/bridge/Gateway.ts#L36" aria-label="Open source: app/src/renderer/apps/game/flash/bridge/Gateway.ts:36" title="app/src/renderer/apps/game/flash/bridge/Gateway.ts:36" target="_blank" rel="noreferrer"><code class="source-reference__path">Gateway.ts:36</code></a></p>
+<p class="source-reference">Defined in <a class="source-reference__link" href="https://github.com/toommyliu/lucent/blob/main/app/src/renderer/apps/game/flash/bridge/Gateway.ts#L35" aria-label="Open source: app/src/renderer/apps/game/flash/bridge/Gateway.ts:35" title="app/src/renderer/apps/game/flash/bridge/Gateway.ts:35" target="_blank" rel="noreferrer"><code class="source-reference__path">Gateway.ts:35</code></a></p>

@@ -85,12 +85,12 @@ const legacyScriptingRedirects = collectRouteSuffixes(
 
 const redirects = [
   {
-    from: "/guides/scripting",
-    to: "/guides/scripting/script-format",
+    from: "/docs/scripting",
+    to: "/docs/scripting/script-format",
   },
   {
     from: "/reference/scripting/imports",
-    to: "/guides/scripting/script-format",
+    to: "/docs/scripting/script-format",
   },
   {
     from: "/reference/scripting/api",
@@ -107,6 +107,7 @@ const moduleGroup = (label: string, segment: string) => {
   const routeRoot = `/reference/scripting/${segment}`;
 
   return {
+    display: "group" as const,
     items: collectPageRoutes(join(scriptingReferenceRoot, segment), routeRoot),
     label,
   };
@@ -123,7 +124,7 @@ export default defineConfig({
       { type: "custom", source: changelogSource },
     ],
   },
-  description: "Guides, cookbooks, and reference for Lucent.",
+  description: "Docs and reference for Lucent.",
   github: {
     dir: "docs",
     owner: "toommyliu",
@@ -132,53 +133,50 @@ export default defineConfig({
   lastModified: true,
   navigation: {
     sidebar: {
-      display: "group",
+      display: "flat",
       items: [
         {
           items: [
-            "/guides/installation",
-            "/guides/app",
-            "/guides/combat-profiles",
+            "/docs/installation",
+            "/docs/app",
+            "/docs/combat-profiles",
             {
               items: [
-                "/guides/scripting/script-format",
-                "/guides/scripting/script-inputs",
-                "/guides/scripting/script-packages",
+                "/docs/scripting/script-format",
+                "/docs/scripting/script-inputs",
+                "/docs/scripting/script-packages",
+                "/docs/scripting/editor-setup",
                 {
                   items: [
-                    "/guides/scripting/armying/army",
-                    "/guides/scripting/armying/loop-taunt",
+                    "/docs/scripting/armying/army",
+                    "/docs/scripting/armying/loop-taunt",
                   ],
                   label: "Armying",
                 },
-                "/guides/scripting/editor-setup",
               ],
               label: "Scripting",
             },
+            {
+              items: [
+                "/docs/concepts/durations",
+                "/docs/concepts/queries-and-selectors",
+                "/docs/concepts/enhancements",
+                "/docs/concepts/error-handling",
+              ],
+              label: "Concepts",
+            },
           ],
-          label: "Guides",
-          root: "/guides",
-        },
-        {
-          items: [
-            "/cookbooks/durations",
-            "/cookbooks/queries-and-selectors",
-            "/cookbooks/enhancements",
-            "/cookbooks/error-handling",
-          ],
-          label: "Cookbooks",
-          root: "/cookbooks",
+          label: "Docs",
+          root: "/docs",
         },
         {
           items: [
             "/reference/cli",
+            "/reference/scripting",
+            "/reference/scripting/types",
+            moduleGroup("lucent/api", "api"),
             {
               items: [
-                {
-                  label: "Overview",
-                  root: "/reference/scripting",
-                },
-                moduleGroup("lucent/api", "api"),
                 {
                   label: "lucent/script",
                   root: "/reference/scripting/script",
@@ -207,26 +205,22 @@ export default defineConfig({
                   label: "effect",
                   root: "/reference/scripting/effect",
                 },
-                "/reference/scripting/types",
-                {
-                  label: "Packages",
-                  items: [
-                    {
-                      label: "Overview",
-                      root: "/reference/scripting/packages",
-                    },
-                    ...collectRouteSuffixes(
-                      join(scriptingReferenceRoot, "packages"),
-                    )
-                      .filter((suffix) => suffix !== "")
-                      .map(
-                        (suffix) => `/reference/scripting/packages${suffix}`,
-                      ),
-                  ],
-                },
               ],
-              display: "group",
-              label: "Scripting",
+              label: "Modules",
+            },
+            {
+              items: [
+                {
+                  label: "Overview",
+                  root: "/reference/scripting/packages",
+                },
+                ...collectRouteSuffixes(
+                  join(scriptingReferenceRoot, "packages"),
+                )
+                  .filter((suffix) => suffix !== "")
+                  .map((suffix) => `/reference/scripting/packages${suffix}`),
+              ],
+              label: "Packages",
             },
           ],
           label: "Reference",
@@ -236,16 +230,10 @@ export default defineConfig({
     },
     tabs: [
       {
-        href: "/guides",
+        href: "/docs",
         icon: "book-open",
-        label: "Guides",
-        path: "/guides",
-      },
-      {
-        href: "/cookbooks",
-        icon: "book-open-check",
-        label: "Cookbooks",
-        path: "/cookbooks",
+        label: "Docs",
+        path: "/docs",
       },
       {
         href: "/reference",

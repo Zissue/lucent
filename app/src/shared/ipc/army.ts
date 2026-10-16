@@ -52,9 +52,7 @@ export const ArmyIpc = {
   leave: defineInvoke({
     channel: `${namespace}:leave`,
     name: "army.leave",
-    payload: Schema.Struct({
-      sessionId: Schema.String,
-    }),
+    payload: Schema.Void,
     result: Schema.Void,
   }),
   sync: defineInvoke({
@@ -76,10 +74,8 @@ export const ArmyIpc = {
     channel: `${namespace}:fail`,
     name: "army.fail",
     payload: Schema.Struct({
-      label: Schema.optionalKey(Schema.String),
       reason: Schema.String,
       sessionId: Schema.String,
-      step: Schema.optionalKey(Schema.Int),
     }),
     result: Schema.Void,
   }),

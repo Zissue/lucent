@@ -164,12 +164,18 @@ describe("Army API", () => {
     Effect.gen(function* () {
       const actionStarted = yield* Deferred.make<void>();
       const actionStopped = yield* Deferred.make<void>();
+      let reports = 0;
       const testBridge = makeBridge({
-        progress: async () => ({
-          complete: false,
-          completedPlayers: ["Alice"],
-          pendingPlayers: ["Bob"],
-        }),
+        progress: () => {
+          reports += 1;
+          return reports === 1
+            ? Promise.resolve({
+                complete: false,
+                completedPlayers: [],
+                pendingPlayers: ["Alice", "Bob"],
+              })
+            : new Promise(() => undefined);
+        },
       });
       const reason = "Timed out waiting for army progress 25; missing: Bob";
 

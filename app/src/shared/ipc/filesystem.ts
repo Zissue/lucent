@@ -34,21 +34,18 @@ export const FileSystemIpc = {
     name: "filesystem.openSession",
     payload: Schema.Void,
     result: FileSystemSessionIdSchema,
-    trace: "metadata",
   }),
   closeSession: defineInvoke({
     channel: "lucent:filesystem:close-session",
     name: "filesystem.closeSession",
     payload: sessionPayload,
     result: Schema.Void,
-    trace: "metadata",
   }),
   exists: defineInvoke({
     channel: "lucent:filesystem:exists",
     name: "filesystem.exists",
     payload: pathPayload,
     result: resultSchema(Schema.Boolean),
-    trace: "metadata",
   }),
   list: defineInvoke({
     channel: "lucent:filesystem:list",
@@ -58,28 +55,24 @@ export const FileSystemIpc = {
       sessionId: FileSystemSessionIdSchema,
     }),
     result: resultSchema(Schema.Array(FileSystemEntrySchema)),
-    trace: "metadata",
   }),
   readJson: defineInvoke({
     channel: "lucent:filesystem:read-json",
     name: "filesystem.readJson",
     payload: pathPayload,
     result: resultSchema(Schema.UndefinedOr(Schema.Json)),
-    trace: "metadata",
   }),
   readText: defineInvoke({
     channel: "lucent:filesystem:read-text",
     name: "filesystem.readText",
     payload: pathPayload,
     result: resultSchema(Schema.UndefinedOr(Schema.String)),
-    trace: "metadata",
   }),
   remove: defineInvoke({
     channel: "lucent:filesystem:remove",
     name: "filesystem.remove",
     payload: pathPayload,
     result: resultSchema(Schema.Void),
-    trace: "metadata",
   }),
   writeJson: defineInvoke({
     channel: "lucent:filesystem:write-json",
@@ -90,7 +83,6 @@ export const FileSystemIpc = {
       value: Schema.Unknown,
     }),
     result: resultSchema(Schema.Void),
-    trace: "metadata",
   }),
   writeText: defineInvoke({
     channel: "lucent:filesystem:write-text",
@@ -101,7 +93,6 @@ export const FileSystemIpc = {
       sessionId: FileSystemSessionIdSchema,
     }),
     result: resultSchema(Schema.Void),
-    trace: "metadata",
   }),
 } as const;
 

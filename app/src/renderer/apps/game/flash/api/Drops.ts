@@ -68,11 +68,12 @@ export const makeDrops = Effect.fnUntraced(function* (
         );
         if (packet === null || response?.bSuccess !== true) return false;
 
-        const container = response.bBank
-          ? "bank"
-          : response.bHouse || drop.houseItem
-            ? "house"
-            : "inventory";
+        const container =
+          response.bBank && drop.category !== "Class"
+            ? "bank"
+            : response.bHouse || drop.houseItem
+              ? "house"
+              : "inventory";
         const expected =
           response.iQtyNow ??
           before[container] + (response.iQty ?? drop.quantity);

@@ -37,7 +37,14 @@ package lucent.game {
     [BridgeExport]
     public static function getUsedSlots():int {
       var game:Object = Main.Game;
-      return game.world.myAvatar.items.length;
+      var categories:Class = Class(Main.getInstance().getGameDomain().getDefinition("InvCat"));
+      return categories["countBag"](game.world.myAvatar.items);
+    }
+
+    [BridgeExport]
+    public static function getMiscSlots():int {
+      var categories:Class = Class(Main.getInstance().getGameDomain().getDefinition("InvCat"));
+      return categories["MISC_SLOTS"];
     }
 
     [BridgeTsParamType("selector: FlashTypes.InventoryItemSelector")]

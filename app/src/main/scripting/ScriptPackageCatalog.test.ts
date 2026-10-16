@@ -3,8 +3,13 @@ import { tmpdir } from "os";
 import { dirname, join } from "path";
 
 import { afterEach, describe, expect, it } from "@effect/vitest";
+import { vi } from "vitest";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as References from "effect/References";
+import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import { DesktopEnvironment } from "../app/DesktopEnvironment";
 import { ElectronApp } from "../electron/ElectronApp";
@@ -19,6 +24,12 @@ import {
   type ManagedScriptPackage,
   ScriptPackageState,
 } from "./ScriptPackageState";
+
+vi.mock("effect/SynchronizedRef", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("effect/SynchronizedRef")>()),
+}));
+
+vi.mock("electron", () => ({ app: {} }));
 
 const directories: string[] = [];
 
@@ -40,6 +51,7 @@ const write = async (path: string, source: string): Promise<void> => {
 };
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(
     directories
       .splice(0)
@@ -205,6 +217,37 @@ describe("discoverScriptCatalog", () => {
       ),
     });
   });
+
+  it.each([
+    [">=0.0.1 <0.1.0", "0.0.3-beta.1", "compatible"],
+    ["*", "0.0.3-beta.1", "compatible"],
+    ["^0.0.3", "0.0.3-beta.1", "compatible"],
+    [">=0.0.3", "0.0.3-beta.1", "incompatible"],
+    [">=0.0.1 <0.1.0-0", "0.1.0-beta.1", "incompatible"],
+    [">=0.0.3-beta.2 <0.1.0", "0.0.3-beta.1", "incompatible"],
+    [">=0.0.3-beta.2 <0.1.0", "0.0.3-beta.3", "compatible"],
+  ])(
+    "checks prerelease app compatibility for %s against %s",
+    async (requiredVersion, currentVersion, status) => {
+      const workspace = await makeWorkspace();
+      await write(
+        join(workspace.packagesDir, "tools", "package.json"),
+        JSON.stringify({ name: "tools", lucent: { version: requiredVersion } }),
+      );
+
+      const discovery = await discoverScriptCatalog({
+        currentVersion,
+        packagesDir: workspace.packagesDir,
+        scriptsDir: workspace.scriptsDir,
+      });
+
+      expect(discovery.packages.get("tools")?.compatibility).toEqual({
+        status,
+        currentVersion,
+        requiredVersion,
+      });
+    },
+  );
 
   it("accepts semver dependency ranges and keeps compatible cycles ready", async () => {
     const workspace = await makeWorkspace();
@@ -388,7 +431,7 @@ describe("discoverScriptCatalog", () => {
   });
 });
 
-const makeCatalogHarness = () =>
+const makeCatalogHarness = (onScan: Effect.Effect<void> = Effect.void) =>
   Effect.gen(function* () {
     const workspace = yield* Effect.promise(makeWorkspace);
     yield* Effect.promise(() =>
@@ -403,11 +446,9 @@ const makeCatalogHarness = () =>
       workspaceDir: workspace.root,
     });
     const app = ElectronApp.of({
-      appendCommandLineSwitch: () => Effect.void,
       exit: () => Effect.void,
       getAppMetrics: Effect.succeed([]),
       getVersion: Effect.succeed("1.0.0"),
-      isPackaged: Effect.succeed(false),
       on: () => Effect.succeed(() => undefined),
       quit: Effect.void,
       relaunch: Effect.void,
@@ -418,7 +459,7 @@ const makeCatalogHarness = () =>
       getAll: Effect.sync(() => {
         scanCount += 1;
         return [];
-      }),
+      }).pipe(Effect.tap(() => onScan)),
       remove: () => Effect.void,
       save: () => Effect.void,
     });
@@ -437,6 +478,49 @@ const makeCatalogHarness = () =>
   });
 
 describe("ScriptPackageCatalog", () => {
+  it.effect.each([8, 16, 32])(
+    "publishes revisions in order with a %i-operation scheduling budget",
+    (maxOps) =>
+      Effect.gen(function* () {
+        const scanStarted = yield* Deferred.make<void>();
+        const { catalog, workspace } = yield* makeCatalogHarness(
+          Deferred.succeed(scanStarted, undefined).pipe(Effect.asVoid),
+        );
+        yield* Effect.promise(() =>
+          write(
+            join(workspace.packagesDir, "tools", "package.json"),
+            '{"name":"tools"}',
+          ),
+        );
+        const revisions: string[] = [];
+        yield* catalog.onChanged((change) => {
+          revisions.push(change.revision);
+        });
+
+        const refreshing = yield* catalog.refresh.pipe(
+          Effect.provideService(References.MaxOpsBeforeYield, maxOps),
+          Effect.forkScoped,
+        );
+        yield* Deferred.await(scanStarted);
+        const removing = yield* catalog
+          .removePackage("tools")
+          .pipe(Effect.forkScoped);
+        const refreshed = yield* Fiber.join(refreshing);
+        const removed = yield* Fiber.join(removing);
+
+        expect(refreshed.packages.map((entry) => entry.name)).toEqual([
+          "tools",
+        ]);
+        expect(removed.packages).toEqual([]);
+        expect(revisions).toEqual(
+          maxOps === 8
+            ? [removed.revision]
+            : [refreshed.revision, removed.revision],
+        );
+        expect((yield* catalog.getOverview).revision).toBe(revisions.at(-1));
+      }),
+  );
+
   it.effect(
     "coalesces the first scan and rescans only on explicit refresh",
     () =>
@@ -481,6 +565,81 @@ describe("ScriptPackageCatalog", () => {
     }),
   );
 
+  it.effect("keeps the last catalog after a failed refresh and can retry", () =>
+    Effect.gen(function* () {
+      const { catalog, workspace } = yield* makeCatalogHarness();
+      const initial = yield* catalog.refresh;
+      const revisions: string[] = [];
+      yield* catalog.onChanged((change) => {
+        revisions.push(change.revision);
+      });
+      yield* Effect.promise(async () => {
+        await fs.rm(workspace.packagesDir, { recursive: true });
+        await fs.writeFile(workspace.packagesDir, "not a directory");
+      });
+      const failure = yield* catalog.refresh.pipe(Effect.flip);
+      expect(failure.operation).toBe("scan");
+      expect(revisions).toEqual([]);
+      expect(yield* catalog.getOverview).toEqual(initial);
+      yield* Effect.promise(async () => {
+        await fs.unlink(workspace.packagesDir);
+        await write(join(workspace.scriptsDir, "second.js"), "");
+      });
+      const retried = yield* catalog.refresh;
+      expect(retried.scriptCount).toBe(2);
+      expect(revisions).toEqual([retried.revision]);
+    }),
+  );
+
+  it.effect(
+    "rescans instead of hiding another folder with the replacement name",
+    () =>
+      Effect.gen(function* () {
+        const { catalog, workspace, scanCount } = yield* makeCatalogHarness();
+        const duplicatePath = join(workspace.packagesDir, "other-tools");
+        yield* Effect.promise(() =>
+          write(join(duplicatePath, "package.json"), '{"name":"tools"}'),
+        );
+        expect((yield* catalog.getOverview).packages).toMatchObject([
+          { status: "valid", name: "tools", path: duplicatePath },
+        ]);
+        const rootPath = join(workspace.packagesDir, "tools");
+        yield* Effect.promise(() =>
+          write(join(rootPath, "package.json"), '{"name":"tools"}'),
+        );
+        const inspected = yield* Effect.promise(() =>
+          inspectScriptPackageDirectory(rootPath),
+        );
+        const replaced = yield* catalog.replacePackage({
+          inspected,
+          integrity: "modified",
+          managed: {
+            directory: "tools",
+            name: "tools",
+            files: {},
+            installedAt: new Date(0).toISOString(),
+            source: {
+              kind: "repository",
+              repositoryUrl: "https://github.com/example/tools",
+              resolvedCommit: "abc123",
+            },
+          },
+          rootPath,
+          sourceRoot: rootPath,
+        });
+        expect(replaced.packages).toEqual(
+          [duplicatePath, rootPath].map((path) => ({
+            status: "invalid",
+            name: "tools",
+            path,
+            diagnostic:
+              'More than one package folder declares the name "tools".',
+          })),
+        );
+        expect((yield* catalog.getDiscovery).packages.size).toBe(0);
+        expect(scanCount()).toBe(2);
+      }),
+  );
   it.effect("replaces and removes a package without a full rescan", () =>
     Effect.gen(function* () {
       const { catalog, workspace, scanCount } = yield* makeCatalogHarness();
@@ -536,5 +695,153 @@ describe("ScriptPackageCatalog", () => {
       expect(removed.scriptCount).toBe(1);
       expect(scanCount()).toBe(1);
     }),
+  );
+
+  it.live.each(["refresh", "remove"] as const)(
+    "allows a %s listener to read the committed catalog",
+    (operation) =>
+      Effect.gen(function* () {
+        const { catalog, workspace } = yield* makeCatalogHarness();
+        yield* Effect.promise(() =>
+          write(
+            join(workspace.packagesDir, "tools", "package.json"),
+            '{"name":"tools"}',
+          ),
+        );
+        yield* catalog.getOverview;
+        const names: (readonly string[])[] = [];
+        yield* catalog.onChanged(() =>
+          catalog.getOverview.pipe(
+            Effect.tap((overview) =>
+              Effect.sync(() => {
+                names.push(
+                  overview.packages.map((entry) => entry.name ?? "invalid"),
+                );
+              }),
+            ),
+          ),
+        );
+        const result = yield* (
+          operation === "refresh"
+            ? catalog.refresh
+            : catalog.removePackage("tools")
+        ).pipe(Effect.timeout("2 seconds"));
+        expect(names).toEqual([operation === "refresh" ? ["tools"] : []]);
+        expect(result.packages.map((entry) => entry.name)).toEqual(
+          operation === "refresh" ? ["tools"] : [],
+        );
+      }),
+  );
+
+  it.effect.each(["refresh", "remove"] as const)(
+    "publishes a committed %s even when interrupted after the commit",
+    (operation) =>
+      Effect.gen(function* () {
+        const committed = yield* Deferred.make<void>();
+        const hold = yield* Deferred.make<void>();
+        let armed = false;
+        const modifyEffect = SynchronizedRef.modifyEffect;
+        vi.spyOn(SynchronizedRef, "modifyEffect").mockImplementation(
+          (ref, change) =>
+            modifyEffect(ref, change).pipe(
+              Effect.tap(() => {
+                if (!armed) return Effect.void;
+                armed = false;
+                return Deferred.succeed(committed, undefined).pipe(
+                  Effect.andThen(Deferred.await(hold)),
+                );
+              }),
+            ),
+        );
+        const { catalog, workspace } = yield* makeCatalogHarness();
+        yield* Effect.promise(() =>
+          write(
+            join(workspace.packagesDir, "tools", "package.json"),
+            '{"name":"tools"}',
+          ),
+        );
+        yield* catalog.getOverview;
+        if (operation === "refresh")
+          yield* Effect.promise(() =>
+            write(join(workspace.scriptsDir, "second.js"), ""),
+          );
+        const received: {
+          revision: string;
+          names: readonly string[];
+          count: number;
+        }[] = [];
+        yield* catalog.onChanged((change) =>
+          catalog.getOverview.pipe(
+            Effect.tap((current) =>
+              Effect.sync(() => {
+                received.push({
+                  revision: change.revision,
+                  names: current.packages.map(
+                    (entry) => entry.name ?? "missing",
+                  ),
+                  count: current.scriptCount,
+                });
+              }),
+            ),
+          ),
+        );
+        armed = true;
+        const running = yield* (
+          operation === "refresh"
+            ? catalog.refresh
+            : catalog.removePackage("tools")
+        ).pipe(Effect.forkScoped);
+        yield* Deferred.await(committed);
+        const current = yield* catalog.getOverview;
+        expect(current.scriptCount).toBe(operation === "refresh" ? 2 : 1);
+        expect(current.packages.map((entry) => entry.name)).toEqual(
+          operation === "refresh" ? ["tools"] : [],
+        );
+        yield* Fiber.interrupt(running);
+        expect(received).toEqual([
+          {
+            revision: current.revision,
+            names: operation === "refresh" ? ["tools"] : [],
+            count: operation === "refresh" ? 2 : 1,
+          },
+        ]);
+      }),
+  );
+
+  it.effect(
+    "interrupts a scan before commit without repeating the previous event",
+    () =>
+      Effect.gen(function* () {
+        const started = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        let block = false;
+        const { catalog } = yield* makeCatalogHarness(
+          Effect.suspend(() =>
+            block
+              ? Deferred.succeed(started, undefined).pipe(
+                  Effect.andThen(Deferred.await(release)),
+                )
+              : Effect.void,
+          ),
+        );
+        const initial = yield* catalog.refresh;
+        const revisions: string[] = [];
+        yield* catalog.onChanged((change) => {
+          revisions.push(change.revision);
+        });
+        block = true;
+        const scanning = yield* catalog.refresh.pipe(Effect.forkScoped);
+        yield* Deferred.await(started);
+        const stopping = yield* Fiber.interrupt(scanning).pipe(
+          Effect.forkScoped,
+        );
+        yield* Effect.yieldNow;
+        const outcome = scanning.pollUnsafe();
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.join(stopping);
+        expect(outcome).toMatchObject({ _tag: "Failure" });
+        expect(yield* catalog.getOverview).toEqual(initial);
+        expect(revisions).toEqual([]);
+      }),
   );
 });

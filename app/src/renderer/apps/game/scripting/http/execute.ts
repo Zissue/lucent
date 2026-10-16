@@ -108,7 +108,9 @@ export const executeRequest = (
         catch: (cause) => requestFailure(cause, payload.url),
       }).pipe(
         Effect.catchCause((cause) =>
-          Effect.logWarning({ message: "HTTP cancellation failed", cause }),
+          Effect.logWarning("HTTP cancellation failed", cause).pipe(
+            Effect.annotateLogs({ component: "scripting" }),
+          ),
         ),
       );
     });

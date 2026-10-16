@@ -5,6 +5,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Cause from "effect/Cause";
 import * as Logger from "effect/Logger";
+import * as References from "effect/References";
 
 import {
   afterAll,
@@ -158,7 +159,7 @@ testLayer(proxyLayer)("Ruffle socket relay", (it) => {
         const closed = yield* Effect.gen(function* () {
           relayTest.failStarts = 1;
           const failed = yield* getUrl.pipe(Effect.flip);
-          expect(failed._tag).toBe("RuffleSocketProxyError");
+          expect(failed.cause).toEqual(new Error("Relay startup failure"));
           const urls = yield* Effect.all([getUrl, getUrl], {
             concurrency: "unbounded",
           });
@@ -169,6 +170,7 @@ testLayer(proxyLayer)("Ruffle socket relay", (it) => {
           return { client, closed: once(client, "close") };
         }).pipe(
           Effect.provide(Layer.fresh(proxyLayer)),
+          Effect.provideService(References.MinimumLogLevel, "Debug"),
           Effect.provide(
             Logger.layer([
               Logger.make((options) => {
@@ -177,7 +179,7 @@ testLayer(proxyLayer)("Ruffle socket relay", (it) => {
             ]),
           ),
         );
-        expect(logs.join("\n")).toContain("Relay startup failure");
+        expect(logs).toEqual([]);
         yield* Effect.promise(() => closed.closed);
         expect(closed.client.readyState).toBe(WebSocket.CLOSED);
         expect(relayTest.servers.at(-1)?.address()).toBeNull();
@@ -202,11 +204,12 @@ testLayer(proxyLayer)("Ruffle socket relay", (it) => {
           yield* Effect.gen(function* () {
             const failure = yield* getUrl.pipe(Effect.flip);
             expect(failure.cause).toMatchObject({ code: "EADDRINUSE" });
-            expect(logs.join("\n")).toContain("EADDRINUSE");
+            expect(logs).toEqual([]);
             const url = yield* getUrl;
             expect(new URL(url).protocol).toBe("ws:");
           }).pipe(
             Effect.provide(Layer.fresh(proxyLayer)),
+            Effect.provideService(References.MinimumLogLevel, "Debug"),
             Effect.provide(
               Logger.layer([
                 Logger.make((options) => {

@@ -139,68 +139,71 @@ describe("DesktopSettings", () => {
     }),
   );
 
-  it.effect("serializes concurrent full-file updates", () =>
-    Effect.gen(function* () {
-      const appDataDir = yield* Effect.promise(() =>
-        makeTempDir("lucent-settings-data-"),
-      );
-      const workspaceDir = yield* Effect.promise(() =>
-        makeTempDir("lucent-settings-workspace-"),
-      );
-      const env = DesktopEnvironment.of({
-        appDataDir,
-        assetsDir: join(appDataDir, "assets"),
-        isDev: true,
-        platform: "darwin",
-        workspaceDir,
-      });
-      const settingsLayer = desktopSettingsLayer.pipe(
-        Layer.provide(
-          Layer.mergeAll(
-            Layer.succeed(DesktopEnvironment, env),
-            desktopFileSystemLayer,
+  it.effect(
+    "serializes concurrent reads and full-file updates before initial load",
+    () =>
+      Effect.gen(function* () {
+        const appDataDir = yield* Effect.promise(() =>
+          makeTempDir("lucent-settings-data-"),
+        );
+        const workspaceDir = yield* Effect.promise(() =>
+          makeTempDir("lucent-settings-workspace-"),
+        );
+        const env = DesktopEnvironment.of({
+          appDataDir,
+          assetsDir: join(appDataDir, "assets"),
+          isDev: true,
+          platform: "darwin",
+          workspaceDir,
+        });
+        const settingsLayer = desktopSettingsLayer.pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              Layer.succeed(DesktopEnvironment, env),
+              desktopFileSystemLayer,
+            ),
           ),
-        ),
-      );
-      const settings = yield* DesktopSettings.pipe(
-        Effect.provide(settingsLayer),
-      );
+        );
+        const settings = yield* DesktopSettings.pipe(
+          Effect.provide(settingsLayer),
+        );
 
-      yield* settings.load;
-      yield* Effect.all(
-        [
-          settings.updateAppearance({ themeMode: "light" }),
-          settings.updatePreferences({
-            launchMode: "account-manager",
-            showGameUsernameInWindowTitle: true,
-            useGameTabs: true,
-          }),
-        ],
-        { concurrency: "unbounded" },
-      );
+        yield* Effect.all(
+          [
+            settings.get,
+            settings.get,
+            settings.updateAppearance({ themeMode: "light" }),
+            settings.updatePreferences({
+              launchMode: "account-manager",
+              showGameUsernameInWindowTitle: true,
+              useGameTabs: true,
+            }),
+          ],
+          { concurrency: "unbounded" },
+        );
 
-      const current = yield* settings.get;
-      const persisted = JSON.parse(
-        yield* Effect.promise(() =>
-          readFile(join(env.appDataDir, "settings.json"), "utf8"),
-        ),
-      ) as {
-        readonly appearance?: { readonly themeMode?: string };
-        readonly preferences?: {
-          readonly launchMode?: string;
-          readonly showGameUsernameInWindowTitle?: boolean;
-          readonly useGameTabs?: boolean;
+        const current = yield* settings.get;
+        const persisted = JSON.parse(
+          yield* Effect.promise(() =>
+            readFile(join(env.appDataDir, "settings.json"), "utf8"),
+          ),
+        ) as {
+          readonly appearance?: { readonly themeMode?: string };
+          readonly preferences?: {
+            readonly launchMode?: string;
+            readonly showGameUsernameInWindowTitle?: boolean;
+            readonly useGameTabs?: boolean;
+          };
         };
-      };
 
-      expect(current.appearance.themeMode).toBe("light");
-      expect(current.preferences.useGameTabs).toBe(true);
-      expect(current.preferences.launchMode).toBe("account-manager");
-      expect(current.preferences.showGameUsernameInWindowTitle).toBe(true);
-      expect(persisted.appearance?.themeMode).toBe("light");
-      expect(persisted.preferences?.useGameTabs).toBe(true);
-      expect(persisted.preferences?.launchMode).toBe("account-manager");
-      expect(persisted.preferences?.showGameUsernameInWindowTitle).toBe(true);
-    }),
+        expect(current.appearance.themeMode).toBe("light");
+        expect(current.preferences.useGameTabs).toBe(true);
+        expect(current.preferences.launchMode).toBe("account-manager");
+        expect(current.preferences.showGameUsernameInWindowTitle).toBe(true);
+        expect(persisted.appearance?.themeMode).toBe("light");
+        expect(persisted.preferences?.useGameTabs).toBe(true);
+        expect(persisted.preferences?.launchMode).toBe("account-manager");
+        expect(persisted.preferences?.showGameUsernameInWindowTitle).toBe(true);
+      }),
   );
 });

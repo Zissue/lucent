@@ -1,12 +1,15 @@
 import { join } from "path";
 
+import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
-import { gt, valid } from "semver";
+import type * as Scope from "effect/Scope";
+import { gt, prerelease, valid } from "semver";
 
 import {
   UpdateReleaseInfo,
@@ -14,7 +17,7 @@ import {
   type UpdateReleaseCache,
 } from "../../shared/updates";
 import { DesktopEnvironment } from "../app/DesktopEnvironment";
-import { makeListenerRegistry } from "../app/ListenerRegistry";
+import { makeListenerRegistry, type Listener } from "../app/ListenerRegistry";
 import { ElectronApp } from "../electron/ElectronApp";
 import { ElectronShell } from "../electron/ElectronShell";
 import {
@@ -27,9 +30,9 @@ import { makeJsonFile } from "../filesystem/JsonFile";
 import { DesktopSettings } from "../settings/DesktopSettings";
 import { parseAllowedUpdateReleaseUrl } from "./UpdateReleaseOpenPolicy";
 
-const RELEASE_URL =
-  "https://api.github.com/repos/toommyliu/lucent/releases/latest";
-const CHECK_TIMEOUT_MS = 10_000;
+const RELEASES_URL = "https://api.github.com/repos/toommyliu/lucent/releases";
+const REQUEST_TIMEOUT_MS = 10_000;
+const CHECK_TIMEOUT_MS = 30_000;
 const CHECK_ATTEMPTS = 3;
 
 export class DesktopUpdateError extends Schema.TaggedError<DesktopUpdateError>()(
@@ -61,7 +64,7 @@ export interface DesktopUpdatesShape {
   }) => Effect.Effect<UpdateCheckState>;
   readonly getState: Effect.Effect<UpdateCheckState>;
   readonly onStateChanged: (
-    listener: (state: UpdateCheckState) => void,
+    listener: Listener<UpdateCheckState>,
   ) => Effect.Effect<() => void>;
   readonly openReleasePage: Effect.Effect<boolean>;
   readonly shouldPromptForAvailableRelease: (
@@ -87,6 +90,9 @@ const GitHubReleasePayloadSchema = Schema.Struct({
 type GitHubReleasePayload = typeof GitHubReleasePayloadSchema.Type;
 const decodeGitHubReleasePayload = Schema.decodeUnknownSync(
   GitHubReleasePayloadSchema,
+);
+const decodeGitHubReleasePayloads = Schema.decodeUnknownSync(
+  Schema.Array(GitHubReleasePayloadSchema),
 );
 
 const UpdateReleaseCacheSchema = Schema.Struct({
@@ -116,13 +122,9 @@ const optionalString = (value: unknown): string | undefined =>
 const errorMessage = (cause: unknown, fallback: string): string =>
   cause instanceof Error && cause.message.length > 0 ? cause.message : fallback;
 
-const parseGitHubReleasePayload = (
+const toUpdateReleaseInfo = (
   payload: GitHubReleasePayload,
 ): UpdateReleaseInfo => {
-  if (payload.draft === true || payload.prerelease === true) {
-    throw new Error("Latest release is not a stable release.");
-  }
-
   const tagName = payload.tag_name.trim();
   const releaseUrl = parseAllowedUpdateReleaseUrl(payload.html_url.trim());
   if (tagName.length === 0)
@@ -144,6 +146,32 @@ const parseGitHubReleasePayload = (
   });
 };
 
+const parseLatestStableRelease = (
+  payload: GitHubReleasePayload,
+): UpdateReleaseInfo => {
+  if (payload.draft || payload.prerelease) {
+    throw new Error("Latest release is not a stable release.");
+  }
+  return toUpdateReleaseInfo(payload);
+};
+
+const findNewestRelease = (
+  payloads: ReadonlyArray<GitHubReleasePayload>,
+  previous: GitHubReleasePayload | undefined,
+): GitHubReleasePayload | undefined => {
+  let newest = previous;
+  for (const payload of payloads) {
+    if (
+      !payload.draft &&
+      valid(payload.tag_name) !== null &&
+      (newest === undefined || gt(payload.tag_name, newest.tag_name))
+    ) {
+      newest = payload;
+    }
+  }
+  return newest;
+};
+
 const desktopUpdateError = (cause: unknown): DesktopUpdateError =>
   cause instanceof DesktopUpdateError
     ? cause
@@ -152,8 +180,8 @@ const desktopUpdateError = (cause: unknown): DesktopUpdateError =>
         cause,
       });
 
-const fetchLatestGitHubRelease = Effect.fn(
-  "DesktopUpdates.fetchLatestGitHubRelease",
+const fetchLatestStableGitHubRelease = Effect.fn(
+  "DesktopUpdates.fetchLatestStableGitHubRelease",
 )(function* (
   api: GitHubApiClientShape,
   options?: { readonly etag?: string },
@@ -162,8 +190,8 @@ const fetchLatestGitHubRelease = Effect.fn(
     .get({
       attempts: CHECK_ATTEMPTS,
       ...(options?.etag === undefined ? {} : { etag: options.etag }),
-      timeoutMs: CHECK_TIMEOUT_MS,
-      url: new URL(RELEASE_URL),
+      timeoutMs: REQUEST_TIMEOUT_MS,
+      url: new URL(`${RELEASES_URL}/latest`),
     })
     .pipe(Effect.mapError(desktopUpdateError));
   const etag = firstHttpHeader(response.headers, "etag");
@@ -177,11 +205,55 @@ const fetchLatestGitHubRelease = Effect.fn(
   return yield* Effect.try({
     try: () => ({
       status: "modified" as const,
-      release: parseGitHubReleasePayload(
+      release: parseLatestStableRelease(
         decodeGitHubReleasePayload(JSON.parse(response.body.toString("utf8"))),
       ),
       ...(etag === undefined ? {} : { etag }),
     }),
+    catch: desktopUpdateError,
+  });
+});
+
+const fetchNewestGitHubRelease = Effect.fn(
+  "DesktopUpdates.fetchNewestGitHubRelease",
+)(function* (
+  api: GitHubApiClientShape,
+): Effect.fn.Return<UpdateReleaseFetchResult, DesktopUpdateError> {
+  let newest: GitHubReleasePayload | undefined;
+  for (let page = 1; ; page++) {
+    const response = yield* api
+      .get({
+        attempts: CHECK_ATTEMPTS,
+        timeoutMs: REQUEST_TIMEOUT_MS,
+        url: new URL(`${RELEASES_URL}?per_page=100&page=${page}`),
+      })
+      .pipe(Effect.mapError(desktopUpdateError));
+
+    newest = yield* Effect.try({
+      try: () =>
+        findNewestRelease(
+          decodeGitHubReleasePayloads(
+            JSON.parse(response.body.toString("utf8")),
+          ),
+          newest,
+        ),
+      catch: desktopUpdateError,
+    });
+    if (!firstHttpHeader(response.headers, "link")?.includes('rel="next"')) {
+      break;
+    }
+  }
+
+  return yield* Effect.try({
+    try: () => {
+      if (newest === undefined) {
+        throw new Error("No published releases were found.");
+      }
+      return {
+        status: "modified" as const,
+        release: toUpdateReleaseInfo(newest),
+      };
+    },
     catch: desktopUpdateError,
   });
 });
@@ -226,12 +298,12 @@ interface DesktopUpdatesOptions {
 
 const makeDesktopUpdates = (
   options: DesktopUpdatesOptions,
-): Effect.Effect<DesktopUpdatesShape> =>
+): Effect.Effect<DesktopUpdatesShape, never, Scope.Scope> =>
   Effect.gen(function* () {
     const currentVersion = normalizeVersion(options.currentVersion);
     const now = options.now ?? (() => new Date());
     const context = yield* Effect.context<never>();
-    const runPromise = Effect.runPromiseWith(context);
+    const runFork = Effect.runForkWith(context);
     const disabledState = (): UpdateCheckState => ({
       status: "disabled",
       currentVersion,
@@ -251,7 +323,10 @@ const makeDesktopUpdates = (
     const cacheRef = yield* Ref.make<UpdateReleaseCache | null>(null);
     const cacheLoadedRef = yield* Ref.make(false);
     const stateChanges = makeListenerRegistry<UpdateCheckState>();
-    let inFlight: Promise<UpdateCheckState> | null = null;
+    let inFlight: Fiber.Fiber<UpdateCheckState> | null = null;
+    yield* Effect.addFinalizer(() =>
+      inFlight === null ? Effect.void : Fiber.interrupt(inFlight),
+    );
 
     const setState = (state: UpdateCheckState): Effect.Effect<void> =>
       Ref.set(stateRef, state).pipe(
@@ -312,9 +387,19 @@ const makeDesktopUpdates = (
         });
 
         const cache = yield* loadCacheOnce;
-        const result = yield* options.fetchRelease(
-          cache?.etag === undefined ? undefined : { etag: cache.etag },
-        );
+        const result = yield* options
+          .fetchRelease(
+            cache?.etag === undefined ? undefined : { etag: cache.etag },
+          )
+          .pipe(
+            Effect.timeoutOrElse({
+              duration: CHECK_TIMEOUT_MS,
+              orElse: () =>
+                Effect.fail(
+                  desktopUpdateError(new Error("Update check timed out.")),
+                ),
+            }),
+          );
         const checkedAt = now().toISOString();
 
         if (result.status === "not-modified") {
@@ -406,22 +491,21 @@ const makeDesktopUpdates = (
         Effect.orElseSucceed(() => false),
       );
 
-    const checkNow: DesktopUpdatesShape["checkNow"] = (checkOptions) => {
-      if (inFlight !== null) {
-        const active = inFlight;
-        return Effect.promise(() => active);
-      }
-
-      const promise = runPromise(runCheck(checkOptions?.force === true));
-      inFlight = promise;
-      return Effect.promise(() =>
-        promise.finally(() => {
-          if (inFlight === promise) {
-            inFlight = null;
-          }
-        }),
-      );
+    const startCheck = (force: boolean): Fiber.Fiber<UpdateCheckState> => {
+      const fiber = runFork(runCheck(force));
+      inFlight = fiber;
+      fiber.addObserver(() => {
+        if (inFlight === fiber) {
+          inFlight = null;
+        }
+      });
+      return fiber;
     };
+
+    const checkNow: DesktopUpdatesShape["checkNow"] = (checkOptions) =>
+      Effect.suspend(() =>
+        Fiber.join(inFlight ?? startCheck(checkOptions?.force === true)),
+      ).pipe(Effect.catchCauseIf(Cause.hasInterruptsOnly, () => getState));
 
     return {
       checkNow,
@@ -444,9 +528,10 @@ export const layer = Layer.effect(
     const api = yield* GitHubApiClient;
     const currentVersion = yield* app.getVersion;
     const releaseCachePath = join(env.appDataDir, "release-cache.json");
-
-    const fetchRelease: DesktopUpdatesOptions["fetchRelease"] = (options) =>
-      fetchLatestGitHubRelease(api, options);
+    const fetchRelease: DesktopUpdatesOptions["fetchRelease"] =
+      prerelease(currentVersion) === null
+        ? (options) => fetchLatestStableGitHubRelease(api, options)
+        : () => fetchNewestGitHubRelease(api);
 
     const isEnabled: DesktopUpdatesOptions["isEnabled"] = settings.get.pipe(
       Effect.map(
@@ -463,10 +548,8 @@ export const layer = Layer.effect(
             : null,
         ),
         Effect.catch((cause) =>
-          Effect.logWarning("Failed to load release cache")
-            .pipe(
-              Effect.annotateLogs({ component: "updates", data: { cause } }),
-            )
+          Effect.logWarning("Failed to load release cache", Cause.fail(cause))
+            .pipe(Effect.annotateLogs({ component: "updates" }))
             .pipe(Effect.as(null)),
         ),
       );
@@ -474,12 +557,12 @@ export const layer = Layer.effect(
     const saveCache: DesktopUpdatesOptions["saveCache"] = (cache) =>
       jsonFile.write(releaseCachePath, serializeUpdateReleaseCache(cache)).pipe(
         Effect.catch((cause) =>
-          Effect.logWarning("Failed to save release cache").pipe(
+          Effect.logWarning(
+            "Failed to save release cache",
+            Cause.fail(cause),
+          ).pipe(
             Effect.annotateLogs({
               component: "updates",
-              data: {
-                cause,
-              },
             }),
           ),
         ),

@@ -11,10 +11,11 @@ sidebar:
 
 | Event | When it happens |
 | --- | --- |
-| <a href="#event-aura-added"><code>aura-added</code></a> | An aura is added to or refreshed on a player or monster. |
+| <a href="#event-aura-added"><code>aura-added</code></a> | An aura first appears on a player or monster. |
 | <a href="#event-aura-removed"><code>aura-removed</code></a> | An aura is removed from a player or monster. |
-| <a href="#event-counter-attack-end"><code>counter-attack-end</code></a> | A monster's counter attack ends. |
-| <a href="#event-counter-attack-start"><code>counter-attack-start</code></a> | A monster's counter attack starts. |
+| <a href="#event-aura-updated"><code>aura-updated</code></a> | An existing aura changes stack, timer, or metadata. |
+| <a href="#event-counter-attack-end"><code>counter-attack-end</code></a> | A monster's active counter-attack aura is removed, including server state clears. |
+| <a href="#event-counter-attack-start"><code>counter-attack-start</code></a> | A monster's counter attack is applied, refreshed, or announced in a combat message. |
 | <a href="#event-item-drop"><code>item-drop</code></a> | An item drops. |
 | <a href="#event-join-map"><code>join-map</code></a> | A map finishes loading. |
 | <a href="#event-login"><code>login</code></a> | A game session starts. |
@@ -37,7 +38,7 @@ Each event includes the information shown below.
 
 ### `aura-added`
 
-An aura is added to or refreshed on a player or monster.
+An aura first appears on a player or monster.
 
 ```ts
 {
@@ -45,7 +46,9 @@ An aura is added to or refreshed on a player or monster.
   /** The aura duration in seconds, when available. */
   readonly duration?: number;
   readonly icon?: string;
+  readonly kind: "active" | "passive";
   readonly name: string;
+  readonly stack: number;
   /** The applying entity's map-scoped ID, when known. */
   readonly sourceId?: number;
   readonly sourceType?: "monster" | "player";
@@ -67,7 +70,32 @@ An aura is removed from a player or monster.
   /** The aura duration in seconds, when available. */
   readonly duration?: number;
   readonly icon?: string;
+  readonly kind: "active" | "passive";
   readonly name: string;
+  /** The applying entity's map-scoped ID, when known. */
+  readonly sourceId?: number;
+  readonly sourceType?: "monster" | "player";
+  /** The affected entity's map-scoped ID. */
+  readonly targetId: number;
+  readonly targetType: "monster" | "player";
+}
+```
+
+<a id="event-aura-updated"></a>
+
+### `aura-updated`
+
+An existing aura changes stack, timer, or metadata.
+
+```ts
+{
+  readonly type: "aura-updated";
+  /** The aura duration in seconds, when available. */
+  readonly duration?: number;
+  readonly icon?: string;
+  readonly kind: "active" | "passive";
+  readonly name: string;
+  readonly stack: number;
   /** The applying entity's map-scoped ID, when known. */
   readonly sourceId?: number;
   readonly sourceType?: "monster" | "player";
@@ -81,7 +109,7 @@ An aura is removed from a player or monster.
 
 ### `counter-attack-end`
 
-A monster's counter attack ends.
+A monster's active counter-attack aura is removed, including server state clears.
 
 ```ts
 {
@@ -101,12 +129,12 @@ A monster's counter attack ends.
 
 ### `counter-attack-start`
 
-A monster's counter attack starts.
+A monster's counter attack is applied, refreshed, or announced in a combat message.
 
 ```ts
 {
   readonly type: "counter-attack-start";
-  /** The expected window duration in milliseconds, when known. */
+  /** The applied aura duration or announced window in milliseconds, when known. */
   readonly durationMs?: number;
   /** The monster's map-scoped ID. */
   readonly monsterMapId: number;
@@ -314,7 +342,7 @@ The current map's encounter zone changes.
 
 <a id="member-api-events-on"></a>
 
-### `api.events.on()` <a class="source-reference__heading-link" style="float: right; display: inline-flex; align-items: center; justify-content: center; margin-block: -0.125rem; margin-inline-start: 0.5rem; border-radius: var(--radius-sm); text-decoration: none;" href="https://github.com/toommyliu/lucent/blob/main/app/src/renderer/apps/game/scripting/ScriptApi.ts#L483" tabindex="-1" aria-hidden="true" title="Open source: app/src/renderer/apps/game/scripting/ScriptApi.ts:483" target="_blank" rel="noreferrer"><svg class="source-reference__icon" width="16" height="16" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"></path><path d="m6 8-4 4 4 4"></path><path d="m14.5 4-5 16"></path></svg></a>
+### `api.events.on()` <a class="source-reference__heading-link" style="float: right; display: inline-flex; align-items: center; justify-content: center; margin-block: -0.125rem; margin-inline-start: 0.5rem; border-radius: var(--radius-sm); text-decoration: none;" href="https://github.com/toommyliu/lucent/blob/main/app/src/renderer/apps/game/scripting/ScriptApi.ts#L477" tabindex="-1" aria-hidden="true" title="Open source: app/src/renderer/apps/game/scripting/ScriptApi.ts:477" target="_blank" rel="noreferrer"><svg class="source-reference__icon" width="16" height="16" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"></path><path d="m6 8-4 4 4 4"></path><path d="m14.5 4-5 16"></path></svg></a>
 
 Runs a handler for every matching event. The handler must return an Effect
 or generator; plain values and Promises are not supported.
@@ -355,7 +383,7 @@ unsubscribe();
 
 <a id="member-api-events-once"></a>
 
-### `api.events.once()` <a class="source-reference__heading-link" style="float: right; display: inline-flex; align-items: center; justify-content: center; margin-block: -0.125rem; margin-inline-start: 0.5rem; border-radius: var(--radius-sm); text-decoration: none;" href="https://github.com/toommyliu/lucent/blob/main/app/src/renderer/apps/game/scripting/ScriptApi.ts#L513" tabindex="-1" aria-hidden="true" title="Open source: app/src/renderer/apps/game/scripting/ScriptApi.ts:513" target="_blank" rel="noreferrer"><svg class="source-reference__icon" width="16" height="16" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"></path><path d="m6 8-4 4 4 4"></path><path d="m14.5 4-5 16"></path></svg></a>
+### `api.events.once()` <a class="source-reference__heading-link" style="float: right; display: inline-flex; align-items: center; justify-content: center; margin-block: -0.125rem; margin-inline-start: 0.5rem; border-radius: var(--radius-sm); text-decoration: none;" href="https://github.com/toommyliu/lucent/blob/main/app/src/renderer/apps/game/scripting/ScriptApi.ts#L507" tabindex="-1" aria-hidden="true" title="Open source: app/src/renderer/apps/game/scripting/ScriptApi.ts:507" target="_blank" rel="noreferrer"><svg class="source-reference__icon" width="16" height="16" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"></path><path d="m6 8-4 4 4 4"></path><path d="m14.5 4-5 16"></path></svg></a>
 
 Waits for the next matching event. With a `trigger`, starts listening before
 running that action so an immediate event is not missed.
