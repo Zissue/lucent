@@ -236,7 +236,14 @@ export function AboutView({
               <div className="about-section__actions">
                 <Menu>
                   <MenuTrigger
-                    render={<Button size="sm" type="button" variant="ghost" />}
+                    render={
+                      <Button
+                        className="about-section__folders"
+                        size="sm"
+                        type="button"
+                        variant="ghost"
+                      />
+                    }
                   >
                     <Icon icon="folder_open" size="sm" />
                     Open folder
