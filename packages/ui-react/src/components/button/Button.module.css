@@ -38,11 +38,11 @@
       opacity: 0.5;
     }
 
-    &:has(> .label > svg:first-child) {
+    &:not([data-square]):has(> .label > svg:first-child) {
       padding-inline-start: calc(var(--button-padding) - var(--spacing) * 0.5);
     }
 
-    &:has(> .label > svg:last-child) {
+    &:not([data-square]):has(> .label > svg:last-child) {
       padding-inline-end: calc(var(--button-padding) - var(--spacing) * 0.5);
     }
   }

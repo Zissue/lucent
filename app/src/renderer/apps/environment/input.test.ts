@@ -21,4 +21,11 @@ describe("Environment bulk input", () => {
       { questId: 78 },
     ]);
   });
+
+  it("rejects the whole input when any quest entry is malformed", () => {
+    expect(parseEnvironmentQuestBulkInput("12; abc")).toBeNull();
+    expect(parseEnvironmentQuestBulkInput("12; 34:abc")).toBeNull();
+    expect(parseEnvironmentQuestBulkInput("12:34:56")).toBeNull();
+    expect(parseEnvironmentQuestBulkInput("0")).toBeNull();
+  });
 });

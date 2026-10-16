@@ -6,24 +6,29 @@ export const splitEnvironmentBulkInput = (value: string): string[] =>
     .map((token) => token.trim())
     .filter(Boolean);
 
+const parsePositiveInt = (value: string): number | undefined => {
+  const parsed = Number(value.trim());
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
+};
+
+const parseQuestToken = (
+  token: string,
+): EnvironmentQuestRegistration | null => {
+  const [questText = "", rewardText = "", ...rest] = token.split(":");
+  const questId = parsePositiveInt(questText);
+  if (questId === undefined || rest.length > 0) {
+    return null;
+  }
+  if (rewardText.trim() === "") {
+    return { questId };
+  }
+  const rewardItemId = parsePositiveInt(rewardText);
+  return rewardItemId === undefined ? null : { questId, rewardItemId };
+};
+
 export const parseEnvironmentQuestBulkInput = (
   value: string,
-): readonly EnvironmentQuestRegistration[] =>
-  splitEnvironmentBulkInput(value).flatMap((token) => {
-    const [questId, rewardItemId] = token.split(":");
-    const parsedQuestId = Number(questId?.trim());
-    if (!Number.isSafeInteger(parsedQuestId) || parsedQuestId <= 0) {
-      return [];
-    }
-
-    const parsedRewardItemId = Number(rewardItemId?.trim());
-
-    return [
-      {
-        questId: parsedQuestId,
-        ...(Number.isSafeInteger(parsedRewardItemId) && parsedRewardItemId > 0
-          ? { rewardItemId: parsedRewardItemId }
-          : {}),
-      },
-    ];
-  });
+): readonly EnvironmentQuestRegistration[] | null => {
+  const quests = splitEnvironmentBulkInput(value).map(parseQuestToken);
+  return quests.every((quest) => quest !== null) ? quests : null;
+};

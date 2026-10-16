@@ -3,7 +3,7 @@ import { cn, type WithClassName } from "../../lib/cn";
 import styles from "./Tooltip.module.css";
 
 export function TooltipProvider(props: TooltipProviderProps) {
-  return <BaseTooltip.Provider {...props} delay={0} closeDelay={200} />;
+  return <BaseTooltip.Provider {...props} delay={200} closeDelay={0} />;
 }
 
 export type TooltipProviderProps = BaseTooltip.Provider.Props;

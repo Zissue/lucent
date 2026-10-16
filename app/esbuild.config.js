@@ -176,7 +176,10 @@ const rendererViews = [
   createRendererView("combat-profiles", "Combat Profiles", {
     startsPending: true,
   }),
-  createRendererView("environment", "Environment", { startsPending: true }),
+  createRendererView("environment", "Environment", {
+    framework: "react",
+    startsPending: true,
+  }),
   createRendererView("follower", "Follower", { startsPending: true }),
   createRendererView("loader-grabber", "Loader Grabber", {
     startsPending: true,

@@ -1,16 +1,10 @@
 import type { EnvironmentBankBoost } from "../../../shared/environmentBoosts";
 
-export interface EnvironmentBankBoostOption extends EnvironmentBankBoost {
-  readonly alreadyAdded: boolean;
-}
-
 const normalizedName = (name: string): string => name.trim().toLowerCase();
 
 export const prepareEnvironmentBankBoosts = (
   candidates: readonly EnvironmentBankBoost[],
-  registeredBoosts: readonly string[],
-): readonly EnvironmentBankBoostOption[] => {
-  const registeredNames = new Set(registeredBoosts.map(normalizedName));
+): readonly EnvironmentBankBoost[] => {
   const seenNames = new Set<string>();
   return candidates
     .flatMap((candidate) => {
@@ -20,14 +14,7 @@ export const prepareEnvironmentBankBoosts = (
         return [];
       }
       seenNames.add(key);
-      return [
-        {
-          alreadyAdded: registeredNames.has(key),
-          itemId: candidate.itemId,
-          name,
-          quantity: candidate.quantity,
-        },
-      ];
+      return [{ ...candidate, name }];
     })
     .toSorted((left, right) => left.name.localeCompare(right.name));
 };
@@ -39,7 +26,7 @@ export const environmentBoostWithdrawalSummary = (
   const failed = Math.max(0, requested - withdrawn);
   if (failed === 0) return "";
   if (withdrawn === 0) {
-    return `Could not withdraw ${failed} selected ${failed === 1 ? "boost" : "boosts"}.`;
+    return `Couldn't withdraw ${failed} ${failed === 1 ? "boost" : "boosts"}. Try again.`;
   }
-  return `Withdrew ${withdrawn} ${withdrawn === 1 ? "boost" : "boosts"}; ${failed} could not be withdrawn.`;
+  return `Withdrew ${withdrawn} ${withdrawn === 1 ? "boost" : "boosts"}. Couldn't withdraw ${failed}.`;
 };

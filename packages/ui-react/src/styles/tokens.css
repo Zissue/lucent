@@ -10,7 +10,6 @@
     --font-size-mono: 12px;
     --radius-scale: 1;
     --cursor-interactive: default;
-    --scrollbar-size: 10px;
 
     --font-size-caption: round(calc(var(--font-size-base) * 11 / 13), 1px);
     --font-size-small: round(calc(var(--font-size-base) * 12 / 13), 1px);
@@ -237,7 +236,6 @@
   :root,
   [data-theme] {
     --color-scrollbar-thumb: var(--gray-8);
-    --color-scrollbar-thumb-hover: var(--gray-9);
     --color-fill: color-mix(
       in oklab,
       var(--color-text) var(--fill-alpha),

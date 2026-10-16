@@ -1,4 +1,5 @@
-import { mountRenderer } from "../../RendererBootstrap";
+/** @jsxImportSource react */
+import { mountReactRenderer } from "../../ReactRendererBootstrap";
 import { App } from "./App";
 
-mountRenderer({ app: () => <App /> });
+mountReactRenderer({ app: () => <App />, markReady: false });
