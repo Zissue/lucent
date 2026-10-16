@@ -42,7 +42,7 @@ export const THEME_FONT_SIZE_MAX = 24;
 export const THEME_ROUNDING_MIN = 0;
 export const THEME_ROUNDING_MAX = 2;
 export const ThemeFontSchema = Schema.String.check(
-  Schema.isLengthBetween(THEME_FONT_MIN_LENGTH, THEME_FONT_MAX_LENGTH),
+  Schema.isBetweenLength(THEME_FONT_MIN_LENGTH, THEME_FONT_MAX_LENGTH),
 );
 const ThemeFontPatchSchema = Schema.NullOr(
   Schema.Union([ThemeFontSchema, Schema.Literal("")]),

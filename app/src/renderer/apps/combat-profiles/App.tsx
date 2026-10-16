@@ -1,10 +1,6 @@
-import { createHotkey } from "@tanstack/solid-hotkeys";
 import {
-  formatHotkeyDisplay,
-  formatHotkeyDisplayParts,
-  type HotkeyDisplayPlatform,
-} from "@lucent/core/hotkeys";
-import {
+  Icon,
+  HelpTooltip,
   Alert,
   AlertDescription,
   AlertDialog,
@@ -15,30 +11,32 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
+  AlertDialogTrigger,
   Button,
+  type ButtonProps,
+  Card,
+  CardContent,
+  CardFrame,
+  CardFrameAction,
+  CardFrameHeader,
+  CardFrameTitle,
   Checkbox,
-  HelpTooltip,
-  Icon,
-  IconButton,
-  type IconName,
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyTitle,
   Input,
-  type InputProps,
-  Kbd,
-  KbdGroup,
+  IconButton,
+  Label,
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
-  type SelectTriggerProps,
-  Tooltip,
+  SelectValue,
+  VirtualizedSelectContent,
   TooltipButton,
   TooltipButtonContent,
   TooltipButtonTrigger,
-  TooltipContent,
-  TooltipIconButton,
-  TooltipTrigger,
-  VirtualizedSelectContent,
-  cn,
 } from "@lucent/ui";
 import {
   For,
@@ -47,12 +45,8 @@ import {
   createEffect,
   createMemo,
   createSignal,
-  createUniqueId,
   onCleanup,
   onMount,
-  splitProps,
-  untrack,
-  type Accessor,
   type JSX,
 } from "solid-js";
 import {
@@ -73,7 +67,6 @@ import {
   type SkillSlot,
 } from "@lucent/core/combatProfiles";
 import { selectDesktopBridge } from "../../../shared/desktopBridge";
-import type { DesktopRendererProps } from "../../RendererBootstrap";
 import {
   readStoredCombatProfileId,
   resolvePreferredCombatProfileId,
@@ -82,7 +75,6 @@ import {
 import {
   buildCombatProfileOptions,
   resolveCombatProfileOptionValue,
-  type CombatProfileOption,
 } from "../../combatProfileOptions";
 
 export interface CombatProfilesViewFixture {
@@ -104,15 +96,7 @@ export interface CombatProfilesViewProps {
   readonly onSaveProfile?: (
     profile: CombatProfile,
   ) => Promise<CombatProfileLibrary>;
-  readonly platform: HotkeyDisplayPlatform;
 }
-
-const SAVE_PROFILE_HOTKEY = "Mod+S";
-const COPY_SNIPPET_HOTKEY = "Mod+C";
-const NEW_PROFILE_HOTKEY = "Mod+N";
-const DUPLICATE_PROFILE_HOTKEY = "Mod+D";
-const SWITCH_PROFILE_HOTKEY = "Mod+P";
-const PROFILE_PICKER_TRIGGER_ID = "combat-profiles-picker-trigger";
 
 const skillSlots: readonly SkillSlot[] = [0, 1, 2, 3, 4, 5];
 
@@ -122,15 +106,6 @@ const parseSkillSlot = (value: string | undefined): SkillSlot | undefined =>
     : skillSlots.find((slot) => String(slot) === value);
 
 type ConditionType = CombatProfileCondition["type"];
-type StatCondition = Extract<
-  CombatProfileCondition,
-  { readonly type: "self-hp" | "self-mp" | "ally-hp" }
->;
-
-interface ChoiceOption<T extends string> {
-  readonly label: string;
-  readonly value: T;
-}
 
 const conditionTypes = [
   { value: "self-hp", label: "Self HP" },
@@ -138,23 +113,35 @@ const conditionTypes = [
   { value: "ally-hp", label: "Any player HP" },
   { value: "self-aura", label: "Self aura" },
   { value: "target-aura", label: "Target aura" },
-] as const satisfies readonly ChoiceOption<ConditionType>[];
+] as const satisfies readonly {
+  readonly value: ConditionType;
+  readonly label: string;
+}[];
 
-const comparisonOptions = [
-  { value: "<=", label: "≤" },
-  { value: ">=", label: "≥" },
-] as const satisfies readonly ChoiceOption<CombatProfileCondition["op"]>[];
+const skillIndices = [0, 1, 2, 3, 4, 5] as const;
 
 const cooldownModeOptions = [
-  { value: "use-if-ready", label: "Skip it" },
-  { value: "wait-for-cooldown", label: "Wait for it" },
-] as const satisfies readonly ChoiceOption<CombatProfileCooldownMode>[];
+  { value: "use-if-ready", label: "Use if ready" },
+  { value: "wait-for-cooldown", label: "Wait for cooldown" },
+] as const satisfies readonly {
+  readonly value: CombatProfileCooldownMode;
+  readonly label: string;
+}[];
+
+const stepCooldownModeOptions = [
+  { value: "default", label: "Use profile default" },
+  { value: "use-if-ready", label: "Skip if unavailable" },
+  { value: "wait-for-cooldown", label: "Wait for cooldown" },
+] as const;
 
 const messageTriggerSourceOptions = [
   { value: "any", label: "Any" },
   { value: "animation", label: "Animation" },
   { value: "aura", label: "Aura" },
-] as const satisfies readonly ChoiceOption<CombatProfileMessageTriggerSource>[];
+] as const satisfies readonly {
+  readonly value: CombatProfileMessageTriggerSource;
+  readonly label: string;
+}[];
 
 const jsIdentifierPattern = /^[A-Za-z_$][\w$]*$/u;
 
@@ -170,7 +157,10 @@ const isMessageTriggerSource = (
 
 const isStatCondition = (
   condition: CombatProfileCondition,
-): condition is StatCondition =>
+): condition is Extract<
+  CombatProfileCondition,
+  { readonly type: "self-hp" | "self-mp" | "ally-hp" }
+> =>
   condition.type === "self-hp" ||
   condition.type === "self-mp" ||
   condition.type === "ally-hp";
@@ -180,24 +170,6 @@ const auraNameValue = (condition: CombatProfileCondition): string =>
 
 const conditionUnitValue = (condition: CombatProfileCondition): string =>
   isStatCondition(condition) ? condition.unit : "percent";
-
-const hpUnitOptions = [
-  { value: "percent", label: "%" },
-  { value: "value", label: "HP" },
-] as const satisfies readonly ChoiceOption<StatCondition["unit"]>[];
-
-const mpUnitOptions = [
-  { value: "percent", label: "%" },
-  { value: "value", label: "MP" },
-] as const satisfies readonly ChoiceOption<StatCondition["unit"]>[];
-
-const conditionUnitOptions = (condition: CombatProfileCondition) =>
-  condition.type === "self-mp" ? mpUnitOptions : hpUnitOptions;
-
-const choiceLabel = <T extends string>(
-  options: readonly ChoiceOption<T>[],
-  value: string,
-): string => options.find((option) => option.value === value)?.label ?? value;
 
 const createCondition = (type: ConditionType): CombatProfileCondition => {
   if (type === "self-aura" || type === "target-aura") {
@@ -217,76 +189,10 @@ const createCondition = (type: ConditionType): CombatProfileCondition => {
   };
 };
 
-const MAX_DELAY_MS = 60_000;
-const MAX_TRIGGER_COOLDOWN_MS = 60_000;
-const MAX_NAME_LENGTH = 80;
-const MAX_MESSAGE_LENGTH = 160;
-
-const conditionValueMax = (condition: CombatProfileCondition): number => {
-  if (!isStatCondition(condition)) {
-    return 999;
-  }
-
-  return condition.unit === "percent" ? 100 : 999_999;
+const clampRuleValue = (value: string): number => {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
 };
-
-const isAuraNameMissing = (condition: CombatProfileCondition): boolean =>
-  !isStatCondition(condition) && condition.auraName.trim() === "";
-
-const wholeNumberIssue = (
-  value: number | undefined,
-  max: number,
-): string | undefined => {
-  if (value === undefined) {
-    return undefined;
-  }
-
-  if (!Number.isInteger(value)) {
-    return "Use whole numbers";
-  }
-
-  return value < 0 || value > max ? `Use 0–${max.toLocaleString()}` : undefined;
-};
-
-const conditionHasIssue = (condition: CombatProfileCondition): boolean =>
-  isAuraNameMissing(condition) ||
-  wholeNumberIssue(condition.value, conditionValueMax(condition)) !== undefined;
-
-const triggerHasIssue = (trigger: CombatProfileMessageTrigger): boolean =>
-  trigger.messageIncludes.trim() === "" ||
-  wholeNumberIssue(trigger.cooldownMs, MAX_TRIGGER_COOLDOWN_MS) !== undefined;
-
-const withSortedKeys = (value: unknown): unknown => {
-  if (Array.isArray(value)) {
-    return value.map(withSortedKeys);
-  }
-
-  if (typeof value !== "object" || value === null) {
-    return value;
-  }
-
-  return Object.fromEntries(
-    Object.entries(value)
-      .filter(([, entryValue]) => entryValue !== undefined)
-      .toSorted(([left], [right]) => left.localeCompare(right))
-      .map(([key, entryValue]) => [key, withSortedKeys(entryValue)]),
-  );
-};
-
-const profileSnapshot = (profile: CombatProfile): string =>
-  JSON.stringify(
-    withSortedKeys({
-      ...profile,
-      classNames: profile.classNames ?? [],
-      messageTriggers: profile.messageTriggers ?? [],
-      resetSkillIndexOnTargetDeath:
-        profile.resetSkillIndexOnTargetDeath === true,
-      steps: profile.steps.map((step) => ({
-        ...step,
-        priority: step.priority === true,
-      })),
-    }),
-  );
 
 const appendClassName = (
   classNames: readonly string[],
@@ -411,15 +317,22 @@ const toScriptProfileDefinition = (
 const formatCombatProfileScriptProperty = (profile: CombatProfile): string =>
   `profile: ${formatJsLiteral(toScriptProfileDefinition(profile))}`;
 
-const focusFirstInvalidField = (): void => {
-  const field = document.querySelector<HTMLElement>(
-    ".combat-profiles-sheet [aria-invalid='true']",
+function CombatProfilesLabelHelp(props: {
+  readonly label: string;
+  readonly tooltip: string;
+}): JSX.Element {
+  return (
+    <span class="combat-profiles-label-help">
+      <span>{props.label}</span>
+      <HelpTooltip aria-label={`${props.label} help`} tooltip={props.tooltip} />
+    </span>
   );
-  field?.scrollIntoView({ block: "nearest" });
-  field?.focus({ preventScroll: true });
-};
+}
 
-function createCombatProfilesController(props: CombatProfilesViewProps) {
+/** Renders the Combat Profiles editor from a typed library fixture. */
+export function CombatProfilesView(
+  props: CombatProfilesViewProps,
+): JSX.Element {
   const [library, setLibrary] = createSignal<CombatProfileLibrary>(
     props.fixture.library,
   );
@@ -432,7 +345,9 @@ function createCombatProfilesController(props: CombatProfilesViewProps) {
   const [classNames, setClassNames] = createSignal<readonly string[]>([]);
   const [classNameDraft, setClassNameDraft] = createSignal("");
   const [consumable, setConsumable] = createSignal("");
-  const [delayMs, setDelayMs] = createSignal(DEFAULT_COMBAT_PROFILE_DELAY_MS);
+  const [delayMs, setDelayMs] = createSignal(
+    String(DEFAULT_COMBAT_PROFILE_DELAY_MS),
+  );
   const [cooldownMode, setCooldownMode] =
     createSignal<CombatProfileCooldownMode>("use-if-ready");
   const [resetSkillIndexOnTargetDeath, setResetSkillIndexOnTargetDeath] =
@@ -447,15 +362,9 @@ function createCombatProfilesController(props: CombatProfilesViewProps) {
   const [groupProfiles, setGroupProfiles] = createSignal(false);
   const [selectedOptionValue, setSelectedOptionValue] = createSignal("");
   const [profileCopied, setProfileCopied] = createSignal(false);
-  const [deleteDialogOpen, setDeleteDialogOpen] = createSignal(false);
-  const [pendingProfileSwitch, setPendingProfileSwitch] = createSignal<{
-    readonly run: () => void;
-  }>();
-  const [showIssues, setShowIssues] = createSignal(false);
   const [error, setError] = createSignal(props.fixture.error ?? "");
   let nameInput: HTMLInputElement | undefined;
   let classNameInput: HTMLInputElement | undefined;
-  let profilePickerTrigger: HTMLButtonElement | undefined;
   let hydratedProfileId = "";
   let profileCopiedTimer: number | undefined;
 
@@ -466,11 +375,6 @@ function createCombatProfilesController(props: CombatProfilesViewProps) {
   );
   const selectedProfileLabel = createMemo(
     () => selectedProfile()?.label ?? selectedId() ?? "",
-  );
-  const isDefaultProfile = createMemo(
-    () =>
-      (selectedProfile()?.id ?? DEFAULT_COMBAT_PROFILE_ID) ===
-      DEFAULT_COMBAT_PROFILE_ID,
   );
   const profileOptions = createMemo(() => {
     const profiles = library().profiles;
@@ -522,18 +426,17 @@ function createCombatProfilesController(props: CombatProfilesViewProps) {
     setClassNames(profile.classNames ?? []);
     setClassNameDraft("");
     setConsumable(profile.consumable ?? "");
-    setDelayMs(profile.delayMs);
+    setDelayMs(String(profile.delayMs));
     setCooldownMode(profile.cooldownMode);
     setResetSkillIndexOnTargetDeath(
       profile.resetSkillIndexOnTargetDeath === true,
     );
-    setDraftSteps(profile.steps.map((step) => ({ ...step })));
+    setDraftSteps(profile.steps.map((step) => Object.assign({}, step)));
     setDraftMessageTriggers(
       (profile.messageTriggers ?? []).map((trigger) =>
         Object.assign({}, trigger),
       ),
     );
-    setShowIssues(false);
   };
 
   createEffect(() => {
@@ -629,122 +532,70 @@ function createCombatProfilesController(props: CombatProfilesViewProps) {
     window.requestAnimationFrame(() => classNameInput?.focus());
   };
 
-  const removeLastClassName = (): void => {
-    setClassNames((current) => current.slice(0, -1));
-  };
-
-  const draftProfile = createMemo((): CombatProfile | undefined => {
+  const buildSelectedProfileDraft = (): CombatProfile | null => {
     const profile = selectedProfile();
     if (!profile) {
-      return undefined;
+      return null;
     }
 
+    const parsedDelay = Number.parseInt(delayMs(), 10);
     const selectedClassNames = appendClassName(classNames(), classNameDraft());
     const trimmedConsumable = consumable().trim();
-    return {
+    const selectedCooldownMode = cooldownMode();
+    const profileWithoutClassNames = {
       id: profile.id,
+      label: profile.label,
+      delayMs: profile.delayMs,
+      cooldownMode: selectedCooldownMode,
+      ...(resetSkillIndexOnTargetDeath()
+        ? { resetSkillIndexOnTargetDeath: true }
+        : {}),
+      steps: draftSteps().map((step) => {
+        if (step.cooldownMode === selectedCooldownMode) {
+          const { cooldownMode: _cooldownMode, ...rest } = step;
+          return rest;
+        }
+
+        return step;
+      }),
+      messageTriggers: draftMessageTriggers(),
+    } satisfies CombatProfile;
+    return {
+      ...profileWithoutClassNames,
       label: label().trim() || profile.label,
       ...(selectedClassNames.length === 0
         ? {}
         : { classNames: selectedClassNames }),
       ...(trimmedConsumable === "" ? {} : { consumable: trimmedConsumable }),
-      delayMs: delayMs(),
-      cooldownMode: cooldownMode(),
-      ...(resetSkillIndexOnTargetDeath()
-        ? { resetSkillIndexOnTargetDeath: true }
-        : {}),
-      steps: draftSteps(),
-      messageTriggers: draftMessageTriggers(),
+      delayMs: Number.isFinite(parsedDelay)
+        ? Math.max(0, parsedDelay)
+        : profile.delayMs,
     };
-  });
-
-  const draftSnapshot = createMemo(() => {
-    const draft = draftProfile();
-    return draft === undefined ? "" : profileSnapshot(draft);
-  });
-
-  const hasUnsavedChanges = createMemo(() => {
-    const profile = selectedProfile();
-    return (
-      profile !== undefined && draftSnapshot() !== profileSnapshot(profile)
-    );
-  });
-
-  const hasIssues = createMemo(
-    () =>
-      wholeNumberIssue(delayMs(), MAX_DELAY_MS) !== undefined ||
-      draftSteps().some((step) => step.conditions.some(conditionHasIssue)) ||
-      draftMessageTriggers().some(triggerHasIssue),
-  );
-
-  const issueMessage = createMemo(() => {
-    if (error() !== "") {
-      return error();
-    }
-
-    return showIssues() && hasIssues()
-      ? "Fix the highlighted fields to save."
-      : "";
-  });
-
-  const blockOnIssues = (): boolean => {
-    if (hasIssues()) {
-      setShowIssues(true);
-      focusFirstInvalidField();
-    }
-    return hasIssues();
-  };
-
-  const confirmDiscardingChanges = (run: () => void): void => {
-    if (hasUnsavedChanges()) {
-      setPendingProfileSwitch({ run });
-    } else {
-      run();
-    }
-  };
-
-  const discardChangesAndContinue = (): void => {
-    const pending = pendingProfileSwitch();
-    setPendingProfileSwitch(undefined);
-    pending?.run();
-  };
-
-  const cancelProfileSwitch = (): void => {
-    setPendingProfileSwitch(undefined);
-  };
-
-  const selectProfileOption = (option: CombatProfileOption): void => {
-    if (option.id === selectedProfile()?.id) {
-      setSelectedOptionValue(option.value);
-      return;
-    }
-
-    confirmDiscardingChanges(() => {
-      setSelectedOptionValue(option.value);
-      selectProfile(option.id);
-    });
   };
 
   const saveSelected = async (): Promise<void> => {
-    const profile = draftProfile();
-    if (saving() || !profile || blockOnIssues()) {
+    if (saving()) {
       return;
     }
 
-    const snapshotAtSave = draftSnapshot();
+    const profile = buildSelectedProfileDraft();
+    if (!profile) {
+      return;
+    }
+
     const nextLibrary = await runUpdate(
       props.onSaveProfile?.(profile) ?? Promise.resolve(library()),
     );
     const savedProfile = nextLibrary?.profiles.find(
       (candidate) => candidate.id === profile.id,
     );
-    if (savedProfile !== undefined && draftSnapshot() === snapshotAtSave) {
+    if (savedProfile !== undefined) {
       hydrateProfileDraft(savedProfile);
     }
   };
 
   const copySelectedProfile = async (): Promise<void> => {
-    const profile = draftProfile();
+    const profile = buildSelectedProfileDraft();
     if (!profile) {
       return;
     }
@@ -763,11 +614,7 @@ function createCombatProfilesController(props: CombatProfilesViewProps) {
     }
   };
 
-  const createProfile = (): void => {
-    confirmDiscardingChanges(() => void saveNewProfile());
-  };
-
-  const saveNewProfile = async (): Promise<void> => {
+  const createProfile = async (): Promise<void> => {
     if (saving()) {
       return;
     }
@@ -791,13 +638,16 @@ function createCombatProfilesController(props: CombatProfilesViewProps) {
     );
     if (nextLibrary !== null) {
       selectProfile(id);
-      focusNameInput();
     }
   };
 
   const duplicateSelected = async (): Promise<void> => {
-    const profile = draftProfile();
-    if (saving() || !profile || blockOnIssues()) {
+    if (saving()) {
+      return;
+    }
+
+    const profile = buildSelectedProfileDraft();
+    if (!profile) {
       return;
     }
 
@@ -1008,1355 +858,896 @@ function createCombatProfilesController(props: CombatProfilesViewProps) {
     );
   };
 
-  return {
-    addClassName,
-    addCondition,
-    addMessageTrigger,
-    addStep,
-    cancelProfileSwitch,
-    classNameDraft,
-    classNames,
-    consumable,
-    cooldownMode,
-    copySelectedProfile,
-    createProfile,
-    delayMs,
-    deleteDialogOpen,
-    deleteSelected,
-    discardChangesAndContinue,
-    draftMessageTriggers,
-    draftSteps,
-    duplicateSelected,
-    duplicateStep,
-    groupProfiles,
-    hasUnsavedChanges,
-    issueMessage,
-    isDefaultProfile,
-    label,
-    moveStep,
-    pendingProfileSwitch,
-    profileCopied,
-    profileSelectItems,
-    profileSelectValue,
-    removeClassName,
-    removeCondition,
-    removeLastClassName,
-    removeMessageTrigger,
-    removeStep,
-    resetSkillIndexOnTargetDeath,
-    saveSelected,
-    saving,
-    selectProfileOption,
-    selectedProfile,
-    selectedProfileLabel,
-    setClassNameDraft,
-    setClassNameInput: (element: HTMLInputElement) => {
-      classNameInput = element;
-    },
-    setConsumable,
-    setCooldownMode,
-    setDelayMs,
-    setDeleteDialogOpen,
-    setGroupProfiles,
-    setLabel,
-    setNameInput: (element: HTMLInputElement) => {
-      nameInput = element;
-    },
-    setProfilePickerTrigger: (element: HTMLButtonElement) => {
-      profilePickerTrigger = element;
-    },
-    setResetSkillIndexOnTargetDeath,
-    showIssues,
-    toggleProfilePicker: () => profilePickerTrigger?.click(),
-    updateCondition,
-    updateConditionType,
-    updateMessageTrigger,
-    updateStepCooldownMode,
-    updateStepPriority,
-    updateStepSkill,
-  };
-}
-
-type CombatProfilesController = ReturnType<
-  typeof createCombatProfilesController
->;
-
-interface ControllerProps {
-  readonly controller: CombatProfilesController;
-}
-
-interface ShortcutControllerProps extends ControllerProps {
-  readonly platform: HotkeyDisplayPlatform;
-}
-
-const hasTextSelection = (): boolean => {
-  const active = document.activeElement;
-  if (
-    active instanceof HTMLInputElement ||
-    active instanceof HTMLTextAreaElement
-  ) {
-    return active.selectionStart !== active.selectionEnd;
-  }
-
-  return window.getSelection()?.isCollapsed === false;
-};
-
-function createCombatProfileHotkeys(c: CombatProfilesController): void {
-  const options = {
-    conflictBehavior: "replace",
-    ignoreInputs: false,
-  } as const;
-  const ignoreShortcut = (event: KeyboardEvent): boolean =>
-    event.repeat ||
-    c.deleteDialogOpen() ||
-    c.pendingProfileSwitch() !== undefined;
-
-  createHotkey(
-    SAVE_PROFILE_HOTKEY,
-    (event) => {
-      if (!ignoreShortcut(event) && c.hasUnsavedChanges()) {
-        void c.saveSelected();
-      }
-    },
-    options,
-  );
-
-  createHotkey(
-    COPY_SNIPPET_HOTKEY,
-    (event) => {
-      if (ignoreShortcut(event) || hasTextSelection()) {
-        return;
-      }
-
-      event.preventDefault();
-      void c.copySelectedProfile();
-    },
-    { ...options, preventDefault: false },
-  );
-
-  createHotkey(
-    NEW_PROFILE_HOTKEY,
-    (event) => {
-      if (!ignoreShortcut(event) && !c.saving()) {
-        c.createProfile();
-      }
-    },
-    options,
-  );
-
-  createHotkey(
-    DUPLICATE_PROFILE_HOTKEY,
-    (event) => {
-      if (!ignoreShortcut(event)) {
-        void c.duplicateSelected();
-      }
-    },
-    options,
-  );
-
-  createHotkey(
-    SWITCH_PROFILE_HOTKEY,
-    (event) => {
-      if (!ignoreShortcut(event)) {
-        c.toggleProfilePicker();
-      }
-    },
-    options,
-  );
-}
-
-const formatAriaKeyshortcuts = (
-  hotkey: string,
-  platform: HotkeyDisplayPlatform,
-): string => hotkey.replace("Mod", platform === "mac" ? "Meta" : "Control");
-
-function ShortcutHint(props: {
-  readonly hotkey: string;
-  readonly platform: HotkeyDisplayPlatform;
-}): JSX.Element {
   return (
-    <KbdGroup aria-label={formatHotkeyDisplay(props.hotkey, props.platform)}>
-      <For each={formatHotkeyDisplayParts(props.hotkey, props.platform)}>
-        {(part) => <Kbd>{part}</Kbd>}
-      </For>
-    </KbdGroup>
-  );
-}
-
-function IssueAlert(props: ControllerProps): JSX.Element {
-  return (
-    <Show when={props.controller.issueMessage()}>
-      {(message) => (
-        <Alert class="combat-profiles-issue" variant="error">
-          <AlertDescription class="combat-profiles-issue__message">
-            <Icon icon="circle_alert" aria-hidden="true" />
-            <span>{message()}</span>
-          </AlertDescription>
-        </Alert>
-      )}
-    </Show>
-  );
-}
-
-const profileOptionLabel = (profile: CombatProfileOption): string =>
-  profile.group === undefined
-    ? profile.label
-    : `${profile.label} - ${profile.group}`;
-
-function ProfilePicker(props: ShortcutControllerProps): JSX.Element {
-  const c = props.controller;
-  const [open, setOpen] = createSignal(false);
-  return (
-    <Tooltip
-      closeDelay={0}
-      disabled={open()}
-      ids={{ trigger: PROFILE_PICKER_TRIGGER_ID }}
-      openDelay={200}
-      positioning={{ placement: "top" }}
-    >
-      <Select
-        class="combat-profiles-picker"
-        composite={false}
-        ids={{ trigger: PROFILE_PICKER_TRIGGER_ID }}
-        items={c.profileSelectItems()}
-        value={c.profileSelectValue() === "" ? [] : [c.profileSelectValue()]}
-        onOpenChange={(details) => setOpen(details.open)}
-        onValueChange={(details) => {
-          const option = c
-            .profileSelectItems()
-            .find((item) => item.value === details.value[0]);
-          if (option !== undefined) {
-            c.selectProfileOption(option);
-          }
-        }}
-      >
-        <TooltipTrigger
-          asChild={(tooltipTriggerProps) => (
+    <div class="standalone-window">
+      <header class="standalone-window__header combat-profiles-toolbar">
+        <div class="combat-profiles-profile-dropdown">
+          <span>Profile</span>
+          <Select
+            class="combat-profiles-profile-dropdown__select"
+            composite={false}
+            items={profileSelectItems()}
+            value={profileSelectValue() === "" ? [] : [profileSelectValue()]}
+            onValueChange={(details) => {
+              const option = profileSelectItems().find(
+                (item) => item.value === details.value[0],
+              );
+              if (option !== undefined) {
+                setSelectedOptionValue(option.value);
+                selectProfile(option.id);
+              }
+            }}
+          >
             <SelectTrigger
-              {...(tooltipTriggerProps({
-                ref: (element: HTMLButtonElement) =>
-                  c.setProfilePickerTrigger(element),
-                "aria-haspopup": "dialog",
-                "aria-keyshortcuts": formatAriaKeyshortcuts(
-                  SWITCH_PROFILE_HOTKEY,
-                  props.platform,
-                ),
-                "aria-label": "Profile",
-              } as SelectTriggerProps) as SelectTriggerProps)}
+              aria-haspopup="dialog"
+              title={selectedProfileLabel() || "Profile"}
             >
               <span
                 class="select__value"
                 data-placeholder={
-                  c.selectedProfileLabel() === "" ? "" : undefined
+                  selectedProfileLabel() === "" ? "" : undefined
                 }
               >
-                {c.selectedProfileLabel() || "Profile"}
+                {selectedProfileLabel() || "Profile"}
               </span>
             </SelectTrigger>
-          )}
-        />
-        <ProfilePickerContent controller={c} />
-      </Select>
-      <TooltipContent>
-        Switch profile{" "}
-        <ShortcutHint
-          hotkey={SWITCH_PROFILE_HOTKEY}
-          platform={props.platform}
-        />
-      </TooltipContent>
-    </Tooltip>
-  );
-}
-
-function ProfilePickerContent(props: ControllerProps): JSX.Element {
-  const c = props.controller;
-  return (
-    <VirtualizedSelectContent
-      aria-label="Combat profiles"
-      items={c.profileSelectItems()}
-      groupBy={
-        c.groupProfiles()
-          ? (profile) => profile.group ?? "Any class"
-          : undefined
-      }
-      header={
-        <Button
-          aria-label="Group by class"
-          aria-pressed={c.groupProfiles()}
-          class="virtual-list__group-toggle"
-          size="xs"
-          title={c.groupProfiles() ? "Show flat list" : "Show grouped list"}
-          variant="ghost"
-          onClick={() => c.setGroupProfiles((grouped) => !grouped)}
-        >
-          <Icon icon="list_tree" class="button__icon" />
-          <span>Group</span>
-        </Button>
-      }
-      searchable
-      scrollToSelected
-    >
-      {(profile) => (
-        <SelectItem
-          item={profile}
-          aria-label={profileOptionLabel(profile)}
-          title={profileOptionLabel(profile)}
-          value={profile.value}
-        >
-          {profile.label}
-        </SelectItem>
-      )}
-    </VirtualizedSelectContent>
-  );
-}
-
-function ProfileActions(props: ShortcutControllerProps): JSX.Element {
-  const c = props.controller;
-  return (
-    <div class="combat-profiles-profile-actions">
-      <TooltipIconButton
-        aria-keyshortcuts={formatAriaKeyshortcuts(
-          NEW_PROFILE_HOTKEY,
-          props.platform,
-        )}
-        aria-label="New profile"
-        class="combat-profiles-profile-action"
-        disabled={c.saving()}
-        size="icon-sm"
-        tooltip={
-          <>
-            New profile{" "}
-            <ShortcutHint
-              hotkey={NEW_PROFILE_HOTKEY}
-              platform={props.platform}
-            />
-          </>
-        }
-        variant="ghost"
-        onClick={() => c.createProfile()}
-      >
-        <Icon icon="plus" size="sm" />
-      </TooltipIconButton>
-      <TooltipIconButton
-        aria-keyshortcuts={formatAriaKeyshortcuts(
-          DUPLICATE_PROFILE_HOTKEY,
-          props.platform,
-        )}
-        aria-label="Duplicate profile"
-        class="combat-profiles-profile-action"
-        disabled={c.saving() || c.selectedProfile() === undefined}
-        size="icon-sm"
-        tooltip={
-          <>
-            Duplicate{" "}
-            <ShortcutHint
-              hotkey={DUPLICATE_PROFILE_HOTKEY}
-              platform={props.platform}
-            />
-          </>
-        }
-        variant="ghost"
-        onClick={() => void c.duplicateSelected()}
-      >
-        <Icon icon="files" size="sm" />
-      </TooltipIconButton>
-      <TooltipIconButton
-        aria-label="Delete profile"
-        class="combat-profiles-profile-action combat-profiles-remove"
-        disabled={c.saving() || c.isDefaultProfile()}
-        size="icon-sm"
-        tooltip="Delete"
-        variant="ghost"
-        onClick={() => c.setDeleteDialogOpen(true)}
-      >
-        <Icon icon="trash_2" size="sm" />
-      </TooltipIconButton>
-    </div>
-  );
-}
-
-function CopySnippetButton(props: ShortcutControllerProps): JSX.Element {
-  const c = props.controller;
-  return (
-    <TooltipButton>
-      <TooltipButtonTrigger
-        aria-keyshortcuts={formatAriaKeyshortcuts(
-          COPY_SNIPPET_HOTKEY,
-          props.platform,
-        )}
-        aria-label={
-          c.profileCopied() ? "Copied profile snippet" : "Copy profile snippet"
-        }
-        class="combat-profiles-quiet-action combat-profiles-copy"
-        disabled={c.selectedProfile() === undefined}
-        size="sm"
-        variant="ghost"
-        onClick={() => void c.copySelectedProfile()}
-      >
-        <Icon
-          icon={c.profileCopied() ? "check" : "copy"}
-          class="button__icon"
-        />
-        <span class="combat-profiles-copy__label">
-          {c.profileCopied() ? "Copied" : "Copy snippet"}
-        </span>
-      </TooltipButtonTrigger>
-      <TooltipButtonContent>
-        For use in scripts.{" "}
-        <ShortcutHint hotkey={COPY_SNIPPET_HOTKEY} platform={props.platform} />
-      </TooltipButtonContent>
-    </TooltipButton>
-  );
-}
-
-function DeleteProfileDialog(props: ControllerProps): JSX.Element {
-  const c = props.controller;
-  return (
-    <AlertDialog
-      open={c.deleteDialogOpen()}
-      onOpenChange={(details) => c.setDeleteDialogOpen(details.open)}
-    >
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>Delete profile?</AlertDialogTitle>
-          <AlertDialogDescription class="combat-profiles-dialog-description">
-            {c.selectedProfile()?.label ?? "This profile"} will be permanently
-            removed.
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction
-            disabled={c.saving()}
-            variant="destructive"
-            onClick={() => void c.deleteSelected()}
-          >
-            Delete
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
-  );
-}
-
-function DiscardChangesDialog(props: ControllerProps): JSX.Element {
-  const c = props.controller;
-  return (
-    <AlertDialog
-      open={c.pendingProfileSwitch() !== undefined}
-      onOpenChange={(details) => {
-        if (!details.open) {
-          c.cancelProfileSwitch();
-        }
-      }}
-    >
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>Discard unsaved changes?</AlertDialogTitle>
-          <AlertDialogDescription class="combat-profiles-dialog-description">
-            Your changes to {c.selectedProfile()?.label ?? "this profile"}{" "}
-            haven't been saved.
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel>Keep editing</AlertDialogCancel>
-          <AlertDialogAction
-            variant="destructive"
-            onClick={() => c.discardChangesAndContinue()}
-          >
-            Discard changes
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
-  );
-}
-
-const formatNumberDraft = (value: number | undefined): string =>
-  value === undefined ? "" : String(value);
-
-const toNumberDraft = (text: string): string => {
-  const [whole = "", ...fractions] = text.replaceAll(/[^\d.]/gu, "").split(".");
-  return fractions.length === 0 ? whole : `${whole}.${fractions.join("")}`;
-};
-
-function NumberField<Empty extends number | undefined>(
-  props: Omit<InputProps, "onChange" | "value"> & {
-    readonly emptyValue: Empty;
-    readonly max: number;
-    readonly onChange: (value: number | Empty) => void;
-    readonly value: number | Empty;
-  },
-): JSX.Element {
-  const [local, inputProps] = splitProps(props, [
-    "emptyValue",
-    "max",
-    "onChange",
-    "value",
-  ]);
-  const parse = (text: string): number | Empty =>
-    text === "" || text === "." ? local.emptyValue : Number(text);
-  const [draft, setDraft] = createSignal(formatNumberDraft(local.value));
-  const issue = () => wholeNumberIssue(local.value, local.max);
-  const issueId = createUniqueId();
-
-  createEffect(() => {
-    const value = local.value;
-    if (value !== parse(untrack(draft))) {
-      setDraft(formatNumberDraft(value));
-    }
-  });
-
-  return (
-    <>
-      <Input
-        {...inputProps}
-        aria-describedby={issue() === undefined ? undefined : issueId}
-        autocomplete="off"
-        inputmode="numeric"
-        invalid={issue() !== undefined}
-        value={draft()}
-        onInput={(event) => {
-          const text = toNumberDraft(event.currentTarget.value);
-          event.currentTarget.value = text;
-          setDraft(text);
-          local.onChange(parse(text));
-        }}
-        onBlur={() => setDraft(formatNumberDraft(local.value))}
-      />
-      <Show when={issue()}>
-        {(message) => (
-          <span id={issueId} class="combat-profiles-field-error">
-            {message()}
-          </span>
-        )}
-      </Show>
-    </>
-  );
-}
-
-function RequiredInput(
-  props: InputProps & {
-    readonly revealMissing: boolean;
-    readonly value: string;
-  },
-): JSX.Element {
-  const [local, inputProps] = splitProps(props, ["revealMissing"]);
-  const [blurred, setBlurred] = createSignal(false);
-  const missing = () => props.value.trim() === "";
-  return (
-    <Input
-      {...inputProps}
-      invalid={missing() && (blurred() || local.revealMissing)}
-      onBlur={() => setBlurred(true)}
-    />
-  );
-}
-
-function FieldLabel(props: {
-  readonly children: string;
-  readonly for?: string;
-  readonly help?: string;
-}): JSX.Element {
-  return (
-    <span class="combat-profiles-label">
-      <label for={props.for}>{props.children}</label>
-      <Show when={props.help}>
-        {(help) => (
-          <HelpTooltip
-            aria-label={`About ${props.children.toLowerCase()}`}
-            tooltip={help()}
-          />
-        )}
-      </Show>
-    </span>
-  );
-}
-
-function SheetSection(props: {
-  readonly action?: JSX.Element;
-  readonly children: JSX.Element;
-  readonly description: string;
-  readonly id: string;
-  readonly sticky?: boolean;
-  readonly title: string;
-}): JSX.Element {
-  const headingId = () => `combat-profiles-section-${props.id}`;
-  return (
-    <section
-      class="combat-profiles-section"
-      aria-labelledby={headingId()}
-      data-sticky={props.sticky ? "" : undefined}
-    >
-      <div class="combat-profiles-section__heading">
-        <div class="combat-profiles-section__label">
-          <h2 id={headingId()} class="combat-profiles-section__title">
-            {props.title}
-          </h2>
-          <p class="combat-profiles-section__description">
-            {props.description}
-          </p>
-        </div>
-        {props.action}
-      </div>
-      {props.children}
-    </section>
-  );
-}
-
-function AddButton(props: {
-  readonly children: string;
-  readonly onClick: () => void;
-}): JSX.Element {
-  return (
-    <Button
-      class="combat-profiles-quiet-action combat-profiles-section__action"
-      size="xs"
-      variant="ghost"
-      onClick={() => props.onClick()}
-    >
-      <Icon icon="plus" class="button__icon" />
-      {props.children}
-    </Button>
-  );
-}
-
-function ChoiceSelect<T extends string>(props: {
-  readonly "aria-label": string;
-  readonly class?: string;
-  readonly "data-overridden"?: string | undefined;
-  readonly display?: JSX.Element;
-  readonly onChange: (value: T) => void;
-  readonly options: readonly ChoiceOption<T>[];
-  readonly parse: (value: string | undefined) => T | undefined;
-  readonly value: string;
-  readonly variant?: "inline" | "field";
-}): JSX.Element {
-  return (
-    <Select
-      class={cn(
-        "combat-profiles-choice",
-        props.variant === "inline" && "combat-profiles-choice--inline",
-        props.class,
-      )}
-      data-overridden={props["data-overridden"]}
-      positioning={{ sameWidth: false }}
-      value={[props.value]}
-      onValueChange={(details) => {
-        const value = props.parse(details.value[0]);
-        if (value !== undefined) {
-          props.onChange(value);
-        }
-      }}
-    >
-      <SelectTrigger size="sm" aria-label={props["aria-label"]}>
-        <span class="select__value">
-          {props.display ?? choiceLabel(props.options, props.value)}
-        </span>
-      </SelectTrigger>
-      <SelectContent class="combat-profiles-choice__content">
-        <For each={props.options}>
-          {(option) => (
-            <SelectItem value={option.value}>{option.label}</SelectItem>
-          )}
-        </For>
-      </SelectContent>
-    </Select>
-  );
-}
-
-const skillOptions = skillSlots.map((skill) => ({
-  value: String(skill),
-  label: `Skill ${skill}`,
-}));
-
-function SkillSelect(props: {
-  readonly "aria-label": string;
-  readonly onChange: (skill: SkillSlot) => void;
-  readonly value: SkillSlot;
-}): JSX.Element {
-  return (
-    <ChoiceSelect
-      aria-label={props["aria-label"]}
-      class="combat-profiles-skill"
-      options={skillOptions}
-      parse={(value) =>
-        parseSkillSlot(value) === undefined ? undefined : value
-      }
-      value={String(props.value)}
-      onChange={(value) => {
-        const skill = parseSkillSlot(value);
-        if (skill !== undefined) {
-          props.onChange(skill);
-        }
-      }}
-    />
-  );
-}
-
-function ClassNamesInput(props: ControllerProps): JSX.Element {
-  const c = props.controller;
-  let input: HTMLInputElement | undefined;
-  return (
-    <div
-      class="combat-profiles-tokens"
-      onMouseDown={(event) => {
-        if (
-          event.target instanceof Element &&
-          event.target.closest("button, input")
-        ) {
-          return;
-        }
-
-        event.preventDefault();
-        input?.focus();
-      }}
-    >
-      <Index each={c.classNames()}>
-        {(className, classNameIndex) => (
-          <span class="combat-profiles-token">
-            <span class="combat-profiles-token__label">{className()}</span>
-            <IconButton
-              aria-label={`Remove ${className()}`}
-              class="combat-profiles-remove"
-              size="icon-xs"
-              variant="ghost"
-              onClick={() => c.removeClassName(classNameIndex)}
+            <VirtualizedSelectContent
+              aria-label="Combat profiles"
+              items={profileSelectItems()}
+              groupBy={
+                groupProfiles()
+                  ? (profile) => profile.group ?? "Any class"
+                  : undefined
+              }
+              header={
+                <Button
+                  aria-label="Group by class"
+                  aria-pressed={groupProfiles()}
+                  class="virtual-list__group-toggle"
+                  size="xs"
+                  title={
+                    groupProfiles() ? "Show flat list" : "Show grouped list"
+                  }
+                  variant="ghost"
+                  onClick={() => setGroupProfiles((grouped) => !grouped)}
+                >
+                  <Icon icon="list_tree" class="button__icon" />
+                  <span>Group</span>
+                </Button>
+              }
+              searchable
+              scrollToSelected
             >
-              <Icon icon="x" size="xs" />
-            </IconButton>
-          </span>
-        )}
-      </Index>
-      <input
-        ref={(element) => {
-          input = element;
-          c.setClassNameInput(element);
-        }}
-        id="combat-profile-class-name"
-        class="combat-profiles-tokens__input"
-        autocomplete="off"
-        maxLength={MAX_NAME_LENGTH}
-        name="combat-profile-class-name"
-        placeholder={c.classNames().length === 0 ? "Any class" : "Add class…"}
-        spellcheck={false}
-        value={c.classNameDraft()}
-        onInput={(event) => c.setClassNameDraft(event.currentTarget.value)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter") {
-            event.preventDefault();
-            c.addClassName();
-            return;
-          }
-
-          if (event.key === "Backspace" && c.classNameDraft() === "") {
-            c.removeLastClassName();
-          }
-        }}
-      />
-      <span aria-hidden="true" class="combat-profiles-tokens__ring" />
-    </div>
-  );
-}
-
-const consumableHelp =
-  "Equips this inventory item before combat. The first running profile controls preflight equipment.";
-const resetHelp =
-  "Restart at the first matching skill when the active target dies.";
-const priorityHelp =
-  "Can interrupt the normal rotation. On the next normal cast, the rotation resumes where it left off.";
-const triggerCooldownHelp =
-  "Minimum time before this trigger can cast again. Leave empty or 0 to allow every matching message.";
-
-function ProfileSection(props: ControllerProps): JSX.Element {
-  const c = props.controller;
-  return (
-    <SheetSection
-      id="general"
-      title="General"
-      description="Name, classes, and pacing for this profile."
-    >
-      <div class="combat-profiles-fields">
-        <div class="combat-profiles-field combat-profiles-field--wide">
-          <FieldLabel for="combat-profile-name">Name</FieldLabel>
-          <Input
-            ref={(element) => c.setNameInput(element)}
-            id="combat-profile-name"
-            autocomplete="off"
-            maxLength={MAX_NAME_LENGTH}
-            value={c.label()}
-            onInput={(event) => c.setLabel(event.currentTarget.value)}
-          />
-        </div>
-        <div class="combat-profiles-field combat-profiles-field--wide">
-          <FieldLabel for="combat-profile-consumable" help={consumableHelp}>
-            Skill 5 item
-          </FieldLabel>
-          <Input
-            id="combat-profile-consumable"
-            autocomplete="off"
-            maxLength={MAX_NAME_LENGTH}
-            placeholder="Potent Honor Potion"
-            value={c.consumable()}
-            onInput={(event) => c.setConsumable(event.currentTarget.value)}
-          />
-        </div>
-      </div>
-      <div class="combat-profiles-field combat-profiles-field--full">
-        <FieldLabel for="combat-profile-class-name">Classes</FieldLabel>
-        <ClassNamesInput controller={c} />
-      </div>
-      <div class="combat-profiles-fields">
-        <div class="combat-profiles-field">
-          <FieldLabel for="combat-profile-delay">Delay</FieldLabel>
-          <div class="combat-profiles-suffixed">
-            <NumberField
-              id="combat-profile-delay"
-              class="combat-profiles-number"
-              emptyValue={0}
-              max={MAX_DELAY_MS}
-              value={c.delayMs()}
-              onChange={c.setDelayMs}
-            />
-            <span class="combat-profiles-suffix">ms</span>
-          </div>
-        </div>
-        <div class="combat-profiles-field">
-          <FieldLabel>On cooldown</FieldLabel>
-          <ChoiceSelect
-            aria-label="On cooldown"
-            class="combat-profiles-cooldown"
-            options={cooldownModeOptions}
-            parse={(value) =>
-              isCombatProfileCooldownMode(value) ? value : undefined
-            }
-            value={c.cooldownMode()}
-            onChange={c.setCooldownMode}
-          />
-        </div>
-        <div class="combat-profiles-check">
-          <Checkbox
-            size="sm"
-            checked={c.resetSkillIndexOnTargetDeath()}
-            onChange={(event) =>
-              c.setResetSkillIndexOnTargetDeath(event.currentTarget.checked)
-            }
-          >
-            Reset rotation on target death
-          </Checkbox>
-          <HelpTooltip
-            aria-label="About resetting the rotation"
-            tooltip={resetHelp}
-          />
-        </div>
-      </div>
-    </SheetSection>
-  );
-}
-
-function RowAction(props: {
-  readonly disabled?: boolean;
-  readonly icon: IconName;
-  readonly label: string;
-  readonly onClick: () => void;
-  readonly tooltip: string;
-  readonly variant?: "remove";
-}): JSX.Element {
-  return (
-    <TooltipIconButton
-      aria-label={props.label}
-      class={cn(
-        "combat-profiles-row-action",
-        props.variant === "remove" && "combat-profiles-remove",
-      )}
-      disabled={props.disabled}
-      size="icon-xs"
-      tooltip={props.tooltip}
-      variant="ghost"
-      onClick={() => props.onClick()}
-    >
-      <Icon icon={props.icon} size="sm" />
-    </TooltipIconButton>
-  );
-}
-
-function RuleRow(props: {
-  readonly condition: Accessor<CombatProfileCondition>;
-  readonly conditionIndex: number;
-  readonly controller: CombatProfilesController;
-  readonly stepIndex: number;
-}): JSX.Element {
-  const c = props.controller;
-  const update = (
-    change: (condition: CombatProfileCondition) => CombatProfileCondition,
-  ): void => c.updateCondition(props.stepIndex, props.conditionIndex, change);
-
-  return (
-    <li class="combat-profiles-rule">
-      <span class="combat-profiles-rule__joiner">
-        {props.conditionIndex === 0 ? "when" : "and"}
-      </span>
-      <ChoiceSelect
-        aria-label="Condition"
-        variant="inline"
-        options={conditionTypes}
-        parse={(value) =>
-          conditionTypes.find((option) => option.value === value)?.value
-        }
-        value={props.condition().type}
-        onChange={(type) =>
-          c.updateConditionType(props.stepIndex, props.conditionIndex, type)
-        }
-      />
-      <Show when={!isStatCondition(props.condition())}>
-        <RequiredInput
-          aria-label="Aura name"
-          class="combat-profiles-aura"
-          autocomplete="off"
-          maxLength={MAX_NAME_LENGTH}
-          placeholder="Aura name"
-          revealMissing={c.showIssues()}
-          size="sm"
-          spellcheck={false}
-          value={auraNameValue(props.condition())}
-          onInput={(event) =>
-            update((current) =>
-              isStatCondition(current)
-                ? current
-                : { ...current, auraName: event.currentTarget.value },
-            )
-          }
-        />
-      </Show>
-      <ChoiceSelect
-        aria-label="Comparison"
-        variant="inline"
-        class="combat-profiles-comparison"
-        options={comparisonOptions}
-        parse={(value) =>
-          comparisonOptions.find((option) => option.value === value)?.value
-        }
-        value={props.condition().op}
-        onChange={(op) => update((current) => ({ ...current, op }))}
-      />
-      <NumberField
-        aria-label="Value"
-        class="combat-profiles-number combat-profiles-number--rule"
-        emptyValue={0}
-        max={conditionValueMax(props.condition())}
-        size="sm"
-        value={props.condition().value}
-        onChange={(value) => update((current) => ({ ...current, value }))}
-      />
-      <Show when={isStatCondition(props.condition())}>
-        <ChoiceSelect
-          aria-label="Unit"
-          variant="inline"
-          options={conditionUnitOptions(props.condition())}
-          parse={(value) =>
-            value === "percent" || value === "value" ? value : undefined
-          }
-          value={conditionUnitValue(props.condition())}
-          onChange={(unit) =>
-            update((current) =>
-              isStatCondition(current) ? { ...current, unit } : current,
-            )
-          }
-        />
-      </Show>
-      <IconButton
-        aria-label={`Remove rule ${conditionLabel(props.condition())}`}
-        class="combat-profiles-remove combat-profiles-rule__remove"
-        size="icon-xs"
-        variant="ghost"
-        onClick={() => c.removeCondition(props.stepIndex, props.conditionIndex)}
-      >
-        <Icon icon="x" size="sm" />
-      </IconButton>
-    </li>
-  );
-}
-
-function StepRow(props: {
-  readonly controller: CombatProfilesController;
-  readonly step: Accessor<CombatProfileStep>;
-  readonly stepIndex: number;
-}): JSX.Element {
-  const c = props.controller;
-  const position = () => props.stepIndex + 1;
-  const cooldownOverride = () => props.step().cooldownMode;
-  const cooldownOverrideLabel = () => {
-    const override = cooldownOverride();
-    return override === undefined
-      ? "default"
-      : choiceLabel(cooldownModeOptions, override);
-  };
-  const stepCooldownOptions = createMemo<
-    readonly ChoiceOption<CombatProfileCooldownMode | "default">[]
-  >(() => [
-    {
-      value: "default",
-      label: `Default (${choiceLabel(cooldownModeOptions, c.cooldownMode()).toLowerCase()})`,
-    },
-    ...cooldownModeOptions,
-  ]);
-
-  return (
-    <li
-      class="combat-profiles-step"
-      data-priority={props.step().priority === true ? "" : undefined}
-    >
-      <div class="combat-profiles-step__main">
-        <span class="combat-profiles-step__order" aria-hidden="true">
-          {position()}
-        </span>
-        <SkillSelect
-          aria-label={`Step ${position()} skill`}
-          value={props.step().skill}
-          onChange={(skill) => c.updateStepSkill(props.stepIndex, skill)}
-        />
-        <TooltipButton>
-          <TooltipButtonTrigger
-            aria-pressed={props.step().priority === true}
-            class="combat-profiles-priority"
-            size="xs"
-            variant="ghost"
-            onClick={() =>
-              c.updateStepPriority(
-                props.stepIndex,
-                props.step().priority !== true,
-              )
-            }
-          >
-            <Show when={props.step().priority === true}>
-              <Icon icon="check" class="button__icon" />
-            </Show>
-            Priority
-          </TooltipButtonTrigger>
-          <TooltipButtonContent>{priorityHelp}</TooltipButtonContent>
-        </TooltipButton>
-        <ChoiceSelect
-          aria-label={`Step ${position()} on cooldown`}
-          variant="inline"
-          class="combat-profiles-step__cooldown"
-          data-overridden={cooldownOverride() === undefined ? undefined : ""}
-          display={
-            <>
-              <span class="combat-profiles-choice__prefix">On cooldown:</span>{" "}
-              {cooldownOverrideLabel()}
-            </>
-          }
-          options={stepCooldownOptions()}
-          parse={(value) =>
-            value === "default" || isCombatProfileCooldownMode(value)
-              ? value
-              : undefined
-          }
-          value={cooldownOverride() ?? "default"}
-          onChange={(mode) => c.updateStepCooldownMode(props.stepIndex, mode)}
-        />
-        <div class="combat-profiles-step__actions">
-          <Button
-            class="combat-profiles-quiet-action"
-            size="xs"
-            variant="ghost"
-            aria-label={`Add rule to step ${position()}`}
-            onClick={() => c.addCondition(props.stepIndex)}
-          >
-            <Icon icon="plus" class="button__icon" />
-            Rule
-          </Button>
-          <RowAction
-            icon="arrow_up"
-            label={`Move step ${position()} up`}
-            tooltip="Move up"
-            disabled={props.stepIndex === 0}
-            onClick={() => c.moveStep(props.stepIndex, -1)}
-          />
-          <RowAction
-            icon="arrow_down"
-            label={`Move step ${position()} down`}
-            tooltip="Move down"
-            disabled={props.stepIndex === c.draftSteps().length - 1}
-            onClick={() => c.moveStep(props.stepIndex, 1)}
-          />
-          <RowAction
-            icon="copy"
-            label={`Duplicate step ${position()}`}
-            tooltip="Duplicate"
-            onClick={() => c.duplicateStep(props.stepIndex)}
-          />
-          <RowAction
-            icon="x"
-            label={`Remove step ${position()}`}
-            tooltip="Remove"
-            variant="remove"
-            onClick={() => c.removeStep(props.stepIndex)}
-          />
-        </div>
-      </div>
-      <Show when={props.step().conditions.length > 0}>
-        <ul
-          class="combat-profiles-rules"
-          aria-label={`Rules for step ${position()}`}
-        >
-          <Index each={props.step().conditions}>
-            {(condition, conditionIndex) => (
-              <RuleRow
-                condition={condition}
-                conditionIndex={conditionIndex}
-                controller={c}
-                stepIndex={props.stepIndex}
-              />
-            )}
-          </Index>
-        </ul>
-      </Show>
-    </li>
-  );
-}
-
-const revealLastRow = (
-  list: HTMLElement | undefined,
-  focusSelector: string,
-): void => {
-  const row = list?.lastElementChild;
-  if (!(row instanceof HTMLElement)) {
-    return;
-  }
-
-  row.scrollIntoView({ block: "nearest" });
-  row.querySelector<HTMLElement>(focusSelector)?.focus({ preventScroll: true });
-};
-
-function RotationSection(props: ControllerProps): JSX.Element {
-  const c = props.controller;
-  let list: HTMLOListElement | undefined;
-  return (
-    <SheetSection
-      id="rotation"
-      sticky
-      title="Rotation"
-      description="Tried top to bottom. A skill casts only if all its rules pass."
-      action={
-        <AddButton
-          onClick={() => {
-            c.addStep();
-            revealLastRow(list, ".combat-profiles-skill .select__trigger");
-          }}
-        >
-          Add skill
-        </AddButton>
-      }
-    >
-      <Show
-        when={c.draftSteps().length > 0}
-        fallback={<p class="combat-profiles-empty">No skills yet.</p>}
-      >
-        <ol
-          ref={(element) => {
-            list = element;
-          }}
-          class="combat-profiles-steps"
-          aria-label="Rotation"
-        >
-          <Index each={c.draftSteps()}>
-            {(step, stepIndex) => (
-              <StepRow controller={c} step={step} stepIndex={stepIndex} />
-            )}
-          </Index>
-        </ol>
-      </Show>
-    </SheetSection>
-  );
-}
-
-function TriggerRow(props: {
-  readonly controller: CombatProfilesController;
-  readonly trigger: Accessor<CombatProfileMessageTrigger>;
-  readonly triggerIndex: number;
-}): JSX.Element {
-  const c = props.controller;
-  const update = (
-    change: (
-      trigger: CombatProfileMessageTrigger,
-    ) => CombatProfileMessageTrigger,
-  ): void => c.updateMessageTrigger(props.triggerIndex, change);
-
-  return (
-    <li class="combat-profiles-trigger">
-      <span class="combat-profiles-trigger__word">When</span>
-      <ChoiceSelect
-        aria-label="Message source"
-        variant="inline"
-        options={messageTriggerSourceOptions}
-        parse={(value) => (isMessageTriggerSource(value) ? value : undefined)}
-        value={props.trigger().source}
-        onChange={(source) => update((current) => ({ ...current, source }))}
-      />
-      <span class="combat-profiles-trigger__word">message contains</span>
-      <RequiredInput
-        aria-label="Message text"
-        class="combat-profiles-trigger__message"
-        autocomplete="off"
-        maxLength={MAX_MESSAGE_LENGTH}
-        placeholder="Message text"
-        revealMissing={c.showIssues()}
-        size="sm"
-        spellcheck={false}
-        value={props.trigger().messageIncludes}
-        onInput={(event) =>
-          update((current) => ({
-            ...current,
-            messageIncludes: event.currentTarget.value,
-          }))
-        }
-      />
-      <span class="combat-profiles-trigger__word">cast</span>
-      <SkillSelect
-        aria-label="Skill to cast"
-        value={props.trigger().skill}
-        onChange={(skill) => update((current) => ({ ...current, skill }))}
-      />
-      <span class="combat-profiles-trigger__cooldown">
-        <span class="combat-profiles-trigger__word">cooldown</span>
-        <NumberField
-          aria-label="Trigger cooldown in milliseconds"
-          class="combat-profiles-number combat-profiles-number--cooldown"
-          emptyValue={undefined}
-          max={MAX_TRIGGER_COOLDOWN_MS}
-          placeholder="0"
-          size="sm"
-          value={props.trigger().cooldownMs}
-          onChange={(cooldownMs) =>
-            update(({ cooldownMs: _previous, ...current }) =>
-              cooldownMs === undefined ? current : { ...current, cooldownMs },
-            )
-          }
-        />
-        <span class="combat-profiles-suffix">ms</span>
-        <HelpTooltip
-          aria-label="About trigger cooldown"
-          tooltip={triggerCooldownHelp}
-        />
-      </span>
-      <IconButton
-        aria-label="Remove trigger"
-        class="combat-profiles-remove combat-profiles-trigger__remove"
-        size="icon-xs"
-        variant="ghost"
-        onClick={() => c.removeMessageTrigger(props.triggerIndex)}
-      >
-        <Icon icon="x" size="sm" />
-      </IconButton>
-    </li>
-  );
-}
-
-function TriggersSection(props: ControllerProps): JSX.Element {
-  const c = props.controller;
-  let list: HTMLUListElement | undefined;
-  return (
-    <SheetSection
-      id="triggers"
-      sticky
-      title="Message triggers"
-      description="Cast a skill when a combat message contains matching text."
-      action={
-        <AddButton
-          onClick={() => {
-            c.addMessageTrigger();
-            revealLastRow(list, ".combat-profiles-trigger__message");
-          }}
-        >
-          Add trigger
-        </AddButton>
-      }
-    >
-      <Show
-        when={c.draftMessageTriggers().length > 0}
-        fallback={<p class="combat-profiles-empty">No message triggers.</p>}
-      >
-        <ul
-          ref={(element) => {
-            list = element;
-          }}
-          class="combat-profiles-triggers"
-          aria-label="Message triggers"
-        >
-          <Index each={c.draftMessageTriggers()}>
-            {(trigger, triggerIndex) => (
-              <TriggerRow
-                controller={c}
-                trigger={trigger}
-                triggerIndex={triggerIndex}
-              />
-            )}
-          </Index>
-        </ul>
-      </Show>
-    </SheetSection>
-  );
-}
-
-export function CombatProfilesView(
-  props: CombatProfilesViewProps,
-): JSX.Element {
-  const c = createCombatProfilesController(props);
-  createCombatProfileHotkeys(c);
-  return (
-    <div class="standalone-window combat-profiles-root">
-      <header class="standalone-window__header combat-profiles-header">
-        <span class="combat-profiles-header__label" aria-hidden="true">
-          Profile
-        </span>
-        <div class="combat-profiles-header__picker">
-          <ProfilePicker controller={c} platform={props.platform} />
-          <ProfileActions controller={c} platform={props.platform} />
-        </div>
-        <div class="combat-profiles-header__end">
-          <CopySnippetButton controller={c} platform={props.platform} />
-          <TooltipButton closeDelay={0} openDelay={200}>
-            <TooltipButtonTrigger
-              aria-keyshortcuts={formatAriaKeyshortcuts(
-                SAVE_PROFILE_HOTKEY,
-                props.platform,
+              {(profile) => (
+                <SelectItem
+                  item={profile}
+                  aria-label={
+                    profile.group === undefined
+                      ? profile.label
+                      : `${profile.label} - ${profile.group}`
+                  }
+                  title={
+                    profile.group === undefined
+                      ? profile.label
+                      : `${profile.label} - ${profile.group}`
+                  }
+                  value={profile.value}
+                >
+                  {profile.label}
+                </SelectItem>
               )}
-              aria-label="Save profile"
-              class="combat-profiles-save"
-              disabled={c.saving() || !c.hasUnsavedChanges()}
-              loading={c.saving()}
-              size="sm"
-              onClick={() => void c.saveSelected()}
-            >
-              Save
-            </TooltipButtonTrigger>
-            <TooltipButtonContent>
-              Save{" "}
-              <ShortcutHint
-                hotkey={SAVE_PROFILE_HOTKEY}
-                platform={props.platform}
-              />
-            </TooltipButtonContent>
-          </TooltipButton>
+            </VirtualizedSelectContent>
+          </Select>
+          <Button
+            aria-label="Duplicate selected profile"
+            class="combat-profiles-duplicate-profile"
+            disabled={saving() || selectedProfile() === undefined}
+            size="sm"
+            variant="outline"
+            onClick={() => void duplicateSelected()}
+          >
+            <Icon icon="files" class="button__icon" />
+            <span class="combat-profiles-toolbar-action__label">Duplicate</span>
+          </Button>
+        </div>
+
+        <div class="standalone-window__header-actions">
+          <Button
+            aria-label="Create new profile"
+            class="combat-profiles-toolbar-action"
+            disabled={saving()}
+            size="sm"
+            variant="secondary"
+            onClick={createProfile}
+          >
+            <Icon
+              icon="plus"
+              class="button__icon combat-profiles-new-profile__icon"
+            />
+            <span class="combat-profiles-toolbar-action__label">New</span>
+          </Button>
+          <Button
+            aria-label="Save profile"
+            class="combat-profiles-toolbar-action"
+            disabled={saving()}
+            loading={saving()}
+            size="sm"
+            onClick={() => void saveSelected()}
+          >
+            <Icon icon="save" class="button__icon" />
+            <span class="combat-profiles-toolbar-action__label">Save</span>
+          </Button>
         </div>
       </header>
 
-      <IssueAlert controller={c} />
+      <div class="standalone-window__content-frame">
+        <main
+          class="standalone-window__content combat-profiles-body"
+          aria-label="Combat profile controls"
+        >
+          <section class="combat-profiles-editor">
+            <Show when={error()}>
+              {(message) => (
+                <Alert class="combat-profiles-error" variant="error">
+                  <AlertDescription class="combat-profiles-error__message">
+                    <Icon icon="circle_alert" aria-hidden="true" />
+                    {message()}
+                  </AlertDescription>
+                </Alert>
+              )}
+            </Show>
 
-      <main class="combat-profiles-sheet" aria-label="Combat profile editor">
-        <ProfileSection controller={c} />
-        <RotationSection controller={c} />
-        <TriggersSection controller={c} />
-      </main>
+            <CardFrame>
+              <CardFrameHeader class="combat-profiles-frame-header">
+                <CardFrameTitle>Details</CardFrameTitle>
+                <CardFrameAction class="combat-profiles-profile-actions">
+                  <TooltipButton>
+                    <TooltipButtonTrigger
+                      aria-label={
+                        profileCopied()
+                          ? "Copied profile snippet"
+                          : "Copy profile snippet"
+                      }
+                      class="combat-profiles-copy-profile combat-profiles-frame-action"
+                      disabled={selectedProfile() === undefined}
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => void copySelectedProfile()}
+                    >
+                      <Icon
+                        icon={profileCopied() ? "check" : "copy"}
+                        class="button__icon"
+                      />
+                      <span class="combat-profiles-frame-action__label">
+                        {profileCopied() ? "Copied" : "Copy snippet"}
+                      </span>
+                    </TooltipButtonTrigger>
+                    <TooltipButtonContent>
+                      For <code>combat.kill</code> and related kill APIs.
+                    </TooltipButtonContent>
+                  </TooltipButton>
+                  <AlertDialog>
+                    <AlertDialogTrigger
+                      asChild={(triggerProps) => (
+                        <Button
+                          {...(triggerProps({
+                            "aria-label": "Delete profile",
+                            class:
+                              "combat-profiles-profile-delete combat-profiles-frame-action",
+                            disabled:
+                              saving() ||
+                              selectedId() === DEFAULT_COMBAT_PROFILE_ID,
+                            size: "sm",
+                            variant: "ghost",
+                          } as ButtonProps) as ButtonProps)}
+                        >
+                          <Icon icon="trash_2" class="button__icon" />
+                          <span class="combat-profiles-frame-action__label">
+                            Delete profile
+                          </span>
+                        </Button>
+                      )}
+                    />
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>Delete profile</AlertDialogTitle>
+                        <AlertDialogDescription>
+                          Delete {selectedProfile()?.label ?? "this profile"}?
+                          This skill profile will be permanently removed.
+                        </AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel>Cancel</AlertDialogCancel>
+                        <AlertDialogAction
+                          disabled={saving()}
+                          variant="destructive"
+                          onClick={() => void deleteSelected()}
+                        >
+                          Delete
+                        </AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
+                </CardFrameAction>
+              </CardFrameHeader>
+              <Card>
+                <CardContent class="combat-profiles-form">
+                  <Label>
+                    <span>Name</span>
+                    <Input
+                      ref={(element) => {
+                        nameInput = element;
+                      }}
+                      value={label()}
+                      onInput={(event) => setLabel(event.currentTarget.value)}
+                    />
+                  </Label>
+                  <Label>
+                    <CombatProfilesLabelHelp
+                      label="Skill 5 item"
+                      tooltip="Equips this inventory item before combat. The first running profile controls preflight equipment."
+                    />
+                    <Input
+                      placeholder="Potent Honor Potion"
+                      value={consumable()}
+                      onInput={(event) =>
+                        setConsumable(event.currentTarget.value)
+                      }
+                    />
+                  </Label>
+                  <div class="combat-profiles-classes-field">
+                    <Label for="combat-profile-class-name">Classes</Label>
+                    <div
+                      class="combat-profiles-classes-control"
+                      onMouseDown={(event) => {
+                        if (
+                          event.target instanceof Element &&
+                          event.target.closest("button, input")
+                        ) {
+                          return;
+                        }
 
-      <DeleteProfileDialog controller={c} />
-      <DiscardChangesDialog controller={c} />
+                        event.preventDefault();
+                        classNameInput?.focus();
+                      }}
+                    >
+                      <Index each={classNames()}>
+                        {(className, classNameIndex) => (
+                          <span class="combat-profiles-class">
+                            <span class="combat-profiles-class-label">
+                              {className()}
+                            </span>
+                            <IconButton
+                              aria-label={`Remove ${className()}`}
+                              class="combat-profiles-class-remove"
+                              size="icon-sm"
+                              variant="ghost"
+                              onClick={() => removeClassName(classNameIndex)}
+                            >
+                              <Icon icon="x" class="button__icon" />
+                            </IconButton>
+                          </span>
+                        )}
+                      </Index>
+                      <Input
+                        ref={(element) => {
+                          classNameInput = element;
+                        }}
+                        id="combat-profile-class-name"
+                        aria-describedby="combat-profile-classes-help"
+                        class="combat-profiles-class-input"
+                        autocomplete="off"
+                        name="combat-profile-class-name"
+                        placeholder="Add class…"
+                        unstyled
+                        value={classNameDraft()}
+                        onInput={(event) =>
+                          setClassNameDraft(event.currentTarget.value)
+                        }
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") {
+                            event.preventDefault();
+                            addClassName();
+                            return;
+                          }
+
+                          if (
+                            event.key === "Backspace" &&
+                            classNameDraft() === ""
+                          ) {
+                            setClassNames((current) => current.slice(0, -1));
+                          }
+                        }}
+                      />
+                      <span
+                        aria-hidden="true"
+                        class="combat-profiles-classes-focus-ring"
+                      />
+                    </div>
+                    <p
+                      id="combat-profile-classes-help"
+                      class="combat-profiles-field-help"
+                    >
+                      Leave empty for any class.
+                    </p>
+                  </div>
+                  <Label>
+                    <span>Delay (ms)</span>
+                    <Input
+                      min="0"
+                      step="1"
+                      type="number"
+                      value={delayMs()}
+                      onInput={(event) => setDelayMs(event.currentTarget.value)}
+                    />
+                  </Label>
+                  <Label>
+                    <span>Cooldown mode</span>
+                    <Select
+                      class="combat-profiles-select"
+                      value={[cooldownMode()]}
+                      onValueChange={(details) => {
+                        const mode = details.value[0];
+                        if (isCombatProfileCooldownMode(mode)) {
+                          setCooldownMode(mode);
+                        }
+                      }}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Cooldown mode" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <For each={cooldownModeOptions}>
+                          {(option) => (
+                            <SelectItem value={option.value}>
+                              {option.label}
+                            </SelectItem>
+                          )}
+                        </For>
+                      </SelectContent>
+                    </Select>
+                  </Label>
+                  <div class="combat-profiles-checkbox-field">
+                    <Checkbox
+                      checked={resetSkillIndexOnTargetDeath()}
+                      onChange={(event) =>
+                        setResetSkillIndexOnTargetDeath(
+                          event.currentTarget.checked,
+                        )
+                      }
+                    >
+                      Reset rotation on target death
+                    </Checkbox>
+                    <HelpTooltip
+                      aria-label="Reset rotation on target death help"
+                      tooltip="Restart at the first matching skill when the active target dies."
+                    />
+                  </div>
+                </CardContent>
+              </Card>
+            </CardFrame>
+
+            <CardFrame>
+              <CardFrameHeader class="combat-profiles-frame-header">
+                <CardFrameTitle>Message triggers</CardFrameTitle>
+                <Button
+                  aria-label="Add message trigger"
+                  class="combat-profiles-add-skill-button combat-profiles-frame-action"
+                  size="sm"
+                  variant="ghost"
+                  onClick={addMessageTrigger}
+                >
+                  <Icon icon="plus" class="button__icon" />
+                  <span class="combat-profiles-frame-action__label">
+                    Trigger
+                  </span>
+                </Button>
+              </CardFrameHeader>
+              <Card>
+                <CardContent class="combat-profiles-triggers">
+                  <Show
+                    when={draftMessageTriggers().length > 0}
+                    fallback={
+                      <Empty class="combat-profiles-empty">
+                        <EmptyHeader>
+                          <EmptyTitle>No message triggers</EmptyTitle>
+                          <EmptyDescription>
+                            Add a trigger to cast a skill when a matching
+                            message appears.
+                          </EmptyDescription>
+                        </EmptyHeader>
+                      </Empty>
+                    }
+                  >
+                    <Index each={draftMessageTriggers()}>
+                      {(trigger, triggerIndex) => (
+                        <div class="combat-profiles-trigger">
+                          <div class="combat-profiles-trigger__fields">
+                            <Label>
+                              <span>Message</span>
+                              <Input
+                                value={trigger().messageIncludes}
+                                placeholder="message text"
+                                onInput={(event) =>
+                                  updateMessageTrigger(
+                                    triggerIndex,
+                                    (current) => ({
+                                      ...current,
+                                      messageIncludes:
+                                        event.currentTarget.value,
+                                    }),
+                                  )
+                                }
+                              />
+                            </Label>
+                            <Label>
+                              <span>Source</span>
+                              <Select
+                                class="combat-profiles-select combat-profiles-select--source"
+                                value={[trigger().source]}
+                                onValueChange={(details) =>
+                                  updateMessageTrigger(
+                                    triggerIndex,
+                                    (current) => {
+                                      const source = details.value[0];
+                                      return isMessageTriggerSource(source)
+                                        ? { ...current, source }
+                                        : current;
+                                    },
+                                  )
+                                }
+                              >
+                                <SelectTrigger>
+                                  <SelectValue placeholder="Source" />
+                                </SelectTrigger>
+                                <SelectContent class="combat-profiles-select-content--source">
+                                  <For each={messageTriggerSourceOptions}>
+                                    {(option) => (
+                                      <SelectItem value={option.value}>
+                                        {option.label}
+                                      </SelectItem>
+                                    )}
+                                  </For>
+                                </SelectContent>
+                              </Select>
+                            </Label>
+                            <Label>
+                              <span>Skill</span>
+                              <Select
+                                class="combat-profiles-select combat-profiles-select--skill"
+                                value={[String(trigger().skill)]}
+                                onValueChange={(details) => {
+                                  const skill = parseSkillSlot(
+                                    details.value[0],
+                                  );
+                                  if (skill === undefined) return;
+
+                                  updateMessageTrigger(
+                                    triggerIndex,
+                                    (current) => ({
+                                      ...current,
+                                      skill,
+                                    }),
+                                  );
+                                }}
+                              >
+                                <SelectTrigger>
+                                  <SelectValue placeholder="Skill" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <For each={skillIndices}>
+                                    {(skill) => (
+                                      <SelectItem value={String(skill)}>
+                                        {skill}
+                                      </SelectItem>
+                                    )}
+                                  </For>
+                                </SelectContent>
+                              </Select>
+                            </Label>
+                            <Label>
+                              <CombatProfilesLabelHelp
+                                label="Cooldown (ms)"
+                                tooltip="Minimum time before this trigger can cast again. Leave empty or 0 to allow every matching message."
+                              />
+                              <Input
+                                min="0"
+                                step="1"
+                                type="number"
+                                value={String(trigger().cooldownMs ?? "")}
+                                placeholder="0"
+                                onInput={(event) =>
+                                  updateMessageTrigger(
+                                    triggerIndex,
+                                    (current) => {
+                                      const raw =
+                                        event.currentTarget.value.trim();
+                                      if (raw === "") {
+                                        const {
+                                          cooldownMs: _cooldownMs,
+                                          ...rest
+                                        } = current;
+                                        return rest;
+                                      }
+
+                                      const parsed = Number.parseInt(raw, 10);
+                                      if (
+                                        Number.isFinite(parsed) &&
+                                        parsed >= 0
+                                      ) {
+                                        return {
+                                          ...current,
+                                          cooldownMs: parsed,
+                                        };
+                                      }
+
+                                      return current;
+                                    },
+                                  )
+                                }
+                              />
+                            </Label>
+                          </div>
+                          <Button
+                            class="combat-profiles-item-remove"
+                            aria-label="Remove trigger"
+                            size="icon-sm"
+                            variant="ghost"
+                            onClick={() => removeMessageTrigger(triggerIndex)}
+                          >
+                            <Icon icon="x" class="button__icon" />
+                          </Button>
+                        </div>
+                      )}
+                    </Index>
+                  </Show>
+                </CardContent>
+              </Card>
+            </CardFrame>
+
+            <CardFrame>
+              <CardFrameHeader class="combat-profiles-frame-header">
+                <CardFrameTitle>Rotation</CardFrameTitle>
+                <Button
+                  aria-label="Add rotation skill"
+                  class="combat-profiles-add-skill-button combat-profiles-frame-action"
+                  size="sm"
+                  variant="ghost"
+                  onClick={addStep}
+                >
+                  <Icon icon="plus" class="button__icon" />
+                  <span class="combat-profiles-frame-action__label">Skill</span>
+                </Button>
+              </CardFrameHeader>
+              <Card>
+                <CardContent class="combat-profiles-steps">
+                  <Index
+                    each={draftSteps()}
+                    fallback={
+                      <Empty class="combat-profiles-empty">
+                        <EmptyHeader>
+                          <EmptyTitle>No rotation skills</EmptyTitle>
+                          <EmptyDescription>
+                            Add a skill to define this profile&apos;s rotation.
+                          </EmptyDescription>
+                        </EmptyHeader>
+                      </Empty>
+                    }
+                  >
+                    {(step, stepIndex) => (
+                      <div class="combat-profiles-step">
+                        <div class="combat-profiles-step__header">
+                          <Label class="combat-profiles-inline-field">
+                            <span>Skill</span>
+                            <Select
+                              class="combat-profiles-select combat-profiles-select--skill"
+                              value={[String(step().skill)]}
+                              onValueChange={(details) => {
+                                const skill = parseSkillSlot(details.value[0]);
+                                if (skill === undefined) return;
+
+                                updateStepSkill(stepIndex, skill);
+                              }}
+                            >
+                              <SelectTrigger>
+                                <SelectValue placeholder="Skill" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <For each={skillIndices}>
+                                  {(skill) => (
+                                    <SelectItem value={String(skill)}>
+                                      {skill}
+                                    </SelectItem>
+                                  )}
+                                </For>
+                              </SelectContent>
+                            </Select>
+                          </Label>
+                          <Label class="combat-profiles-inline-field combat-profiles-inline-field--availability">
+                            <span>Cooldown</span>
+                            <Select
+                              class="combat-profiles-select combat-profiles-select--availability"
+                              value={[step().cooldownMode ?? "default"]}
+                              onValueChange={(details) => {
+                                const value = details.value[0];
+                                updateStepCooldownMode(
+                                  stepIndex,
+                                  isCombatProfileCooldownMode(value)
+                                    ? value
+                                    : "default",
+                                );
+                              }}
+                            >
+                              <SelectTrigger>
+                                <SelectValue placeholder="Cooldown" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <For each={stepCooldownModeOptions}>
+                                  {(option) => (
+                                    <SelectItem value={option.value}>
+                                      {option.label}
+                                    </SelectItem>
+                                  )}
+                                </For>
+                              </SelectContent>
+                            </Select>
+                          </Label>
+                          <div class="combat-profiles-step__priority">
+                            <Checkbox
+                              checked={step().priority === true}
+                              onChange={(event) =>
+                                updateStepPriority(
+                                  stepIndex,
+                                  event.currentTarget.checked,
+                                )
+                              }
+                            >
+                              Priority
+                            </Checkbox>
+                            <HelpTooltip
+                              aria-label={`Priority skill ${step().skill} help`}
+                              tooltip="This skill can interrupt the normal rotation. On the next normal cast, the rotation resumes where it left off."
+                            />
+                          </div>
+                          <div class="combat-profiles-step__actions">
+                            <Button
+                              aria-label={`Move skill ${step().skill} up`}
+                              disabled={stepIndex === 0}
+                              size="icon-sm"
+                              variant="ghost"
+                              onClick={() => moveStep(stepIndex, -1)}
+                            >
+                              <Icon icon="arrow_up" class="button__icon" />
+                            </Button>
+                            <Button
+                              aria-label={`Move skill ${step().skill} down`}
+                              disabled={stepIndex === draftSteps().length - 1}
+                              size="icon-sm"
+                              variant="ghost"
+                              onClick={() => moveStep(stepIndex, 1)}
+                            >
+                              <Icon icon="arrow_down" class="button__icon" />
+                            </Button>
+                            <Button
+                              aria-label={`Duplicate skill ${step().skill}`}
+                              size="icon-sm"
+                              variant="ghost"
+                              onClick={() => duplicateStep(stepIndex)}
+                            >
+                              <Icon icon="copy" class="button__icon" />
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => addCondition(stepIndex)}
+                            >
+                              <Icon icon="plus" class="button__icon" />
+                              Rule
+                            </Button>
+                            <Button
+                              class="combat-profiles-item-remove"
+                              aria-label={`Remove skill ${step().skill}`}
+                              size="icon-sm"
+                              variant="ghost"
+                              onClick={() => removeStep(stepIndex)}
+                            >
+                              <Icon icon="x" class="button__icon" />
+                            </Button>
+                          </div>
+                        </div>
+                        <div class="combat-profiles-rules">
+                          <Show
+                            when={step().conditions.length > 0}
+                            fallback={
+                              <div class="combat-profiles-empty-rule">
+                                This skill has no rules and can run whenever it
+                                is ready.
+                              </div>
+                            }
+                          >
+                            <Index each={step().conditions}>
+                              {(condition, conditionIndex) => (
+                                <div class="combat-profiles-rule">
+                                  <div
+                                    class={
+                                      isStatCondition(condition())
+                                        ? "combat-profiles-rule__fields combat-profiles-rule__fields--stat"
+                                        : "combat-profiles-rule__fields combat-profiles-rule__fields--aura"
+                                    }
+                                  >
+                                    <Label class="combat-profiles-rule-field">
+                                      <span>Condition</span>
+                                      <Select
+                                        class="combat-profiles-select"
+                                        value={[condition().type]}
+                                        onValueChange={(details) =>
+                                          updateConditionType(
+                                            stepIndex,
+                                            conditionIndex,
+                                            (details.value[0] ??
+                                              "self-hp") as ConditionType,
+                                          )
+                                        }
+                                      >
+                                        <SelectTrigger>
+                                          <SelectValue placeholder="Rule type" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                          <For each={conditionTypes}>
+                                            {(option) => (
+                                              <SelectItem value={option.value}>
+                                                {option.label}
+                                              </SelectItem>
+                                            )}
+                                          </For>
+                                        </SelectContent>
+                                      </Select>
+                                    </Label>
+                                    <Show when={!isStatCondition(condition())}>
+                                      <Label class="combat-profiles-rule-field">
+                                        <span>Aura</span>
+                                        <Input
+                                          placeholder="Aura name"
+                                          value={auraNameValue(condition())}
+                                          onInput={(event) =>
+                                            updateCondition(
+                                              stepIndex,
+                                              conditionIndex,
+                                              (current) =>
+                                                isStatCondition(current)
+                                                  ? current
+                                                  : {
+                                                      ...current,
+                                                      auraName:
+                                                        event.currentTarget
+                                                          .value,
+                                                    },
+                                            )
+                                          }
+                                        />
+                                      </Label>
+                                    </Show>
+                                    <Label class="combat-profiles-rule-field">
+                                      <span>Operator</span>
+                                      <Select
+                                        class="combat-profiles-select combat-profiles-select--op"
+                                        value={[condition().op]}
+                                        onValueChange={(details) =>
+                                          updateCondition(
+                                            stepIndex,
+                                            conditionIndex,
+                                            (current) => ({
+                                              ...current,
+                                              op: (details.value[0] ?? "<=") as
+                                                | "<="
+                                                | ">=",
+                                            }),
+                                          )
+                                        }
+                                      >
+                                        <SelectTrigger>
+                                          <SelectValue placeholder="Op" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                          <SelectItem value="<=">
+                                            &lt;=
+                                          </SelectItem>
+                                          <SelectItem value=">=">
+                                            &gt;=
+                                          </SelectItem>
+                                        </SelectContent>
+                                      </Select>
+                                    </Label>
+                                    <Label class="combat-profiles-rule-field">
+                                      <span>Value</span>
+                                      <Input
+                                        inputMode="numeric"
+                                        value={String(condition().value)}
+                                        onInput={(event) =>
+                                          updateCondition(
+                                            stepIndex,
+                                            conditionIndex,
+                                            (current) => ({
+                                              ...current,
+                                              value: clampRuleValue(
+                                                event.currentTarget.value,
+                                              ),
+                                            }),
+                                          )
+                                        }
+                                      />
+                                    </Label>
+                                    <Show when={isStatCondition(condition())}>
+                                      <Label class="combat-profiles-rule-field">
+                                        <span>Unit</span>
+                                        <Select
+                                          class="combat-profiles-select combat-profiles-select--unit"
+                                          value={[
+                                            conditionUnitValue(condition()),
+                                          ]}
+                                          onValueChange={(details) =>
+                                            updateCondition(
+                                              stepIndex,
+                                              conditionIndex,
+                                              (current) =>
+                                                isStatCondition(current)
+                                                  ? {
+                                                      ...current,
+                                                      unit: (details.value[0] ??
+                                                        "percent") as
+                                                        | "percent"
+                                                        | "value",
+                                                    }
+                                                  : current,
+                                            )
+                                          }
+                                        >
+                                          <SelectTrigger>
+                                            <SelectValue placeholder="Unit" />
+                                          </SelectTrigger>
+                                          <SelectContent>
+                                            <SelectItem value="percent">
+                                              %
+                                            </SelectItem>
+                                            <SelectItem value="value">
+                                              Value
+                                            </SelectItem>
+                                          </SelectContent>
+                                        </Select>
+                                      </Label>
+                                    </Show>
+                                  </div>
+                                  <Button
+                                    class="combat-profiles-item-remove"
+                                    aria-label={`Remove rule ${conditionLabel(condition())}`}
+                                    size="icon-sm"
+                                    variant="ghost"
+                                    onClick={() =>
+                                      removeCondition(stepIndex, conditionIndex)
+                                    }
+                                  >
+                                    <Icon icon="x" class="button__icon" />
+                                  </Button>
+                                </div>
+                              )}
+                            </Index>
+                          </Show>
+                        </div>
+                      </div>
+                    )}
+                  </Index>
+                </CardContent>
+              </Card>
+            </CardFrame>
+          </section>
+        </main>
+      </div>
     </div>
   );
 }
 
-export function App(props: DesktopRendererProps): JSX.Element {
+/** Connects the fixture-driven Combat Profiles view to the Electron bridge. */
+export function App(): JSX.Element {
   const combatProfiles = selectDesktopBridge(
     window.desktop,
     "combat-profiles",
@@ -2370,7 +1761,6 @@ export function App(props: DesktopRendererProps): JSX.Element {
       onDeleteProfile={(profileId) => combatProfiles.deleteProfile(profileId)}
       onLibraryChanged={(listener) => combatProfiles.onChanged(listener)}
       onSaveProfile={(profile) => combatProfiles.saveProfile(profile)}
-      platform={props.platform}
     />
   );
 }

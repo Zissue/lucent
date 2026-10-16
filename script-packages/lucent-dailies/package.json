@@ -1,6 +1,6 @@
 {
   "name": "@lucent/dailies",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "Automate daily and recurring activities.",
   "main": "index.js",
   "types": "index.d.ts",

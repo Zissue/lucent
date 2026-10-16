@@ -5,10 +5,12 @@
  * the browser `WebSocket` constructor. `layerWebSocketConstructor` provides
  * only the browser-backed constructor service for lower-level socket code.
  *
+ * @stability unstable
  * @since 4.0.0
  */
+import type * as Duration from "effect/Duration"
 import * as Layer from "effect/Layer"
-import * as Socket from "effect/unstable/socket/Socket"
+import * as Socket from "effect/socket/Socket"
 
 /**
  * Creates a `Socket` layer connected to the given URL using the browser `WebSocket` constructor.
@@ -26,17 +28,19 @@ import * as Socket from "effect/unstable/socket/Socket"
  * **Gotchas**
  *
  * Browser WebSocket rules still control URL schemes, mixed-content blocking,
- * cookies, authentication, origin checks, subprotocols, and extensions. Close
- * events are errors unless `closeCodeIsError` classifies the close code as
- * clean.
+ * cookies, authentication, origin checks, subprotocols, and extensions. Every
+ * close, whatever the code, fails the socket's reader with a `SocketError`.
  *
  * @see {@link layerWebSocketConstructor} for providing only the browser constructor service
  *
+ * @stability unstable
  * @category layers
  * @since 4.0.0
  */
 export const layerWebSocket = (url: string, options?: {
-  readonly closeCodeIsError?: (code: number) => boolean
+  readonly openTimeout?: Duration.Input | undefined
+  readonly protocols?: string | Array<string> | undefined
+  readonly highWaterMark?: number | undefined
 }): Layer.Layer<Socket.Socket> =>
   Layer.effect(Socket.Socket, Socket.makeWebSocket(url, options)).pipe(
     Layer.provide(layerWebSocketConstructor)
@@ -45,6 +49,7 @@ export const layerWebSocket = (url: string, options?: {
 /**
  * Layer that provides a `WebSocketConstructor` service backed by `globalThis.WebSocket`.
  *
+ * @stability unstable
  * @category layers
  * @since 4.0.0
  */

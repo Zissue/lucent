@@ -38,7 +38,6 @@ Referenced types are generated from the types directly linked by the documented 
 | <a href="/reference/scripting/types/auto-zone-state/"><code>AutoZoneState</code></a> | interface |  |
 | <a href="/reference/scripting/types/auto-zone-supported-map/"><code>AutoZoneSupportedMap</code></a> | type alias |  |
 | <a href="/reference/scripting/types/bank-open-options/"><code>BankOpenOptions</code></a> | interface |  |
-| <a href="/reference/scripting/types/bank-view/"><code>BankView</code></a> | type alias |  |
 | <a href="/reference/scripting/types/boost-type/"><code>BoostType</code></a> | type alias |  |
 | <a href="/reference/scripting/types/cell-position-options/"><code>CellPositionOptions</code></a> | interface |  |
 | <a href="/reference/scripting/types/client-packet/"><code>ClientPacket</code></a> | type alias |  |
@@ -79,9 +78,11 @@ Referenced types are generated from the types directly linked by the documented 
 | <a href="/reference/scripting/types/http-request-options/"><code>HttpRequestOptions</code></a> | interface |  |
 | <a href="/reference/scripting/types/http-response/"><code>HttpResponse</code></a> | interface | Fully downloaded response. Each body can be consumed once. |
 | <a href="/reference/scripting/types/hunt-options/"><code>HuntOptions</code></a> | interface |  |
+| <a href="/reference/scripting/types/inventory-pool/"><code>InventoryPool</code></a> | type alias | `"bag"` counts equipment and equippable consumables such as potions.<br>`"misc"` counts resources, quest items, notes, and other non-consumable items<br>of type Item.<br>Classes, house items, and Guild items count against neither. A misc item<br>already in the inventory never takes a new misc slot. |
 | <a href="/reference/scripting/types/item/"><code>Item</code></a> | interface |  |
 | <a href="/reference/scripting/types/item-context/"><code>ItemContext</code></a> | type alias |  |
 | <a href="/reference/scripting/types/item-data/"><code>ItemData</code></a> | interface |  |
+| <a href="/reference/scripting/types/item-pool/"><code>ItemPool</code></a> | type alias | The pool an item counts against in the inventory. `"class"` has no limit,<br>and `"house"` uses house slots. |
 | <a href="/reference/scripting/types/item-query/"><code>ItemQuery</code></a> | type alias |  |
 | <a href="/reference/scripting/types/item-requirement/"><code>ItemRequirement</code></a> | interface |  |
 | <a href="/reference/scripting/types/item-selector/"><code>ItemSelector</code></a> | type alias |  |

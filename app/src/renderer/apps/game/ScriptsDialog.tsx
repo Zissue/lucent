@@ -59,6 +59,7 @@ import {
   createMemo,
   createSignal,
   For,
+  on,
   onCleanup,
   onMount,
   Show,
@@ -73,6 +74,7 @@ import {
   type ScriptCatalogEntry,
   type ScriptCatalogOverview,
   type ScriptPackageInstallRequest,
+  type ScriptPackageLeftoverCopy,
   type ScriptPackageDependencyIssue,
   type ScriptPackageMutationResult,
   type ScriptPackageSummary,
@@ -109,6 +111,8 @@ import {
   touchScriptCatalogPages,
   type ScriptCatalogPageCache,
 } from "./scriptCatalogPages";
+import { confirmScriptPackageRemoval } from "./scriptPackageRemoval";
+import { refreshScriptPackageLeftovers } from "./scriptPackageLeftovers";
 import {
   checkScriptPackageUpdatesSerially,
   formatScriptPackageUpdateCheckFailures,
@@ -981,6 +985,11 @@ export function ScriptsDialog(props: ScriptsDialogProps): JSX.Element {
     createSignal(false);
   const [copiedRevisionPath, setCopiedRevisionPath] = createSignal<string>();
   const [rateLimitNow, setRateLimitNow] = createSignal(Date.now());
+  const [leftoverCopies, setLeftoverCopies] = createSignal<
+    readonly ScriptPackageLeftoverCopy[]
+  >([]);
+  const [leftoverError, setLeftoverError] = createSignal("");
+  let leftoverRequestId = 0;
   let catalogRequestId = 0;
   let scriptQueryRequestId = 0;
   let requestedCatalogQuery = "";
@@ -1529,7 +1538,21 @@ export function ScriptsDialog(props: ScriptsDialogProps): JSX.Element {
     }
   };
 
-  const refreshCatalog = (): Promise<void> => loadCatalog(true);
+  const refreshLeftovers = async (): Promise<void> => {
+    const bridge = props.bridge;
+    if (bridge === undefined || fixtureMode) return;
+    const requestId = ++leftoverRequestId;
+    await refreshScriptPackageLeftovers({
+      list: () => bridge.listPackageLeftovers(),
+      isCurrent: () => requestId === leftoverRequestId && props.open,
+      setCopies: setLeftoverCopies,
+      setError: setLeftoverError,
+    });
+  };
+
+  const refreshCatalog = async (): Promise<void> => {
+    await Promise.all([loadCatalog(true), refreshLeftovers()]);
+  };
 
   const refreshCredentials = async (): Promise<void> => {
     const bridge = props.bridge;
@@ -1541,6 +1564,15 @@ export function ScriptsDialog(props: ScriptsDialogProps): JSX.Element {
     }
   };
 
+  createEffect(
+    on(
+      () => props.open,
+      (open) => {
+        if (open) void refreshLeftovers();
+      },
+    ),
+  );
+
   createEffect(() => {
     const revision = untrack(() => catalog().revision);
     if (fixtureMode) {
@@ -1548,6 +1580,7 @@ export function ScriptsDialog(props: ScriptsDialogProps): JSX.Element {
       return;
     }
     if (!props.open) {
+      leftoverRequestId += 1;
       catalogRequestId += 1;
       scriptQueryRequestId += 1;
       requestedCatalogQuery = catalogQuery();
@@ -1832,9 +1865,9 @@ export function ScriptsDialog(props: ScriptsDialogProps): JSX.Element {
   };
 
   const applyMutation = (result: ScriptPackageMutationResult): void => {
+    setConfirmation(null);
     if (result.status === "completed" || result.status === "unchanged") {
       replaceCatalog(result.catalog);
-      setConfirmation(null);
     }
   };
 
@@ -1928,10 +1961,12 @@ export function ScriptsDialog(props: ScriptsDialogProps): JSX.Element {
   ): Promise<void> => {
     const bridge = props.bridge;
     if (bridge === undefined) return;
-    const result = await bridge.updatePackage({
-      packageName: entry.name,
-      ...(replaceModified ? { replaceModified: true } : {}),
-    });
+    const result = await bridge
+      .updatePackage({
+        packageName: entry.name,
+        ...(replaceModified ? { replaceModified: true } : {}),
+      })
+      .finally(refreshLeftovers);
     if (result.status === "confirmation-required") {
       askForConfirmation({
         confirmLabel: "Discard changes and update",
@@ -1952,10 +1987,19 @@ export function ScriptsDialog(props: ScriptsDialogProps): JSX.Element {
         ? "Restore package"
         : "Discard changes and update",
       description: restoring
-        ? `${entry.name} has local changes. Restoring will replace the entire package with Lucent's saved copy and permanently discard your changes.`
+        ? `${entry.name} has local changes. Restoring will replace the entire package with the installed version and permanently discard your changes.`
         : `${entry.name} has local changes. Updating will replace the entire package with the latest version from GitHub and permanently discard your changes.`,
       destructive: true,
-      onConfirm: () => updatePackage(entry, true),
+      onConfirm: async () => {
+        if (!restoring) return updatePackage(entry, true);
+        const bridge = props.bridge;
+        if (bridge === undefined) return;
+        applyMutation(
+          await bridge
+            .restorePackage({ packageName: entry.name })
+            .finally(refreshLeftovers),
+        );
+      },
       title: restoring ? "Restore this package?" : "Replace local changes?",
     });
   };
@@ -1976,27 +2020,19 @@ export function ScriptsDialog(props: ScriptsDialogProps): JSX.Element {
   };
 
   const removePackage = (entry: ValidScriptPackage): void => {
-    askForConfirmation({
-      confirmLabel: "Remove package",
-      description:
-        entry.integrity === "modified"
-          ? `${entry.name} has local changes. Removing it will permanently delete the entire package folder, including your changes.`
-          : `Remove ${entry.name} and delete its entire package folder?`,
-      destructive: true,
-      onConfirm: async () => {
-        const bridge = props.bridge;
-        if (bridge === undefined) return;
-        const result = await bridge.removePackage({
-          packageName: entry.name,
-          confirmModified: true,
-        });
+    const bridge = props.bridge;
+    if (bridge === undefined) return;
+    confirmScriptPackageRemoval(entry, {
+      askForConfirmation,
+      removePackage: (request) =>
+        bridge.removePackage(request).finally(refreshLeftovers),
+      applyMutation: (result) => {
         applyMutation(result);
         if (result.status === "completed" || result.status === "unchanged") {
           setSelectedPackagePath(undefined);
           setPackageManagementView("installed");
         }
       },
-      title: "Remove this package?",
     });
   };
 
@@ -2062,7 +2098,9 @@ export function ScriptsDialog(props: ScriptsDialogProps): JSX.Element {
     }
   };
 
-  const openPackage = async (entry: ScriptPackageSummary): Promise<void> => {
+  const openPackage = async (
+    entry: Pick<ScriptPackageSummary, "path">,
+  ): Promise<void> => {
     try {
       if (!(await props.bridge?.openPath(entry.path))) {
         throw new Error("The package folder could not be opened.");
@@ -3201,6 +3239,47 @@ export function ScriptsDialog(props: ScriptsDialogProps): JSX.Element {
                     />
                   </div>
                 </div>
+                <Show
+                  when={leftoverCopies().length > 0 || leftoverError() !== ""}
+                >
+                  <Alert
+                    class="game-scripts-dialog__package-notice"
+                    variant="warning"
+                  >
+                    <AlertTitle>Leftover package folders</AlertTitle>
+                    <AlertDescription>
+                      <Show when={leftoverError() !== ""}>
+                        <p>{leftoverError()}</p>
+                      </Show>
+                      <Show when={leftoverCopies().length > 0}>
+                        An update or removal didn't finish. These folders hold
+                        the old package files. Another open copy of Lucent may
+                        still be using them.
+                        <ul class="game-scripts-dialog__package-leftovers">
+                          <For each={leftoverCopies()}>
+                            {(copy) => (
+                              <li>
+                                <span title={copy.path}>
+                                  {copy.packageName ??
+                                    copy.path.split(/[\\/]/u).at(-1)}
+                                </span>
+                                <Button
+                                  aria-label={`Open folder for ${copy.packageName ?? copy.path.split(/[\\/]/u).at(-1)}`}
+                                  onClick={() => void openPackage(copy)}
+                                  size="sm"
+                                  variant="secondary"
+                                >
+                                  <Icon icon="folder_open" size="sm" />
+                                  Open folder
+                                </Button>
+                              </li>
+                            )}
+                          </For>
+                        </ul>
+                      </Show>
+                    </AlertDescription>
+                  </Alert>
+                </Show>
               </Show>
 
               <Show

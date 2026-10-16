@@ -18,12 +18,10 @@ const noop: DiagnosticSinkService = {
 
 const debug: DiagnosticSinkService = {
   report: (phase, operation, cause, args) => {
-    const diagnostic = makeDiagnostic(phase, operation, cause, args);
-    if (phase === "projection-trace") {
-      console.debug("[flash:projection]", diagnostic);
-      return;
-    }
-    console.warn("[flash:diagnostic]", diagnostic);
+    console.warn(
+      "[flash:diagnostic]",
+      makeDiagnostic(phase, operation, cause, args),
+    );
   },
 };
 

@@ -5,10 +5,16 @@ import { join } from "path";
 import { afterEach, describe, expect, it } from "@effect/vitest";
 // Vitest requires a direct import for hoisted mocks.
 import { vi } from "vitest";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
+import { TestClock } from "effect/testing";
 
 import { DEFAULT_APP_SETTINGS, type AppSettings } from "@lucent/core/settings";
+import { makeLifetime } from "../window/RendererLifetimeTesting";
 import { DesktopEnvironment } from "../app/DesktopEnvironment";
 import { layer as desktopFileSystemLayer } from "@effect/platform-node/NodeFileSystem";
 import { ElectronApp } from "../electron/ElectronApp";
@@ -20,14 +26,19 @@ import {
 import {
   DesktopHttpClient,
   DesktopHttpClientError,
+  type DesktopHttpClientShape,
   type DesktopHttpGetOptions,
   type DesktopHttpResponse,
 } from "../http/DesktopHttpClient";
+import { createDesktopIpcInvokeHandler } from "../ipc/DesktopIpcInvoke";
+import type { DesktopIpcSender } from "../ipc/DesktopIpcSenders";
+import * as UpdatesIpcMethods from "../ipc/methods/updates";
 import { DesktopSettings } from "../settings/DesktopSettings";
 import { DesktopUpdates, layer as desktopUpdatesLayer } from "./DesktopUpdates";
 
 vi.mock("electron", () => ({
   app: {},
+  ipcMain: {},
   shell: {
     openExternal: vi.fn(),
   },
@@ -76,6 +87,22 @@ const mockGitHubResponse = (options: {
   });
 };
 
+const mockGitHubReleasePage = (
+  tags: ReadonlyArray<string>,
+  headers: Record<string, string> = {},
+): void =>
+  mockGitHubResponse({
+    body: JSON.stringify(
+      tags.map((tag) => ({
+        draft: false,
+        html_url: `https://github.com/toommyliu/lucent/releases/tag/${tag}`,
+        prerelease: tag.includes("-"),
+        tag_name: tag,
+      })),
+    ),
+    headers,
+  });
+
 const testSettings = (checkForUpdates: boolean): AppSettings => ({
   ...DEFAULT_APP_SETTINGS,
   preferences: {
@@ -96,6 +123,7 @@ const makeUpdatesHarness = (options: {
   readonly cache?: unknown;
   readonly checkForUpdates: boolean;
   readonly currentVersion: string;
+  readonly httpClient?: DesktopHttpClientShape;
 }) =>
   Effect.gen(function* () {
     const appDataDir = yield* Effect.promise(() =>
@@ -133,11 +161,9 @@ const makeUpdatesHarness = (options: {
       updatePreferences: () => Effect.succeed(settings),
     });
     const app = ElectronApp.of({
-      appendCommandLineSwitch: () => Effect.void,
       exit: () => Effect.void,
       getAppMetrics: Effect.succeed([]),
       getVersion: Effect.succeed(options.currentVersion),
-      isPackaged: Effect.succeed(false),
       on: () => Effect.succeed(() => undefined),
       relaunch: Effect.void,
       quit: Effect.void,
@@ -157,7 +183,10 @@ const makeUpdatesHarness = (options: {
           Layer.succeed(ElectronShell, shell),
           Layer.succeed(
             GitHubApiClient,
-            makeGitHubApiClient(httpClient, `Lucent/${options.currentVersion}`),
+            makeGitHubApiClient(
+              options.httpClient ?? httpClient,
+              `Lucent/${options.currentVersion}`,
+            ),
           ),
           Layer.succeed(DesktopSettings, settingsService),
         ),
@@ -166,6 +195,28 @@ const makeUpdatesHarness = (options: {
 
     return { env, layer };
   });
+
+const makeHangingCheckHarness = Effect.gen(function* () {
+  const started = yield* Deferred.make<void>();
+  const events: string[] = [];
+  const { layer } = yield* makeUpdatesHarness({
+    checkForUpdates: true,
+    currentVersion: "1.0.0",
+    httpClient: {
+      ...httpClient,
+      get: () =>
+        Deferred.succeed(started, undefined).pipe(
+          Effect.andThen(Effect.never),
+          Effect.onInterrupt(() =>
+            Effect.sync(() => {
+              events.push("check-interrupted");
+            }),
+          ),
+        ),
+    },
+  });
+  return { events, layer, started };
+});
 
 afterEach(async () => {
   vi.clearAllMocks();
@@ -178,6 +229,106 @@ afterEach(async () => {
 });
 
 describe("DesktopUpdates", () => {
+  it.effect(
+    "answers an IPC check without an error when shutdown cancels it",
+    () =>
+      Effect.gen(function* () {
+        const { layer, started } = yield* makeHangingCheckHarness;
+        const errors: string[] = [];
+        const sender: DesktopIpcSender = {
+          rendererId: 1,
+          kind: "settings",
+          lifetime: makeLifetime(1),
+        };
+
+        const { pending, state } = yield* Effect.gen(function* () {
+          const context = yield* Effect.context<DesktopUpdates>();
+          const invoke = createDesktopIpcInvokeHandler(
+            UpdatesIpcMethods.checkNow.descriptor,
+            (payload) => UpdatesIpcMethods.checkNow.handler(payload, sender),
+            Effect.runPromiseWith(context),
+          );
+          const pending = invoke(undefined, { force: true });
+          yield* Deferred.await(started);
+          const state = yield* (yield* DesktopUpdates).getState;
+          return { pending, state };
+        }).pipe(
+          Effect.provide(
+            Layer.merge(
+              layer,
+              Logger.layer([
+                Logger.make((log) => {
+                  if (log.logLevel === "Error") {
+                    errors.push(String(log.message));
+                  }
+                }),
+              ]),
+            ),
+          ),
+        );
+        const envelope = yield* Effect.promise(() => pending);
+
+        expect({ envelope, errors }).toEqual({
+          envelope: { ok: true, value: state },
+          errors: [],
+        });
+      }),
+  );
+
+  it.effect("keeps a shared check running when one caller is interrupted", () =>
+    Effect.gen(function* () {
+      const { events, layer, started } = yield* makeHangingCheckHarness;
+
+      const firstExit = yield* Effect.gen(function* () {
+        const updates = yield* DesktopUpdates;
+        const first = yield* updates.checkNow().pipe(Effect.forkChild);
+        yield* Deferred.await(started);
+        yield* Fiber.interrupt(first);
+        const exit = yield* Fiber.await(first);
+        events.push("first-caller-done");
+        return exit;
+      }).pipe(Effect.provide(layer));
+
+      expect({
+        firstInterrupted: Exit.hasInterrupts(firstExit),
+        events,
+      }).toEqual({
+        firstInterrupted: true,
+        events: ["first-caller-done", "check-interrupted"],
+      });
+    }),
+  );
+
+  it.effect("reports a defect in the shared check to its caller", () =>
+    Effect.gen(function* () {
+      const { layer } = yield* makeUpdatesHarness({
+        checkForUpdates: true,
+        currentVersion: "1.0.0",
+        httpClient: { ...httpClient, get: () => Effect.die("boom") },
+      });
+      const updates = yield* DesktopUpdates.pipe(Effect.provide(layer));
+
+      const exit = yield* Effect.exit(updates.checkNow());
+
+      expect(Exit.hasDies(exit)).toBe(true);
+    }),
+  );
+
+  it.effect("interrupts an in-flight check when its layer closes", () =>
+    Effect.gen(function* () {
+      const { events, layer, started } = yield* makeHangingCheckHarness;
+
+      yield* Effect.gen(function* () {
+        const updates = yield* DesktopUpdates;
+        yield* updates.checkNow().pipe(Effect.forkChild);
+        yield* Deferred.await(started);
+      }).pipe(Effect.provide(layer));
+      events.push("layer-closed");
+
+      expect(events).toEqual(["check-interrupted", "layer-closed"]);
+    }),
+  );
+
   it.effect("starts disabled when update checks are disabled", () =>
     Effect.gen(function* () {
       const harness = yield* makeUpdatesHarness({
@@ -224,6 +375,9 @@ describe("DesktopUpdates", () => {
           expect(state.latestVersion).toBe("1.2.3");
           expect(state.release.tagName).toBe("v1.2.3");
         }
+        expect(httpRequests[0]?.url.href).toBe(
+          "https://api.github.com/repos/toommyliu/lucent/releases/latest",
+        );
         const cache = JSON.parse(
           yield* Effect.promise(() =>
             readFile(join(env.appDataDir, "release-cache.json"), "utf8"),
@@ -235,6 +389,287 @@ describe("DesktopUpdates", () => {
         expect(cache.etag).toBe("etag-2");
         expect(cache.release?.tagName).toBe("v1.2.3");
       }),
+  );
+
+  it.effect(
+    "offers prerelease builds the newest published release, including prereleases",
+    () =>
+      Effect.gen(function* () {
+        mockGitHubResponse({
+          body: JSON.stringify([
+            {
+              draft: true,
+              html_url:
+                "https://github.com/toommyliu/lucent/releases/tag/v0.2.0",
+              prerelease: false,
+              tag_name: "v0.2.0",
+            },
+            {
+              draft: false,
+              html_url:
+                "https://github.com/toommyliu/lucent/releases/tag/v0.0.2",
+              prerelease: false,
+              tag_name: "v0.0.2",
+            },
+            {
+              draft: false,
+              html_url:
+                "https://github.com/toommyliu/lucent/releases/tag/v0.1.0-beta.2",
+              prerelease: true,
+              tag_name: "v0.1.0-beta.2",
+            },
+          ]),
+        });
+        const { layer } = yield* makeUpdatesHarness({
+          checkForUpdates: true,
+          currentVersion: "0.1.0-beta.1",
+        });
+        const updates = yield* DesktopUpdates.pipe(Effect.provide(layer));
+
+        const state = yield* updates.checkNow();
+
+        expect(httpRequests[0]?.url.href).toBe(
+          "https://api.github.com/repos/toommyliu/lucent/releases?per_page=100&page=1",
+        );
+        expect(state.status).toBe("available");
+        if (state.status === "available") {
+          expect(state.latestVersion).toBe("0.1.0-beta.2");
+          expect(state.release.htmlUrl).toBe(
+            "https://github.com/toommyliu/lucent/releases/tag/v0.1.0-beta.2",
+          );
+        }
+      }),
+  );
+
+  it.effect("finds the newest published version across release pages", () =>
+    Effect.gen(function* () {
+      mockGitHubReleasePage(["nightly"], {
+        link: '<https://api.github.com/repos/toommyliu/lucent/releases?per_page=100&page=2>; rel="next", <https://api.github.com/repos/toommyliu/lucent/releases?per_page=100&page=3>; rel="last"',
+      });
+      mockGitHubReleasePage(["v0.1.0-beta.10"], {
+        link: '<https://api.github.com/repos/toommyliu/lucent/releases?per_page=100&page=3>; rel="next"',
+      });
+      mockGitHubReleasePage(["v0.1.0-beta.9"], {
+        link: '<https://api.github.com/repos/toommyliu/lucent/releases?per_page=100&page=2>; rel="prev"',
+      });
+      const { layer } = yield* makeUpdatesHarness({
+        checkForUpdates: true,
+        currentVersion: "0.1.0-beta.1",
+      });
+      const updates = yield* DesktopUpdates.pipe(Effect.provide(layer));
+
+      const state = yield* updates.checkNow();
+
+      expect(state).toMatchObject({
+        status: "available",
+        latestVersion: "0.1.0-beta.10",
+        release: {
+          htmlUrl:
+            "https://github.com/toommyliu/lucent/releases/tag/v0.1.0-beta.10",
+        },
+      });
+      expect(httpRequests.map((request) => request.url.href)).toEqual([
+        "https://api.github.com/repos/toommyliu/lucent/releases?per_page=100&page=1",
+        "https://api.github.com/repos/toommyliu/lucent/releases?per_page=100&page=2",
+        "https://api.github.com/repos/toommyliu/lucent/releases?per_page=100&page=3",
+      ]);
+    }),
+  );
+
+  it.effect(
+    "bounds the whole fetch, cancels pagination, and allows retry",
+    () =>
+      Effect.gen(function* () {
+        const cache = {
+          skippedVersion: "0.1.0-beta.2",
+          release: {
+            htmlUrl:
+              "https://github.com/toommyliu/lucent/releases/tag/v0.1.0-beta.2",
+            tagName: "v0.1.0-beta.2",
+            version: "0.1.0-beta.2",
+          },
+        };
+        for (let page = 1; page <= 5; page++) {
+          mockGitHubReleasePage(["v0.1.0-beta.3"], {
+            link: `<https://api.github.com/repos/toommyliu/lucent/releases?per_page=100&page=${page + 1}>; rel="next"`,
+          });
+        }
+        const started = yield* Deferred.make<void>();
+        let delayMs = 9_000;
+        const interrupted: string[] = [];
+        const { env, layer } = yield* makeUpdatesHarness({
+          cache,
+          checkForUpdates: true,
+          currentVersion: "0.1.0-beta.1",
+          httpClient: {
+            ...httpClient,
+            get: (options) =>
+              httpClient.get(options).pipe(
+                Effect.tap(() => Deferred.succeed(started, undefined)),
+                Effect.tap(() => Effect.sleep(delayMs)),
+                Effect.onInterrupt(() =>
+                  Effect.sync(() => {
+                    interrupted.push(options.url.href);
+                  }),
+                ),
+              ),
+          },
+        });
+        const updates = yield* DesktopUpdates.pipe(Effect.provide(layer));
+        const check = yield* updates.checkNow().pipe(Effect.forkChild);
+        yield* Deferred.await(started);
+        const manualCheck = yield* updates
+          .checkNow({ force: true })
+          .pipe(Effect.forkChild);
+
+        yield* TestClock.adjust("30 seconds");
+
+        expect(yield* updates.getState).toMatchObject({ status: "error" });
+        expect(yield* Fiber.join(check)).toMatchObject({
+          status: "error",
+          message: "Update check timed out.",
+        });
+        expect(yield* Fiber.join(manualCheck)).toMatchObject({
+          status: "error",
+        });
+        expect(interrupted).toEqual([
+          "https://api.github.com/repos/toommyliu/lucent/releases?per_page=100&page=4",
+        ]);
+        expect(
+          JSON.parse(
+            yield* Effect.promise(() =>
+              readFile(join(env.appDataDir, "release-cache.json"), "utf8"),
+            ),
+          ),
+        ).toEqual(cache);
+        yield* TestClock.adjust("1 minute");
+        expect(httpRequests).toHaveLength(4);
+
+        httpResponses.length = 0;
+        delayMs = 0;
+        mockGitHubReleasePage(["v0.1.0-beta.4"]);
+        expect(yield* updates.checkNow()).toMatchObject({
+          status: "available",
+          latestVersion: "0.1.0-beta.4",
+        });
+      }),
+  );
+
+  it.effect("rechecks later pages even when the first page is unchanged", () =>
+    Effect.gen(function* () {
+      const firstPageHeaders = {
+        etag: "first-page",
+        link: '<https://api.github.com/repos/toommyliu/lucent/releases?per_page=100&page=2>; rel="next"',
+      };
+      mockGitHubReleasePage(["v0.0.2"], firstPageHeaders);
+      mockGitHubReleasePage(["v0.1.0-beta.2"], { etag: "second-page-1" });
+      const { env, layer } = yield* makeUpdatesHarness({
+        cache: {
+          etag: "legacy-first-page",
+          release: {
+            htmlUrl: "https://github.com/toommyliu/lucent/releases/tag/v0.0.2",
+            tagName: "v0.0.2",
+            version: "0.0.2",
+          },
+        },
+        checkForUpdates: true,
+        currentVersion: "0.1.0-beta.1",
+      });
+      const updates = yield* DesktopUpdates.pipe(Effect.provide(layer));
+
+      expect(yield* updates.checkNow()).toMatchObject({
+        status: "available",
+        latestVersion: "0.1.0-beta.2",
+      });
+
+      mockGitHubReleasePage(["v0.0.2"], firstPageHeaders);
+      mockGitHubReleasePage(["v0.1.0-beta.3"], { etag: "second-page-2" });
+
+      expect(yield* updates.checkNow()).toMatchObject({
+        status: "available",
+        latestVersion: "0.1.0-beta.3",
+      });
+      for (const request of httpRequests) {
+        expect(request.headers).not.toHaveProperty("If-None-Match");
+      }
+      const cache = JSON.parse(
+        yield* Effect.promise(() =>
+          readFile(join(env.appDataDir, "release-cache.json"), "utf8"),
+        ),
+      );
+      expect(cache).toMatchObject({ release: { version: "0.1.0-beta.3" } });
+      expect(cache).not.toHaveProperty("etag");
+    }),
+  );
+
+  it.effect.each([{ statusCode: 404 }, { body: "invalid JSON" }])(
+    "preserves the previous cache when a later release page fails (%#)",
+    (failedResponse) =>
+      Effect.gen(function* () {
+        const cache = {
+          etag: "legacy-first-page",
+          skippedVersion: "0.1.0-beta.2",
+          release: {
+            htmlUrl:
+              "https://github.com/toommyliu/lucent/releases/tag/v0.1.0-beta.2",
+            tagName: "v0.1.0-beta.2",
+            version: "0.1.0-beta.2",
+          },
+        };
+        mockGitHubReleasePage(["v0.1.0-beta.3"], {
+          link: '<https://api.github.com/repos/toommyliu/lucent/releases?per_page=100&page=2>; rel="next"',
+        });
+        mockGitHubResponse(failedResponse);
+        const { env, layer } = yield* makeUpdatesHarness({
+          cache,
+          checkForUpdates: true,
+          currentVersion: "0.1.0-beta.1",
+        });
+        const updates = yield* DesktopUpdates.pipe(Effect.provide(layer));
+
+        expect((yield* updates.checkNow()).status).toBe("error");
+        expect(
+          JSON.parse(
+            yield* Effect.promise(() =>
+              readFile(join(env.appDataDir, "release-cache.json"), "utf8"),
+            ),
+          ),
+        ).toEqual(cache);
+      }),
+  );
+
+  it.effect("offers prerelease builds the matching stable release", () =>
+    Effect.gen(function* () {
+      mockGitHubResponse({
+        body: JSON.stringify([
+          {
+            draft: false,
+            html_url: "https://github.com/toommyliu/lucent/releases/tag/v0.1.0",
+            prerelease: false,
+            tag_name: "v0.1.0",
+          },
+          {
+            draft: false,
+            html_url:
+              "https://github.com/toommyliu/lucent/releases/tag/v0.1.0-beta.2",
+            prerelease: true,
+            tag_name: "v0.1.0-beta.2",
+          },
+        ]),
+      });
+      const { layer } = yield* makeUpdatesHarness({
+        checkForUpdates: true,
+        currentVersion: "0.1.0-beta.2",
+      });
+      const updates = yield* DesktopUpdates.pipe(Effect.provide(layer));
+
+      const state = yield* updates.checkNow();
+
+      expect(state.status).toBe("available");
+      if (state.status === "available") {
+        expect(state.latestVersion).toBe("0.1.0");
+      }
+    }),
   );
 
   it.effect("rejects draft and prerelease payloads", () =>

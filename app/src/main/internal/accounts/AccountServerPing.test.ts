@@ -3,7 +3,7 @@ import { vi } from "vitest";
 import type { EventEmitter } from "node:events";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import { HttpClient, HttpClientResponse } from "effect/unstable/http";
+import { HttpClient, HttpClientResponse } from "effect/http";
 import { AccountServers, layer as serversLayer } from "./AccountServers";
 import { layer as environmentLayer } from "../../app/DesktopEnvironment";
 import * as Fiber from "effect/Fiber";

@@ -223,25 +223,12 @@ export const layer = Layer.effect(
     const http = yield* DesktopHttpClient;
     const windows = yield* DesktopWindows;
     const service = makeScriptHttp(http);
-    yield* Effect.acquireRelease(
-      windows.onRendererDestroyed((event) =>
-        service.closeRenderer(event.rendererId),
-      ),
-      (unsubscribe) => Effect.sync(unsubscribe),
-    );
-    yield* Effect.acquireRelease(
-      windows.onRendererReloaded((event) =>
-        service.closeRenderer(event.rendererId),
-      ),
-      (unsubscribe) => Effect.sync(unsubscribe),
-    );
-    yield* Effect.acquireRelease(
-      windows.onRendererUnavailable((event) =>
-        event.failure.type === "render-process-gone"
-          ? service.closeRenderer(event.rendererId)
-          : Effect.void,
-      ),
-      (unsubscribe) => Effect.sync(unsubscribe),
+    yield* windows.observe({}, (event) =>
+      event.type === "closed" ||
+      event.type === "reloaded" ||
+      event.type === "crashed"
+        ? service.closeRenderer(event.rendererId)
+        : Effect.void,
     );
     return service;
   }),

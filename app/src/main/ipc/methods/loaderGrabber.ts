@@ -1,6 +1,5 @@
 import * as Effect from "effect/Effect";
-import * as Schema from "effect/Schema";
-import type { RpcClientError } from "effect/unstable/rpc/RpcClientError";
+import type { RpcClientError } from "effect/rpc/RpcClientError";
 
 import type { LoaderGrabberError } from "../../../shared/gameRendererRpc";
 import { LoaderGrabberIpc } from "../../../shared/ipc";
@@ -8,38 +7,13 @@ import {
   GameRendererRpc,
   type GameRendererRpcClient,
 } from "../../internal/game-renderer/GameRendererRpc";
-import { DesktopWindows } from "../../window/DesktopWindows";
 import { makeDesktopIpcMethod } from "../DesktopIpc";
-import type { DesktopIpcSender } from "../DesktopIpcSenders";
+import {
+  resolveGameRendererId,
+  type DesktopIpcSender,
+} from "../DesktopIpcSenders";
 
 const LOADER_GRABBER_REQUEST_TIMEOUT_MS = 12_000;
-
-export class LoaderGrabberOwnerError extends Schema.TaggedError<LoaderGrabberOwnerError>()(
-  "LoaderGrabberOwnerError",
-  {
-    rendererId: Schema.Int,
-  },
-) {
-  override get message(): string {
-    return "This window is no longer linked to a game. Reopen it from the game.";
-  }
-}
-
-const resolveOwningGame = Effect.fn(
-  "desktop.ipc.loaderGrabber.resolveOwningGame",
-)(function* (sender: DesktopIpcSender) {
-  const windows = yield* DesktopWindows;
-  const ownerRendererId = yield* windows.getOwnerRendererId(sender.rendererId);
-  if (
-    ownerRendererId === null ||
-    (yield* windows.getRendererKind(ownerRendererId)) !== "game"
-  ) {
-    return yield* new LoaderGrabberOwnerError({
-      rendererId: sender.rendererId,
-    });
-  }
-  return ownerRendererId;
-});
 
 const requestOwningGame = Effect.fn("desktop.ipc.loaderGrabber.request")(
   function* <A>(
@@ -49,7 +23,7 @@ const requestOwningGame = Effect.fn("desktop.ipc.loaderGrabber.request")(
     ) => Effect.Effect<A, LoaderGrabberError | RpcClientError>,
   ) {
     const rpc = yield* GameRendererRpc;
-    const gameRendererId = yield* resolveOwningGame(sender);
+    const gameRendererId = yield* resolveGameRendererId(sender);
     return yield* rpc.call(gameRendererId, request, {
       timeout: LOADER_GRABBER_REQUEST_TIMEOUT_MS,
     });

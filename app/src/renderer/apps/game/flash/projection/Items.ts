@@ -292,11 +292,12 @@ const projectPurchase = Effect.fn("projectPurchase")(function* (
   });
   if (shopItem === null) return;
 
-  const container: ItemContainer = purchase.bBank
-    ? "bank"
-    : shopItem.houseItem
-      ? "house"
-      : "inventory";
+  const container: ItemContainer =
+    purchase.bBank && shopItem.category !== "Class"
+      ? "bank"
+      : shopItem.houseItem
+        ? "house"
+        : "inventory";
   const current = yield* store.items.get(container, purchase.ItemID);
   const autoEquip =
     container === "house" &&
@@ -737,11 +738,12 @@ export const projectExtensionItems = (
         if (decoded.value.bSuccess !== true) return [];
         const drop = yield* store.items.remove("drop", decoded.value.ItemID);
         if (drop === null) return [];
-        const context = decoded.value.bBank
-          ? "bank"
-          : decoded.value.bHouse || drop.houseItem
-            ? "house"
-            : "inventory";
+        const context =
+          decoded.value.bBank && drop.category !== "Class"
+            ? "bank"
+            : decoded.value.bHouse || drop.houseItem
+              ? "house"
+              : "inventory";
         const current = yield* store.items.get(context, {
           itemId: decoded.value.ItemID,
         });
@@ -817,9 +819,16 @@ export const projectExtensionItems = (
         const decoded = decodeCharacterItemMutation(data);
         if (Option.isNone(decoded) || decoded.value.bSuccess === false)
           return [];
-        const containers = decoded.value.bBank
-          ? (["bank"] as const)
-          : (["inventory", "house"] as const);
+        const inventoryItem = decoded.value.bBank
+          ? yield* store.items.getByCharItemId(
+              "inventory",
+              decoded.value.CharItemID,
+            )
+          : null;
+        const containers =
+          decoded.value.bBank && inventoryItem?.category !== "Class"
+            ? (["bank"] as const)
+            : (["inventory", "house"] as const);
         let container: (typeof containers)[number] | undefined;
         let current: LiveItem | null = null;
         for (const candidate of containers) {
@@ -835,7 +844,7 @@ export const projectExtensionItems = (
         if (container === undefined || current === null) return [];
         const quantity =
           decoded.value.iQtyNow ?? current.quantity - (decoded.value.iQty ?? 1);
-        if (quantity <= 0) {
+        if (current.category === "Class" || quantity <= 0) {
           yield* store.items.remove(container, current.itemId);
         } else {
           current.update({ quantity });

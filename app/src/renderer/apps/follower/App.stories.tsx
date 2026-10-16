@@ -67,10 +67,7 @@ function InteractiveFollowerStory(props: FollowerViewProps) {
         (candidate) => candidate.id === configuration.selectedProfileId,
       );
       return commit({
-        attemptsRemaining:
-          configuration.maxAttempts === undefined
-            ? 3
-            : configuration.maxAttempts,
+        attemptsRemaining: configuration.maxAttempts ?? 3,
         enabled: true,
         phase: "following",
         ...(profile === undefined

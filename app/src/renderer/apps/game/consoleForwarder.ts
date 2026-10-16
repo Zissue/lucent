@@ -431,7 +431,7 @@ export const installConsoleForwarder = (
     const original = console[method].bind(console) as ConsoleMethodFn;
     console[method] = ((...args: readonly unknown[]) => {
       try {
-        bridge.message(formatConsoleArguments(args));
+        bridge.message(method, formatConsoleArguments(args));
       } catch {}
 
       original(...args);

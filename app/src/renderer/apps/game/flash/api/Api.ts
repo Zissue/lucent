@@ -38,8 +38,8 @@ const makeApiServices = Effect.gen(function* () {
   const events = yield* makeEvents(gateway, wait);
   const packet = yield* makePacket(gateway, store, wait);
   const auth = makeAuth(bridge, store, wait);
-  const inventory = makeInventory(bridge, store, wait);
   const house = makeHouse(bridge, store);
+  const inventory = makeInventory(bridge, store, house, wait);
   const bank = yield* makeBank(bridge, store, auth, inventory, house, wait);
   const drops = yield* makeDrops(bridge, store, auth, wait);
   const map = makeMap(bridge, store, wait);
@@ -58,8 +58,6 @@ const makeApiServices = Effect.gen(function* () {
   const shops = makeShops(bridge, store, inventory, wait);
   const tempInventory = makeTempInventory(store);
   const debug = typeof window !== "undefined" && window.desktop.debug;
-  const traceProjections =
-    typeof window !== "undefined" && window.desktop.traceProjections;
   const combat = makeCombat(
     bridge,
     antiCounter,
@@ -82,9 +80,6 @@ const makeApiServices = Effect.gen(function* () {
       handleRuntimeEvent: sessionEvents.handleRuntimeEvent,
       publishEvent: gateway.publishEvent,
       ...(debug ? { reportDiagnostic: gateway.reportDiagnostic } : {}),
-      ...(traceProjections
-        ? { reportProjectionTrace: gateway.reportProjectionTrace }
-        : {}),
     },
     bridge,
   );
@@ -101,6 +96,7 @@ const makeApiServices = Effect.gen(function* () {
       house,
       inventory,
       map,
+      monsterLookup: monsterServices.lookup,
       monsters,
       packet,
       player,

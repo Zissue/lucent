@@ -76,7 +76,7 @@ export const toItem = (
     houseCategories.has(category);
   const temporaryItem = payload.bTemp ?? defaults.temporaryItem ?? false;
   const context =
-    payload.bBank === true
+    payload.bBank === true && category !== "Class"
       ? "bank"
       : (defaults.context ??
         (temporaryItem ? "temporary" : houseItem ? "house" : "inventory"));
@@ -161,3 +161,8 @@ export const toItem = (
     worn: payload.bWear ?? defaults.worn ?? false,
   });
 };
+
+export const toBankItems = (payloads: readonly ItemPayload[]): LiveItem[] =>
+  payloads
+    .filter((payload) => payload.sType !== "Class")
+    .map((payload) => toItem(payload, { context: "bank" }));

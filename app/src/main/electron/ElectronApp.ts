@@ -1,21 +1,34 @@
 import { app, type ProcessMetric } from "electron";
+import type { EventEmitter } from "node:events";
 
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
+export interface ElectronWillQuitEvent {
+  readonly preventDefault: () => void;
+}
+
+export interface ElectronAppListeners {
+  readonly activate: () => void;
+  readonly "before-quit": () => void;
+  readonly "will-quit": (event: ElectronWillQuitEvent) => void;
+  readonly "second-instance": (
+    event: unknown,
+    argv: readonly string[],
+    workingDirectory: string,
+    additionalData: unknown,
+  ) => void;
+  readonly "window-all-closed": () => void;
+}
+
 export interface ElectronAppShape {
-  readonly appendCommandLineSwitch: (
-    name: string,
-    value?: string,
-  ) => Effect.Effect<void>;
   readonly exit: (code?: number) => Effect.Effect<void>;
   readonly getAppMetrics: Effect.Effect<readonly ProcessMetric[]>;
   readonly getVersion: Effect.Effect<string>;
-  readonly isPackaged: Effect.Effect<boolean>;
-  readonly on: (
-    eventName: string,
-    listener: (...args: readonly unknown[]) => void,
+  readonly on: <EventName extends keyof ElectronAppListeners>(
+    eventName: EventName,
+    listener: ElectronAppListeners[EventName],
   ) => Effect.Effect<() => void>;
   readonly relaunch: Effect.Effect<void>;
   readonly quit: Effect.Effect<void>;
@@ -27,66 +40,19 @@ export class ElectronApp extends Context.Service<
   ElectronAppShape
 >()("lucent/desktop/electron/ElectronApp") {}
 
-const appendCommandLineSwitch: ElectronAppShape["appendCommandLineSwitch"] = (
-  name,
-  value,
-) =>
-  Effect.sync(() => {
-    if (value === undefined) {
-      app.commandLine.appendSwitch(name);
-    } else {
-      app.commandLine.appendSwitch(name, value);
-    }
-  });
-
-const exit: ElectronAppShape["exit"] = (code) =>
-  Effect.sync(() => {
-    app.exit(code);
-  });
-
-const getAppMetrics: ElectronAppShape["getAppMetrics"] = Effect.sync(() =>
-  app.getAppMetrics(),
-);
-
-const getVersion: ElectronAppShape["getVersion"] = Effect.sync(() =>
-  app.getVersion(),
-);
-
-const isPackaged: ElectronAppShape["isPackaged"] = Effect.sync(
-  () => app.isPackaged,
-);
-
-const on: ElectronAppShape["on"] = (eventName, listener) =>
-  Effect.sync(() => {
-    app.on(eventName as never, listener as never);
-    return () => {
-      app.removeListener(eventName as never, listener as never);
-    };
-  });
-
-const relaunch: ElectronAppShape["relaunch"] = Effect.sync(() => {
-  app.relaunch();
+export const layer = Layer.succeed(ElectronApp, {
+  exit: (code) => Effect.sync(() => app.exit(code)),
+  getAppMetrics: Effect.sync(() => app.getAppMetrics()),
+  getVersion: Effect.sync(() => app.getVersion()),
+  on: (event, listener) =>
+    Effect.sync(() => {
+      const events: EventEmitter = app;
+      events.on(event, listener);
+      return () => {
+        events.removeListener(event, listener);
+      };
+    }),
+  relaunch: Effect.sync(() => app.relaunch()),
+  quit: Effect.sync(() => app.quit()),
+  whenReady: Effect.promise(() => app.whenReady()).pipe(Effect.asVoid),
 });
-
-const quit: ElectronAppShape["quit"] = Effect.sync(() => {
-  app.quit();
-});
-
-const whenReady: ElectronAppShape["whenReady"] = Effect.promise(() =>
-  app.whenReady(),
-).pipe(Effect.asVoid);
-
-export const layer = Layer.succeed(
-  ElectronApp,
-  ElectronApp.of({
-    appendCommandLineSwitch,
-    exit,
-    getAppMetrics,
-    getVersion,
-    isPackaged,
-    on,
-    relaunch,
-    quit,
-    whenReady,
-  }),
-);

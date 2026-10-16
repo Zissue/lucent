@@ -798,7 +798,13 @@ async function writeOrCheckFile(
   try {
     existing = await fs.readFile(filePath, "utf8");
   }
-  catch {
+  catch (cause) {
+    if (check) {
+      throw new Error(
+        `Unable to read generated file: ${relative(repoRoot, filePath)}`,
+        { cause },
+      );
+    }
     existing = "";
   }
 
@@ -883,8 +889,7 @@ async function main(): Promise<void> {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
-    process.stderr.write(`${message}\n`);
-    process.exit(1);
+    console.error(error);
+    process.exitCode = 1;
   });
 }

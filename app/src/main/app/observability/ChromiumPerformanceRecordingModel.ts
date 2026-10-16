@@ -1,3 +1,5 @@
+import type { ProcessMetric } from "electron";
+
 export const CHROMIUM_PERFORMANCE_RECORDING_SCHEMA_VERSION = 2;
 
 export const CHROMIUM_TRACE_BUFFER_SIZE_KIB = 256 * 1024;
@@ -64,3 +66,31 @@ export const chromiumHeapCheckpointDirectoryName = (
   startedAt: string,
 ): string =>
   `checkpoint-${String(index).padStart(3, "0")}-${chromiumRecordingTimestamp(startedAt)}`;
+
+export interface ChromiumProcessSample {
+  readonly cpuPercent: number;
+  readonly creationTime: number;
+  readonly idleWakeupsPerSecond: number;
+  readonly name?: string;
+  readonly peakWorkingSetKiB: number;
+  readonly pid: number;
+  readonly privateMemoryKiB?: number;
+  readonly type: ProcessMetric["type"];
+  readonly workingSetKiB: number;
+}
+
+export const normalizeChromiumProcessMetric = (
+  metric: ProcessMetric,
+): ChromiumProcessSample => ({
+  cpuPercent: metric.cpu.percentCPUUsage,
+  creationTime: metric.creationTime,
+  idleWakeupsPerSecond: metric.cpu.idleWakeupsPerSecond,
+  ...(metric.name === undefined ? {} : { name: metric.name }),
+  peakWorkingSetKiB: metric.memory.peakWorkingSetSize,
+  pid: metric.pid,
+  ...(metric.memory.privateBytes === undefined
+    ? {}
+    : { privateMemoryKiB: metric.memory.privateBytes }),
+  type: metric.type,
+  workingSetKiB: metric.memory.workingSetSize,
+});

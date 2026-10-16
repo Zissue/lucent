@@ -3,9 +3,8 @@ import { join } from "path";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Ref from "effect/Ref";
+import * as SynchronizedRef from "effect/SynchronizedRef";
 import * as Schema from "effect/Schema";
-import * as Semaphore from "effect/Semaphore";
 
 import {
   DEFAULT_COMBAT_PROFILE_ID,
@@ -18,7 +17,10 @@ import {
   type CombatProfileLibrary,
 } from "@lucent/core/combatProfiles";
 import { DesktopEnvironment } from "../../app/DesktopEnvironment";
-import { makeListenerRegistry } from "../../app/ListenerRegistry";
+import {
+  makeListenerRegistry,
+  type Listener,
+} from "../../app/ListenerRegistry";
 import { FileSystem } from "effect/FileSystem";
 import { type JsonFileError, makeJsonFile } from "../../filesystem/JsonFile";
 
@@ -53,7 +55,7 @@ export interface CombatProfilesShape {
   readonly get: Effect.Effect<CombatProfileLibrary, CombatProfilesError>;
   readonly load: Effect.Effect<CombatProfileLibrary, CombatProfilesError>;
   readonly onChanged: (
-    listener: (library: CombatProfileLibrary) => void,
+    listener: Listener<CombatProfileLibrary>,
   ) => Effect.Effect<() => void>;
   readonly saveProfile: (
     profile: CombatProfile,
@@ -137,8 +139,10 @@ const makeCombatProfiles = Effect.gen(function* () {
   const env = yield* DesktopEnvironment;
   const jsonFile = makeJsonFile(yield* FileSystem);
   const path = join(env.appDataDir, "combat-profiles.json");
-  const libraryRef = yield* Ref.make<CombatProfileLibrary | null>(null);
-  const mutationLock = yield* Semaphore.make(1);
+  const libraryRef = yield* SynchronizedRef.make<{
+    readonly value: CombatProfileLibrary | null;
+    readonly publicationRevision: number;
+  }>({ value: null, publicationRevision: 0 });
   const libraryChanges = makeListenerRegistry<CombatProfileLibrary>();
 
   const readLibraryFromFile = Effect.gen(function* () {
@@ -171,24 +175,6 @@ const makeCombatProfiles = Effect.gen(function* () {
     return library;
   });
 
-  const commitLibrary = Effect.fn("CombatProfiles.commitLibrary")(function* (
-    library: CombatProfileLibrary,
-  ) {
-    yield* Ref.set(libraryRef, library);
-    yield* libraryChanges.publish(library);
-    return library;
-  });
-
-  const load = mutationLock.withPermit(
-    readLibraryFromFile.pipe(Effect.flatMap(commitLibrary)),
-  );
-
-  const get = Ref.get(libraryRef).pipe(
-    Effect.flatMap((current) =>
-      current === null ? load : Effect.succeed(current),
-    ),
-  );
-
   const writeLibraryFile = (
     library: CombatProfileLibrary,
   ): Effect.Effect<CombatProfileLibrary, CombatProfilesError> => {
@@ -198,21 +184,61 @@ const makeCombatProfiles = Effect.gen(function* () {
       .pipe(Effect.mapError(wrapDataError), Effect.as(normalized));
   };
 
+  const publishCurrent = SynchronizedRef.get(libraryRef).pipe(
+    Effect.flatMap(({ value, publicationRevision }) =>
+      value === null || publicationRevision === 0
+        ? Effect.void
+        : libraryChanges.publishLatest(publicationRevision, value),
+    ),
+  );
+  const get = SynchronizedRef.modifyEffect(libraryRef, (current) =>
+    (current.value === null
+      ? readLibraryFromFile
+      : Effect.succeed(current.value)
+    ).pipe(
+      Effect.map(
+        (library) => [library, { ...current, value: library }] as const,
+      ),
+    ),
+  );
+  const load = SynchronizedRef.modifyEffect(libraryRef, (current) =>
+    readLibraryFromFile.pipe(
+      Effect.map(
+        (library) =>
+          [
+            library,
+            {
+              value: library,
+              publicationRevision: current.publicationRevision + 1,
+            },
+          ] as const,
+      ),
+    ),
+  ).pipe(Effect.ensuring(publishCurrent));
   const update = (
     modify: (
       current: CombatProfileLibrary,
     ) => Effect.Effect<CombatProfileLibrary, CombatProfilesError>,
   ) =>
-    mutationLock.withPermit(
-      Ref.get(libraryRef).pipe(
-        Effect.flatMap((current) =>
-          current === null ? readLibraryFromFile : Effect.succeed(current),
-        ),
+    SynchronizedRef.modifyEffect(libraryRef, (current) =>
+      (current.value === null
+        ? readLibraryFromFile
+        : Effect.succeed(current.value)
+      ).pipe(
         Effect.flatMap(modify),
         Effect.flatMap(writeLibraryFile),
-        Effect.flatMap(commitLibrary),
+        Effect.map(
+          (saved) =>
+            [
+              saved,
+              {
+                value: saved,
+                publicationRevision: current.publicationRevision + 1,
+              },
+            ] as const,
+        ),
       ),
-    );
+    ).pipe(Effect.ensuring(publishCurrent));
 
   const deleteProfile: CombatProfilesShape["deleteProfile"] = (profileId) =>
     update((current) => deleteProfileFromLibrary(current, profileId));

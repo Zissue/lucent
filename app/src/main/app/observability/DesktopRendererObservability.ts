@@ -1,68 +1,21 @@
-import {
-  app,
-  ipcMain,
-  type Event as ElectronEvent,
-  type IpcMainEvent,
-  type WebContents,
-} from "electron";
+import { app, type Event as ElectronEvent, type WebContents } from "electron";
 import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
 
-import { DiagnosticsIpc } from "../../../shared/ipc";
-import { DesktopObservability } from "./DesktopObservability";
-
-const decodeRendererRecord = Option.liftThrowable(
-  DiagnosticsIpc.rendererRecord.decodePayload,
-);
-
-/** Installs debug-only renderer and Electron process failure recording. */
 export const installDesktopRendererObservability = Effect.gen(function* () {
-  const observability = yield* DesktopObservability;
+  const context = yield* Effect.context();
+  const runFork = Effect.runForkWith(context);
   const webContentsCleanups = new Set<() => void>();
-
-  const record = observability.recordUnsafe;
-
-  const handleRendererRecord = (
-    event: IpcMainEvent,
-    rawPayload: unknown,
-  ): void => {
-    const decoded = decodeRendererRecord(rawPayload);
-    if (Option.isNone(decoded)) {
-      return;
-    }
-    if (decoded.value.type === "trace.span") {
-      const { span, view } = decoded.value;
-      record({
-        component: "trace",
-        event: "span.completed",
-        data: {
-          ...span,
-          attributes: {
-            ...span.attributes,
-            "renderer.id": event.sender.id,
-            "renderer.view": view,
-          },
-        },
-      });
-      return;
-    }
-    const { type, ...data } = decoded.value;
-    record({
-      component: "renderer",
-      event: type,
-      data: { rendererId: event.sender.id, ...data },
-    });
-  };
 
   const handleChildProcessGone = (
     _event: ElectronEvent,
     details: Electron.Details,
   ): void => {
-    record({
-      component: "process",
-      event: "child.gone",
-      data: details,
-    });
+    runFork(
+      (details.reason === "clean-exit"
+        ? Effect.logInfo("Child process gone")
+        : Effect.logError("Child process gone")
+      ).pipe(Effect.annotateLogs({ component: "process", data: details })),
+    );
   };
 
   const handleRenderProcessGone = (
@@ -70,11 +23,17 @@ export const installDesktopRendererObservability = Effect.gen(function* () {
     contents: WebContents,
     details: Electron.RenderProcessGoneDetails,
   ): void => {
-    record({
-      component: "renderer",
-      event: "process.gone",
-      data: { rendererId: contents.id, ...details },
-    });
+    runFork(
+      (details.reason === "clean-exit"
+        ? Effect.logInfo("Renderer process gone")
+        : Effect.logError("Renderer process gone")
+      ).pipe(
+        Effect.annotateLogs({
+          component: "renderer",
+          data: { rendererId: contents.id, ...details },
+        }),
+      ),
+    );
   };
 
   const observeWebContents = (contents: WebContents): void => {
@@ -85,31 +44,40 @@ export const installDesktopRendererObservability = Effect.gen(function* () {
       validatedUrl: string,
       isMainFrame: boolean,
     ): void => {
-      record({
-        component: "renderer",
-        event: "load.failed",
-        data: {
-          errorCode,
-          errorDescription,
-          isMainFrame,
-          rendererId: contents.id,
-          validatedUrl,
-        },
-      });
+      runFork(
+        Effect.logWarning("Renderer load failed").pipe(
+          Effect.annotateLogs({
+            component: "renderer",
+            data: {
+              errorCode,
+              errorDescription,
+              isMainFrame,
+              rendererId: contents.id,
+              validatedUrl,
+            },
+          }),
+        ),
+      );
     };
     const handleResponsive = (): void => {
-      record({
-        component: "renderer",
-        event: "responsive",
-        data: { rendererId: contents.id },
-      });
+      runFork(
+        Effect.logInfo("Renderer responsive").pipe(
+          Effect.annotateLogs({
+            component: "renderer",
+            data: { rendererId: contents.id },
+          }),
+        ),
+      );
     };
     const handleUnresponsive = (): void => {
-      record({
-        component: "renderer",
-        event: "unresponsive",
-        data: { rendererId: contents.id },
-      });
+      runFork(
+        Effect.logWarning("Renderer unresponsive").pipe(
+          Effect.annotateLogs({
+            component: "renderer",
+            data: { rendererId: contents.id },
+          }),
+        ),
+      );
     };
     let cleanedUp = false;
     const cleanup = (): void => {
@@ -139,17 +107,12 @@ export const installDesktopRendererObservability = Effect.gen(function* () {
   };
 
   yield* Effect.sync(() => {
-    ipcMain.on(DiagnosticsIpc.rendererRecord.channel, handleRendererRecord);
     app.on("child-process-gone", handleChildProcessGone);
     app.on("render-process-gone", handleRenderProcessGone);
     app.on("web-contents-created", handleWebContentsCreated);
   });
   yield* Effect.addFinalizer(() =>
     Effect.sync(() => {
-      ipcMain.removeListener(
-        DiagnosticsIpc.rendererRecord.channel,
-        handleRendererRecord,
-      );
       app.removeListener("child-process-gone", handleChildProcessGone);
       app.removeListener("render-process-gone", handleRenderProcessGone);
       app.removeListener("web-contents-created", handleWebContentsCreated);

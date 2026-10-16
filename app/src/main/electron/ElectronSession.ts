@@ -1,10 +1,12 @@
 import { app, session, type Session } from "electron";
 
 import * as Context from "effect/Context";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as FiberSet from "effect/FiberSet";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import type * as Scope from "effect/Scope";
 
 import { DesktopEnvironment } from "../app/DesktopEnvironment";
 import { allowArtixCors, handleRuffleAssets } from "../ruffle/RuffleAssets";
@@ -59,9 +61,8 @@ export interface ElectronSessionShape {
   readonly clearAppData: Effect.Effect<void, ElectronSessionDataClearError>;
   readonly acquireGamePartition: (
     owner: GamePartitionOwner,
-  ) => Effect.Effect<string, ElectronGamePartitionError>;
+  ) => Effect.Effect<string, ElectronGamePartitionError, Scope.Scope>;
   readonly prepareGameNetworking: Effect.Effect<void>;
-  readonly releaseGamePartition: (partition: string) => void;
   readonly retireManagedGameProfile: (
     key: string,
   ) => Effect.Effect<void, ElectronGamePartitionError>;
@@ -118,12 +119,13 @@ export const layer = Layer.effect(
       app.on("session-created", configureSession);
     });
 
-    const acquireGamePartition: ElectronSessionShape["acquireGamePartition"] = (
-      owner,
-    ) =>
-      Effect.suspend(() => {
-        const partition = gamePartitions.acquire(owner);
-        return Effect.try({
+    const acquireGamePartition: ElectronSessionShape["acquireGamePartition"] =
+      Effect.fn("ElectronSession.acquireGamePartition")(function* (owner) {
+        const partition = yield* Effect.acquireRelease(
+          Effect.sync(() => gamePartitions.acquire(owner)),
+          (partition) => Effect.sync(() => releaseGamePartition(partition)),
+        );
+        return yield* Effect.try({
           try: () => {
             if (owner.kind === "managed-account") {
               const profilePath = session.fromPartition(
@@ -139,11 +141,7 @@ export const layer = Layer.effect(
           },
           catch: (cause) =>
             new ElectronGamePartitionError({ cause, partition }),
-        }).pipe(
-          Effect.tapError(() =>
-            Effect.sync(() => gamePartitions.release(partition)),
-          ),
-        );
+        });
       });
 
     const retireManagedGameProfile: ElectronSessionShape["retireManagedGameProfile"] =
@@ -185,7 +183,7 @@ export const layer = Layer.effect(
           Effect.catch((cause) =>
             Effect.logWarning(
               "Failed to clear a temporary game session",
-              cause,
+              Cause.fail(cause),
             ),
           ),
           Effect.ensuring(
@@ -218,7 +216,6 @@ export const layer = Layer.effect(
       acquireGamePartition,
       clearAppData,
       prepareGameNetworking,
-      releaseGamePartition,
       retireManagedGameProfile,
     });
   }),

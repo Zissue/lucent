@@ -93,6 +93,7 @@ package lucent {
 			this.game.sfc.addEventListener(SFSEvent.onConnection, this.onConnection);
 			this.game.sfc.addEventListener(SFSEvent.onConnectionLost, this.onConnectionLost);
 			this.game.sfc.addEventListener(SFSEvent.onExtensionResponse, this.onExtensionResponse);
+			this.game.sfc.debug = true;
 			this.gameDomain = LoaderInfo(ev.target).applicationDomain;
 
 			this.external.init(this);

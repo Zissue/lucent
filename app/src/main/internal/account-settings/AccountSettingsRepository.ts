@@ -1,6 +1,7 @@
 import { join } from "path";
 
 import * as Context from "effect/Context";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -110,12 +111,16 @@ export const layer = Layer.effect(
       const result = yield* jsonFile.read(path).pipe(
         Effect.catch((error: JsonFileError) =>
           error.operation === "parse"
-            ? Effect.logWarning({
-                message:
-                  "Account settings JSON is malformed; using defaults until the next edit.",
-                path,
-                cause: error,
-              }).pipe(Effect.as({ status: "malformed" as const }))
+            ? Effect.logWarning(
+                "Account settings JSON is malformed; using defaults until the next edit.",
+                Cause.fail(error),
+              ).pipe(
+                Effect.annotateLogs({
+                  component: "account-settings",
+                  data: { path },
+                }),
+                Effect.as({ status: "malformed" as const }),
+              )
             : Effect.fail(wrapJsonError(error)),
         ),
       );

@@ -26,7 +26,9 @@ body = """
 	{% for message, message_commits in group_commits | group_by(attribute="message") %}
 		- {% if message_commits[0].scope %}**{{ message_commits[0].scope }}:** {% endif %}{{ message | upper_first }} ({% for c in message_commits %}[{{ c.id | truncate(length=7, end="") }}]({{ self::remote_url() }}/commit/{{ c.id }}){% if not loop.last %}, {% endif %}{% endfor %})
 		{%- for c in message_commits %}
-			{%- if c.body %}
+			{%- if c.body
+    			and c.id != "f4c3b519116eb465c5094f414f52faa0b14a87f5"
+				and c.id != "18fd1a6ba6f5a3748b981090fab5505708b37eb8" %}
 			{%- set trimmed_body = c.body | trim %}
 			{%- if trimmed_body is starting_with("-") %}
 				{{ "\n" }}  {{ trimmed_body | indent(prefix="  ", first=false) }}

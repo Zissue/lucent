@@ -1,17 +1,18 @@
 import * as Cache from "effect/Cache";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
-import * as FileSystem from "effect/FileSystem";
+import * as ByteSize from "effect/ByteSize";
 import {
   HttpClient,
   HttpClientError,
   HttpClientResponse,
   HttpIncomingMessage,
-} from "effect/unstable/http";
+} from "effect/http";
 
 import { ACCOUNT_SERVER_REFRESH_COOLDOWN_MS } from "../../../shared/accountPolicy";
 import type {
@@ -46,10 +47,7 @@ export const requestAccountServers = Effect.fn("requestAccountServers")(
       Schema.Array(AccountServerDataSchema),
     )(response);
   },
-  Effect.provideService(
-    HttpIncomingMessage.MaxBodySize,
-    FileSystem.Size(1024 * 1024),
-  ),
+  Effect.provideService(HttpIncomingMessage.MaxBodySize, ByteSize.mebibytes(1)),
   Effect.timeout(SERVER_REQUEST_TIMEOUT_MS),
   Effect.scoped,
 );
@@ -145,12 +143,14 @@ export const layer = Layer.effect(
           Effect.catch((error: AccountsError) =>
             serverCache === null
               ? Effect.fail(error)
-              : Effect.logWarning("Failed to fetch servers; using cache")
+              : Effect.logWarning(
+                  "Failed to fetch servers; using cache",
+                  Cause.fail(error),
+                )
                   .pipe(
                     Effect.annotateLogs({
                       component: "accounts",
                       data: {
-                        error,
                         cachedServerCount: serverCache.servers.length,
                       },
                     }),

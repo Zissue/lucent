@@ -1,6 +1,5 @@
 import * as Effect from "effect/Effect";
-import * as Schema from "effect/Schema";
-import type { RpcClientError } from "effect/unstable/rpc/RpcClientError";
+import type { RpcClientError } from "effect/rpc/RpcClientError";
 
 import { PacketsError } from "../../../shared/gameRendererRpc";
 import {
@@ -16,36 +15,10 @@ import {
 import { GamePackets } from "../../internal/packets/GamePackets";
 import { DesktopWindows } from "../../window/DesktopWindows";
 import { DesktopIpc, makeDesktopIpcMethod } from "../DesktopIpc";
-import type { DesktopIpcSender } from "../DesktopIpcSenders";
-
-export class PacketsOwnerError extends Schema.TaggedError<PacketsOwnerError>()(
-  "PacketsOwnerError",
-  {
-    rendererId: Schema.Int,
-  },
-) {
-  override get message(): string {
-    return "This window is no longer linked to a game. Reopen it from the game.";
-  }
-}
-
-const resolveOwningGame = Effect.fn("desktop.ipc.packets.resolveOwningGame")(
-  function* (sender: DesktopIpcSender) {
-    const windows = yield* DesktopWindows;
-    const ownerRendererId = yield* windows.getOwnerRendererId(
-      sender.rendererId,
-    );
-    if (
-      ownerRendererId === null ||
-      (yield* windows.getRendererKind(ownerRendererId)) !== "game"
-    ) {
-      return yield* new PacketsOwnerError({
-        rendererId: sender.rendererId,
-      });
-    }
-    return ownerRendererId;
-  },
-);
+import {
+  resolveGameRendererId,
+  type DesktopIpcSender,
+} from "../DesktopIpcSenders";
 
 const PACKETS_REQUEST_TIMEOUT_MS = 5_000;
 
@@ -56,7 +29,7 @@ const requestGame = Effect.fn("desktop.ipc.packets.requestGame")(function* (
   ) => Effect.Effect<void, PacketsError | RpcClientError>,
 ) {
   const rpc = yield* GameRendererRpc;
-  const gameRendererId = yield* resolveOwningGame(sender);
+  const gameRendererId = yield* resolveGameRendererId(sender);
   yield* rpc.call(gameRendererId, request, {
     timeout: PACKETS_REQUEST_TIMEOUT_MS,
   });
@@ -91,7 +64,7 @@ export const getStatus = makeDesktopIpcMethod({
   handler: Effect.fn("desktop.ipc.packets.getStatus")(
     function* (_payload, sender) {
       const packets = yield* GamePackets;
-      const gameRendererId = yield* resolveOwningGame(sender);
+      const gameRendererId = yield* resolveGameRendererId(sender);
       return yield* packets.getStatus(gameRendererId);
     },
   ),
@@ -144,9 +117,8 @@ export const publishCaptured = makeDesktopIpcMethod({
   handler: Effect.fn("desktop.ipc.packets.publishCaptured")(
     function* (payload, sender) {
       const windows = yield* DesktopWindows;
-      const rendererReady = yield* windows
-        .isRendererReady(sender.rendererId)
-        .pipe(Effect.catch(() => Effect.succeed(false)));
+      const rendererReady =
+        (yield* windows.describe(sender.rendererId))?.ready ?? false;
       if (rendererReady) {
         yield* notifyPacketsWindow(
           sender.rendererId,
@@ -164,9 +136,8 @@ export const publishStatus = makeDesktopIpcMethod({
   handler: Effect.fn("desktop.ipc.packets.publishStatus")(
     function* (payload, sender) {
       const windows = yield* DesktopWindows;
-      const rendererReady = yield* windows
-        .isRendererReady(sender.rendererId)
-        .pipe(Effect.catch(() => Effect.succeed(false)));
+      const rendererReady =
+        (yield* windows.describe(sender.rendererId))?.ready ?? false;
       if (!rendererReady) {
         return;
       }

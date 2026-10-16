@@ -4,9 +4,9 @@ import * as FiberSet from "effect/FiberSet";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
-import type * as Rpc from "effect/unstable/rpc/Rpc";
-import type * as RpcGroup from "effect/unstable/rpc/RpcGroup";
-import * as RpcServer from "effect/unstable/rpc/RpcServer";
+import type * as Rpc from "effect/rpc/Rpc";
+import type * as RpcGroup from "effect/rpc/RpcGroup";
+import * as RpcServer from "effect/rpc/RpcServer";
 
 import { GameRendererRpcs } from "../../../shared/gameRendererRpc";
 import { GAME_RENDERER_RPC_PORT_MESSAGE } from "../../../shared/ipc/gameRenderer";

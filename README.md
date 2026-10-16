@@ -9,7 +9,7 @@
   <p>
     <a href="https://uselucent.vercel.app">Website</a> ·
     <a href="https://github.com/toommyliu/lucent/releases/latest#assets">Download</a> ·
-    <a href="https://uselucent.vercel.app/guides">Documentation</a>
+    <a href="https://uselucent.vercel.app/docs">Documentation</a>
   </p>
 </div>
 

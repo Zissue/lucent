@@ -1,0 +1,41 @@
+---
+import type { ComponentProps } from "astro/types";
+import { resolveDateFormatOptions } from "blume/core/date-format.ts";
+import RootLayout from "blume/components/layout/RootLayout.astro";
+
+type Props = ComponentProps<typeof RootLayout>;
+
+const props = Astro.props;
+const isChangelogEntry = props.pageType === "changelog";
+const releaseDate = props.published ? new Date(props.published) : null;
+const formattedReleaseDate =
+  releaseDate && !Number.isNaN(releaseDate.getTime())
+    ? new Intl.DateTimeFormat(
+        props.locale || "en",
+        resolveDateFormatOptions(props.dateFormat),
+      ).format(releaseDate)
+    : null;
+---
+
+<RootLayout
+  {...props}
+  contentLayout={isChangelogEntry ? "bare" : props.contentLayout}
+>
+  {
+    isChangelogEntry && (
+      <p class="changelog-release-meta not-prose">
+        {formattedReleaseDate && <span>{formattedReleaseDate}</span>}
+        {formattedReleaseDate && props.editUrl && (
+          <span aria-hidden="true">·</span>
+        )}
+        {props.editUrl && (
+          <a href={props.editUrl} rel="noreferrer" target="_blank">
+            GitHub ↗
+          </a>
+        )}
+      </p>
+    )
+  }
+  <slot />
+  {isChangelogEntry && <span data-changelog-entry hidden />}
+</RootLayout>

@@ -2,28 +2,25 @@ import {
   Alert,
   AlertAction,
   AlertDescription,
+  Icon,
+  HelpTooltip,
   Button,
-  Checkbox,
   Combobox,
   ComboboxContent,
   ComboboxEmpty,
   ComboboxInput,
   ComboboxItem,
   ComboboxList,
-  HelpTooltip,
-  Icon,
+  Field,
   IconButton,
   Input,
+  Label,
   Select,
   SelectItem,
   SelectTrigger,
-  Switch,
-  TooltipButton,
-  TooltipButtonContent,
-  TooltipButtonTrigger,
-  TooltipIconButton,
   VirtualizedSelectContent,
-  cn,
+  Switch as ToggleSwitch,
+  TooltipIconButton,
 } from "@lucent/ui";
 import {
   For,
@@ -34,7 +31,6 @@ import {
   createSignal,
   onCleanup,
   onMount,
-  untrack,
   type JSX,
 } from "solid-js";
 import {
@@ -47,27 +43,18 @@ import {
   DEFAULT_FOLLOWER_COMBAT_ENABLED,
   DEFAULT_FOLLOWER_COPY_WALK,
   DEFAULT_FOLLOWER_RETRY_ENABLED,
-  MAX_FOLLOWER_ATTEMPTS,
   createIdleFollowerState,
-  normalizeFollowerConfig,
-  parseFollowerAttackPriority,
   parseFollowerLocationFallbacks,
-  type FollowerConfig,
   type FollowerStartPayload,
+  type FollowerConfig,
   type FollowerState,
 } from "@lucent/core/follower";
 import {
   readLocalStorageValue,
   writeLocalStorageValue,
 } from "../../localStorage";
-import {
-  buildCombatProfileOptions,
-  resolveCombatProfileOptionValue,
-  type CombatProfileOption,
-} from "../../combatProfileOptions";
 import { filterPlayerRoster, observePlayerRoster } from "./playerRoster";
 import { reconcileFollowerCombatProfileId } from "./profileSelection";
-import { parseMonsterMapId } from "@lucent/game";
 import { selectDesktopBridge } from "../../../shared/desktopBridge";
 
 const selectedProfileStorageKey = "lucent.follower.selectedProfileId";
@@ -110,22 +97,20 @@ export interface FollowerViewProps {
   readonly fixture: FollowerViewFixture;
 }
 
-type AttackTarget = number | string;
+function LabelHelp(props: {
+  readonly label: string;
+  readonly tooltip: string;
+}): JSX.Element {
+  return (
+    <span class="follower-label-help">
+      <span>{props.label}</span>
+      <HelpTooltip aria-label={`${props.label} help`} tooltip={props.tooltip} />
+    </span>
+  );
+}
 
-const loadFailureMessages = {
-  config: "Failed to load follower configuration",
-  state: "Failed to load follower state",
-  library: "Failed to load combat profiles",
-};
-type FollowerLoadSource = keyof typeof loadFailureMessages;
-
-const errorMessage = (cause: unknown, fallback: string): string =>
-  cause instanceof Error ? cause.message : fallback;
-
-const configurationKey = (configuration: FollowerStartPayload): string =>
-  JSON.stringify(normalizeFollowerConfig(configuration));
-
-function createFollowerController(props: FollowerViewProps) {
+/** Renders Follower state from typed fixtures and optional interactions. */
+export function FollowerView(props: FollowerViewProps): JSX.Element {
   const initialConfig = props.fixture.config ?? null;
   const [state, setState] = createSignal<FollowerState>(props.fixture.state);
   const [library, setLibrary] = createSignal<CombatProfileLibrary>(
@@ -146,53 +131,34 @@ function createFollowerController(props: FollowerViewProps) {
   const [retryEnabled, setRetryEnabled] = createSignal(
     initialConfig?.retryEnabled ?? DEFAULT_FOLLOWER_RETRY_ENABLED,
   );
-  const [attemptLimit, setAttemptLimit] = createSignal(
+  const [maxAttempts, setMaxAttempts] = createSignal(
     initialConfig?.maxAttempts ?? DEFAULT_FOLLOWER_ATTEMPTS,
-  );
-  const [attemptDraft, setAttemptDraft] = createSignal(String(attemptLimit()));
-  const [unlimitedAttempts, setUnlimitedAttempts] = createSignal(
-    initialConfig?.maxAttempts === null,
   );
   const [selectedProfileId, setSelectedProfileId] = createSignal(
     initialConfig?.selectedProfileId ??
       readLocalStorageValue(selectedProfileStorageKey) ??
       DEFAULT_COMBAT_PROFILE_ID,
   );
-  const [attackPriority, setAttackPriority] = createSignal<
-    readonly AttackTarget[]
-  >(initialConfig?.attackPriority ?? []);
+  const [attackPriority, setAttackPriority] = createSignal(
+    initialConfig?.attackPriority.join(", ") ?? "",
+  );
   const [lockedZoneFallbacks, setLockedZoneFallbacks] = createSignal<
     readonly string[]
   >(initialConfig?.lockedZoneFallbacks ?? []);
+  const [lockedZoneFallbackInput, setLockedZoneFallbackInput] =
+    createSignal("");
   const [lockedZoneRoomOverride, setLockedZoneRoomOverride] = createSignal(
     initialConfig?.lockedZoneRoomOverride ?? "",
   );
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal(props.fixture.error ?? "");
-  const [loadErrors, setLoadErrors] = createSignal<
-    Record<FollowerLoadSource, string>
-  >({ config: "", state: "", library: "" });
-  const [hydrated, setHydrated] = createSignal(
-    props.callbacks?.getConfig === undefined &&
-      props.callbacks?.getState === undefined &&
-      props.callbacks?.getLibrary === undefined,
-  );
-  const [loadingConfig, setLoadingConfig] = createSignal(false);
-  const configReady = createMemo(
-    () => hydrated() && loadErrors().config === "",
-  );
-  let syncedConfigurationKey = "";
+  const [dismissedIssue, setDismissedIssue] = createSignal(false);
+  let previousIssueKey = "";
+  let configurationEffectReady = false;
   let configurationRevision = 0;
   let disposed = false;
 
-  const clearLoadError = (source: FollowerLoadSource): void => {
-    setLoadErrors((current) =>
-      current[source] === "" ? current : { ...current, [source]: "" },
-    );
-  };
-
   const running = createMemo(() => state().enabled || state().running);
-  const settingsDisabled = createMemo(() => running() || !configReady());
   const profileOptions = createMemo(() => {
     const profiles = library().profiles;
     const generic = profiles.find(
@@ -203,18 +169,12 @@ function createFollowerController(props: FollowerViewProps) {
     );
     return generic ? [generic, ...rest] : rest;
   });
-  const [groupProfiles, setGroupProfiles] = createSignal(false);
-  const [selectedProfileOptionValue, setSelectedProfileOptionValue] =
-    createSignal("");
   const profileSelectItems = createMemo(() =>
-    buildCombatProfileOptions(profileOptions(), groupProfiles()),
-  );
-  const profileSelectValue = createMemo(() =>
-    resolveCombatProfileOptionValue(
-      profileSelectItems(),
-      selectedProfileId(),
-      selectedProfileOptionValue(),
-    ),
+    profileOptions().map((profile) => ({
+      label: profile.label,
+      searchText: profile.classNames?.join(" "),
+      value: profile.id,
+    })),
   );
   const filteredPlayers = createMemo(() =>
     filterPlayerRoster(players(), targetName()),
@@ -243,7 +203,7 @@ function createFollowerController(props: FollowerViewProps) {
     return (
       !current.enabled &&
       !current.running &&
-      current.attemptsRemaining === 0 &&
+      current.attemptsRemaining <= 0 &&
       current.stoppedReason !== "Stopped by user"
     );
   });
@@ -252,11 +212,7 @@ function createFollowerController(props: FollowerViewProps) {
     const followerMessages = exhaustedFollowerAttempts()
       ? [current.stoppedReason ?? "", current.lastError ?? ""]
       : [];
-    const messages = [
-      ...Object.values(loadErrors()),
-      error(),
-      ...followerMessages,
-    ].filter(Boolean);
+    const messages = [error(), ...followerMessages].filter(Boolean);
     return [...new Set(messages)].join(" - ");
   });
   const issueMessage = createMemo(
@@ -265,18 +221,8 @@ function createFollowerController(props: FollowerViewProps) {
   const issueVariant = createMemo(() =>
     errorIssueMessage() === "" ? "warning" : "error",
   );
-  const showIssue = createMemo(() => issueMessage() !== "");
-  const attemptsInvalid = createMemo(
-    () =>
-      retryEnabled() &&
-      !unlimitedAttempts() &&
-      parseAttempts(attemptDraft()) === undefined,
-  );
-  const canToggle = createMemo(
-    () =>
-      !busy() &&
-      (running() ||
-        (configReady() && targetName().trim() !== "" && !attemptsInvalid())),
+  const showIssue = createMemo(
+    () => issueMessage() !== "" && !dismissedIssue(),
   );
 
   const readConfiguration = (): FollowerStartPayload => ({
@@ -284,7 +230,7 @@ function createFollowerController(props: FollowerViewProps) {
     combatEnabled: combatEnabled(),
     copyWalk: copyWalk(),
     retryEnabled: retryEnabled(),
-    maxAttempts: unlimitedAttempts() ? null : attemptLimit(),
+    maxAttempts: maxAttempts(),
     selectedProfileId: selectedProfileId(),
     attackPriority: attackPriority(),
     lockedZoneFallbacks: lockedZoneFallbacks(),
@@ -293,11 +239,10 @@ function createFollowerController(props: FollowerViewProps) {
 
   createEffect(() => {
     const configuration = readConfiguration();
-    const key = configurationKey(configuration);
-    if (!configReady() || key === syncedConfigurationKey) {
+    if (!configurationEffectReady) {
+      configurationEffectReady = true;
       return;
     }
-    syncedConfigurationKey = key;
 
     const revision = ++configurationRevision;
     const update = props.callbacks?.configure?.(configuration);
@@ -308,7 +253,11 @@ function createFollowerController(props: FollowerViewProps) {
     void update.catch((cause: unknown) => {
       console.error("Failed to sync follower configuration:", cause);
       if (!disposed && revision === configurationRevision) {
-        setError(errorMessage(cause, "Failed to sync follower configuration"));
+        setError(
+          cause instanceof Error
+            ? cause.message
+            : "Failed to sync follower configuration",
+        );
       }
     });
   });
@@ -317,13 +266,20 @@ function createFollowerController(props: FollowerViewProps) {
     disposed = true;
   });
 
+  createEffect(() => {
+    const key = issueMessage();
+    if (key !== previousIssueKey) {
+      previousIssueKey = key;
+      setDismissedIssue(false);
+    }
+  });
+
   const selectProfile = (profileId: string): void => {
     setSelectedProfileId(profileId);
     writeLocalStorageValue(selectedProfileStorageKey, profileId);
   };
 
   const applyLibrary = (nextLibrary: CombatProfileLibrary): void => {
-    clearLoadError("library");
     setLibrary(nextLibrary);
     const nextProfileId = reconcileFollowerCombatProfileId(
       nextLibrary,
@@ -335,7 +291,6 @@ function createFollowerController(props: FollowerViewProps) {
   };
 
   const applyFollowerState = (nextState: FollowerState): void => {
-    clearLoadError("state");
     setState(nextState);
     if (targetName().trim() === "" && nextState.targetName.trim() !== "") {
       setTargetName(nextState.targetName);
@@ -345,12 +300,14 @@ function createFollowerController(props: FollowerViewProps) {
       nextState.running ||
       (nextState.phase === "idle" && nextState.lastError === undefined)
     ) {
+      if (nextState.warning === undefined) {
+        setDismissedIssue(false);
+      }
       setError("");
     }
   };
 
   const applyFollowerConfig = (config: FollowerConfig | null): void => {
-    clearLoadError("config");
     if (config === null) {
       return;
     }
@@ -360,44 +317,12 @@ function createFollowerController(props: FollowerViewProps) {
       setCombatEnabled(config.combatEnabled);
       setCopyWalk(config.copyWalk);
       setRetryEnabled(config.retryEnabled);
-      setUnlimitedAttempts(config.maxAttempts === null);
-      if (config.maxAttempts !== null) {
-        setAttemptLimit(config.maxAttempts);
-        setAttemptDraft(String(config.maxAttempts));
-      }
+      setMaxAttempts(config.maxAttempts);
       setSelectedProfileId(config.selectedProfileId);
-      setAttackPriority(config.attackPriority);
+      setAttackPriority(config.attackPriority.join(", "));
       setLockedZoneFallbacks(config.lockedZoneFallbacks);
       setLockedZoneRoomOverride(config.lockedZoneRoomOverride);
     });
-  };
-
-  const retryConfig = async (): Promise<void> => {
-    const getConfig = props.callbacks?.getConfig;
-    if (getConfig === undefined || loadingConfig()) {
-      return;
-    }
-
-    setLoadingConfig(true);
-    try {
-      const config = await getConfig();
-      if (disposed) {
-        return;
-      }
-      batch(() => {
-        applyFollowerConfig(config);
-        if (loadErrors().library === "") {
-          applyLibrary(library());
-        }
-        syncedConfigurationKey = configurationKey(readConfiguration());
-      });
-    } catch (cause) {
-      console.error("Failed to load follower configuration:", cause);
-    } finally {
-      if (!disposed) {
-        setLoadingConfig(false);
-      }
-    }
   };
 
   const fillMe = async (): Promise<void> => {
@@ -409,7 +334,7 @@ function createFollowerController(props: FollowerViewProps) {
       }
     } catch (cause) {
       console.error("Failed to resolve current player:", cause);
-      setError(errorMessage(cause, "Failed to get player"));
+      setError(cause instanceof Error ? cause.message : "Failed to get player");
     }
   };
 
@@ -419,18 +344,23 @@ function createFollowerController(props: FollowerViewProps) {
       await props.callbacks?.openCombatProfiles?.();
     } catch (cause) {
       console.error("Failed to open combat profiles:", cause);
-      setError(errorMessage(cause, "Failed to open combat profiles"));
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "Failed to open combat profiles",
+      );
     }
   };
 
   const start = async (): Promise<void> => {
     const trimmedTarget = targetName().trim();
-    if (!configReady() || !trimmedTarget || attemptsInvalid() || busy()) {
+    if (!trimmedTarget || busy()) {
       return;
     }
 
     setBusy(true);
     setError("");
+    setDismissedIssue(false);
     try {
       const nextState = await (props.callbacks?.start?.({
         ...readConfiguration(),
@@ -439,7 +369,9 @@ function createFollowerController(props: FollowerViewProps) {
       applyFollowerState(nextState);
     } catch (cause) {
       console.error("Failed to start follower:", cause);
-      setError(errorMessage(cause, "Failed to start follower"));
+      setError(
+        cause instanceof Error ? cause.message : "Failed to start follower",
+      );
     } finally {
       setBusy(false);
     }
@@ -458,7 +390,9 @@ function createFollowerController(props: FollowerViewProps) {
       applyFollowerState(nextState);
     } catch (cause) {
       console.error("Failed to stop follower:", cause);
-      setError(errorMessage(cause, "Failed to stop follower"));
+      setError(
+        cause instanceof Error ? cause.message : "Failed to stop follower",
+      );
     } finally {
       setBusy(false);
     }
@@ -472,64 +406,270 @@ function createFollowerController(props: FollowerViewProps) {
     }
   };
 
-  const addAttackPriority = (input: string): void => {
-    const additions = parseFollowerAttackPriority(
-      input.split(/[,;]/u).map((token) => parseMonsterMapId(token) ?? token),
-    );
-    if (additions.length > 0) {
-      setAttackPriority((current) =>
-        parseFollowerAttackPriority([...current, ...additions]),
-      );
-    }
-  };
+  const PlayerPicker = (): JSX.Element => (
+    <div class="follower-target-row">
+      <Combobox
+        class="follower-player-combobox"
+        allowCustomValue
+        disabled={running()}
+        inputBehavior="autohighlight"
+        inputValue={targetName()}
+        items={playerItems()}
+        openOnClick
+        value={selectedPlayerValue()}
+        onInputValueChange={(details) => {
+          if (
+            details.reason === "input-change" ||
+            details.reason === "item-select" ||
+            details.reason === "clear-trigger"
+          ) {
+            setTargetName(details.inputValue);
+          }
+        }}
+        onValueChange={(details) => {
+          const selected = details.value[0];
+          if (selected !== undefined) {
+            setTargetName(selected);
+          }
+        }}
+      >
+        <ComboboxInput
+          id="follower-target-name"
+          aria-label="Player name"
+          autocomplete="off"
+          disabled={running()}
+          placeholder="Player name"
+        />
+        <ComboboxContent>
+          <ComboboxEmpty>
+            {players().length === 0
+              ? "No players in map"
+              : "No matching players"}
+          </ComboboxEmpty>
+          <ComboboxList>
+            <For each={filteredPlayers()}>
+              {(player) => <ComboboxItem value={player}>{player}</ComboboxItem>}
+            </For>
+          </ComboboxList>
+        </ComboboxContent>
+      </Combobox>
+      <Button
+        size="sm"
+        variant="outline"
+        disabled={running()}
+        onClick={() => void fillMe()}
+      >
+        <Icon icon="user_round" class="button__icon" />
+        Me
+      </Button>
+    </div>
+  );
 
-  const removeAttackPriority = (index: number): void => {
-    setAttackPriority((current) => current.filter((_, i) => i !== index));
-  };
+  const CombatFields = (): JSX.Element => (
+    <>
+      <div class="follower-profile-field">
+        <Button
+          aria-label="Open combat profiles"
+          class="follower-profile-access"
+          size="xs"
+          variant="ghost"
+          onClick={() => void openCombatProfiles()}
+        >
+          <span>Combat Profile</span>
+          <Icon icon="arrow_up_right" class="button__icon" />
+        </Button>
+        <Select
+          items={profileSelectItems()}
+          value={[selectedProfileId()]}
+          disabled={running() || !combatEnabled()}
+          onValueChange={(details) => {
+            const id = details.value[0];
+            if (id) {
+              selectProfile(id);
+            }
+          }}
+        >
+          <SelectTrigger aria-label="Selected combat profile">
+            <span
+              class="select__value"
+              data-placeholder={selectedProfileLabel() === "" ? "" : undefined}
+            >
+              {selectedProfileLabel() || "Combat profile"}
+            </span>
+          </SelectTrigger>
+          <VirtualizedSelectContent items={profileSelectItems()} searchable>
+            {(profile) => (
+              <SelectItem item={profile} value={profile.value}>
+                {profile.label}
+              </SelectItem>
+            )}
+          </VirtualizedSelectContent>
+        </Select>
+      </div>
+      <Field
+        class="follower-field follower-field--priority"
+        label="Attack priority"
+        for="follower-attack-priority"
+      >
+        <Input
+          id="follower-attack-priority"
+          value={attackPriority()}
+          placeholder="Defense Drone, Attack Drone"
+          autocomplete="off"
+          disabled={running() || !combatEnabled()}
+          onInput={(event) => setAttackPriority(event.currentTarget.value)}
+        />
+      </Field>
+    </>
+  );
 
-  const addLockedZoneFallbacks = (input: string): void => {
+  const AttemptsControl = (): JSX.Element => (
+    <Label class="follower-inline-number" for="follower-retry-attempts">
+      <span>Attempts</span>
+      <Input
+        id="follower-retry-attempts"
+        class="follower-retry-attempts-input"
+        type="number"
+        min="1"
+        step="1"
+        value={String(maxAttempts())}
+        disabled={running() || !retryEnabled()}
+        onInput={(event) => {
+          const parsed = Number.parseInt(event.currentTarget.value, 10);
+          if (Number.isFinite(parsed)) {
+            setMaxAttempts(Math.max(1, parsed));
+          }
+        }}
+      />
+    </Label>
+  );
+
+  const addLockedZoneFallbacks = (event: SubmitEvent): void => {
+    event.preventDefault();
     const additions = parseFollowerLocationFallbacks(
-      input.replaceAll(/[;,]/gu, "\n"),
+      lockedZoneFallbackInput().replaceAll(";", "\n"),
     );
-    if (additions.length > 0) {
-      setLockedZoneFallbacks((current) =>
-        parseFollowerLocationFallbacks([...current, ...additions]),
+    setLockedZoneFallbackInput("");
+    if (additions.length === 0) {
+      return;
+    }
+
+    setLockedZoneFallbacks((current) => {
+      const identities = new Set(
+        current.map((location) => location.toLowerCase()),
       );
-    }
+      return [
+        ...current,
+        ...additions.filter((location) => {
+          const identity = location.toLowerCase();
+          if (identities.has(identity)) {
+            return false;
+          }
+          identities.add(identity);
+          return true;
+        }),
+      ];
+    });
   };
 
-  const replaceLockedZoneFallback = (index: number, input: string): void => {
-    const location = input.trim();
+  const removeLockedZoneFallback = (location: string): void => {
+    const identity = location.toLowerCase();
     setLockedZoneFallbacks((current) =>
-      parseFollowerLocationFallbacks(
-        location === ""
-          ? current.filter((_, i) => i !== index)
-          : current.map((candidate, i) => (i === index ? location : candidate)),
-      ),
+      current.filter((candidate) => candidate.toLowerCase() !== identity),
     );
   };
 
-  const updateAttemptDraft = (draft: string): void => {
-    setAttemptDraft(draft);
-    const attempts = parseAttempts(draft);
-    if (attempts !== undefined) {
-      setAttemptLimit(attempts);
-    }
-  };
-
-  const removeLockedZoneFallback = (index: number): void => {
-    setLockedZoneFallbacks((current) => current.filter((_, i) => i !== index));
-  };
+  const LockedZoneFields = (): JSX.Element => (
+    <>
+      <div class="follower-field follower-field--fallbacks">
+        <Label for="follower-locked-zone-fallback">Locked-zone locations</Label>
+        <form class="follower-location-entry" onSubmit={addLockedZoneFallbacks}>
+          <Input
+            id="follower-locked-zone-fallback"
+            value={lockedZoneFallbackInput()}
+            placeholder="ultradage-12345"
+            autocomplete="off"
+            spellcheck={false}
+            disabled={running() || !retryEnabled()}
+            onInput={(event) =>
+              setLockedZoneFallbackInput(event.currentTarget.value)
+            }
+          />
+          <TooltipIconButton
+            type="submit"
+            size="icon"
+            aria-label="Add locked-zone location"
+            tooltip="Add location"
+            disabled={
+              running() ||
+              !retryEnabled() ||
+              lockedZoneFallbackInput().trim() === ""
+            }
+          >
+            <Icon icon="plus" class="button__icon" />
+          </TooltipIconButton>
+        </form>
+        <div class="follower-location-list" aria-label="Locked-zone locations">
+          <Show
+            when={lockedZoneFallbacks().length > 0}
+            fallback={
+              <span class="follower-location-list__empty">No locations</span>
+            }
+          >
+            <For each={lockedZoneFallbacks()}>
+              {(location) => {
+                return (
+                  <div class="follower-location-chip">
+                    <span class="follower-location-chip__label">
+                      {location}
+                    </span>
+                    <IconButton
+                      type="button"
+                      class="follower-location-chip__remove"
+                      size="icon"
+                      variant="ghost"
+                      aria-label={`Remove ${location}`}
+                      disabled={running() || !retryEnabled()}
+                      onClick={() => removeLockedZoneFallback(location)}
+                    >
+                      <Icon icon="x" class="button__icon" />
+                    </IconButton>
+                  </div>
+                );
+              }}
+            </For>
+          </Show>
+        </div>
+      </div>
+      <Field
+        class="follower-field follower-field--room"
+        label={
+          <LabelHelp
+            label="Room override"
+            tooltip="Used only for locked-zone maps without a room suffix."
+          />
+        }
+        for="follower-locked-zone-room"
+      >
+        <Input
+          id="follower-locked-zone-room"
+          class="follower-room-input"
+          value={lockedZoneRoomOverride()}
+          placeholder="12345"
+          inputMode="numeric"
+          autocomplete="off"
+          disabled={running() || !retryEnabled()}
+          onInput={(event) =>
+            setLockedZoneRoomOverride(event.currentTarget.value)
+          }
+        />
+      </Field>
+    </>
+  );
 
   onMount(() => {
-    let receivedState = false;
-    let receivedLibrary = false;
-    const unsubscribeFollower = props.callbacks?.onFollowerChanged?.(
-      (nextState) => {
-        receivedState = true;
-        applyFollowerState(nextState);
-      },
-    );
+    const unsubscribeFollower =
+      props.callbacks?.onFollowerChanged?.(applyFollowerState);
     const unsubscribePlayers =
       props.callbacks?.getPlayers !== undefined &&
       props.callbacks.onPlayersChanged !== undefined
@@ -544,56 +684,38 @@ function createFollowerController(props: FollowerViewProps) {
             },
           )
         : undefined;
-    const unsubscribeProfiles = props.callbacks?.onLibraryChanged?.(
-      (nextLibrary) => {
-        receivedLibrary = true;
-        applyLibrary(nextLibrary);
-      },
-    );
+    const unsubscribeProfiles =
+      props.callbacks?.onLibraryChanged?.(applyLibrary);
 
-    const load = <T,>(
-      request: (() => Promise<T>) | undefined,
-      source: FollowerLoadSource,
-    ): Promise<T | undefined> =>
-      request === undefined
-        ? Promise.resolve(undefined)
-        : request().catch((cause: unknown) => {
-            const failure = loadFailureMessages[source];
-            console.error(`${failure}:`, cause);
-            if (!disposed) {
-              setLoadErrors((current) => ({ ...current, [source]: failure }));
-            }
-            return undefined;
-          });
+    if (props.callbacks?.getConfig !== undefined) {
+      void props.callbacks
+        .getConfig()
+        .then(applyFollowerConfig)
+        .catch((cause: unknown) => {
+          console.error("Failed to load follower configuration:", cause);
+          setError("Failed to load follower configuration");
+        });
+    }
 
-    void Promise.all([
-      load(props.callbacks?.getConfig, "config"),
-      load(props.callbacks?.getState, "state"),
-      load(props.callbacks?.getLibrary, "library"),
-    ]).then(([config, loadedState, loadedLibrary]) => {
-      if (disposed) {
-        return;
-      }
-      batch(() => {
-        if (config !== undefined) {
-          applyFollowerConfig(config);
-        }
-        const initialLibrary =
-          receivedLibrary || props.callbacks?.getLibrary === undefined
-            ? library()
-            : loadedLibrary;
-        if (initialLibrary !== undefined) {
-          applyLibrary(initialLibrary);
-        }
-        if (receivedState) {
-          clearLoadError("state");
-        } else if (loadedState !== undefined) {
-          applyFollowerState(loadedState);
-        }
-        syncedConfigurationKey = configurationKey(readConfiguration());
-        setHydrated(true);
-      });
-    });
+    if (props.callbacks?.getState !== undefined) {
+      void props.callbacks
+        .getState()
+        .then(applyFollowerState)
+        .catch((cause: unknown) => {
+          console.error("Failed to load follower state:", cause);
+          setError("Failed to load follower state");
+        });
+    }
+
+    if (props.callbacks?.getLibrary !== undefined) {
+      void props.callbacks
+        .getLibrary()
+        .then(applyLibrary)
+        .catch((cause: unknown) => {
+          console.error("Failed to load combat profiles:", cause);
+          setError("Failed to load combat profiles");
+        });
+    }
 
     onCleanup(() => {
       unsubscribeFollower?.();
@@ -602,747 +724,128 @@ function createFollowerController(props: FollowerViewProps) {
     });
   });
 
-  return {
-    addAttackPriority,
-    addLockedZoneFallbacks,
-    attackPriority,
-    busy,
-    canToggle,
-    combatEnabled,
-    configReady,
-    copyWalk,
-    filteredPlayers,
-    fillMe,
-    issueMessage,
-    issueVariant,
-    lockedZoneFallbacks,
-    lockedZoneRoomOverride,
-    loadingConfig,
-    attemptDraft,
-    attemptsInvalid,
-    openCombatProfiles,
-    playerItems,
-    players,
-    groupProfiles,
-    hydrated,
-    profileSelectItems,
-    profileSelectValue,
-    setGroupProfiles,
-    setSelectedProfileOptionValue,
-    removeAttackPriority,
-    removeLockedZoneFallback,
-    replaceLockedZoneFallback,
-    retryEnabled,
-    retryConfig,
-    running,
-    selectProfile,
-    selectedPlayerValue,
-    selectedProfileId,
-    selectedProfileLabel,
-    setCombatEnabled,
-    setCopyWalk,
-    setLockedZoneRoomOverride,
-    setRetryEnabled,
-    setTargetName,
-    setUnlimitedAttempts,
-    settingsDisabled,
-    showIssue,
-    state,
-    targetName,
-    toggle,
-    unlimitedAttempts,
-    updateAttemptDraft,
-  };
-}
-
-type FollowerController = ReturnType<typeof createFollowerController>;
-
-interface ControllerProps {
-  readonly controller: FollowerController;
-}
-
-function IssueAlert(props: ControllerProps): JSX.Element {
-  const c = props.controller;
   return (
-    <Show when={c.showIssue()}>
-      <Alert
-        class="follower-issue"
-        variant={c.issueVariant()}
-        data-variant={c.issueVariant()}
-      >
-        <AlertDescription class="follower-issue__message">
-          <Icon icon="circle_alert" aria-hidden="true" />
-          <span>{c.issueMessage()}</span>
-        </AlertDescription>
-        <Show when={!c.configReady()}>
-          <AlertAction>
-            <Button
-              size="xs"
-              variant="ghost"
-              disabled={c.loadingConfig()}
-              aria-busy={c.loadingConfig()}
-              onClick={() => void c.retryConfig()}
-            >
-              Retry
-            </Button>
-          </AlertAction>
-        </Show>
-      </Alert>
-    </Show>
-  );
-}
-
-function StartStopButton(
-  props: ControllerProps & {
-    readonly class?: string;
-    readonly size?: "default" | "sm";
-  },
-): JSX.Element {
-  const c = props.controller;
-  return (
-    <Button
-      class={cn("follower-toggle", props.class)}
-      size={props.size ?? "sm"}
-      variant={c.running() ? "destructive" : "default"}
-      aria-busy={c.busy()}
-      disabled={!c.canToggle()}
-      title={
-        !c.running() && c.targetName().trim() === ""
-          ? "Choose a player to follow first"
-          : undefined
-      }
-      onClick={() => c.toggle()}
-    >
-      {c.running() ? "Stop" : "Start"}
-    </Button>
-  );
-}
-
-function TargetPicker(
-  props: ControllerProps & { readonly class?: string },
-): JSX.Element {
-  const c = props.controller;
-  return (
-    <div class={cn("follower-target", props.class)}>
-      <Combobox
-        class="follower-target__combobox"
-        allowCustomValue
-        disabled={c.settingsDisabled()}
-        inputBehavior="autohighlight"
-        inputValue={c.targetName()}
-        items={c.playerItems()}
-        openOnClick
-        value={c.selectedPlayerValue()}
-        onInputValueChange={(details) => {
-          if (
-            details.reason === "input-change" ||
-            details.reason === "item-select" ||
-            details.reason === "clear-trigger"
-          ) {
-            c.setTargetName(details.inputValue);
-          }
-        }}
-        onValueChange={(details) => {
-          const selected = details.value[0];
-          if (selected !== undefined) {
-            c.setTargetName(selected);
-          }
-        }}
-      >
-        <ComboboxInput
-          id="follower-target-name"
-          aria-label="Player to follow"
-          autocomplete="off"
-          spellcheck={false}
-          disabled={c.settingsDisabled()}
-          placeholder="Player to follow"
-        />
-        <ComboboxContent>
-          <ComboboxEmpty>
-            {c.players().length === 0
-              ? "No players in this map"
-              : "No matching players"}
-          </ComboboxEmpty>
-          <ComboboxList>
-            <For each={c.filteredPlayers()}>
-              {(player) => <ComboboxItem value={player}>{player}</ComboboxItem>}
-            </For>
-          </ComboboxList>
-        </ComboboxContent>
-      </Combobox>
-      <TooltipButton>
-        <TooltipButtonTrigger
-          variant="secondary"
-          class="follower-me-action"
-          disabled={c.settingsDisabled()}
-          onClick={() => void c.fillMe()}
+    <div class="standalone-window follower-window">
+      <div class="standalone-window__content-frame">
+        <main
+          class="standalone-window__content follower-body"
+          aria-label="Follower controls"
         >
-          Me
-        </TooltipButtonTrigger>
-        <TooltipButtonContent>Use your player name</TooltipButtonContent>
-      </TooltipButton>
-    </div>
-  );
-}
-
-const profileOptionLabel = (profile: CombatProfileOption): string =>
-  profile.group === undefined
-    ? profile.label
-    : `${profile.label} - ${profile.group}`;
-
-function ProfileSelect(props: ControllerProps): JSX.Element {
-  const c = props.controller;
-  return (
-    <Select
-      composite={false}
-      items={c.profileSelectItems()}
-      value={c.profileSelectValue() === "" ? [] : [c.profileSelectValue()]}
-      disabled={c.settingsDisabled() || !c.combatEnabled()}
-      onValueChange={(details) => {
-        const option = c
-          .profileSelectItems()
-          .find((item) => item.value === details.value[0]);
-        if (option !== undefined) {
-          c.setSelectedProfileOptionValue(option.value);
-          c.selectProfile(option.id);
-        }
-      }}
-    >
-      <SelectTrigger
-        class="follower-profile-trigger"
-        aria-label="Combat profile"
-        title={c.selectedProfileLabel() || "Combat profile"}
-      >
-        <span
-          class="select__value"
-          data-placeholder={c.selectedProfileLabel() === "" ? "" : undefined}
-        >
-          {c.selectedProfileLabel() || "Combat profile"}
-        </span>
-      </SelectTrigger>
-      <VirtualizedSelectContent
-        aria-label="Combat profiles"
-        items={c.profileSelectItems()}
-        groupBy={
-          c.groupProfiles()
-            ? (profile) => profile.group ?? "Any class"
-            : undefined
-        }
-        header={
-          <Button
-            aria-label="Group by class"
-            aria-pressed={c.groupProfiles()}
-            class="virtual-list__group-toggle"
-            size="xs"
-            title={c.groupProfiles() ? "Show flat list" : "Show grouped list"}
-            variant="ghost"
-            onClick={() => c.setGroupProfiles((grouped) => !grouped)}
-          >
-            <Icon icon="list_tree" class="button__icon" />
-            <span>Group</span>
-          </Button>
-        }
-        searchable
-        scrollToSelected
-      >
-        {(profile) => (
-          <SelectItem
-            item={profile}
-            aria-label={profileOptionLabel(profile)}
-            title={profileOptionLabel(profile)}
-            value={profile.value}
-          >
-            {profile.label}
-          </SelectItem>
-        )}
-      </VirtualizedSelectContent>
-    </Select>
-  );
-}
-
-function EditProfilesButton(props: ControllerProps): JSX.Element {
-  return (
-    <Button
-      size="xs"
-      variant="ghost"
-      class="follower-quiet-action"
-      onClick={() => void props.controller.openCombatProfiles()}
-    >
-      Edit profiles
-      <Icon icon="arrow_up_right" class="button__icon" />
-    </Button>
-  );
-}
-
-const attemptsPattern = /^\d+$/u;
-
-const parseAttempts = (draft: string): number | undefined => {
-  const value = Number(draft);
-  return attemptsPattern.test(draft) &&
-    value >= 1 &&
-    value <= MAX_FOLLOWER_ATTEMPTS
-    ? value
-    : undefined;
-};
-
-function AttemptsInput(props: ControllerProps): JSX.Element {
-  const c = props.controller;
-  return (
-    <div class="follower-room-field">
-      <Input
-        id="follower-attempts"
-        class="follower-number-input"
-        value={c.unlimitedAttempts() ? "" : c.attemptDraft()}
-        placeholder={c.unlimitedAttempts() ? "∞" : undefined}
-        inputmode="numeric"
-        autocomplete="off"
-        aria-label="Attempts"
-        aria-describedby={
-          c.attemptsInvalid() ? "follower-attempts-error" : undefined
-        }
-        invalid={c.attemptsInvalid()}
-        disabled={
-          c.settingsDisabled() || !c.retryEnabled() || c.unlimitedAttempts()
-        }
-        onInput={(event) => {
-          const digits = event.currentTarget.value.replaceAll(/\D/gu, "");
-          event.currentTarget.value = digits;
-          c.updateAttemptDraft(digits);
-        }}
-      />
-      <Checkbox
-        size="sm"
-        checked={c.unlimitedAttempts()}
-        disabled={c.settingsDisabled() || !c.retryEnabled()}
-        onChange={(event) =>
-          c.setUnlimitedAttempts(event.currentTarget.checked)
-        }
-      >
-        Unlimited
-      </Checkbox>
-      <Show when={c.attemptsInvalid()}>
-        <span id="follower-attempts-error" class="follower-field-error">
-          {`Use 1–${MAX_FOLLOWER_ATTEMPTS}`}
-        </span>
-      </Show>
-    </div>
-  );
-}
-
-const roomNumberPattern = /^\d{4,6}$/u;
-
-const savedRoomOverride = (draft: string): string =>
-  roomNumberPattern.test(draft) ? draft : "";
-
-function RoomOverrideInput(props: ControllerProps): JSX.Element {
-  const c = props.controller;
-  const [draft, setDraft] = createSignal(c.lockedZoneRoomOverride());
-  const invalid = () => draft() !== "" && !roomNumberPattern.test(draft());
-  createEffect(() => {
-    const saved = c.lockedZoneRoomOverride();
-    if (saved !== savedRoomOverride(untrack(draft))) {
-      setDraft(saved);
-    }
-  });
-  return (
-    <div class="follower-room-field">
-      <Input
-        id="follower-room-override"
-        class="follower-room-input"
-        value={draft()}
-        placeholder="12345"
-        inputmode="numeric"
-        maxLength={6}
-        autocomplete="off"
-        autocorrect="off"
-        spellcheck={false}
-        aria-label="Room override"
-        aria-describedby={
-          invalid() ? "follower-room-override-error" : undefined
-        }
-        invalid={invalid()}
-        disabled={c.settingsDisabled() || !c.retryEnabled()}
-        onInput={(event) => {
-          const digits = event.currentTarget.value
-            .replaceAll(/\D/gu, "")
-            .slice(0, 6);
-          event.currentTarget.value = digits;
-          setDraft(digits);
-          c.setLockedZoneRoomOverride(savedRoomOverride(digits));
-        }}
-      />
-      <Show when={invalid()}>
-        <span id="follower-room-override-error" class="follower-field-error">
-          Use 4–6 digits
-        </span>
-      </Show>
-    </div>
-  );
-}
-
-function RuleLabel(props: {
-  readonly children: string;
-  readonly for?: string;
-  readonly help?: string;
-}): JSX.Element {
-  return (
-    <span class="follower-rule-label">
-      <label for={props.for}>{props.children}</label>
-      <Show when={props.help}>
-        {(help) => (
-          <HelpTooltip
-            aria-label={`About ${props.children.toLowerCase()}`}
-            tooltip={help()}
-          />
-        )}
-      </Show>
-    </span>
-  );
-}
-
-const toggleFromRow = (
-  event: MouseEvent,
-  disabled: boolean,
-  checked: boolean,
-  onChange: (checked: boolean) => void,
-): void => {
-  const target = event.target;
-  if (
-    disabled ||
-    !(target instanceof Element) ||
-    target.closest("a, button, input, label, select, textarea") !== null
-  ) {
-    return;
-  }
-  onChange(!checked);
-};
-
-const formatAttackTarget = (target: AttackTarget): string =>
-  typeof target === "number" ? `id:${target}` : target;
-
-function TagEditor(props: {
-  readonly disabled: boolean;
-  readonly empty: string;
-  readonly id: string;
-  readonly label: string;
-  readonly mono?: (value: string) => boolean;
-  readonly numbered?: boolean;
-  readonly onAdd: (value: string) => void;
-  readonly onEdit?: (index: number, value: string) => void;
-  readonly onRemove: (index: number) => void;
-  readonly placeholder: string;
-  readonly values: readonly string[];
-}): JSX.Element {
-  const [input, setInput] = createSignal("");
-  const [editingIndex, setEditingIndex] = createSignal<number | null>(null);
-  let canceledEdit = false;
-
-  createEffect(() => {
-    if (props.disabled) {
-      setEditingIndex(null);
-    }
-  });
-
-  const beginEdit = (index: number): void => {
-    if (props.onEdit !== undefined && !props.disabled) {
-      canceledEdit = false;
-      setEditingIndex(index);
-    }
-  };
-
-  const commitEdit = (index: number, value: string): void => {
-    setEditingIndex(null);
-    if (canceledEdit || props.disabled) {
-      canceledEdit = false;
-      return;
-    }
-    if (value !== props.values[index]) {
-      props.onEdit?.(index, value);
-    }
-  };
-
-  return (
-    <>
-      <form
-        class="follower-entry"
-        onSubmit={(event) => {
-          event.preventDefault();
-          props.onAdd(input());
-          setInput("");
-        }}
-      >
-        <Input
-          id={props.id}
-          value={input()}
-          placeholder={props.placeholder}
-          autocomplete="off"
-          spellcheck={false}
-          aria-label={props.label}
-          disabled={props.disabled}
-          onInput={(event) => setInput(event.currentTarget.value)}
-        />
-        <TooltipIconButton
-          type="submit"
-          size="icon"
-          variant="secondary"
-          class="follower-icon-action"
-          aria-label={props.label}
-          tooltip={props.label}
-          disabled={props.disabled || input().trim() === ""}
-        >
-          <Icon icon="plus" class="button__icon" />
-        </TooltipIconButton>
-      </form>
-      <ul class="follower-tags" aria-label={props.label}>
-        <For
-          each={props.values}
-          fallback={<li class="follower-empty">{props.empty}</li>}
-        >
-          {(value, index) => (
-            <li
-              class="follower-tag"
-              data-disabled={props.disabled ? "" : undefined}
-              data-numbered={props.numbered ? "" : undefined}
-            >
-              <Show when={props.numbered}>
-                <span class="follower-tag__order">{index() + 1}</span>
-              </Show>
-              <Show
-                when={editingIndex() === index()}
-                fallback={
-                  <span
-                    class={cn(
-                      "follower-tag__label",
-                      props.mono?.(value) && "follower-tag__label--mono",
-                      props.onEdit !== undefined &&
-                        "follower-tag__label--editable",
-                    )}
-                    title={
-                      props.onEdit !== undefined && !props.disabled
-                        ? `${value} (double-click to edit)`
-                        : value
-                    }
-                    onDblClick={() => beginEdit(index())}
+          <section class="follower-shell">
+            <Show when={showIssue()}>
+              <Alert class="follower-issue" variant={issueVariant()}>
+                <AlertDescription class="follower-issue__message">
+                  <Icon icon="circle_alert" aria-hidden="true" />
+                  <span>{issueMessage()}</span>
+                </AlertDescription>
+                <AlertAction>
+                  <IconButton
+                    aria-label="Dismiss follower status"
+                    size="icon-sm"
+                    variant="ghost"
+                    onClick={() => setDismissedIssue(true)}
                   >
-                    {value}
-                  </span>
-                }
-              >
-                <input
-                  ref={(element) =>
-                    requestAnimationFrame(() => {
-                      element.focus();
-                      element.select();
-                    })
-                  }
-                  class="follower-tag__input"
-                  value={value}
-                  aria-label={`Edit ${value}`}
-                  autocomplete="off"
-                  spellcheck={false}
-                  size={Math.max(value.length, 4)}
-                  onInput={(event) => {
-                    event.currentTarget.size = Math.max(
-                      event.currentTarget.value.length,
-                      4,
-                    );
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") {
-                      event.preventDefault();
-                      event.currentTarget.blur();
-                    } else if (event.key === "Escape") {
-                      event.preventDefault();
-                      canceledEdit = true;
-                      event.currentTarget.blur();
-                    }
-                  }}
-                  onBlur={(event) =>
-                    commitEdit(index(), event.currentTarget.value)
-                  }
-                />
-              </Show>
-              <IconButton
-                type="button"
-                size="icon-xs"
-                variant="ghost"
-                class="follower-remove-button"
-                aria-label={`Remove ${value}`}
-                disabled={props.disabled}
-                onClick={() => props.onRemove(index())}
-              >
-                <Icon icon="x" size="sm" />
-              </IconButton>
-            </li>
-          )}
-        </For>
-      </ul>
-    </>
-  );
-}
+                    <Icon icon="x" class="button__icon" />
+                  </IconButton>
+                </AlertAction>
+              </Alert>
+            </Show>
 
-const isMonsterMapId = (value: string): boolean =>
-  parseMonsterMapId(value) !== undefined;
-
-const priorityValues = (c: FollowerController): readonly string[] =>
-  c.attackPriority().map(formatAttackTarget);
-
-const priorityHelp =
-  "Attacked first, in order. Anything else available is attacked after these.";
-const fallbackHelp =
-  "Joined directly, in order, when the game won't let you go to the target.";
-const roomHelp = "Used for fallback maps that don't include a room number.";
-
-function SheetSection(props: {
-  readonly checked: boolean;
-  readonly children?: JSX.Element;
-  readonly description: string;
-  readonly disabled: boolean;
-  readonly id: string;
-  readonly onChange: (checked: boolean) => void;
-  readonly title: string;
-}): JSX.Element {
-  const headingId = () => `follower-section-${props.id}`;
-  return (
-    <section
-      class="follower-section"
-      aria-labelledby={headingId()}
-      data-off={props.checked ? undefined : ""}
-    >
-      <div
-        class="follower-section__heading"
-        data-toggle={props.disabled ? undefined : ""}
-        onClick={(event) =>
-          toggleFromRow(event, props.disabled, props.checked, props.onChange)
-        }
-      >
-        <div class="follower-section__label">
-          <h2 id={headingId()} class="follower-section__title">
-            {props.title}
-          </h2>
-          <p class="follower-section__description">{props.description}</p>
-        </div>
-        <Switch
-          size="sm"
-          class="follower-section__switch"
-          aria-label={props.title}
-          checked={props.checked}
-          disabled={props.disabled}
-          onChange={(event) => props.onChange(event.currentTarget.checked)}
-        />
-      </div>
-      <Show when={props.checked && props.children}>{props.children}</Show>
-    </section>
-  );
-}
-
-export function FollowerView(props: FollowerViewProps): JSX.Element {
-  const c = createFollowerController(props);
-  return (
-    <div class="standalone-window follower-root">
-      <Show when={c.hydrated()}>
-        <header class="standalone-window__header follower-header">
-          <label for="follower-target-name" class="follower-header__label">
-            Follow
-          </label>
-          <TargetPicker controller={c} />
-          <div class="follower-header__end">
-            <StartStopButton controller={c} />
-          </div>
-        </header>
-
-        <IssueAlert controller={c} />
-
-        <main class="follower-sheet" aria-label="Follower settings">
-          <SheetSection
-            id="movement"
-            title="Copy movement"
-            description="Walk where the target walks inside a room."
-            checked={c.copyWalk()}
-            disabled={c.settingsDisabled()}
-            onChange={c.setCopyWalk}
-          />
-
-          <SheetSection
-            id="combat"
-            title="Combat"
-            description="Fight alongside the target with a combat profile."
-            checked={c.combatEnabled()}
-            disabled={c.settingsDisabled()}
-            onChange={c.setCombatEnabled}
-          >
-            <div class="follower-rules">
-              <div class="follower-rules__header">
-                <RuleLabel>Profile</RuleLabel>
-                <EditProfilesButton controller={c} />
+            <section
+              class="follower-layout follower-layout--focus"
+              data-layout="focus"
+              aria-label="Focused follower controls"
+            >
+              <div class="follower-focus__command">
+                <div class="follower-focus__command-label">Target</div>
+                <PlayerPicker />
+                <Button
+                  class="follower-focus__start"
+                  disabled={busy() || (!running() && !targetName().trim())}
+                  size="sm"
+                  variant={running() ? "destructive" : "default"}
+                  onClick={toggle}
+                >
+                  {running() ? "Stop" : "Start"}
+                </Button>
               </div>
-              <div class="follower-profile-row">
-                <ProfileSelect controller={c} />
-              </div>
-            </div>
-            <div class="follower-rules">
-              <RuleLabel for="follower-priority" help={priorityHelp}>
-                Attack priority
-              </RuleLabel>
-              <TagEditor
-                id="follower-priority"
-                label="Add priority target"
-                placeholder="Monster name or id:123; another"
-                empty="No priority targets. Attacks whatever is available."
-                numbered
-                mono={isMonsterMapId}
-                disabled={c.settingsDisabled()}
-                values={priorityValues(c)}
-                onAdd={c.addAttackPriority}
-                onRemove={c.removeAttackPriority}
-              />
-            </div>
-          </SheetSection>
 
-          <SheetSection
-            id="recovery"
-            title="Recovery"
-            description="Retry when following fails, and try fallback maps."
-            checked={c.retryEnabled()}
-            disabled={c.settingsDisabled()}
-            onChange={c.setRetryEnabled}
-          >
-            <div class="follower-inline-fields">
-              <div class="follower-rules">
-                <RuleLabel for="follower-attempts">Attempts</RuleLabel>
-                <AttemptsInput controller={c} />
+              <div class="follower-focus__behaviors">
+                <div class="follower-focus__section-label">Behavior</div>
+
+                <section class="follower-focus__behavior">
+                  <div class="follower-focus__behavior-row">
+                    <div class="follower-focus__behavior-title">
+                      Copy movement
+                    </div>
+                    <ToggleSwitch
+                      aria-label="Copy movement"
+                      checked={copyWalk()}
+                      disabled={running()}
+                      size="sm"
+                      onChange={(event) =>
+                        setCopyWalk(event.currentTarget.checked)
+                      }
+                    />
+                  </div>
+                </section>
+
+                <section class="follower-focus__behavior">
+                  <div class="follower-focus__behavior-row">
+                    <div class="follower-focus__behavior-title">Combat</div>
+                    <ToggleSwitch
+                      aria-label="Combat"
+                      checked={combatEnabled()}
+                      disabled={running()}
+                      size="sm"
+                      onChange={(event) =>
+                        setCombatEnabled(event.currentTarget.checked)
+                      }
+                    />
+                  </div>
+                  <Show when={combatEnabled()}>
+                    <div class="follower-focus__behavior-body follower-focus__behavior-body--combat">
+                      <CombatFields />
+                    </div>
+                  </Show>
+                </section>
+
+                <section class="follower-focus__behavior">
+                  <div class="follower-focus__behavior-row">
+                    <div class="follower-focus__behavior-title">Recovery</div>
+                    <div class="follower-focus__behavior-summary follower-focus__behavior-summary--attempts">
+                      <Show when={retryEnabled()} fallback="Off">
+                        <AttemptsControl />
+                      </Show>
+                    </div>
+                    <ToggleSwitch
+                      aria-label="Recovery"
+                      checked={retryEnabled()}
+                      disabled={running()}
+                      size="sm"
+                      onChange={(event) =>
+                        setRetryEnabled(event.currentTarget.checked)
+                      }
+                    />
+                  </div>
+                  <Show when={retryEnabled()}>
+                    <div class="follower-focus__behavior-body follower-focus__behavior-body--recovery">
+                      <div class="follower-locked-zone-grid">
+                        <LockedZoneFields />
+                      </div>
+                    </div>
+                  </Show>
+                </section>
               </div>
-              <div class="follower-rules">
-                <RuleLabel for="follower-room-override" help={roomHelp}>
-                  Room override
-                </RuleLabel>
-                <RoomOverrideInput controller={c} />
-              </div>
-            </div>
-            <div class="follower-rules">
-              <RuleLabel for="follower-fallbacks" help={fallbackHelp}>
-                Fallback maps
-              </RuleLabel>
-              <TagEditor
-                id="follower-fallbacks"
-                label="Add fallback map"
-                placeholder="ultradage-12345; another map"
-                empty="No fallback maps yet."
-                numbered
-                disabled={c.settingsDisabled()}
-                values={c.lockedZoneFallbacks()}
-                onAdd={c.addLockedZoneFallbacks}
-                onEdit={c.replaceLockedZoneFallback}
-                onRemove={c.removeLockedZoneFallback}
-              />
-            </div>
-          </SheetSection>
+            </section>
+          </section>
         </main>
-      </Show>
+      </div>
     </div>
   );
 }
 
+/** Connects the fixture-driven Follower view to the Electron bridge. */
 export function App(): JSX.Element {
   const desktop = selectDesktopBridge(window.desktop, "follower");
   const follower = desktop.follower;

@@ -724,25 +724,12 @@ export const layer = Layer.effect(
     const { dataDir } = resolveScriptWorkspacePaths(env.workspaceDir);
     const service = yield* makeScriptFileSystem(fileSystem, dataDir);
 
-    yield* Effect.acquireRelease(
-      windows.onRendererDestroyed((event) =>
-        service.closeRenderer(event.rendererId),
-      ),
-      (unsubscribe) => Effect.sync(unsubscribe),
-    );
-    yield* Effect.acquireRelease(
-      windows.onRendererUnavailable((event) =>
-        event.failure.type === "render-process-gone"
-          ? service.closeRenderer(event.rendererId)
-          : Effect.void,
-      ),
-      (unsubscribe) => Effect.sync(unsubscribe),
-    );
-    yield* Effect.acquireRelease(
-      windows.onRendererReloaded((event) =>
-        service.closeRenderer(event.rendererId),
-      ),
-      (unsubscribe) => Effect.sync(unsubscribe),
+    yield* windows.observe({}, (event) =>
+      event.type === "closed" ||
+      event.type === "reloaded" ||
+      event.type === "crashed"
+        ? service.closeRenderer(event.rendererId)
+        : Effect.void,
     );
     return service;
   }),

@@ -1,0 +1,90 @@
+---
+import type { ComponentProps } from "astro/types";
+import NavTree from "blume/components/layout/NavTree.astro";
+
+type Props = ComponentProps<typeof NavTree>;
+---
+
+<NavTree {...Astro.props} />
+
+<script is:inline>
+  // Must run before Blume's centering script after the sidebar: reopen groups
+  // first so the restored scroll offset is measured against the final height.
+  (() => {
+    const GROUPS_KEY = "lucent-sidebar-groups";
+    const SCROLL_KEY = "lucent-sidebar-scroll";
+    const drawer = document.querySelector("[data-blume-nav-drawer]");
+    if (!drawer) {
+      return;
+    }
+
+    const read = (key) => {
+      try {
+        return JSON.parse(sessionStorage.getItem(key) ?? "null");
+      } catch {
+        return null;
+      }
+    };
+    const write = (key, value) => {
+      try {
+        sessionStorage.setItem(key, JSON.stringify(value));
+      } catch {}
+    };
+
+    const storedGroups = read(GROUPS_KEY);
+    const openGroups = new Set(
+      Array.isArray(storedGroups)
+        ? storedGroups.filter((group) => typeof group === "string")
+        : [],
+    );
+    const groupKey = (details, index) => {
+      const href = details.querySelector("a[href]")?.getAttribute("href");
+      if (href) {
+        return `href:${href}`;
+      }
+      const label = details.querySelector("summary")?.textContent?.trim();
+      return `label:${label ?? "group"}:${index}`;
+    };
+
+    drawer
+      .querySelectorAll("[data-blume-nav-tree] details")
+      .forEach((details, index) => {
+        const key = groupKey(details, index);
+        if (details.open) {
+          openGroups.add(key);
+        } else if (openGroups.has(key)) {
+          details.open = true;
+        }
+        details.addEventListener("toggle", () => {
+          if (details.open) {
+            openGroups.add(key);
+          } else {
+            openGroups.delete(key);
+          }
+          write(GROUPS_KEY, [...openGroups]);
+        });
+      });
+    write(GROUPS_KEY, [...openGroups]);
+
+    const normalize = (path) => path.replace(/\/$/u, "");
+    const saved = read(SCROLL_KEY);
+    try {
+      sessionStorage.removeItem(SCROLL_KEY);
+    } catch {}
+    if (saved && normalize(saved.path) === normalize(location.pathname)) {
+      drawer.scrollTop = saved.top;
+    }
+
+    drawer.addEventListener("click", (event) => {
+      const link =
+        event.target instanceof Element &&
+        event.target.closest("[data-blume-nav-tree] a[href]");
+      if (link) {
+        write(SCROLL_KEY, {
+          path: new URL(link.href).pathname,
+          top: drawer.scrollTop,
+        });
+      }
+    });
+  })();
+</script>

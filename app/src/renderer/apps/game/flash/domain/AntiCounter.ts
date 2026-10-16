@@ -52,10 +52,3 @@ export const matchAntiCounterAura = (
         triggerText: name,
       };
 };
-
-export const antiCounterDurationMsFromAura = (
-  duration: number | undefined,
-): number | undefined =>
-  duration === undefined || !Number.isFinite(duration) || duration <= 0
-    ? undefined
-    : duration * 1_000;

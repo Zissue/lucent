@@ -1,23 +1,45 @@
 import { promises as fs } from "fs";
+import { basename, join } from "path";
+
+import { desktopLogErrorDetails } from "../../../shared/logRecord";
 
 const FLUSH_INTERVAL_MS = 250;
-const MAX_LOG_BYTES = 32 * 1024 * 1024;
-const MAX_BATCH_BYTES = 8 * 1024 * 1024;
+const MAX_LOG_BYTES = 10 * 1024 * 1024;
 const MAX_PENDING_RECORDS = 256;
-const MAX_RECORD_BYTES = 1024 * 1024;
-const PREVIEW_BYTES = 128 * 1024;
-const ROTATION_COUNT = 4;
+const MAX_RECORD_BYTES = 16 * 1024;
+const ROTATION_COUNT = 3;
+const LOG_LEVELS = [
+  "trace",
+  "debug",
+  "info",
+  "warn",
+  "error",
+  "fatal",
+] as const;
+const TIMESTAMP_BACKUP = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z$/;
 
-export const desktopLogErrorDetails = (cause: unknown): unknown => {
-  if (cause instanceof Error) {
-    return {
-      name: cause.name,
-      message: cause.message,
-      stack: cause.stack,
-    };
+type LogLevel = (typeof LOG_LEVELS)[number];
+type LevelCounts = Partial<Record<LogLevel, number>>;
+type PendingRecord = { line: string; level: LogLevel };
+
+const addCounts = (target: LevelCounts, source: LevelCounts): void => {
+  for (const level of LOG_LEVELS) {
+    if (source[level] !== undefined) {
+      target[level] = (target[level] ?? 0) + source[level];
+    }
   }
+};
 
-  return cause;
+const recordLevel = (record: unknown): LogLevel => {
+  try {
+    const value =
+      typeof record === "object" && record !== null && "level" in record
+        ? record.level
+        : undefined;
+    return LOG_LEVELS.find((level) => level === value) ?? "info";
+  } catch {
+    return "info";
+  }
 };
 
 const fallbackSerializationRecord = () => ({
@@ -54,15 +76,16 @@ const serializeDiagnostic = (record: unknown): string => {
       return `${source}\n`;
     }
 
-    const preview = Buffer.from(source, "utf8")
-      .subarray(0, PREVIEW_BYTES)
-      .toString("utf8");
+    const serialized: unknown = JSON.parse(source);
+    const metadata =
+      typeof serialized === "object" && serialized !== null ? serialized : {};
+    const message = "message" in metadata ? metadata.message : undefined;
     return `${JSON.stringify({
-      at: new Date().toISOString(),
-      level: "warn",
-      component: "observability",
-      message: "Log record truncated",
-      data: { bytes, preview },
+      at: "at" in metadata ? metadata.at : undefined,
+      level: "level" in metadata ? metadata.level : undefined,
+      component: "component" in metadata ? metadata.component : undefined,
+      message: typeof message === "string" ? message.slice(0, 1024) : undefined,
+      truncated: { bytes },
     })}\n`;
   } catch {
     return `${JSON.stringify(fallbackSerializationRecord())}\n`;
@@ -70,57 +93,62 @@ const serializeDiagnostic = (record: unknown): string => {
 };
 
 const isMissingFileError = (cause: unknown): boolean =>
-  cause instanceof Error &&
-  "code" in cause &&
-  (cause as NodeJS.ErrnoException).code === "ENOENT";
-
-const removeIfPresent = async (path: string): Promise<void> => {
-  try {
-    await fs.unlink(path);
-  } catch (cause) {
-    if (!isMissingFileError(cause)) {
-      throw cause;
-    }
-  }
-};
-
-const renameIfPresent = async (from: string, to: string): Promise<void> => {
-  try {
-    await fs.rename(from, to);
-  } catch (cause) {
-    if (!isMissingFileError(cause)) {
-      throw cause;
-    }
-  }
-};
+  cause instanceof Error && "code" in cause && cause.code === "ENOENT";
 
 export interface DesktopLogWriter {
   readonly close: (finalRecord?: unknown) => Promise<void>;
   readonly flush: () => Promise<void>;
-  readonly write: (record: unknown) => void;
+  readonly write: (record: unknown) => boolean;
 }
 
-/** Queues observability records so serialization and disk I/O stay off calling paths. */
 export const makeBufferedDesktopLogWriter = (
   logsDir: string,
   logFilePath: string,
 ): DesktopLogWriter => {
+  const backupPrefix = `${basename(logFilePath)}.`;
   let closed = false;
-  let dropped = 0;
+  let dropped: LevelCounts = {};
+  let failedWrites = 0;
+  let failedRecords: LevelCounts = {};
   let fileBytes: number | undefined;
   let flushTimer: NodeJS.Timeout | undefined;
-  let pending: unknown[] = [];
+  let pending: PendingRecord[] = [];
+  let startupPruned = false;
   let writeInFlight: Promise<void> | undefined;
 
-  const rotate = async (): Promise<void> => {
-    await removeIfPresent(`${logFilePath}.${ROTATION_COUNT}`);
-    for (let index = ROTATION_COUNT - 1; index >= 1; index -= 1) {
-      await renameIfPresent(
-        `${logFilePath}.${index}`,
-        `${logFilePath}.${index + 1}`,
+  const pruneBackups = async (): Promise<void> => {
+    try {
+      const names = (await fs.readdir(logsDir)).filter((name) =>
+        name.startsWith(backupPrefix),
       );
-    }
-    await renameIfPresent(logFilePath, `${logFilePath}.1`);
+      const timestamps = names
+        .filter((name) =>
+          TIMESTAMP_BACKUP.test(name.slice(backupPrefix.length)),
+        )
+        .toSorted();
+      const obsolete = timestamps.slice(
+        0,
+        Math.max(0, timestamps.length - ROTATION_COUNT),
+      );
+      if (!startupPruned) {
+        obsolete.push(
+          ...names.filter((name) =>
+            /^\d+$/.test(name.slice(backupPrefix.length)),
+          ),
+        );
+      }
+      await Promise.all(
+        obsolete.map((name) =>
+          fs.unlink(join(logsDir, name)).catch(() => undefined),
+        ),
+      );
+    } catch {}
+    startupPruned = true;
+  };
+
+  const rotate = async (): Promise<void> => {
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    await fs.rename(logFilePath, join(logsDir, `${backupPrefix}${stamp}`));
     fileBytes = 0;
   };
 
@@ -137,7 +165,9 @@ export const makeBufferedDesktopLogWriter = (
       }
     }
     if (fileBytes > 0 && fileBytes + bytes > MAX_LOG_BYTES) {
-      await rotate();
+      await rotate().then(pruneBackups, () => undefined);
+    } else if (!startupPruned) {
+      await pruneBackups();
     }
     await fs.appendFile(logFilePath, source, "utf8");
     fileBytes += bytes;
@@ -151,47 +181,64 @@ export const makeBufferedDesktopLogWriter = (
     if (writeInFlight !== undefined) {
       return writeInFlight;
     }
-    if (pending.length === 0 && dropped === 0) {
+    if (
+      pending.length === 0 &&
+      Object.keys(dropped).length === 0 &&
+      failedWrites === 0
+    ) {
       return Promise.resolve();
     }
 
     const records = pending;
-    let droppedRecords = dropped;
+    const batchLevels = records.map(({ level }) => level);
+    const batchDropped = dropped;
+    const batchFailedWrites = failedWrites;
+    const batchFailedRecords = failedRecords;
     pending = [];
-    dropped = 0;
+    dropped = {};
+    failedWrites = 0;
+    failedRecords = {};
 
     const serializedRecords: string[] = [];
-    let bytes = 0;
-    for (const record of records) {
-      const serialized = serializeDiagnostic(record);
-      const recordBytes = Buffer.byteLength(serialized, "utf8");
-      if (bytes + recordBytes > MAX_BATCH_BYTES) {
-        droppedRecords += 1;
-        continue;
-      }
-      serializedRecords.push(serialized);
-      bytes += recordBytes;
+    if (Object.keys(batchDropped).length > 0 || batchFailedWrites > 0) {
+      serializedRecords.push(
+        serializeDiagnostic({
+          at: new Date().toISOString(),
+          level: "warn",
+          component: "observability",
+          message: "Log records lost",
+          event: "records.lost",
+          data: {
+            ...(Object.keys(batchDropped).length > 0
+              ? { dropped: batchDropped }
+              : {}),
+            ...(batchFailedWrites > 0
+              ? { failedWrites: batchFailedWrites }
+              : {}),
+            ...(Object.keys(batchFailedRecords).length > 0
+              ? { failedRecords: batchFailedRecords }
+              : {}),
+          },
+        }),
+      );
     }
-
-    let source = serializedRecords.join("");
-    if (droppedRecords > 0) {
-      const droppedSource = serializeDiagnostic({
-        at: new Date().toISOString(),
-        level: "warn",
-        component: "observability",
-        message: "Diagnostic records dropped",
-        event: "records.dropped",
-        data: { count: droppedRecords },
-      });
-      source += droppedSource;
-      bytes += Buffer.byteLength(droppedSource, "utf8");
+    for (const { line } of records) {
+      serializedRecords.push(line);
     }
-
-    writeInFlight = append(source, bytes)
-      .catch(() => undefined)
+    const source = serializedRecords.join("");
+    writeInFlight = append(source, Buffer.byteLength(source, "utf8"))
+      .catch(() => {
+        fileBytes = undefined;
+        failedWrites += batchFailedWrites + 1;
+        addCounts(dropped, batchDropped);
+        addCounts(failedRecords, batchFailedRecords);
+        for (const level of batchLevels) {
+          addCounts(failedRecords, { [level]: 1 });
+        }
+      })
       .finally(() => {
         writeInFlight = undefined;
-        if (!closed && (pending.length > 0 || dropped > 0)) {
+        if (!closed && pending.length > 0) {
           scheduleFlush(0);
         }
       });
@@ -212,25 +259,40 @@ export const makeBufferedDesktopLogWriter = (
     flushTimer.unref?.();
   };
 
-  const write = (record: unknown): void => {
+  const write = (record: unknown): boolean => {
     if (closed) {
-      return;
+      return false;
     }
+    const level = recordLevel(record);
     if (pending.length >= MAX_PENDING_RECORDS) {
-      dropped += 1;
-      scheduleFlush(0);
-      return;
+      let lowestLevel = level;
+      let evictionIndex = -1;
+      pending.forEach((entry, index) => {
+        if (LOG_LEVELS.indexOf(entry.level) < LOG_LEVELS.indexOf(lowestLevel)) {
+          lowestLevel = entry.level;
+          evictionIndex = index;
+        }
+      });
+      dropped[lowestLevel] = (dropped[lowestLevel] ?? 0) + 1;
+      if (evictionIndex === -1) {
+        scheduleFlush(0);
+        return false;
+      }
+      pending.splice(evictionIndex, 1);
     }
-    pending.push(record);
+    pending.push({ line: serializeDiagnostic(record), level });
     scheduleFlush(
       pending.length === MAX_PENDING_RECORDS ? 0 : FLUSH_INTERVAL_MS,
     );
+    return true;
   };
 
   const flush = async (): Promise<void> => {
-    await flushBatch();
-    if (writeInFlight !== undefined || pending.length > 0 || dropped > 0) {
-      await flush();
+    while (true) {
+      await flushBatch();
+      if (writeInFlight === undefined && pending.length === 0) {
+        return;
+      }
     }
   };
 
@@ -239,7 +301,10 @@ export const makeBufferedDesktopLogWriter = (
       return;
     }
     if (finalRecord !== undefined) {
-      pending.push(finalRecord);
+      pending.push({
+        line: serializeDiagnostic(finalRecord),
+        level: recordLevel(finalRecord),
+      });
     }
     closed = true;
     await flush();

@@ -1,9 +1,48 @@
 import { describe, expect, it } from "@effect/vitest";
 import { LiveServer } from "@lucent/game";
 
-import { formatConsoleArguments } from "./consoleForwarder";
+import { vi } from "vitest";
+
+import {
+  formatConsoleArguments,
+  installConsoleForwarder,
+} from "./consoleForwarder";
 
 describe("console forwarder", () => {
+  it("forwards the console method and retains normal console output", () => {
+    const methods = ["debug", "error", "info", "log", "warn"] as const;
+    const original = methods.map(
+      (method) => [method, console[method]] as const,
+    );
+    const outputs = methods.map((method) =>
+      vi.spyOn(console, method).mockImplementation(() => {}),
+    );
+    const message = vi.fn();
+    try {
+      installConsoleForwarder(undefined);
+      console.info("Before install");
+      installConsoleForwarder({ message });
+      for (const method of methods) console[method]("hello", 42);
+      expect(message.mock.calls).toEqual([
+        ["debug", "hello 42"],
+        ["error", "hello 42"],
+        ["info", "hello 42"],
+        ["log", "hello 42"],
+        ["warn", "hello 42"],
+      ]);
+      expect(outputs.map((output) => output.mock.calls)).toEqual([
+        [["hello", 42]],
+        [["hello", 42]],
+        [["Before install"], ["hello", 42]],
+        [["hello", 42]],
+        [["hello", 42]],
+      ]);
+    } finally {
+      outputs.forEach((output) => output.mockRestore());
+      for (const [method, fn] of original) console[method] = fn;
+    }
+  });
+
   it("serializes object console arguments instead of flattening them", () => {
     expect(
       formatConsoleArguments([

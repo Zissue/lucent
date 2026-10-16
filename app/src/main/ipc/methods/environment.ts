@@ -21,53 +21,17 @@ import {
   type EnvironmentState,
 } from "@lucent/core/environment";
 import * as Effect from "effect/Effect";
-import * as Schema from "effect/Schema";
 
 import { EnvironmentIpc } from "../../../shared/ipc";
 import { GameEnvironments } from "../../internal/environment/GameEnvironments";
 import { DesktopWindows } from "../../window/DesktopWindows";
 import { DesktopIpc, makeDesktopIpcMethod } from "../DesktopIpc";
-import type { DesktopIpcSender } from "../DesktopIpcSenders";
-
-export class EnvironmentOwnerError extends Schema.TaggedError<EnvironmentOwnerError>()(
-  "EnvironmentOwnerError",
-  {
-    rendererId: Schema.Int,
-  },
-) {
-  override get message(): string {
-    return "This window is no longer linked to a game. Reopen it from the game.";
-  }
-}
+import {
+  resolveGameRendererId,
+  type DesktopIpcSender,
+} from "../DesktopIpcSenders";
 
 const allowedSenders = ["game", "environment"] as const;
-
-const resolveGameRendererId = Effect.fn("desktop.ipc.environment.resolveGame")(
-  function* (sender: DesktopIpcSender) {
-    if (sender.kind === "game") {
-      return sender.rendererId;
-    }
-
-    const windows = yield* DesktopWindows;
-    const ownerRendererId = yield* windows.getOwnerRendererId(
-      sender.rendererId,
-    );
-    if (ownerRendererId === null) {
-      return yield* new EnvironmentOwnerError({
-        rendererId: sender.rendererId,
-      });
-    }
-
-    const ownerKind = yield* windows.getRendererKind(ownerRendererId);
-    if (ownerKind !== "game") {
-      return yield* new EnvironmentOwnerError({
-        rendererId: sender.rendererId,
-      });
-    }
-
-    return ownerRendererId;
-  },
-);
 
 const notifyChanged = Effect.fn("desktop.ipc.environment.notifyChanged")(
   function* (

@@ -6,7 +6,6 @@ import { join } from "node:path";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Result from "effect/Result";
 import * as TestClock from "effect/testing/TestClock";
 
 import { ElectronApp } from "../../electron/ElectronApp";
@@ -17,10 +16,6 @@ import {
 } from "../../electron/ElectronChromiumPerformance";
 import { DesktopWindows } from "../../window/DesktopWindows";
 import { layer as environmentLayer } from "../DesktopEnvironment";
-import {
-  DesktopPerformanceTrace,
-  layer as traceLayer,
-} from "./DesktopPerformanceTrace";
 import {
   DesktopChromiumPerformanceRecording,
   layer as chromiumLayer,
@@ -41,58 +36,6 @@ const environment = (root: string) =>
 
 describe("recording lifetimes", () => {
   it.effect(
-    "serializes trace starts and stops sampling on stop or service shutdown",
-    () =>
-      Effect.gen(function* () {
-        const root = yield* fixture;
-        let samples = 0;
-        const layer = traceLayer.pipe(
-          Layer.provide(
-            Layer.mergeAll(
-              environment(root),
-              Layer.mock(ElectronApp, {
-                getVersion: Effect.succeed("1.0.0"),
-                getAppMetrics: Effect.sync(() => {
-                  samples += 1;
-                  return [];
-                }),
-              }),
-            ),
-          ),
-        );
-        yield* Effect.gen(function* () {
-          const trace = yield* DesktopPerformanceTrace;
-          const starts = yield* Effect.all(
-            [trace.start.pipe(Effect.result), trace.start.pipe(Effect.result)],
-            { concurrency: "unbounded" },
-          );
-          expect(starts.filter(Result.isSuccess)).toHaveLength(1);
-          expect(starts.filter(Result.isFailure)).toHaveLength(1);
-          yield* TestClock.adjust(1000);
-          const saved = yield* trace.stop;
-          expect(saved).toMatchObject({ durationMs: 1000, sampleCount: 1 });
-          expect(
-            JSON.parse(
-              yield* Effect.promise(() => readFile(saved!.filePath, "utf8")),
-            ),
-          ).toMatchObject({
-            lucent: {
-              samples: [{ elapsedMs: 1000, processes: [] }],
-              summary: { sampleCount: 1 },
-            },
-          });
-          expect(samples).toBe(2);
-          yield* TestClock.adjust(5000);
-          expect(samples).toBe(2);
-          yield* trace.start;
-        }).pipe(Effect.provide(layer));
-        const before = samples;
-        yield* TestClock.adjust(5000);
-        expect(samples).toBe(before);
-      }),
-  );
-
-  it.effect(
     "interrupts pending Chromium samples before releasing debuggers and saving",
     () =>
       Effect.gen(function* () {
@@ -111,9 +54,15 @@ describe("recording lifetimes", () => {
                 }),
               }),
               Layer.mock(DesktopWindows, {
-                getRendererKind: () => Effect.succeed("game"),
-                getRendererGeneration: () => Effect.succeed(1),
-                getOwnerRendererId: () => Effect.succeed(null),
+                describe: (rendererId) =>
+                  Effect.succeed({
+                    rendererId,
+                    kind: "game",
+                    windowId: 1,
+                    ownerId: undefined,
+                    generation: 1,
+                    ready: false,
+                  }),
               }),
               Layer.mock(ElectronChromiumPerformance, {
                 getCategories: Effect.succeed([]),

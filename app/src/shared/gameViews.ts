@@ -53,6 +53,8 @@ export const GameViewPresentationSchema = Schema.Struct({
   /** Whether this view is selected within its host window. */
   active: Schema.Boolean,
   layout: GameViewLayoutSchema,
+  /** Whether this view is sized as a grid tile, which an unselected view in the focused layout can still be. */
+  tiled: Schema.Boolean,
   /** Whether the owning native window currently has focus. */
   windowActive: Schema.Boolean,
 });

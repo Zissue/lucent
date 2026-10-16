@@ -34,7 +34,7 @@ export const installDesktopDevRendererReload = Effect.gen(function* () {
 
     const rendererCount = reloadOpenRendererContents();
     void runPromise(
-      Effect.logInfo("Renderer reload requested").pipe(
+      Effect.logDebug("Renderer reload requested").pipe(
         Effect.annotateLogs({
           component: "dev",
           data: {

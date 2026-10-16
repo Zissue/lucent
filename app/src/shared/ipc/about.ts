@@ -50,7 +50,6 @@ export const AboutIpc = {
     name: "about.getInfo",
     payload: Schema.Void,
     result: AboutInfoSchema,
-    trace: "metadata",
   }),
   openFolder: defineInvoke({
     channel: `${namespace}:open-folder`,

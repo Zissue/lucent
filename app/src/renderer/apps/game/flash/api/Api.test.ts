@@ -1,7 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 
-import type { BankView } from "../../Types";
 import { Bridge, makeBridge } from "../bridge/Bridge";
 import { Gateway, makeGateway } from "../bridge/Gateway";
 import { makeApi } from "./Api";
@@ -14,7 +13,6 @@ const makeTarget = () => {
   const calls = {
     actions: [] as string[],
     bankOpens: 0,
-    bankOpenViews: [] as BankView[],
     bankLoadForces: [] as boolean[],
     deposits: 0,
     equips: 0,
@@ -28,11 +26,10 @@ const makeTarget = () => {
     swaps: 0,
     wears: 0,
     withdrawals: 0,
-    withdrawalViews: [] as (BankView | null)[],
   };
   let failBankLoad = false;
   let bankLoaded = false;
-  let bankView: BankView | null = null;
+  let bankOpen = false;
   let bankItems: readonly unknown[] = [];
   let cachedShopId = 0;
   let openShopId = 0;
@@ -50,6 +47,7 @@ const makeTarget = () => {
       return true;
     },
     "bank.getSlots": () => 2,
+    "bank.getUsedSlots": () => 2,
     "bank.getItems": () => bankItems,
     "bank.isLoaded": () => bankLoaded,
     "bank.loadItems": (force = false) => {
@@ -78,25 +76,25 @@ const makeTarget = () => {
       ];
       bankLoaded = true;
     },
-    "bank.isOpen": (view?: BankView) =>
-      view === undefined ? bankView !== null : bankView === view,
-    "bank.open": (view: BankView = "regular") => {
+    "bank.isOpen": () => bankOpen,
+    "bank.open": () => {
       calls.bankOpens += 1;
-      calls.bankOpenViews.push(view);
-      bankView = view;
+      bankOpen = true;
     },
-    "bank.swap": () => {
+    "bank.swap": (
+      inventorySelector: { itemId: number },
+      bankSelector: { itemId: number },
+    ) => {
       calls.swaps += 1;
       emitExtension(target, {
-        bankItemID: 42,
+        bankItemID: bankSelector.itemId,
         cmd: "bankSwapInv",
-        invItemID: 50,
+        invItemID: inventorySelector.itemId,
       });
       return true;
     },
     "bank.withdraw": () => {
       calls.withdrawals += 1;
-      calls.withdrawalViews.push(bankView);
       return false;
     },
     "combat.getSkillCooldownRemaining": () => 0,
@@ -106,6 +104,16 @@ const makeTarget = () => {
       force = false,
     ) => {
       calls.skillUses.push({ force, index, selector });
+      return true;
+    },
+    "drops.accept": (itemId: number) => {
+      emitExtension(target, {
+        ItemID: itemId,
+        bBank: 1,
+        bSuccess: 1,
+        cmd: "getDrop",
+        iQty: 1,
+      });
       return true;
     },
     "house.getSlots": () => 1,
@@ -145,6 +153,23 @@ const makeTarget = () => {
     "player.isMember": () => false,
     "shops.isOpen": (shopId = 0) =>
       openShopId !== 0 && (shopId === 0 || shopId === openShopId),
+    "shops.canBuyItem": () => true,
+    "shops.buy": () => {
+      bankItems = [
+        { ItemID: 42, bCoins: 1, iQty: 3, sName: "Indexed Item" },
+        { ItemID: 43, bHouse: 1, sName: "Banked House Item" },
+        { ItemID: 44, sName: "Occupied Slot" },
+        { ItemID: 45, sType: "Class", sName: "Banked Class" },
+      ];
+      emitExtension(target, {
+        cmd: "buyItem",
+        bitSuccess: 1,
+        bBank: 1,
+        CharItemID: 420,
+        ItemID: 42,
+        iQty: 1,
+      });
+    },
     "shops.load": (shopId: number) => {
       calls.shopLoads += 1;
       openShopId = shopId;
@@ -170,7 +195,7 @@ const makeTarget = () => {
   return {
     calls,
     closeBankUi: () => {
-      bankView = null;
+      bankOpen = false;
     },
     closeShopUi: () => {
       openShopId = 0;
@@ -181,7 +206,7 @@ const makeTarget = () => {
     resetBankSession: () => {
       bankItems = [];
       bankLoaded = false;
-      bankView = null;
+      bankOpen = false;
       failBankLoad = false;
     },
     target,
@@ -355,11 +380,8 @@ describe("Api", () => {
       expect(calls.bankLoadForces).toEqual([]);
 
       expect(yield* api.bank.open()).toBe(true);
-      const bankedClass = yield* api.bank.get(45);
-      expect(bankedClass).not.toBeNull();
-      expect(bankedClass?.category).toBe("Class");
-      expect(bankedClass?.classRank).toBe(10);
-      expect(yield* api.player.getClassRank(45)).toBe(10);
+      expect(yield* api.bank.get(45)).toBeNull();
+      expect(yield* api.player.getClassRank(45)).toBeNull();
 
       const inventoryLoad = yield* api.wait.forPacket(
         {
@@ -373,6 +395,13 @@ describe("Api", () => {
             emitExtension(target, {
               cmd: "loadInventoryBig",
               items: [
+                {
+                  ItemID: 45,
+                  iQty: 302_500,
+                  sES: "ar",
+                  sName: "Owned Class",
+                  sType: "Class",
+                },
                 {
                   ItemID: 46,
                   bEquip: 1,
@@ -394,7 +423,7 @@ describe("Api", () => {
     }),
   );
 
-  it.effect("opens the requested bank view for house withdrawals", () =>
+  it.effect("reuses the shared bank for house withdrawals", () =>
     Effect.gen(function* () {
       const { calls, target } = makeTarget();
       const bridge = yield* makeBridge(target);
@@ -407,22 +436,20 @@ describe("Api", () => {
       );
 
       expect(yield* api.bank.isOpen()).toBe(false);
-      expect(yield* api.bank.open({ view: "house" })).toBe(true);
+      expect(yield* api.bank.open()).toBe(true);
       expect(yield* api.bank.isOpen()).toBe(true);
-      expect(yield* api.bank.isOpen("house")).toBe(true);
-      expect(yield* api.bank.isOpen("regular")).toBe(false);
-      expect(calls.bankOpenViews).toEqual(["house"]);
+      expect(calls.bankOpens).toBe(1);
 
-      expect(yield* api.bank.open({ view: "house" })).toBe(true);
-      expect(calls.bankOpenViews).toEqual(["house"]);
+      expect(yield* api.bank.open()).toBe(true);
+      expect(calls.bankOpens).toBe(1);
 
       expect(yield* api.bank.open({ force: true })).toBe(true);
       expect(calls.bankLoadForces).toEqual([true, true]);
-      expect(calls.bankOpenViews).toEqual(["house", "regular"]);
+      expect(calls.bankOpens).toBe(1);
 
       expect(yield* api.bank.withdraw(43)).toBe(false);
-      expect(calls.withdrawalViews).toEqual(["house"]);
-      expect(calls.bankOpenViews).toEqual(["house", "regular", "house"]);
+      expect(calls.withdrawals).toBe(1);
+      expect(calls.bankOpens).toBe(1);
       expect((yield* api.bank.get(43))?.context).toBe("bank");
       expect(yield* api.house.get(43)).toBeNull();
     }),
@@ -470,6 +497,58 @@ describe("Api", () => {
       }),
   );
 
+  it.effect(
+    "keeps classes out of bank snapshots after a purchase refresh",
+    () =>
+      Effect.gen(function* () {
+        const { api, target } = yield* makeApiHarness();
+        expect(yield* api.bank.load()).toBe(true);
+        const loaded = yield* api.wait.forPacket(
+          { command: "loadShop", direction: "extension", encoding: "json" },
+          {
+            trigger: Effect.sync(() => {
+              emitExtension(target, {
+                cmd: "loadShop",
+                ShopID: 1,
+                items: [{ ItemID: 42, sName: "Indexed Item" }],
+              });
+              return true;
+            }),
+          },
+        );
+        expect(loaded).not.toBeNull();
+        expect(yield* api.shops.buy(42)).toBe(true);
+        expect((yield* api.bank.get(42))?.quantity).toBe(3);
+        expect(yield* api.bank.get(45)).toBeNull();
+      }),
+  );
+
+  it.effect("accepts classes into inventory despite a bank response flag", () =>
+    Effect.gen(function* () {
+      const { api, target } = yield* makeApiHarness();
+      const packet = yield* api.wait.forPacket(
+        { command: "dropItem", direction: "extension", encoding: "json" },
+        {
+          timeout: "1 second",
+          trigger: Effect.sync(() => {
+            emitExtension(target, {
+              cmd: "dropItem",
+              items: {
+                70: { ItemID: 70, sName: "Dropped Class", sType: "Class" },
+              },
+            });
+            return true;
+          }),
+        },
+      );
+      expect(packet).not.toBeNull();
+      expect(yield* api.drops.accept(70)).toBe(true);
+      expect(yield* api.drops.contains(70)).toBe(false);
+      expect((yield* api.inventory.get(70))?.context).toBe("inventory");
+      expect(yield* api.bank.get(70)).toBeNull();
+    }),
+  );
+
   it.effect("guards full containers and projects deposits and swaps", () =>
     Effect.gen(function* () {
       const { api, calls, closeBankUi, target } = yield* makeApiHarness();
@@ -493,10 +572,12 @@ describe("Api", () => {
       expect(yield* api.bank.contains(51)).toBe(true);
       expect(yield* api.inventory.contains(51)).toBe(false);
 
-      expect(yield* api.bank.swap(50, 42)).toBe(true);
+      expect(yield* api.bank.swap(50, 42)).toBe(false);
+      expect(calls.swaps).toBe(0);
+      expect(yield* api.bank.swap(50, 44)).toBe(true);
       expect(calls.swaps).toBe(1);
       expect(yield* api.bank.contains(50)).toBe(true);
-      expect(yield* api.inventory.contains(42)).toBe(true);
+      expect(yield* api.inventory.contains(44)).toBe(true);
     }),
   );
 

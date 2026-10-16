@@ -1,5 +1,12 @@
 /** @jsxImportSource react */
-import { Button, Icon } from "@lucent/ui-react";
+import {
+  Button,
+  Icon,
+  Menu,
+  MenuContent,
+  MenuItem,
+  MenuTrigger,
+} from "@lucent/ui-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { selectDesktopBridge } from "../../../shared/desktopBridge";
@@ -226,15 +233,54 @@ export function AboutView({
               <h2 className="about-section__title" id="about-details-title">
                 Details
               </h2>
-              <Button
-                onClick={() => copyDiagnostics(info)}
-                size="sm"
-                type="button"
-                variant="ghost"
-              >
-                <Icon icon={copied ? "check" : "copy"} size="sm" />
-                {copied ? "Copied" : "Copy diagnostics"}
-              </Button>
+              <div className="about-section__actions">
+                <Menu>
+                  <MenuTrigger
+                    render={
+                      <Button
+                        className="about-section__folders"
+                        size="sm"
+                        type="button"
+                        variant="ghost"
+                      />
+                    }
+                  >
+                    <Icon icon="folder_open" size="sm" />
+                    Open folder
+                    <Icon icon="chevron_down" size="sm" />
+                  </MenuTrigger>
+                  <MenuContent align="end" className="about-folders">
+                    {FOLDERS.map((folder) => (
+                      <MenuItem
+                        className="about-folders__item"
+                        key={folder.id}
+                        title={info.paths[folder.id]}
+                        onClick={() =>
+                          openFolder(folder.id, folder.label.toLowerCase())
+                        }
+                      >
+                        {folder.label}
+                      </MenuItem>
+                    ))}
+                  </MenuContent>
+                </Menu>
+                <Button
+                  onClick={() => copyDiagnostics(info)}
+                  size="sm"
+                  type="button"
+                  variant="ghost"
+                >
+                  <Icon icon={copied ? "check" : "copy"} size="sm" />
+                  Copy diagnostics
+                </Button>
+                <span
+                  aria-atomic="true"
+                  className="about-visually-hidden"
+                  role="status"
+                >
+                  {copied ? "Copied diagnostics to the clipboard" : ""}
+                </span>
+              </div>
             </div>
             <dl className="about-info">
               <InfoRow label="Commit">
@@ -258,24 +304,6 @@ export function AboutView({
               <InfoRow label="System">{formatSystem(info.system)}</InfoRow>
             </dl>
           </section>
-
-          <div aria-label="Open folder" className="about-actions" role="group">
-            {FOLDERS.map((folder) => (
-              <Button
-                key={folder.id}
-                onClick={() =>
-                  openFolder(folder.id, folder.label.toLowerCase())
-                }
-                size="sm"
-                title={info.paths[folder.id]}
-                type="button"
-                variant="secondary"
-              >
-                <Icon icon="folder_open" size="sm" />
-                {folder.label}
-              </Button>
-            ))}
-          </div>
 
           <nav aria-label="Links" className="about-links">
             {LINKS.map((link) => (
