@@ -34,6 +34,7 @@ export class GameRendererUnavailableError extends Schema.TaggedError<GameRendere
   "GameRendererUnavailableError",
   {
     detail: Schema.String,
+    cause: Schema.optionalKey(Schema.Defect()),
   },
 ) {
   override get message(): string {
@@ -69,6 +70,12 @@ interface Connection {
 
 const isRpcClientError = Schema.is(RpcClientError);
 
+class GameRendererRpcClientError extends RpcClientError {
+  override get cause(): RpcClientError["reason"] {
+    return this.reason;
+  }
+}
+
 const makePortProtocol = Effect.fnUntraced(function* (
   port: GameRendererRpcPort,
 ) {
@@ -81,7 +88,7 @@ const makePortProtocol = Effect.fnUntraced(function* (
         if (failure !== undefined) {
           return Effect.void;
         }
-        failure = new RpcClientError({
+        failure = new GameRendererRpcClientError({
           reason: new RpcClientDefect({
             message: "The connection was closed.",
             cause: undefined,
@@ -126,7 +133,7 @@ const makePortProtocol = Effect.fnUntraced(function* (
             : Effect.try({
                 try: () => port.postMessage(request),
                 catch: (cause) =>
-                  new RpcClientError({
+                  new GameRendererRpcClientError({
                     reason: new RpcClientDefect({
                       message: "Could not send the request.",
                       cause,
@@ -168,9 +175,10 @@ export const makeGameRendererRpc = Effect.fn("makeGameRendererRpc")(function* (
     yield* disconnect(rendererId);
     const port = yield* Effect.try({
       try: () => transport.open(rendererId),
-      catch: () =>
+      catch: (cause) =>
         new GameRendererUnavailableError({
           detail: "The connection was unavailable.",
+          cause,
         }),
     });
     if (port === undefined) {
@@ -216,10 +224,11 @@ export const makeGameRendererRpc = Effect.fn("makeGameRendererRpc")(function* (
         return yield* request(connection.client);
       }),
       isRpcClientError,
-      () =>
+      (cause) =>
         Effect.fail(
           new GameRendererUnavailableError({
             detail: "The connection was unavailable.",
+            cause,
           }),
         ),
       Effect.fail,

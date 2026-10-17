@@ -7,12 +7,16 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Ref from "effect/Ref";
+import { RpcClientDefect, RpcClientError } from "effect/rpc/RpcClientError";
 import { TestClock } from "effect/testing";
 
 import { FollowerIpc } from "../../../shared/ipc/follower";
 import { DesktopIpc } from "../../ipc/DesktopIpc";
 import { DesktopWindows } from "../../window/DesktopWindows";
-import { GameRendererRpc } from "../rpc/GameRendererRpc";
+import {
+  GameRendererRpc,
+  GameRendererUnavailableError,
+} from "../rpc/GameRendererRpc";
 import {
   makeTestGameRenderer,
   TEST_GAME_RENDERER_ID,
@@ -42,6 +46,43 @@ const makeFollowers = Effect.fn(function* (
 });
 
 describe("GameFollowers", () => {
+  it.effect("preserves the renderer RPC failure chain", () =>
+    Effect.gen(function* () {
+      const rpcFailure = new RpcClientError({
+        reason: new RpcClientDefect({
+          message: "The connection was closed.",
+          cause: undefined,
+        }),
+      });
+      const original = Object.assign(
+        new GameRendererUnavailableError({
+          detail: "The connection was unavailable.",
+        }),
+        { cause: rpcFailure },
+      );
+      const game = yield* makeTestGameRenderer();
+      const followers = yield* makeGameFollowers.pipe(
+        Effect.provideService(DesktopIpc, idleIpc),
+        Effect.provideService(DesktopWindows, game.windows),
+        Effect.provideService(
+          GameRendererRpc,
+          GameRendererRpc.of({
+            call: () => Effect.fail(original),
+            onConnected: () => Effect.succeed(() => {}),
+          }),
+        ),
+      );
+
+      const error = yield* followers
+        .me(TEST_GAME_RENDERER_ID)
+        .pipe(Effect.flip);
+
+      expect(error.message).toBe("The connection was unavailable.");
+      expect(error.cause).toBe(original);
+      expect(error.cause).toHaveProperty("cause", rpcFailure);
+    }),
+  );
+
   it.effect("isolates, deduplicates, and clears cached player rosters", () =>
     Effect.gen(function* () {
       const sent = yield* Ref.make<
