@@ -39,6 +39,12 @@
   },
   "overrides": [
     {
+      "files": ["script-packages/*/scripts/**/*.js"],
+      "rules": {
+        "lucent/static-script-inputs": "error"
+      }
+    },
+    {
       "files": ["app/src/shared/**/*.ts"],
       "rules": {
         "eslint/no-restricted-imports": [
@@ -84,12 +90,6 @@
             ]
           }
         ]
-      }
-    },
-    {
-      "files": ["script-packages/*/scripts/**/*.js"],
-      "rules": {
-        "lucent/static-script-inputs": "error"
       }
     }
   ]
