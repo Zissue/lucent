@@ -7,6 +7,7 @@ import { makeLifetime } from "../window/RendererLifetimeTesting";
 
 import type { DesktopRendererKind } from "../window/DesktopWindowCatalog";
 import { DesktopWindows } from "../window/DesktopWindows";
+import { ALL_DESKTOP_RENDERER_KINDS } from "./DesktopIpc";
 import {
   DesktopIpcSenderError,
   makeDesktopIpcSenders,
@@ -70,6 +71,22 @@ describe("DesktopIpcSenders", () => {
       expect(error).toBeInstanceOf(DesktopIpcSenderError);
       expect(error.message).toBe("IPC sender must be one of: game");
     }),
+  );
+
+  it.effect(
+    "lists all renderer kinds in order when rejecting unmanaged contents",
+    () =>
+      Effect.gen(function* () {
+        const senders = makeDesktopIpcSenders(makeWindows(null));
+
+        const error = yield* Effect.flip(
+          senders.require(event, ALL_DESKTOP_RENDERER_KINDS),
+        );
+
+        expect(error.message).toBe(
+          "IPC sender must be one of: about, account-manager, combat-profiles, environment, follower, game, game-group-controls, game-host, loader-grabber, packets, settings",
+        );
+      }),
   );
 
   it.effect("routes child windows to their live game owner", () =>
