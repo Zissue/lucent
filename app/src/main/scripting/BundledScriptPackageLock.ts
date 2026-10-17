@@ -5,6 +5,7 @@ import { join } from "path";
 
 import * as Schema from "effect/Schema";
 
+import { parseLocalJson } from "../filesystem/parseLocalJson";
 import { isMissingFileError } from "./ScriptPackageFileSystem";
 
 const decodeOwner = Schema.decodeUnknownSync(
@@ -16,9 +17,7 @@ const decodeOwner = Schema.decodeUnknownSync(
 const readOwner = async (path: string) => {
   try {
     return decodeOwner(
-      JSON.parse(
-        await fs.readFile(join(path, "owner.json"), "utf8"),
-      ) as unknown,
+      parseLocalJson(await fs.readFile(join(path, "owner.json"), "utf8")),
     );
   } catch (cause) {
     if (isMissingFileError(cause)) return undefined;
