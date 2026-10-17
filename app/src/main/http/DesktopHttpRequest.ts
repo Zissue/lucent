@@ -81,7 +81,15 @@ export const requestFollowingRedirects = <A, E, R>(
             const waiting = scopedClient.execute(outgoing);
             const response = yield* options.socketTimeoutMs === undefined
               ? waiting
-              : waiting.pipe(Effect.timeout(options.socketTimeoutMs));
+              : waiting.pipe(
+                  Effect.timeoutOrElse({
+                    duration: options.socketTimeoutMs,
+                    orElse: () =>
+                      Effect.fail(
+                        clientError("timeout", "HTTP response timed out.", url),
+                      ),
+                  }),
+                );
             if (response instanceof NodeHttpIncomingMessage) {
               if (response.status === 101) {
                 response.source.socket.destroy();
@@ -94,7 +102,7 @@ export const requestFollowingRedirects = <A, E, R>(
               if (options.socketTimeoutMs !== undefined)
                 response.source.setTimeout(options.socketTimeoutMs, () =>
                   response.source.destroy(
-                    new Error("HTTP response timed out."),
+                    clientError("timeout", "HTTP response timed out.", url),
                   ),
                 );
             }
