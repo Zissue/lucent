@@ -11,7 +11,7 @@ import {
   DesktopHttpClientError,
   type DesktopHttpClientShape,
   type DesktopHttpResponse,
-} from "../http/DesktopHttpClient";
+} from "./DesktopHttpClient";
 import {
   type GitHubApiClientError,
   isGitHubRateLimitResponse,

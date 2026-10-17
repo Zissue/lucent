@@ -19,10 +19,7 @@ import { DesktopEnvironment } from "../app/DesktopEnvironment";
 import { layer as desktopFileSystemLayer } from "@effect/platform-node/NodeFileSystem";
 import { ElectronApp } from "../electron/ElectronApp";
 import { ElectronShell } from "../electron/ElectronShell";
-import {
-  GitHubApiClient,
-  makeGitHubApiClient,
-} from "../github/GitHubApiClient";
+import { GitHubApiClient, makeGitHubApiClient } from "../http/GitHubApiClient";
 import {
   DesktopHttpClient,
   DesktopHttpClientError,
