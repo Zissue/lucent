@@ -14,11 +14,8 @@ import type {
   ArmyLoopTauntRunPayload,
   ArmyLoopTauntTerminalResult,
 } from "@lucent/core/army";
-import {
-  ArmyCoordinator,
-  type ArmyCoordinatorError,
-  type ArmyParticipantId,
-} from "./ArmyCoordinator";
+import { ArmyCoordinator } from "./ArmyCoordinator";
+import type { ArmyCoordinatorError, ArmyParticipantId } from "./ArmySession";
 import {
   ArmyLoopTauntError,
   type ArmyLoopTauntCommandEvent,

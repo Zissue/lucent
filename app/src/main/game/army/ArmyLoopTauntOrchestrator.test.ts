@@ -11,11 +11,8 @@ import type {
   ArmyLoopTauntRegistrationAssignment,
   ArmyLoopTauntReport,
 } from "@lucent/core/army";
-import {
-  ArmyCoordinator,
-  type ArmyCoordinatorError,
-  makeArmyCoordinator,
-} from "./ArmyCoordinator";
+import { ArmyCoordinator, makeArmyCoordinator } from "./ArmyCoordinator";
+import type { ArmyCoordinatorError } from "./ArmySession";
 import {
   type ArmyLoopTauntCommandEvent,
   type ArmyLoopTauntOrchestratorShape,
