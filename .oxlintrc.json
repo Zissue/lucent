@@ -39,6 +39,54 @@
   },
   "overrides": [
     {
+      "files": ["app/src/shared/**/*.ts"],
+      "rules": {
+        "eslint/no-restricted-imports": [
+          "error",
+          {
+            "paths": [
+              {
+                "name": "effect",
+                "message": "Import Effect namespaces from explicit subpaths such as effect/Effect."
+              }
+            ],
+            "patterns": [
+              {
+                "regex": "^(\\.\\./)+(main|renderer)(/|$)",
+                "message": "shared/ runs in every process. It must not import main or renderer code."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["app/src/main/electron/**/*.ts"],
+      "rules": {
+        "eslint/no-restricted-imports": [
+          "error",
+          {
+            "paths": [
+              {
+                "name": "effect",
+                "message": "Import Effect namespaces from explicit subpaths such as effect/Effect."
+              }
+            ],
+            "patterns": [
+              {
+                "regex": "^\\.\\./[^.]",
+                "message": "electron/ holds thin Electron adapters. Import only electron/, shared/, and packages."
+              },
+              {
+                "regex": "^\\.\\./\\.\\./(main|renderer)(/|$)",
+                "message": "electron/ holds thin Electron adapters. Import only electron/, shared/, and packages."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
       "files": ["script-packages/*/scripts/**/*.js"],
       "rules": {
         "lucent/static-script-inputs": "error"
