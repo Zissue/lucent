@@ -1,10 +1,29 @@
+import type { WebContents } from "electron";
 import { watchFile, unwatchFile, type Stats } from "fs";
 
 import { electronRendererRegistry } from "../electron/ElectronRendererRegistry";
 
 import * as Effect from "effect/Effect";
 
-import { reloadUsableRendererContents } from "./DesktopDevRendererReloadContents";
+export type RendererReloadContentTarget = Pick<
+  WebContents,
+  "isDestroyed" | "reloadIgnoringCache"
+>;
+
+export const reloadUsableRendererContents = (
+  contents: Iterable<RendererReloadContentTarget>,
+): number => {
+  let reloadCount = 0;
+  for (const renderer of contents) {
+    if (renderer.isDestroyed()) {
+      continue;
+    }
+
+    renderer.reloadIgnoringCache();
+    reloadCount += 1;
+  }
+  return reloadCount;
+};
 
 const RELOAD_WATCH_INTERVAL_MS = 100;
 

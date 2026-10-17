@@ -3,7 +3,7 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   reloadUsableRendererContents,
   type RendererReloadContentTarget,
-} from "./DesktopDevRendererReloadContents";
+} from "./DesktopDevRendererReload";
 
 const makeContents = (input: {
   readonly destroyed?: boolean;
