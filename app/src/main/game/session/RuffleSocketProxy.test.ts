@@ -7,6 +7,7 @@ import {
 import { Server as HttpServer } from "node:http";
 import { createServer, type Socket, type TcpNetConnectOpts } from "node:net";
 import * as Effect from "effect/Effect";
+import * as Deferred from "effect/Deferred";
 import * as Layer from "effect/Layer";
 import * as Cause from "effect/Cause";
 import * as Logger from "effect/Logger";
@@ -29,6 +30,10 @@ const relayTest = vi.hoisted(() => ({
   connect: vi.fn(),
   failStarts: 0,
   slowReader: false,
+}));
+
+vi.mock("effect/Effect", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("effect/Effect")>()),
 }));
 
 vi.mock("ws", async (importOriginal) => {
@@ -330,6 +335,39 @@ testLayer(proxyLayer)("Ruffle socket relay", (it) => {
 });
 
 testLayer(proxyLayer)("Ruffle connection failure logging", (it) => {
+  it.effect("interrupts in-flight relay logging when its scope closes", () =>
+    Effect.gen(function* () {
+      const started = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const events: string[] = [];
+      const log = vi.spyOn(Effect, "logError").mockReturnValue(
+        Effect.gen(function* () {
+          events.push("started");
+          yield* Deferred.succeed(started, undefined);
+          yield* Deferred.await(release);
+        }).pipe(
+          Effect.onInterrupt(() =>
+            Effect.sync(() => {
+              events.push("interrupted");
+            }),
+          ),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        yield* Effect.gen(function* () {
+          yield* getUrl;
+          relayTest.servers.at(-1)!.emit("error", new Error("Relay failed"));
+          yield* Deferred.await(started);
+          yield* Effect.yieldNow;
+        }).pipe(Effect.provide(Layer.fresh(proxyLayer)));
+        expect(events).toEqual(["started", "interrupted"]);
+      }).pipe(
+        Effect.ensuring(Deferred.succeed(release, undefined)),
+        Effect.ensuring(Effect.sync(() => log.mockRestore())),
+      );
+    }),
+  );
+
   it.effect.each(["tcp", "pipeline"] as const)(
     "logs %s failure once per connection",
     (source) => {

@@ -1,9 +1,9 @@
 import { app, type Event as ElectronEvent, type WebContents } from "electron";
 import * as Effect from "effect/Effect";
+import * as FiberSet from "effect/FiberSet";
 
 export const installDesktopRendererObservability = Effect.gen(function* () {
-  const context = yield* Effect.context();
-  const runFork = Effect.runForkWith(context);
+  const runFork = yield* FiberSet.makeRuntime();
   const webContentsCleanups = new Set<() => void>();
 
   const handleChildProcessGone = (

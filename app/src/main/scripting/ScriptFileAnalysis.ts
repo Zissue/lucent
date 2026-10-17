@@ -137,17 +137,11 @@ const readStableFile = Effect.fnUntraced(
   ),
 );
 
-const analyzeSource = (source: string, path: string) =>
-  Effect.runPromiseExit(analyzeScriptSource(source, path)).then((exit) => {
-    if (Exit.isFailure(exit)) throw exit.cause;
-    return exit.value;
-  });
-
-const cachedAnalysis = async (
+const cachedAnalysis = Effect.fnUntraced(function* (
   source: string,
   path: string,
   revision: string,
-) => {
+) {
   const key = `${revision}:${path}`;
   const cached = extractionCache.get(key);
   if (cached !== undefined) {
@@ -156,7 +150,7 @@ const cachedAnalysis = async (
     return cached.analysis;
   }
 
-  const analysis = await analyzeSource(source, path);
+  const analysis = yield* analyzeScriptSource(source, path);
   const entry: ExtractionCacheEntry = {
     analysis,
     weight: Buffer.byteLength(source, "utf8"),
@@ -174,19 +168,16 @@ const cachedAnalysis = async (
     extractionCacheBytes -= oldest?.weight ?? 0;
   }
   return analysis;
-};
+});
 
-export const processScriptFile = async (
+export const analyzeScriptFile = Effect.fnUntraced(function* (
   path: string,
-): Promise<ScriptFileAnalysisResolution> => {
-  let stable: Effect.Success<ReturnType<typeof readStableFile>>;
-  try {
-    const exit = await Effect.runPromiseExit(
-      readStableFile(path).pipe(Effect.provide(NodeFileSystem.layer)),
-    );
-    if (Exit.isFailure(exit)) throw Cause.squash(exit.cause);
-    stable = exit.value;
-  } catch (error) {
+): Effect.fn.Return<ScriptFileAnalysisResolution> {
+  const read = yield* Effect.exit(
+    readStableFile(path).pipe(Effect.provide(NodeFileSystem.layer)),
+  );
+  if (Exit.isFailure(read)) {
+    const error = Cause.squash(read.cause);
     return isMissingError(error)
       ? { status: "missing", path }
       : failed(
@@ -197,15 +188,16 @@ export const processScriptFile = async (
             : Cause.fail(error),
         );
   }
+  const stable = read.value;
   if ("missing" in stable) return { status: "missing", path };
 
-  try {
+  return yield* Effect.gen(function* () {
     const { contents } = stable;
     const source = contents.toString("utf8");
     const revision = createHash("sha256").update(contents).digest("hex");
-    const analysis = await cachedAnalysis(source, path, revision);
+    const analysis = yield* cachedAnalysis(source, path, revision);
     return {
-      status: "found",
+      status: "found" as const,
       analysis: {
         file: {
           inputs: analysis.inputs,
@@ -218,14 +210,22 @@ export const processScriptFile = async (
         requirements: analysis.requirements,
       },
     };
-  } catch (error) {
-    const cause = Cause.isCause(error) ? error : Cause.die(error);
-    return failed(
-      path,
-      Cause.squash(cause),
-      Cause.hasDies(cause) || Cause.hasInterruptsOnly(cause)
-        ? cause
-        : undefined,
-    );
-  }
-};
+  }).pipe(
+    Effect.catchCause((cause) =>
+      Effect.succeed(
+        failed(
+          path,
+          Cause.squash(cause),
+          Cause.hasDies(cause) || Cause.hasInterruptsOnly(cause)
+            ? cause
+            : undefined,
+        ),
+      ),
+    ),
+  );
+});
+
+export const processScriptFile = (
+  path: string,
+): Promise<ScriptFileAnalysisResolution> =>
+  Effect.runPromise(analyzeScriptFile(path));
