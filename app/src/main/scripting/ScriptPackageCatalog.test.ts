@@ -13,7 +13,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as References from "effect/References";
-import * as SynchronizedRef from "effect/SynchronizedRef";
+import * as Ref from "effect/Ref";
 
 import { DesktopEnvironment } from "../app/DesktopEnvironment";
 import { ElectronApp } from "../electron/ElectronApp";
@@ -33,8 +33,8 @@ import {
   ScriptPackageState,
 } from "./ScriptPackageState";
 
-vi.mock("effect/SynchronizedRef", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("effect/SynchronizedRef")>()),
+vi.mock("effect/Ref", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("effect/Ref")>()),
 }));
 
 vi.mock("electron", () => ({ app: {} }));
@@ -1003,18 +1003,18 @@ describe("ScriptPackageCatalog", () => {
         const committed = yield* Deferred.make<void>();
         const hold = yield* Deferred.make<void>();
         let armed = false;
-        const modifyEffect = SynchronizedRef.modifyEffect;
-        vi.spyOn(SynchronizedRef, "modifyEffect").mockImplementation(
-          (ref, change) =>
-            modifyEffect(ref, change).pipe(
-              Effect.tap(() => {
-                if (!armed) return Effect.void;
-                armed = false;
-                return Deferred.succeed(committed, undefined).pipe(
-                  Effect.andThen(Deferred.await(hold)),
-                );
-              }),
-            ),
+        const set = Ref.set;
+        vi.spyOn(Ref, "set").mockImplementation((ref, value) =>
+          set(ref, value).pipe(
+            Effect.tap(() => {
+              if (!armed) return Effect.void;
+              armed = false;
+              return Deferred.succeed(committed, undefined).pipe(
+                Effect.andThen(Deferred.await(hold)),
+                Effect.interruptible,
+              );
+            }),
+          ),
         );
         const { catalog, workspace } = yield* makeCatalogHarness();
         yield* Effect.promise(() =>
@@ -1108,3 +1108,84 @@ describe("ScriptPackageCatalog", () => {
       }),
   );
 });
+
+it.effect("returns the loaded catalog while a refresh scan is blocked", () =>
+  Effect.gen(function* () {
+    const started = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    let block = false;
+    const { catalog, workspace } = yield* makeCatalogHarness(
+      Effect.suspend(() =>
+        block
+          ? Deferred.succeed(started, undefined).pipe(
+              Effect.andThen(Deferred.await(release)),
+            )
+          : Effect.void,
+      ),
+    );
+    yield* catalog.getOverview;
+    yield* Effect.promise(() =>
+      write(join(workspace.scriptsDir, "second.js"), ""),
+    );
+    block = true;
+    const scanning = yield* catalog.refresh.pipe(Effect.forkChild);
+    yield* Deferred.await(started);
+    const reading = yield* catalog.getOverview.pipe(
+      Effect.forkChild({ startImmediately: true }),
+    );
+    const duringScan = reading.pollUnsafe();
+    yield* Deferred.succeed(release, undefined);
+    yield* Fiber.join(reading);
+    expect((yield* Fiber.join(scanning)).scriptCount).toBe(2);
+    expect(duringScan).toMatchObject({
+      _tag: "Success",
+      value: { scriptCount: 1 },
+    });
+    expect((yield* catalog.getOverview).scriptCount).toBe(2);
+  }),
+);
+
+it.effect(
+  "allows a refresh listener to update the catalog before returning",
+  () =>
+    Effect.gen(function* () {
+      const { catalog, workspace } = yield* makeCatalogHarness();
+      yield* Effect.promise(() =>
+        write(
+          join(workspace.packagesDir, "tools", "package.json"),
+          '{"name":"tools"}',
+        ),
+      );
+      const received: (string | undefined)[][] = [];
+      yield* catalog.onChanged(() =>
+        Effect.gen(function* () {
+          const current = yield* catalog.getOverview;
+          received.push(current.packages.map((entry) => entry.name));
+          if (current.packages.length === 1)
+            yield* catalog.removePackage("tools");
+        }),
+      );
+      yield* catalog.refresh;
+      expect(received).toEqual([["tools"], []]);
+      expect((yield* catalog.getOverview).scriptCount).toBe(1);
+    }),
+);
+
+it.effect(
+  "publishes every refresh even when the catalog content is unchanged",
+  () =>
+    Effect.gen(function* () {
+      const { catalog } = yield* makeCatalogHarness();
+      const counts: number[] = [];
+      yield* catalog.onChanged(() =>
+        catalog.getOverview.pipe(
+          Effect.map((value) => {
+            counts.push(value.scriptCount);
+          }),
+        ),
+      );
+      yield* catalog.refresh;
+      yield* catalog.refresh;
+      expect(counts).toEqual([1, 1]);
+    }),
+);

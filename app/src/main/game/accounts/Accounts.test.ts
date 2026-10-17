@@ -16,10 +16,13 @@ import {
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
-import * as SynchronizedRef from "effect/SynchronizedRef";
+import * as Ref from "effect/Ref";
 import { vi } from "vitest";
 
-import type { AccountLaunchWindowTarget } from "@lucent/core/accounts";
+import type {
+  AccountLaunchWindowTarget,
+  AccountManagerState,
+} from "@lucent/core/accounts";
 import { DesktopEnvironment } from "../../app/DesktopEnvironment";
 import { layer as desktopFileSystemLayer } from "@effect/platform-node/NodeFileSystem";
 import {
@@ -33,8 +36,8 @@ import { AccountsError } from "./AccountsError";
 import { AccountServers } from "./AccountServers";
 import * as AccountSessions from "./AccountSessions";
 
-vi.mock("effect/SynchronizedRef", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("effect/SynchronizedRef")>()),
+vi.mock("effect/Ref", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("effect/Ref")>()),
 }));
 
 const tempDirs = new Set<string>();
@@ -286,27 +289,29 @@ describe("Accounts", () => {
       const committed = yield* Deferred.make<void>();
       const hold = yield* Deferred.make<void>();
       let armed = false;
-      const modifyEffect = SynchronizedRef.modifyEffect;
-      vi.spyOn(SynchronizedRef, "modifyEffect").mockImplementation(
-        (ref, change) =>
-          modifyEffect(ref, change).pipe(
-            Effect.tap((saved) => {
-              if (
-                !armed ||
-                typeof saved !== "object" ||
-                saved === null ||
-                !("accounts" in saved) ||
-                !("groups" in saved) ||
-                "sessions" in saved
-              )
-                return Effect.void;
-              armed = false;
-              return Deferred.succeed(committed, undefined).pipe(
-                Effect.andThen(Deferred.await(hold)),
-                Effect.interruptible,
-              );
-            }),
-          ),
+      const set = Ref.set;
+      vi.spyOn(Ref, "set").mockImplementation((ref, value) =>
+        set(ref, value).pipe(
+          Effect.tap(() => {
+            if (
+              !armed ||
+              typeof value !== "object" ||
+              value === null ||
+              !("value" in value) ||
+              typeof value.value !== "object" ||
+              value.value === null ||
+              !("accounts" in value.value) ||
+              !("groups" in value.value) ||
+              "sessions" in value.value
+            )
+              return Effect.void;
+            armed = false;
+            return Deferred.succeed(committed, undefined).pipe(
+              Effect.andThen(Deferred.await(hold)),
+              Effect.interruptible,
+            );
+          }),
+        ),
       );
       const layer = yield* makeHarness();
       return yield* Effect.gen(function* () {
@@ -1120,4 +1125,128 @@ it.effect("commits accounts interrupted after the file rename", () =>
       expect(received).toEqual([["Committed"], ["Committed", "After"]]);
     }).pipe(Effect.provide(layer));
   }),
+);
+
+it.effect(
+  "orders repository and session publications without replaying an older revision",
+  () =>
+    Effect.gen(function* () {
+      const started = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const layer = yield* makeHarness();
+      yield* Effect.gen(function* () {
+        const accounts = yield* Accounts;
+        const windows = yield* AccountGameWindows;
+        const repository = yield* AccountRepository.AccountRepository;
+        const sessions = yield* AccountSessions.AccountSessions;
+        const gameWindowId = yield* windows.open();
+        const first: {
+          sourceRevision: number;
+          sessionRevision: number;
+          names: string[];
+          connection: string;
+        }[] = [];
+        const later: {
+          sourceRevision: number;
+          sessionRevision: number;
+          names: string[];
+          connection: string;
+        }[] = [];
+        const snapshot = (state: AccountManagerState) =>
+          repository.getWithRevision.pipe(
+            Effect.map((current) => ({
+              sourceRevision: (current?.revision ?? 0) + sessions.revision,
+              sessionRevision: state.sessions[0]?.revision ?? 0,
+              names: state.accounts.map((account) => account.username),
+              connection: state.sessions[0]?.connection.state ?? "missing",
+            })),
+          );
+        yield* accounts.onChanged((state) =>
+          Effect.gen(function* () {
+            first.push(yield* snapshot(state));
+            if (first.length === 1) {
+              yield* Deferred.succeed(started, undefined);
+              yield* Deferred.await(release);
+            }
+          }),
+        );
+        yield* accounts.onChanged((state) =>
+          snapshot(state).pipe(
+            Effect.map((value) => {
+              later.push(value);
+            }),
+          ),
+        );
+        const creating = yield* accounts
+          .createAccount({ username: "Alice", password: "secret" })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(started);
+        const report = {
+          rendererGeneration: 1,
+          revision: 1,
+          runtime: {
+            connection: { state: "online", username: "Alice" },
+            login: { state: "idle" },
+            script: { state: "idle" },
+          },
+        } as const;
+        yield* accounts.reportSession(gameWindowId, report);
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.join(creating);
+        yield* accounts.createAccount({ username: "Bob", password: "secret" });
+        yield* accounts.reportSession(gameWindowId, {
+          ...report,
+          revision: 2,
+          runtime: { ...report.runtime, connection: { state: "offline" } },
+        });
+        yield* accounts.load;
+        yield* accounts.reportSession(gameWindowId, report);
+        expect(first).toEqual([
+          {
+            sourceRevision: 2,
+            sessionRevision: 1,
+            names: ["Alice"],
+            connection: "offline",
+          },
+          {
+            sourceRevision: 3,
+            sessionRevision: 2,
+            names: ["Alice"],
+            connection: "online",
+          },
+          {
+            sourceRevision: 4,
+            sessionRevision: 2,
+            names: ["Alice", "Bob"],
+            connection: "online",
+          },
+          {
+            sourceRevision: 5,
+            sessionRevision: 3,
+            names: ["Alice", "Bob"],
+            connection: "offline",
+          },
+        ]);
+        expect(later).toEqual([
+          {
+            sourceRevision: 3,
+            sessionRevision: 2,
+            names: ["Alice"],
+            connection: "online",
+          },
+          {
+            sourceRevision: 4,
+            sessionRevision: 2,
+            names: ["Alice", "Bob"],
+            connection: "online",
+          },
+          {
+            sourceRevision: 5,
+            sessionRevision: 3,
+            names: ["Alice", "Bob"],
+            connection: "offline",
+          },
+        ]);
+      }).pipe(Effect.provide(layer));
+    }),
 );

@@ -16,7 +16,7 @@ import * as PlatformError from "effect/PlatformError";
 import * as References from "effect/References";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
-import * as SynchronizedRef from "effect/SynchronizedRef";
+import * as Ref from "effect/Ref";
 
 import { DEFAULT_APP_SETTINGS } from "@lucent/core/settings";
 import { DesktopEnvironment } from "../app/DesktopEnvironment";
@@ -663,8 +663,8 @@ describe("saved settings recovery", () => {
   );
 });
 
-vi.mock("effect/SynchronizedRef", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("effect/SynchronizedRef")>()),
+vi.mock("effect/Ref", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("effect/Ref")>()),
 }));
 
 describe("settings change publication", () => {
@@ -675,23 +675,21 @@ describe("settings change publication", () => {
         const committed = yield* Deferred.make<void>();
         const hold = yield* Deferred.make<void>();
         let armed = false;
-        const modifyEffect = SynchronizedRef.modifyEffect;
+        const set = Ref.set;
         yield* Effect.acquireUseRelease(
           Effect.sync(() =>
-            vi
-              .spyOn(SynchronizedRef, "modifyEffect")
-              .mockImplementation((ref, change) =>
-                modifyEffect(ref, change).pipe(
-                  Effect.tap(() => {
-                    if (!armed) return Effect.void;
-                    armed = false;
-                    return Deferred.succeed(committed, undefined).pipe(
-                      Effect.andThen(Deferred.await(hold)),
-                      Effect.interruptible,
-                    );
-                  }),
-                ),
+            vi.spyOn(Ref, "set").mockImplementation((ref, value) =>
+              set(ref, value).pipe(
+                Effect.tap(() => {
+                  if (!armed) return Effect.void;
+                  armed = false;
+                  return Deferred.succeed(committed, undefined).pipe(
+                    Effect.andThen(Deferred.await(hold)),
+                    Effect.interruptible,
+                  );
+                }),
               ),
+            ),
           ),
           () =>
             Effect.gen(function* () {
@@ -827,5 +825,22 @@ it.effect("commits settings interrupted after the file rename", () =>
     expect(persisted.preferences.checkForUpdates).toBe(true);
     expect(received).toEqual(["light", "light"]);
     expect(records).toEqual([]);
+  }),
+);
+
+it.effect("reloads settings silently before and after an update", () =>
+  Effect.gen(function* () {
+    const { settings, path } = yield* makeRecoverySettings();
+    const themes: string[] = [];
+    yield* settings.onChanged((value) => {
+      themes.push(value.appearance.themeMode);
+    });
+    yield* settings.load;
+    yield* settings.updateAppearance({ themeMode: "light" });
+    yield* Effect.promise(() =>
+      writeFile(path, '{"appearance":{"themeMode":"system"}}'),
+    );
+    expect((yield* settings.load).appearance.themeMode).toBe("system");
+    expect(themes).toEqual(["light"]);
   }),
 );

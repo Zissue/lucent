@@ -14,7 +14,7 @@ import * as Logger from "effect/Logger";
 import * as PlatformError from "effect/PlatformError";
 import * as References from "effect/References";
 import * as Stream from "effect/Stream";
-import * as SynchronizedRef from "effect/SynchronizedRef";
+import * as Ref from "effect/Ref";
 
 import {
   COMBAT_PROFILE_LIBRARY_VERSION,
@@ -32,8 +32,8 @@ import {
   layer as desktopCombatProfilesLayer,
 } from "./CombatProfiles";
 
-vi.mock("effect/SynchronizedRef", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("effect/SynchronizedRef")>()),
+vi.mock("effect/Ref", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("effect/Ref")>()),
 }));
 
 const tempDirs = new Set<string>();
@@ -716,19 +716,18 @@ describe("CombatProfiles", () => {
         const committed = yield* Deferred.make<void>();
         const hold = yield* Deferred.make<void>();
         let armed = false;
-        const modifyEffect = SynchronizedRef.modifyEffect;
-        vi.spyOn(SynchronizedRef, "modifyEffect").mockImplementation(
-          (ref, change) =>
-            modifyEffect(ref, change).pipe(
-              Effect.tap(() => {
-                if (!armed) return Effect.void;
-                armed = false;
-                return Deferred.succeed(committed, undefined).pipe(
-                  Effect.andThen(Deferred.await(hold)),
-                  Effect.interruptible,
-                );
-              }),
-            ),
+        const set = Ref.set;
+        vi.spyOn(Ref, "set").mockImplementation((ref, value) =>
+          set(ref, value).pipe(
+            Effect.tap(() => {
+              if (!armed) return Effect.void;
+              armed = false;
+              return Deferred.succeed(committed, undefined).pipe(
+                Effect.andThen(Deferred.await(hold)),
+                Effect.interruptible,
+              );
+            }),
+          ),
         );
         const { combatProfiles, path } = yield* makeHarness();
         yield* combatProfiles.saveProfile({ ...testProfile, label: "Before" });
@@ -857,5 +856,18 @@ it.effect("commits combat profiles interrupted after the file rename", () =>
       "Committed",
     );
     expect(received).toEqual(["Committed"]);
+  }),
+);
+
+it.effect("publishes every load even when combat profiles are unchanged", () =>
+  Effect.gen(function* () {
+    const { combatProfiles } = yield* makeHarness();
+    const names: string[][] = [];
+    yield* combatProfiles.onChanged((value) => {
+      names.push(value.profiles.map((profile) => profile.label));
+    });
+    yield* combatProfiles.load;
+    yield* combatProfiles.load;
+    expect(names).toEqual([["Generic"], ["Generic"]]);
   }),
 );

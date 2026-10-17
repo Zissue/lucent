@@ -4,9 +4,8 @@ import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import { makeCommittedState } from "../app/CommittedState";
 import * as Schema from "effect/Schema";
-import * as Semaphore from "effect/Semaphore";
-import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import {
   DEFAULT_APP_SETTINGS,
@@ -33,7 +32,7 @@ import {
   type SettingsCommandId,
 } from "@lucent/core/hotkeys";
 import { DesktopEnvironment } from "../app/DesktopEnvironment";
-import { makeListenerRegistry, type Listener } from "../app/ListenerRegistry";
+import { type Listener } from "../app/ListenerRegistry";
 import { FileSystem } from "effect/FileSystem";
 import type * as Scope from "effect/Scope";
 import { type JsonFileError, makeJsonFile } from "../filesystem/JsonFile";
@@ -237,16 +236,11 @@ const makeDesktopSettings = Effect.gen(function* () {
   const env = yield* DesktopEnvironment;
   const jsonFile = makeJsonFile(yield* FileSystem);
   const settingsPath = join(env.appDataDir, "settings.json");
-  const settingsRef = yield* SynchronizedRef.make<{
-    readonly value: AppSettings | null;
-    readonly publicationRevision: number;
-  }>({ value: null, publicationRevision: 0 });
-  const commitLock = yield* Semaphore.make(1);
-  const settingsChanges = makeListenerRegistry<AppSettings>();
-
-  const readSettingsFromFile = Effect.fnUntraced(function* (
-    diagnostics: boolean,
-  ) {
+  const readSettingsFromFile = Effect.fnUntraced(function* ({
+    diagnostics,
+  }: {
+    readonly diagnostics: boolean;
+  }) {
     const result = yield* jsonFile.read(settingsPath).pipe(
       Effect.catch((error) =>
         error.operation === "parse"
@@ -311,59 +305,18 @@ const makeDesktopSettings = Effect.gen(function* () {
       .pipe(Effect.mapError(wrapDataError), Effect.as(normalized));
   };
 
-  const publishCurrent = SynchronizedRef.get(settingsRef).pipe(
-    Effect.flatMap(({ value, publicationRevision }) =>
-      value === null || publicationRevision === 0
-        ? Effect.void
-        : settingsChanges.publishLatest(publicationRevision, value),
-    ),
-  );
-  const get = SynchronizedRef.modifyEffect(settingsRef, (current) =>
-    (current.value === null
-      ? readSettingsFromFile(true)
-      : Effect.succeed(current.value)
-    ).pipe(
-      Effect.map(
-        (settings) => [settings, { ...current, value: settings }] as const,
-      ),
-    ),
-  ).pipe(Effect.uninterruptible, Semaphore.withPermit(commitLock));
-  const load = SynchronizedRef.modifyEffect(settingsRef, (current) =>
-    readSettingsFromFile(true).pipe(
-      Effect.map(
-        (settings) => [settings, { ...current, value: settings }] as const,
-      ),
-    ),
-  ).pipe(Effect.uninterruptible, Semaphore.withPermit(commitLock));
-  const update = (
-    modify: (
-      current: AppSettings,
-    ) => Effect.Effect<AppSettings, DesktopSettingsError>,
-  ) =>
-    Effect.uninterruptibleMask((restore) =>
-      SynchronizedRef.modifyEffect(settingsRef, (current) =>
-        (current.value === null
-          ? readSettingsFromFile(false)
-          : Effect.succeed(current.value)
-        ).pipe(
-          Effect.flatMap((value) => restore(modify(value))),
-          Effect.flatMap(writeSettingsFile),
-          Effect.map(
-            (saved) =>
-              [
-                saved,
-                {
-                  value: saved,
-                  publicationRevision: current.publicationRevision + 1,
-                },
-              ] as const,
-          ),
-        ),
-      ),
-    ).pipe(Semaphore.withPermit(commitLock), Effect.ensuring(publishCurrent));
-
-  const onChanged: DesktopSettingsShape["onChanged"] =
-    settingsChanges.subscribe;
+  const {
+    get,
+    reload: load,
+    update,
+    subscribe: onChanged,
+  } = yield* makeCommittedState({
+    load: readSettingsFromFile,
+    loadMayWrite: true,
+    write: writeSettingsFile,
+    publishValue: (value) => value,
+    shouldPublishReload: () => false,
+  });
 
   const resetAppearance: DesktopSettingsShape["resetAppearance"] = update(
     (current) =>

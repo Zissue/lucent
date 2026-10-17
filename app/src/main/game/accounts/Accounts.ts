@@ -27,10 +27,8 @@ import {
   type ManagedAccountPatch,
   type RecentlyClosedGameSession,
 } from "@lucent/core/accounts";
-import {
-  makeListenerRegistry,
-  type Listener,
-} from "../../app/ListenerRegistry";
+import type { Listener } from "../../app/ListenerRegistry";
+import { makeCommittedPublication } from "../../app/CommittedState";
 import {
   AccountGameWindows,
   type AccountGameWindowEvent,
@@ -291,7 +289,6 @@ export const makeAccounts = Effect.gen(function* () {
   const repository = yield* AccountRepository;
   const servers = yield* AccountServers;
   const sessions = yield* AccountSessions;
-  const stateChanges = makeListenerRegistry<AccountManagerState>();
   const reopening = new Set<number>();
   const getRecentlyClosed: AccountsShape["getRecentlyClosed"] = (groupId) =>
     Effect.sync(() => sessions.recentlyClosed(groupId));
@@ -315,24 +312,28 @@ export const makeAccounts = Effect.gen(function* () {
 
   const getState = repository.get.pipe(Effect.map(toState));
 
-  const publishCurrent = repository.getWithRevision.pipe(
-    Effect.flatMap((current) =>
-      current === null
-        ? repository.get.pipe(Effect.andThen(repository.getWithRevision))
-        : Effect.succeed(current),
+  const stateChanges = makeCommittedPublication(
+    repository.getWithRevision.pipe(
+      Effect.flatMap((current) =>
+        current === null
+          ? repository.get.pipe(Effect.andThen(repository.getWithRevision))
+          : Effect.succeed(current),
+      ),
+      Effect.map((current) =>
+        current === null
+          ? null
+          : {
+              revision: current.revision + sessions.revision,
+              value: toState(current.storage),
+            },
+      ),
+      Effect.orElseSucceed(() => null),
     ),
-    Effect.orElseSucceed(() => null),
-    Effect.flatMap((current) => {
-      if (current === null) return Effect.void;
-      const revision = current.revision + sessions.revision;
-      return revision === 0
-        ? Effect.void
-        : stateChanges.publishLatest(revision, toState(current.storage));
-    }),
+    (value) => value,
   );
 
   const withSessionPublication = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-    effect.pipe(Effect.asVoid, Effect.ensuring(publishCurrent));
+    effect.pipe(Effect.asVoid, stateChanges.withPublication);
 
   const updateStorage = (
     modify: (
@@ -341,7 +342,7 @@ export const makeAccounts = Effect.gen(function* () {
   ) =>
     repository
       .update(modify)
-      .pipe(Effect.map(toState), Effect.ensuring(publishCurrent));
+      .pipe(Effect.map(toState), stateChanges.withPublication);
 
   const retireGameProfiles = Effect.fnUntraced(function* (
     keys: Iterable<string>,
@@ -703,7 +704,7 @@ export const makeAccounts = Effect.gen(function* () {
 
   const load: AccountsShape["load"] = repository.load.pipe(
     Effect.map(toState),
-    Effect.ensuring(publishCurrent),
+    stateChanges.withPublication,
   );
 
   const onChanged: AccountsShape["onChanged"] = stateChanges.subscribe;

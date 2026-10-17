@@ -6,8 +6,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import * as Semaphore from "effect/Semaphore";
-import * as SynchronizedRef from "effect/SynchronizedRef";
+import { makeCommittedState } from "../../app/CommittedState";
 
 import {
   emptyAccountManagerStorage,
@@ -61,14 +60,11 @@ export const layer = Layer.effect(
     const env = yield* DesktopEnvironment;
     const jsonFile = makeJsonFile(yield* FileSystem);
     const path = join(env.appDataDir, ACCOUNT_MANAGER_STORAGE_FILE);
-    const storageRef = yield* SynchronizedRef.make<VersionedStorage | null>(
-      null,
-    );
-    const commitLock = yield* Semaphore.make(1);
-
-    const readStorageFromFile = Effect.fnUntraced(function* (
-      diagnostics: boolean,
-    ) {
+    const readStorageFromFile = Effect.fnUntraced(function* ({
+      diagnostics,
+    }: {
+      readonly diagnostics: boolean;
+    }) {
       const result = yield* jsonFile.read(path).pipe(
         Effect.catch((error) =>
           error.operation === "parse"
@@ -156,55 +152,37 @@ export const layer = Layer.effect(
       return storage;
     });
 
-    const getWithRevision = SynchronizedRef.get(storageRef);
-    const get = SynchronizedRef.modifyEffect(storageRef, (current) =>
-      Effect.gen(function* () {
-        const next = current ?? {
-          storage: yield* readStorageFromFile(true),
-          revision: 0,
-        };
-        return [next.storage, next] as const;
-      }),
-    ).pipe(Effect.uninterruptible, Semaphore.withPermit(commitLock));
-    const load = SynchronizedRef.modifyEffect(storageRef, (current) =>
-      Effect.gen(function* () {
-        const storage = yield* readStorageFromFile(true);
-        const next =
-          current !== null && isDeepStrictEqual(current.storage, storage)
-            ? current
-            : {
-                storage,
-                revision: current === null ? 0 : current.revision + 1,
-              };
-        return [next.storage, next] as const;
-      }),
-    ).pipe(Effect.uninterruptible, Semaphore.withPermit(commitLock));
+    const state = yield* makeCommittedState({
+      load: readStorageFromFile,
+      loadMayWrite: true,
+      write: (storage: AccountManagerStorage) =>
+        jsonFile
+          .write(path, storage)
+          .pipe(Effect.mapError(wrapJsonError), Effect.as(storage)),
+      publishValue: (value) => value,
+      equivalent: isDeepStrictEqual,
+      shouldPublishReload: (previous, next) =>
+        previous !== null && !isDeepStrictEqual(previous, next),
+    });
+    const getWithRevision = state.current.pipe(
+      Effect.map((current) =>
+        current === null
+          ? null
+          : {
+              storage: current.value,
+              revision: current.revision,
+            },
+      ),
+    );
     const update: AccountRepositoryShape["update"] = (modify) =>
-      Effect.uninterruptibleMask((restore) =>
-        SynchronizedRef.modifyEffect(storageRef, (current) =>
-          Effect.gen(function* () {
-            const previous = current ?? {
-              storage: yield* readStorageFromFile(false),
-              revision: 0,
-            };
-            const storage = serializeAccountManagerStorage(
-              yield* restore(modify(previous.storage)),
-            );
-            if (isDeepStrictEqual(previous.storage, storage))
-              return [previous.storage, previous] as const;
-            yield* jsonFile
-              .write(path, storage)
-              .pipe(Effect.mapError(wrapJsonError));
-            const next = { storage, revision: previous.revision + 1 };
-            return [storage, next] as const;
-          }),
-        ),
-      ).pipe(Semaphore.withPermit(commitLock));
+      state.update((storage) =>
+        modify(storage).pipe(Effect.map(serializeAccountManagerStorage)),
+      );
 
     return AccountRepository.of({
-      get,
+      get: state.get,
       getWithRevision,
-      load,
+      load: state.reload,
       path,
       update,
     });
