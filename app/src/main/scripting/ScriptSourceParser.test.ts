@@ -165,6 +165,7 @@ describe("ScriptSourceParser", () => {
       ).pipe(Effect.flip);
 
       expect(error).toMatchObject({
+        _tag: "ScriptInputsExtractorError",
         operation: "validate",
         message: expect.stringContaining(
           "Script inputs definition is invalid:",
