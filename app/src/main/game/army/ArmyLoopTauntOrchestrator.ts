@@ -80,7 +80,7 @@ export interface ArmyLoopTauntOrchestratorShape {
 export class ArmyLoopTauntOrchestrator extends Context.Service<
   ArmyLoopTauntOrchestrator,
   ArmyLoopTauntOrchestratorShape
->()("lucent/internal/army/ArmyLoopTauntOrchestrator") {}
+>()("lucent/desktop/game/army/ArmyLoopTauntOrchestrator") {}
 
 export const makeArmyLoopTauntOrchestrator = (): Effect.Effect<
   ArmyLoopTauntOrchestratorShape,

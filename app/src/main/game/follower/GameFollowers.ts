@@ -76,7 +76,7 @@ export interface GameFollowersShape {
 export class GameFollowers extends Context.Service<
   GameFollowers,
   GameFollowersShape
->()("lucent/internal/follower/GameFollowers") {}
+>()("lucent/desktop/game/follower/GameFollowers") {}
 
 export const makeGameFollowers = Effect.gen(function* () {
   const ipc = yield* DesktopIpc;

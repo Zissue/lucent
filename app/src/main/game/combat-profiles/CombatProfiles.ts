@@ -65,7 +65,7 @@ export interface CombatProfilesShape {
 export class CombatProfiles extends Context.Service<
   CombatProfiles,
   CombatProfilesShape
->()("lucent/internal/combat-profiles/CombatProfiles") {}
+>()("lucent/desktop/game/combat-profiles/CombatProfiles") {}
 
 const wrapDataError = (error: JsonFileError): CombatProfilesError =>
   new CombatProfilesError({

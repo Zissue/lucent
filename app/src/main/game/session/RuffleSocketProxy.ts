@@ -13,12 +13,13 @@ import * as Scope from "effect/Scope";
 import * as ScopedCache from "effect/ScopedCache";
 import { createWebSocketStream, WebSocketServer, type WebSocket } from "ws";
 
+import { isArtixHost } from "./GameRequestHeaders";
+
 interface RelayTarget {
   readonly host: string;
   readonly port: number;
 }
 
-const ARTIX_HOSTNAME = /(^|\.)(aq\.com|aqworlds\.com|artix\.com)$/i;
 const RELAY_HOST = "127.0.0.1";
 const POLICY_VIOLATION = 1008;
 const INTERNAL_ERROR = 1011;
@@ -38,7 +39,7 @@ export class RuffleSocketProxy extends Context.Service<
   {
     readonly getUrl: Effect.Effect<string, RuffleSocketProxyError>;
   }
->()("lucent/ruffle/RuffleSocketProxy") {}
+>()("lucent/desktop/game/session/RuffleSocketProxy") {}
 
 const requestUrl = (request: IncomingMessage): URL =>
   new URL(request.url ?? "/", "http://localhost");
@@ -55,7 +56,7 @@ const parseRelayTarget = (request: IncomingMessage): RelayTarget | null => {
   const port = Number(params.get("port"));
   if (
     host === null ||
-    !ARTIX_HOSTNAME.test(host) ||
+    !isArtixHost(host) ||
     !Number.isInteger(port) ||
     port < 1 ||
     port > 65_535

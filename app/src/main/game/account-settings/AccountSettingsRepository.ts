@@ -59,7 +59,7 @@ export interface AccountSettingsRepositoryShape {
 export class AccountSettingsRepository extends Context.Service<
   AccountSettingsRepository,
   AccountSettingsRepositoryShape
->()("lucent/internal/account-settings/AccountSettingsRepository") {}
+>()("lucent/desktop/game/account-settings/AccountSettingsRepository") {}
 
 const wrapJsonError = (error: JsonFileError): AccountSettingsError =>
   new AccountSettingsError({

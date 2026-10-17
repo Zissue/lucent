@@ -26,7 +26,7 @@ export interface GamePacketsShape {
 export class GamePackets extends Context.Service<
   GamePackets,
   GamePacketsShape
->()("lucent/internal/packets/GamePackets") {}
+>()("lucent/desktop/game/packets/GamePackets") {}
 
 export const makeGamePackets = Effect.gen(function* () {
   const ipc = yield* DesktopIpc;

@@ -44,7 +44,7 @@ export interface GameEnvironmentsShape {
 export class GameEnvironments extends Context.Service<
   GameEnvironments,
   GameEnvironmentsShape
->()("lucent/internal/environment/GameEnvironments") {}
+>()("lucent/desktop/game/environment/GameEnvironments") {}
 
 export const makeGameEnvironments = Effect.gen(function* () {
   const rpc = yield* GameRendererRpc;

@@ -2,6 +2,8 @@ import { net, protocol, type Session } from "electron";
 import { join, normalize, sep } from "path";
 import { pathToFileURL } from "url";
 
+import { ARTIX_DOMAINS } from "./GameRequestHeaders";
+
 export const RUFFLE_ASSET_SCHEME = "lucent-asset";
 
 export const registerRuffleAssetScheme = (): void => {
@@ -34,11 +36,9 @@ export const handleRuffleAssets = (
   });
 };
 
-const ARTIX_URL_PATTERNS = [
-  "https://*.aq.com/*",
-  "https://*.aqworlds.com/*",
-  "https://*.artix.com/*",
-];
+const ARTIX_URL_PATTERNS = ARTIX_DOMAINS.map(
+  (domain) => `https://*.${domain}/*`,
+);
 
 export const allowArtixCors = (targetSession: Session): void => {
   targetSession.webRequest.onHeadersReceived(

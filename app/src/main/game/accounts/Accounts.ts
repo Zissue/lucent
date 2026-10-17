@@ -112,7 +112,7 @@ export interface AccountsShape {
 }
 
 export class Accounts extends Context.Service<Accounts, AccountsShape>()(
-  "lucent/internal/accounts/Accounts",
+  "lucent/desktop/game/accounts/Accounts",
 ) {}
 
 const normalizeRequiredString = (

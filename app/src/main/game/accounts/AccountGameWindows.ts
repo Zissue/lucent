@@ -45,4 +45,4 @@ export interface AccountGameWindowsShape {
 export class AccountGameWindows extends Context.Service<
   AccountGameWindows,
   AccountGameWindowsShape
->()("lucent/internal/accounts/AccountGameWindows") {}
+>()("lucent/desktop/game/accounts/AccountGameWindows") {}

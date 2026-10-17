@@ -18,7 +18,14 @@ export const getGameRequestHeaders = (
   artixmode: "launcher",
 });
 
-const ARTIX_HOSTNAME = /(^|\.)(aq\.com|aqworlds\.com|artix\.com)$/i;
+export const ARTIX_DOMAINS = ["aq.com", "aqworlds.com", "artix.com"] as const;
+
+export const isArtixHost = (hostname: string): boolean => {
+  const host = hostname.toLowerCase();
+  return ARTIX_DOMAINS.some(
+    (domain) => host === domain || host.endsWith(`.${domain}`),
+  );
+};
 
 const isHeaderMissingFromLauncher = (name: string): boolean =>
   name.startsWith("sec-ch-ua") || name === "priority";
@@ -35,7 +42,7 @@ export const applyLauncherHeaders = (
   url: string,
 ): void => {
   const target = new URL(url);
-  if (!ARTIX_HOSTNAME.test(target.hostname)) return;
+  if (!isArtixHost(target.hostname)) return;
 
   for (const name of Object.keys(headers)) {
     const normalized = name.toLowerCase();

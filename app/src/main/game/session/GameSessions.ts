@@ -9,7 +9,11 @@ import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 
 import { DesktopEnvironment } from "../../app/DesktopEnvironment";
-import { allowArtixCors, handleRuffleAssets } from "./RuffleAssets";
+import {
+  allowArtixCors,
+  handleRuffleAssets,
+  RUFFLE_ASSET_SCHEME,
+} from "./RuffleAssets";
 import {
   applyLauncherHeaders,
   getGameRequestHeaders,
@@ -57,7 +61,7 @@ export const clearSessionData = (
     Effect.mapError((cause) => new ElectronSessionDataClearError({ cause })),
   );
 
-export interface ElectronSessionShape {
+export interface GameSessionsShape {
   readonly clearAppData: Effect.Effect<void, ElectronSessionDataClearError>;
   readonly acquireGamePartition: (
     owner: GamePartitionOwner,
@@ -68,13 +72,13 @@ export interface ElectronSessionShape {
   ) => Effect.Effect<void, ElectronGamePartitionError>;
 }
 
-export class ElectronSession extends Context.Service<
-  ElectronSession,
-  ElectronSessionShape
->()("lucent/desktop/electron/ElectronSession") {}
+export class GameSessions extends Context.Service<
+  GameSessions,
+  GameSessionsShape
+>()("lucent/desktop/game/session/GameSessions") {}
 
 export const layer = Layer.effect(
-  ElectronSession,
+  GameSessions,
   Effect.gen(function* () {
     const env = yield* DesktopEnvironment;
     const gameRequestHeaders = getGameRequestHeaders(env.platform);
@@ -119,8 +123,8 @@ export const layer = Layer.effect(
       app.on("session-created", configureSession);
     });
 
-    const acquireGamePartition: ElectronSessionShape["acquireGamePartition"] =
-      Effect.fn("ElectronSession.acquireGamePartition")(function* (owner) {
+    const acquireGamePartition: GameSessionsShape["acquireGamePartition"] =
+      Effect.fn("GameSessions.acquireGamePartition")(function* (owner) {
         const partition = yield* Effect.acquireRelease(
           Effect.sync(() => gamePartitions.acquire(owner)),
           (partition) => Effect.sync(() => releaseGamePartition(partition)),
@@ -144,7 +148,7 @@ export const layer = Layer.effect(
         });
       });
 
-    const retireManagedGameProfile: ElectronSessionShape["retireManagedGameProfile"] =
+    const retireManagedGameProfile: GameSessionsShape["retireManagedGameProfile"] =
       (key) => {
         const partition = managedGamePartition(key);
         return Effect.try({
@@ -190,7 +194,7 @@ export const layer = Layer.effect(
             Effect.sync(() => {
               target.webRequest.onBeforeSendHeaders(null);
               target.webRequest.onHeadersReceived(null);
-              target.protocol.unhandle("lucent-asset");
+              target.protocol.unhandle(RUFFLE_ASSET_SCHEME);
               configuredSessions.delete(target);
             }),
           ),
@@ -212,7 +216,7 @@ export const layer = Layer.effect(
       }),
     );
 
-    return ElectronSession.of({
+    return GameSessions.of({
       acquireGamePartition,
       clearAppData,
       prepareGameNetworking,

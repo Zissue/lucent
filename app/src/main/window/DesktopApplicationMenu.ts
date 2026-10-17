@@ -24,7 +24,7 @@ import {
 import { DesktopEnvironment } from "../app/DesktopEnvironment";
 import { DesktopLifecycle } from "../app/DesktopLifecycle";
 import { logFailure } from "../../shared/logFailure";
-import { ElectronSession } from "../game/session/GameSessions";
+import { GameSessions } from "../game/session/GameSessions";
 import { ElectronApp } from "../electron/ElectronApp";
 import { ElectronDialog } from "../electron/ElectronDialog";
 import { ElectronShell } from "../electron/ElectronShell";
@@ -77,7 +77,7 @@ const reloadContents = (target: WebContents, bypassCache: boolean): void => {
 const makeDesktopApplicationMenu = Effect.gen(function* () {
   const electronApp = yield* ElectronApp;
   const lifecycle = yield* DesktopLifecycle;
-  const electronSession = yield* ElectronSession;
+  const gameSessions = yield* GameSessions;
   const chromiumPerformanceRecording =
     yield* DesktopChromiumPerformanceRecording;
   const dialog = yield* ElectronDialog;
@@ -294,7 +294,7 @@ const makeDesktopApplicationMenu = Effect.gen(function* () {
     );
   };
 
-  const clearAppData = electronSession.clearAppData.pipe(
+  const clearAppData = gameSessions.clearAppData.pipe(
     Effect.mapError((cause) => new DesktopAppDataClearError({ cause })),
   );
 

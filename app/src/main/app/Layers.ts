@@ -43,7 +43,7 @@ import * as DesktopWindows from "../window/DesktopWindows";
 import * as ElectronApp from "../electron/ElectronApp";
 import * as ElectronChromiumPerformance from "../electron/ElectronChromiumPerformance";
 import * as ElectronDialog from "../electron/ElectronDialog";
-import * as ElectronSession from "../game/session/GameSessions";
+import * as GameSessions from "../game/session/GameSessions";
 import * as ElectronShell from "../electron/ElectronShell";
 import * as ElectronTheme from "../electron/ElectronTheme";
 import * as ElectronWindow from "../electron/ElectronWindow";
@@ -86,7 +86,7 @@ export const makeDesktopLayer = (
 
   const storage = Layer.mergeAll(
     DesktopSettings.layer,
-    ElectronSession.layer,
+    GameSessions.layer,
     AccountRepository.layer,
     AccountSettingsRepository.layer,
     ArmyConfigRepository.layer,

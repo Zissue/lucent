@@ -895,7 +895,7 @@ export interface ArmyCoordinatorShape {
 export class ArmyCoordinator extends Context.Service<
   ArmyCoordinator,
   ArmyCoordinatorShape
->()("lucent/internal/army/ArmyCoordinator") {}
+>()("lucent/desktop/game/army/ArmyCoordinator") {}
 
 export const makeArmyCoordinator = (): Effect.Effect<
   ArmyCoordinatorShape,

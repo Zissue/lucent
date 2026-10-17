@@ -102,7 +102,7 @@ export interface AccountSessionsShape {
 export class AccountSessions extends Context.Service<
   AccountSessions,
   AccountSessionsShape
->()("lucent/internal/accounts/AccountSessions") {}
+>()("lucent/desktop/game/accounts/AccountSessions") {}
 
 export const layer = Layer.effect(
   AccountSessions,

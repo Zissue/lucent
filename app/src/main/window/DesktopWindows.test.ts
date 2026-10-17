@@ -20,7 +20,7 @@ import {
 import { DesktopWindowKindSchema } from "../../shared/ipc/windows";
 import { layer as desktopEnvironmentLayer } from "../app/DesktopEnvironment";
 import { ElectronApp } from "../electron/ElectronApp";
-import { ElectronSession } from "../game/session/GameSessions";
+import { GameSessions } from "../game/session/GameSessions";
 import { ElectronShell } from "../electron/ElectronShell";
 import { ElectronTheme } from "../electron/ElectronTheme";
 import {
@@ -162,8 +162,8 @@ const makeHarness = (useGameTabs = false) => {
       }),
     ),
     Layer.succeed(
-      ElectronSession,
-      ElectronSession.of({
+      GameSessions,
+      GameSessions.of({
         acquireGamePartition: () => Effect.succeed("persist:game"),
         clearAppData: Effect.void,
         prepareGameNetworking: Effect.void,

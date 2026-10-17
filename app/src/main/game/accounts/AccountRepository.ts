@@ -46,7 +46,7 @@ export interface AccountRepositoryShape {
 export class AccountRepository extends Context.Service<
   AccountRepository,
   AccountRepositoryShape
->()("lucent/internal/accounts/AccountRepository") {}
+>()("lucent/desktop/game/accounts/AccountRepository") {}
 
 export const layer = Layer.effect(
   AccountRepository,

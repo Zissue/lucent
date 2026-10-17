@@ -45,7 +45,7 @@ export interface ArmyConfigRepositoryShape {
 export class ArmyConfigRepository extends Context.Service<
   ArmyConfigRepository,
   ArmyConfigRepositoryShape
->()("lucent/internal/army/ArmyConfigRepository") {}
+>()("lucent/desktop/game/army/ArmyConfigRepository") {}
 
 const error = (
   operation: typeof armyConfigOperationSchema.Type,

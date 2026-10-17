@@ -60,7 +60,7 @@ export interface GameRendererRpcShape {
 export class GameRendererRpc extends Context.Service<
   GameRendererRpc,
   GameRendererRpcShape
->()("lucent/internal/game-renderer/GameRendererRpc") {}
+>()("lucent/desktop/game/rpc/GameRendererRpc") {}
 
 interface Connection {
   readonly client: GameRendererRpcClient;
