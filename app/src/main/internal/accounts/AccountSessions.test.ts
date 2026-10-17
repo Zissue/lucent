@@ -20,6 +20,71 @@ const report = (
 
 describe("AccountSessions", () => {
   it.effect(
+    "advances revisions for accepted session changes and ignores stale mutations",
+    () =>
+      Effect.gen(function* () {
+        const sessions = yield* AccountSessions;
+        expect(sessions.revision).toBe(0);
+        expect(sessions.openWindow(42, 7, 1)).toBe(true);
+        expect(sessions.revision).toBe(1);
+        expect(sessions.openWindow(42, 7, 1)).toBe(false);
+        expect(sessions.reloadWindow(42, 7, 1)).toBe(false);
+        expect(sessions.applyReport(42, report(2, 1, "Alice"))).toBeNull();
+        expect(sessions.suppressLaunchScript(99, "Missing script")).toBe(false);
+        expect(sessions.remove(99)).toBe(false);
+        expect(sessions.revision).toBe(1);
+        expect(sessions.applyReport(42, report(1, 1, "Alice"))).toEqual({
+          windowName: "Alice",
+        });
+        expect(sessions.revision).toBe(2);
+        expect(sessions.applyReport(42, report(1, 1, "Bob"))).toBeNull();
+        expect(sessions.revision).toBe(2);
+        expect(sessions.openWindow(42, 7, 2)).toBe(true);
+        expect(sessions.revision).toBe(3);
+        sessions.trackLaunch(42, 7, 1, {
+          account: { label: "Alice", password: "secret", username: "Alice" },
+          requestedAt: 10,
+        });
+        expect(sessions.revision).toBe(3);
+        sessions.trackLaunch(42, 7, 2, {
+          account: { label: "Alice", password: "secret", username: "Alice" },
+          requestedAt: 10,
+        });
+        expect(sessions.revision).toBe(4);
+        expect(sessions.suppressLaunchScript(42, "Missing script")).toBe(true);
+        expect(sessions.revision).toBe(5);
+        expect(sessions.snapshot()[0]?.script).toEqual({
+          state: "failed",
+          message: "Missing script",
+        });
+        expect(sessions.closeWindow(42, 20)).toBe(true);
+        expect(sessions.revision).toBe(6);
+        expect(sessions.closeWindow(42, 30)).toBe(false);
+        expect(sessions.revision).toBe(6);
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("keeps the session revision when forgetting closed history", () =>
+    Effect.gen(function* () {
+      const sessions = yield* AccountSessions;
+      sessions.openWindow(77, 7, 1);
+      sessions.trackLaunch(42, 7, 1, {
+        account: { label: "Alice", password: "secret", username: "Alice" },
+        requestedAt: 10,
+      });
+      expect(sessions.revision).toBe(3);
+      sessions.closeWindow(42, 20);
+      expect(sessions.recentlyClosed(7)).toEqual([
+        { id: 42, closedAt: 20, username: "Alice" },
+      ]);
+      expect(sessions.revision).toBe(4);
+      sessions.forgetClosed(42);
+      expect(sessions.recentlyClosed(7)).toEqual([]);
+      expect(sessions.revision).toBe(4);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
     "remembers login intent without retaining credentials or scripts",
     () =>
       Effect.gen(function* () {

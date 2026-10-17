@@ -64,6 +64,7 @@ const lastConnectionUsername = (
     : runtime.connection.lastUsername;
 
 export interface AccountSessionsShape {
+  readonly revision: number;
   readonly closeWindow: (gameWindowId: number, closedAt: number) => boolean;
   readonly recentlyClosed: (
     gameWindowGroupId: number,
@@ -107,6 +108,7 @@ export const layer = Layer.effect(
   AccountSessions,
   Effect.sync(() => {
     const sessions = new Map<number, TrackedSession>();
+    let revision = 0;
     const closedByGroup = new Map<
       number,
       readonly RecentlyClosedGameSession[]
@@ -165,6 +167,7 @@ export const layer = Layer.effect(
     const remove: AccountSessionsShape["remove"] = (gameWindowId) => {
       const groupId = sessions.get(gameWindowId)?.snapshot.gameWindowGroupId;
       const removed = sessions.delete(gameWindowId);
+      if (removed) revision += 1;
       if (
         groupId !== undefined &&
         ![...sessions.values()].some(
@@ -232,6 +235,7 @@ export const layer = Layer.effect(
           updatedAt: Date.now(),
         },
       });
+      revision += 1;
       return true;
     };
 
@@ -273,6 +277,7 @@ export const layer = Layer.effect(
           updatedAt: Date.now(),
         },
       });
+      revision += 1;
       return true;
     };
 
@@ -304,6 +309,7 @@ export const layer = Layer.effect(
           updatedAt: Date.now(),
         },
       });
+      revision += 1;
       return true;
     };
 
@@ -354,6 +360,7 @@ export const layer = Layer.effect(
           updatedAt: Date.now(),
         },
       });
+      revision += 1;
     };
 
     const applyReport: AccountSessionsShape["applyReport"] = (
@@ -392,6 +399,7 @@ export const layer = Layer.effect(
         rendererRevision: report.revision,
         snapshot: nextSnapshot,
       });
+      revision += 1;
 
       return previousUsername === nextUsername
         ? {}
@@ -399,6 +407,9 @@ export const layer = Layer.effect(
     };
 
     return AccountSessions.of({
+      get revision() {
+        return revision;
+      },
       closeWindow,
       recentlyClosed,
       forgetClosed,
