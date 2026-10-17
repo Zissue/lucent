@@ -169,6 +169,64 @@ const makeHarness = (harnessOptions: HarnessOptions = {}) =>
   });
 
 describe("Accounts", () => {
+  it.effect("records window sessions when account storage cannot load", () =>
+    Effect.gen(function* () {
+      const layer = yield* makeHarness();
+      return yield* Effect.gen(function* () {
+        const accounts = yield* Accounts;
+        const gameWindows = yield* AccountGameWindows;
+        const repository = yield* AccountRepository.AccountRepository;
+        const sessions = yield* AccountSessions.AccountSessions;
+        const connections: string[][] = [];
+        yield* accounts.onChanged((state) => {
+          connections.push(
+            state.sessions.map((session) => session.connection.state),
+          );
+        });
+        yield* Effect.promise(() => writeFile(repository.path, "{"));
+
+        const gameWindowId = yield* gameWindows
+          .open()
+          .pipe(Effect.orElseSucceed(() => -1));
+
+        expect(sessions.snapshot()).toMatchObject([
+          {
+            gameWindowGroupId: 1,
+            gameWindowId: 1,
+            rendererGeneration: 1,
+            connection: { state: "offline" },
+          },
+        ]);
+        expect(gameWindowId).toBe(1);
+        expect(connections).toEqual([]);
+        expect(yield* Effect.flip(accounts.getState)).toBeInstanceOf(
+          AccountsError,
+        );
+
+        yield* Effect.promise(() =>
+          writeFile(repository.path, '{"accounts":[],"groups":{}}'),
+        );
+        yield* accounts.reportSession(gameWindowId, {
+          rendererGeneration: 1,
+          revision: 1,
+          runtime: {
+            connection: { state: "online", username: "Alice" },
+            login: { state: "idle" },
+            script: { state: "idle" },
+          },
+        });
+
+        expect((yield* accounts.getState).sessions).toMatchObject([
+          {
+            gameWindowId: 1,
+            connection: { state: "online", username: "Alice" },
+          },
+        ]);
+        expect(connections).toEqual([["online"]]);
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
   it.effect("publishes a committed mutation once even when interrupted", () =>
     Effect.gen(function* () {
       const committed = yield* Deferred.make<void>();

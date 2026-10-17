@@ -323,6 +323,12 @@ export const makeAccounts = Effect.gen(function* () {
   const getState = repository.get.pipe(Effect.map(toState));
 
   const publishCurrent = repository.getWithRevision.pipe(
+    Effect.flatMap((current) =>
+      current === null
+        ? repository.get.pipe(Effect.andThen(repository.getWithRevision))
+        : Effect.succeed(current),
+    ),
+    Effect.orElseSucceed(() => null),
     Effect.flatMap((current) => {
       if (current === null) return Effect.void;
       const revision = current.revision + sessions.revision;
@@ -333,14 +339,7 @@ export const makeAccounts = Effect.gen(function* () {
   );
 
   const withSessionPublication = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-    repository.getWithRevision.pipe(
-      Effect.flatMap((current) =>
-        current === null ? repository.get : Effect.void,
-      ),
-      Effect.andThen(
-        effect.pipe(Effect.asVoid, Effect.ensuring(publishCurrent)),
-      ),
-    );
+    effect.pipe(Effect.asVoid, Effect.ensuring(publishCurrent));
 
   const updateStorage = (
     modify: (
