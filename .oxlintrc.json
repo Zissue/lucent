@@ -61,7 +61,7 @@
       }
     },
     {
-      "files": ["app/src/main/electron/**/*.ts"],
+      "files": ["app/src/main/electron/*.ts"],
       "rules": {
         "eslint/no-restricted-imports": [
           "error",
