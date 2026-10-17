@@ -365,9 +365,7 @@ const gameViewHostBridge: DesktopGameViewHostBridge = {
 
 const gameViewBridge: DesktopGameViewBridge = {
   close: () => {
-    void invoke(GameViewsIpc.closeCurrent, undefined).catch((cause) => {
-      console.error("Failed to close the current game client.", cause);
-    });
+    void invoke(GameViewsIpc.closeCurrent, undefined).catch(() => undefined);
   },
   dispatchGroupOptionHotkey: (commandId) =>
     invoke(GameViewsIpc.dispatchGroupOptionHotkey, { commandId }),

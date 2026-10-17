@@ -54,9 +54,19 @@ const logLines = (records: readonly LogRecord[]) =>
   }));
 
 const unexpectedFailureLog = {
-  annotations: { component: "ipc", data: { channel: "test:count" } },
+  annotations: {
+    component: "ipc",
+    data: { channel: "test:count" },
+    repeatKey: "test:count",
+  },
   level: "Error",
   message: ["IPC handler failed unexpectedly"],
+};
+
+const typedFailureLog = {
+  ...unexpectedFailureLog,
+  level: "Warn",
+  message: ["IPC handler failed"],
 };
 
 describe("createDesktopIpcInvokeHandler", () => {
@@ -80,17 +90,14 @@ describe("createDesktopIpcInvokeHandler", () => {
     }),
   );
 
-  it.effect("logs a handler interruption with its channel", () =>
+  it.effect("does not log a handler interruption", () =>
     Effect.gen(function* () {
       const { records } = yield* invokeWithCapturedLogs(
         1,
         () => Effect.interrupt,
       );
 
-      expect(logLines(records)).toEqual([unexpectedFailureLog]);
-      expect(
-        records.map(({ cause }) => Cause.hasInterruptsOnly(cause)),
-      ).toEqual([true]);
+      expect(records).toEqual([]);
     }),
   );
 
@@ -113,7 +120,7 @@ describe("createDesktopIpcInvokeHandler", () => {
     }),
   );
 
-  it.effect("returns a typed handler failure without logging it", () =>
+  it.effect("logs a typed handler failure by its tag", () =>
     Effect.gen(function* () {
       const { envelope, records } = yield* invokeWithCapturedLogs(1, () =>
         Effect.fail(
@@ -129,11 +136,14 @@ describe("createDesktopIpcInvokeHandler", () => {
           message: "Sender is not allowed.",
         },
       });
-      expect(records).toEqual([]);
+      expect(logLines(records)).toEqual([typedFailureLog]);
+      expect(records.map(({ cause }) => Cause.squash(cause))).toEqual([
+        "DesktopIpcSenderError",
+      ]);
     }),
   );
 
-  it.effect("rejects an invalid payload without logging it", () =>
+  it.effect("rejects an invalid payload and logs it once", () =>
     Effect.gen(function* () {
       let handled = 0;
       const { envelope, records } = yield* invokeWithCapturedLogs("one", () =>
@@ -145,7 +155,7 @@ describe("createDesktopIpcInvokeHandler", () => {
 
       expect(envelope.ok).toBe(false);
       expect(handled).toBe(0);
-      expect(records).toEqual([]);
+      expect(logLines(records)).toEqual([typedFailureLog]);
     }),
   );
 

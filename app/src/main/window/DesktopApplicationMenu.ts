@@ -100,7 +100,9 @@ const makeDesktopApplicationMenu = Effect.gen(function* () {
     );
 
   const logMenuFailure = (operation: string, cause: Cause.Cause<unknown>) =>
-    logFailure("Application menu action failed", cause).pipe(
+    logFailure("Application menu action failed", cause, {
+      failure: "warning",
+    }).pipe(
       Effect.annotateLogs({
         component: "menu",
         data: {
