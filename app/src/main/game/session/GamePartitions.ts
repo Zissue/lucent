@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { readdir, unlink } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 
 import * as Effect from "effect/Effect";
@@ -140,6 +140,7 @@ const defaultProcessIsAlive = (processId: number): boolean => {
   }
 };
 
+/** Removes only profiles that cannot belong to a live game session. */
 export const cleanupStaleGamePartitionProfiles = Effect.fnUntraced(function* (
   sessionDataDir: string,
   fileSystem: FileSystem.FileSystem,
@@ -159,7 +160,7 @@ export const cleanupStaleGamePartitionProfiles = Effect.fnUntraced(function* (
       (MANAGED_PARTITION_PATTERN.test(name) &&
         (yield* fileSystem
           .exists(join(path, RETIRED_PROFILE_MARKER))
-          .pipe(Effect.catch(() => Effect.succeed(false))))) ||
+          .pipe(Effect.orElseSucceed(() => false)))) ||
       (temporaryMatch !== null && !isProcessAlive(Number(temporaryMatch[1])));
     if (!removable) continue;
 
@@ -173,15 +174,13 @@ export const cleanupStaleGamePartitionProfiles = Effect.fnUntraced(function* (
   return { failedPaths, removedPaths };
 });
 
-export const activateManagedGamePartitionProfile = (profilePath: string) =>
-  Effect.tryPromise({
-    try: () => unlink(join(profilePath, RETIRED_PROFILE_MARKER)),
-    catch: (cause) => cause,
-  }).pipe(
-    Effect.catch((cause) =>
-      isMissing(cause) ? Effect.void : Effect.fail(cause),
-    ),
-  );
+export const activateManagedGamePartitionProfile = (
+  profilePath: string,
+  fileSystem: FileSystem.FileSystem,
+) =>
+  fileSystem
+    .remove(join(profilePath, RETIRED_PROFILE_MARKER))
+    .pipe(Effect.catchReason("PlatformError", "NotFound", () => Effect.void));
 
 export const retireManagedGamePartitionProfile = Effect.fnUntraced(function* (
   profilePath: string,
@@ -189,7 +188,7 @@ export const retireManagedGamePartitionProfile = Effect.fnUntraced(function* (
 ) {
   const exists = yield* fileSystem
     .exists(profilePath)
-    .pipe(Effect.catch(() => Effect.succeed(false)));
+    .pipe(Effect.orElseSucceed(() => false));
   if (!exists) return false;
   yield* fileSystem.writeFileString(
     join(profilePath, RETIRED_PROFILE_MARKER),
@@ -198,6 +197,7 @@ export const retireManagedGamePartitionProfile = Effect.fnUntraced(function* (
   return true;
 });
 
+/** Discovers inactive Lucent profiles so clearing data also covers unopened accounts. */
 export const listPersistentGamePartitions = Effect.fnUntraced(function* (
   sessionDataDir: string,
 ) {

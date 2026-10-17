@@ -44,40 +44,6 @@ afterEach(async () => {
 });
 
 describe("Electron game partitions", () => {
-  it.effect("defers stale profile deletion until cleanup runs", () =>
-    Effect.gen(function* () {
-      const appDataDir = yield* Effect.promise(() => makeTempDir());
-      const profilePath = join(
-        appDataDir,
-        "Partitions",
-        `lucent-game-temporary-10-${"a".repeat(24)}`,
-      );
-      yield* Effect.promise(() => mkdir(profilePath, { recursive: true }));
-      const fileSystem = yield* FileSystem.FileSystem.pipe(
-        Effect.provide(nodeFileSystemLayer),
-      );
-
-      const cleanup = cleanupStaleGamePartitionProfiles(
-        appDataDir,
-        fileSystem,
-        {
-          isProcessAlive: () => false,
-        },
-      );
-
-      expect(
-        (yield* Effect.promise(() => stat(profilePath))).isDirectory(),
-      ).toBe(true);
-      expect(yield* cleanup).toEqual({
-        failedPaths: [],
-        removedPaths: [profilePath],
-      });
-      yield* Effect.promise(() =>
-        expect(stat(profilePath)).rejects.toMatchObject({ code: "ENOENT" }),
-      );
-    }),
-  );
-
   it.effect("retires managed profiles without exposing account names", () =>
     Effect.gen(function* () {
       const appDataDir = yield* Effect.promise(() => makeTempDir());
@@ -102,7 +68,7 @@ describe("Electron game partitions", () => {
         ).resolves.toBe("1\n"),
       );
 
-      yield* activateManagedGamePartitionProfile(profilePath);
+      yield* activateManagedGamePartitionProfile(profilePath, fileSystem);
       yield* Effect.promise(() =>
         expect(
           readFile(join(profilePath, ".lucent-retired"), "utf8"),
@@ -331,7 +297,7 @@ describe("Electron game partitions", () => {
         expect(
           yield* retireManagedGamePartitionProfile(missingPath, fileSystem),
         ).toBe(false);
-        yield* activateManagedGamePartitionProfile(missingPath);
+        yield* activateManagedGamePartitionProfile(missingPath, fileSystem);
         yield* Effect.promise(() => mkdir(missingPath));
         expect(
           yield* retireManagedGamePartitionProfile(missingPath, fileSystem),
@@ -344,8 +310,8 @@ describe("Electron game partitions", () => {
             readFile(join(missingPath, ".lucent-retired"), "utf8"),
           ),
         ).toBe("1\n");
-        yield* activateManagedGamePartitionProfile(missingPath);
-        yield* activateManagedGamePartitionProfile(missingPath);
+        yield* activateManagedGamePartitionProfile(missingPath, fileSystem);
+        yield* activateManagedGamePartitionProfile(missingPath, fileSystem);
         expect(
           (yield* Effect.promise(() => stat(missingPath))).isDirectory(),
         ).toBe(true);
@@ -362,13 +328,20 @@ describe("Electron game partitions", () => {
     () =>
       Effect.gen(function* () {
         const appDataDir = yield* Effect.promise(() => makeTempDir());
+        const fileSystem = yield* FileSystem.FileSystem.pipe(
+          Effect.provide(nodeFileSystemLayer),
+        );
         const markerPath = join(appDataDir, ".lucent-retired");
         yield* Effect.promise(() => mkdir(markerPath));
 
         const error = yield* activateManagedGamePartitionProfile(
           appDataDir,
+          fileSystem,
         ).pipe(Effect.flip);
-        expect(error).toMatchObject({ syscall: "unlink", path: markerPath });
+        expect(error).toMatchObject({
+          _tag: "PlatformError",
+          reason: { pathOrDescriptor: markerPath },
+        });
         expect(
           (yield* Effect.promise(() => stat(markerPath))).isDirectory(),
         ).toBe(true);

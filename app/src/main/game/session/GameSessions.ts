@@ -149,7 +149,10 @@ export const layer = Layer.effect(
                 catch: (cause) => cause,
               });
               if (profilePath !== null)
-                yield* activateManagedGamePartitionProfile(profilePath);
+                yield* activateManagedGamePartitionProfile(
+                  profilePath,
+                  fileSystem,
+                );
             }
             return yield* Effect.try({
               try: () => {
