@@ -2,9 +2,9 @@ import { vi } from "vitest";
 import { ipcMain } from "electron";
 import { RendererLogIpc } from "../../../shared/ipc/rendererLog";
 import * as Cause from "effect/Cause";
-import { promises as fs } from "fs";
-import { tmpdir } from "os";
-import { join } from "path";
+import { promises as fs } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "@effect/vitest";
 import * as Context from "effect/Context";

@@ -1,4 +1,4 @@
-import { randomBytes } from "crypto";
+import { randomBytes } from "node:crypto";
 
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";

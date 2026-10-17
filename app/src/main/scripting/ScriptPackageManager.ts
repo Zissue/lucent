@@ -1,5 +1,5 @@
-import { promises as fs } from "fs";
-import { basename, dirname, join, resolve } from "path";
+import { promises as fs } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";

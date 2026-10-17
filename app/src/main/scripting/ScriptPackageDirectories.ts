@@ -1,5 +1,5 @@
-import { promises as fs } from "fs";
-import { dirname, resolve } from "path";
+import { promises as fs } from "node:fs";
+import { dirname, resolve } from "node:path";
 
 import * as Schema from "effect/Schema";
 

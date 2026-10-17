@@ -1,7 +1,7 @@
-import { execFileSync } from "child_process";
-import { promises as fs } from "fs";
-import { tmpdir } from "os";
-import { dirname, join } from "path";
+import { execFileSync } from "node:child_process";
+import { promises as fs } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 
 import { afterEach, describe, expect, it } from "@effect/vitest";
 import { vi } from "vitest";

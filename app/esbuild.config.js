@@ -1,7 +1,7 @@
 const { build, context } = require("esbuild");
 const { solidPlugin } = require("esbuild-plugin-solid");
-const { execFileSync } = require("child_process");
-const { createHash } = require("crypto");
+const { execFileSync } = require("node:child_process");
+const { createHash } = require("node:crypto");
 const {
   copyFileSync,
   existsSync,
@@ -14,8 +14,8 @@ const {
   watchFile,
   writeFileSync,
   appendFileSync,
-} = require("fs");
-const { dirname, join } = require("path");
+} = require("node:fs");
+const { dirname, join } = require("node:path");
 const runtimeTargets = require("./runtime-targets.json");
 
 const isProduction = process.env.NODE_ENV === "production";

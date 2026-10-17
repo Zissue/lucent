@@ -1,5 +1,5 @@
-import { join, resolve as resolvePath } from "path";
-import { Worker } from "worker_threads";
+import { join, resolve as resolvePath } from "node:path";
+import { Worker } from "node:worker_threads";
 
 import * as Deferred from "effect/Deferred";
 import * as Cause from "effect/Cause";

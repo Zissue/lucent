@@ -1,5 +1,5 @@
-import { promises as fs } from "fs";
-import { basename, join } from "path";
+import { promises as fs } from "node:fs";
+import { basename, join } from "node:path";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Predicate from "effect/Predicate";

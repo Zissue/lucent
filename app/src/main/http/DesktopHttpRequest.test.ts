@@ -1,5 +1,9 @@
-import { createServer, type IncomingMessage, type ServerResponse } from "http";
-import type { Socket } from "net";
+import {
+  createServer,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
+import type { Socket } from "node:net";
 import { afterEach, expect, layer as testLayer } from "@effect/vitest";
 import { gzipSync } from "node:zlib";
 import * as Effect from "effect/Effect";

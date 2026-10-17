@@ -1,4 +1,4 @@
-import { extname, relative, resolve } from "path";
+import { extname, relative, resolve } from "node:path";
 
 import * as Context from "effect/Context";
 import * as Cause from "effect/Cause";

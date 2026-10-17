@@ -34,6 +34,7 @@
         ]
       }
     ],
+    "unicorn/prefer-node-protocol": "error",
     "lucent/no-inline-schema-compile": "warn",
     "lucent/no-manual-effect-runtime-in-tests": "error"
   },

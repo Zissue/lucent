@@ -1,4 +1,4 @@
-import { join } from "path";
+import { join } from "node:path";
 
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";

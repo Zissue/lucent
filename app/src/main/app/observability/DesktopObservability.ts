@@ -2,7 +2,7 @@ import { ipcMain, type IpcMainEvent } from "electron";
 import * as Clock from "effect/Clock";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
-import { join } from "path";
+import { join } from "node:path";
 import * as Cause from "effect/Cause";
 import * as Logger from "effect/Logger";
 import * as References from "effect/References";

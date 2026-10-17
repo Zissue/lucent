@@ -1,6 +1,6 @@
-import { promises as fs } from "fs";
-import { tmpdir } from "os";
-import { dirname, join } from "path";
+import { promises as fs } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 
 import { afterEach, expect, layer as testLayer } from "@effect/vitest";
 import * as Effect from "effect/Effect";

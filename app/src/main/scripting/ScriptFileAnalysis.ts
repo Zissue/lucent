@@ -1,6 +1,6 @@
-import { createHash } from "crypto";
+import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
-import { basename } from "path";
+import { basename } from "node:path";
 
 import * as Effect from "effect/Effect";
 import * as Cause from "effect/Cause";

@@ -1,4 +1,4 @@
-import { basename } from "path";
+import { basename } from "node:path";
 
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
