@@ -220,7 +220,7 @@ for (const source of ["{", '{"appearance":{"themeMode":"invalid"}}']) {
     `saves settings without recovery warnings before loading ${source}`,
     () =>
       Effect.gen(function* () {
-        const { settings, path } = yield* makeSettings();
+        const { settings, path } = yield* makeRecoverySettings();
         yield* Effect.promise(() => writeFile(path, source));
         const { records, logger } = captureLogs();
         const value = yield* settings
@@ -238,7 +238,7 @@ for (const source of ["{", '{"appearance":{"themeMode":"invalid"}}']) {
   );
 }
 
-const makeSettings = (
+const makeRecoverySettings = (
   wrapFileSystem: (fs: FileSystem) => FileSystem = (fs) => fs,
 ) =>
   Effect.gen(function* () {
@@ -297,7 +297,7 @@ describe("saved settings recovery", () => {
     "keeps valid settings and preserves invalid bytes until an edit",
     () =>
       Effect.gen(function* () {
-        const { settings, path } = yield* makeSettings();
+        const { settings, path } = yield* makeRecoverySettings();
         const source =
           JSON.stringify(
             {
@@ -353,7 +353,7 @@ describe("saved settings recovery", () => {
 
   it.effect("preserves invalid enum strings that reset to the default", () =>
     Effect.gen(function* () {
-      const { settings, path } = yield* makeSettings();
+      const { settings, path } = yield* makeRecoverySettings();
       const source = JSON.stringify({
         preferences: { launchMode: " game " },
         appearance: { themeMode: " dark ", reduceMotion: " system " },
@@ -391,7 +391,7 @@ describe("saved settings recovery", () => {
 
   it.effect("reports hotkey overrides discarded by normalization", () =>
     Effect.gen(function* () {
-      const { settings, path } = yield* makeSettings();
+      const { settings, path } = yield* makeRecoverySettings();
       const source = JSON.stringify({
         hotkeys: {
           bindings: [
@@ -428,7 +428,7 @@ describe("saved settings recovery", () => {
     "reports invalid theme fields without exposing arbitrary token names",
     () =>
       Effect.gen(function* () {
-        const { settings, path } = yield* makeSettings();
+        const { settings, path } = yield* makeRecoverySettings();
         const source = JSON.stringify({
           appearance: {
             themes: {
@@ -484,7 +484,7 @@ describe("saved settings recovery", () => {
   for (const source of ["{invalid secret", "[]", "null"]) {
     it.effect(`recovers unreadable settings from ${source.slice(0, 1)}`, () =>
       Effect.gen(function* () {
-        const { settings, path } = yield* makeSettings();
+        const { settings, path } = yield* makeRecoverySettings();
         yield* Effect.promise(() => writeFile(path, source));
         const { records, logger } = captureLogs();
         const loaded = yield* settings.load.pipe(
@@ -527,7 +527,7 @@ describe("saved settings recovery", () => {
   it.effect("fails unreadable storage without overwriting it on update", () =>
     Effect.gen(function* () {
       let unreadablePath: string | undefined;
-      const { settings, path } = yield* makeSettings((fileSystem) =>
+      const { settings, path } = yield* makeRecoverySettings((fileSystem) =>
         FileSystem.of({
           ...fileSystem,
           stream: (path, options) =>
@@ -583,7 +583,7 @@ describe("saved settings recovery", () => {
     "loads missing and valid partial settings silently and keeps migration writes",
     () =>
       Effect.gen(function* () {
-        const { settings, path } = yield* makeSettings();
+        const { settings, path } = yield* makeRecoverySettings();
         const { records, logger } = captureLogs();
         expect(
           (yield* settings.load.pipe(
