@@ -60,6 +60,16 @@ const httpClient = DesktopHttpClient.of({
           url: options.url.href,
         });
       }
+      if (
+        options.maxBytes !== undefined &&
+        response.body.byteLength > options.maxBytes
+      ) {
+        return yield* new DesktopHttpClientError({
+          kind: "response-too-large",
+          detail: `HTTP response exceeds the ${options.maxBytes} byte limit.`,
+          url: options.url.href,
+        });
+      }
       return response;
     }),
   download: (options) =>
@@ -229,6 +239,39 @@ afterEach(async () => {
 });
 
 describe("DesktopUpdates", () => {
+  it.effect.each(["1.0.0", "1.0.0-beta.1"])(
+    "rejects an oversized release response for %s",
+    (currentVersion) =>
+      Effect.gen(function* () {
+        const release = {
+          body: "x".repeat(16 * 1024 * 1024),
+          draft: false,
+          html_url: "https://github.com/toommyliu/lucent/releases/tag/v1.1.0",
+          prerelease: false,
+          tag_name: "v1.1.0",
+        };
+        mockGitHubResponse({
+          body: JSON.stringify(
+            currentVersion.includes("-") ? [release] : release,
+          ),
+        });
+        const { layer } = yield* makeUpdatesHarness({
+          checkForUpdates: true,
+          currentVersion,
+        });
+        const updates = yield* DesktopUpdates.pipe(Effect.provide(layer));
+
+        const state = yield* updates.checkNow();
+
+        expect(state.status).toBe("error");
+        expect(state).toMatchObject({
+          status: "error",
+          currentVersion,
+          message: "HTTP response exceeds the 16777216 byte limit.",
+        });
+      }),
+  );
+
   it.effect(
     "answers an IPC check without an error when shutdown cancels it",
     () =>

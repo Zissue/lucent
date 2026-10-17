@@ -4,7 +4,10 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 
-import { GitHubApiClient } from "../github/GitHubApiClient";
+import {
+  GitHubApiClient,
+  GitHubApiClientError,
+} from "../github/GitHubApiClient";
 import type { DesktopHttpResponse } from "../http/DesktopHttpClient";
 import { GitHubCredentials } from "./GitHubCredentials";
 import {
@@ -29,11 +32,20 @@ const makeClientHarness = (responses: readonly DesktopHttpResponse[]) => {
   const api = GitHubApiClient.of({
     download: () => Effect.die("Unexpected download."),
     get: (options) =>
-      Effect.sync(() => {
+      Effect.gen(function* () {
         requests.push(options.url);
         const response = pending.shift();
         if (response === undefined)
           throw new Error("Unexpected GitHub request.");
+        if (
+          options.maxBytes !== undefined &&
+          response.body.byteLength > options.maxBytes
+        ) {
+          return yield* new GitHubApiClientError({
+            kind: "response-too-large",
+            detail: `HTTP response exceeds the ${options.maxBytes} byte limit.`,
+          });
+        }
         return response;
       }),
   });
@@ -95,6 +107,27 @@ const makeControlledHarness = Effect.gen(function* () {
 const repositoryUrl = "https://github.com/example/tools";
 
 describe("GitHubScriptPackageClient", () => {
+  it.effect("rejects an oversized commit response", () =>
+    Effect.gen(function* () {
+      const harness = makeClientHarness([
+        jsonResponse({ sha: "commit", padding: "x".repeat(16 * 1024 * 1024) }),
+      ]);
+      const client = yield* GitHubScriptPackageClient.pipe(
+        Effect.provide(harness.layer),
+      );
+
+      const error = yield* client
+        .resolveCommit({ repositoryUrl })
+        .pipe(Effect.flip);
+
+      expect(error).toMatchObject({
+        _tag: "GitHubScriptPackageClientError",
+        kind: "response-too-large",
+        detail: "HTTP response exceeds the 16777216 byte limit.",
+      });
+    }),
+  );
+
   it("normalizes repository sources and throws for unsupported source URLs", () => {
     expect(
       normalizeGitHubRepositoryUrl("https://github.com/example/tools.git/"),
