@@ -80,12 +80,12 @@ export class ArmyLoopTauntOrchestrator extends Context.Service<
   ArmyLoopTauntOrchestratorShape
 >()("lucent/desktop/game/army/ArmyLoopTauntOrchestrator") {}
 
-export const makeArmyLoopTauntOrchestrator = (): Effect.Effect<
-  ArmyLoopTauntOrchestratorShape,
-  never,
-  ArmyCoordinator | Scope.Scope
-> =>
-  Effect.gen(function* () {
+export const makeArmyLoopTauntOrchestrator = Effect.fnUntraced(
+  function* (): Effect.fn.Return<
+    ArmyLoopTauntOrchestratorShape,
+    never,
+    ArmyCoordinator | Scope.Scope
+  > {
     const coordinator = yield* ArmyCoordinator;
     const scope = yield* Effect.scope;
     const commandEvents = makeListenerRegistry<ArmyLoopTauntCommandEvent>();
@@ -222,26 +222,22 @@ export const makeArmyLoopTauntOrchestrator = (): Effect.Effect<
         })
         .pipe(Effect.map(([run]) => run));
 
-    const ready: ArmyLoopTauntOrchestratorShape["ready"] = (
-      payload,
-      senderId,
-    ) =>
-      Effect.gen(function* () {
+    const ready: ArmyLoopTauntOrchestratorShape["ready"] = Effect.fnUntraced(
+      function* (payload, senderId) {
         const run = yield* requireRun(payload, senderId);
         if (run.status === "terminal") {
           return yield* terminalReadinessError(run, run.terminal);
         }
         yield* Deferred.await(run.readinessGate);
-      });
+      },
+    );
 
-    const awaitRun: ArmyLoopTauntOrchestratorShape["await"] = (
-      payload,
-      senderId,
-    ) =>
-      Effect.gen(function* () {
+    const awaitRun: ArmyLoopTauntOrchestratorShape["await"] = Effect.fnUntraced(
+      function* (payload, senderId) {
         const run = yield* requireRun(payload, senderId);
         return yield* Deferred.await(run.terminalGate);
-      });
+      },
+    );
 
     const report: ArmyLoopTauntOrchestratorShape["report"] = (
       payload,
@@ -276,7 +272,8 @@ export const makeArmyLoopTauntOrchestrator = (): Effect.Effect<
       register,
       report,
     });
-  });
+  },
+);
 
 export const layer = Layer.effect(
   ArmyLoopTauntOrchestrator,

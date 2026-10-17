@@ -256,107 +256,103 @@ export const makeScriptFileSystem = Effect.fn("ScriptFileSystem.make")(
         ),
       );
 
-    const ensureRoot = (
+    const ensureRoot = Effect.fnUntraced(function* (
       operation: FileSystemOperation,
-    ): Effect.Effect<void, FileSystemError> =>
-      Effect.gen(function* () {
-        let info = yield* lstatOptional(operation, undefined, dataDir);
-        if (info === undefined) {
-          yield* fileSystem
-            .makeDirectory(dataDir, { mode: 0o700, recursive: true })
-            .pipe(
-              Effect.uninterruptible,
-              Effect.mapError((error) =>
-                mapFileSystemError(operation, undefined, error),
-              ),
-            );
-          info = yield* lstat(dataDir).pipe(
+    ): Effect.fn.Return<void, FileSystemError> {
+      let info = yield* lstatOptional(operation, undefined, dataDir);
+      if (info === undefined) {
+        yield* fileSystem
+          .makeDirectory(dataDir, { mode: 0o700, recursive: true })
+          .pipe(
+            Effect.uninterruptible,
             Effect.mapError((error) =>
               mapFileSystemError(operation, undefined, error),
             ),
           );
-        }
-        yield* requireDirectory(operation, undefined, info);
-      });
+        info = yield* lstat(dataDir).pipe(
+          Effect.mapError((error) =>
+            mapFileSystemError(operation, undefined, error),
+          ),
+        );
+      }
+      yield* requireDirectory(operation, undefined, info);
+    });
 
-    const resolveParent = (
+    const resolveParent = Effect.fnUntraced(function* (
       operation: FileSystemOperation,
       parsed: ParsedPath,
       mode: ParentMode,
-    ): Effect.Effect<string | undefined, FileSystemError> =>
-      Effect.gen(function* () {
-        yield* ensureRoot(operation);
-        let current = dataDir;
-        for (const segment of parsed.segments.slice(0, -1)) {
-          current = join(current, segment);
-          let info = yield* lstatOptional(operation, parsed.path, current);
-          if (info === undefined && mode === "create") {
-            yield* fileSystem
-              .makeDirectory(current, { mode: 0o700, recursive: false })
-              .pipe(
-                Effect.uninterruptible,
-                Effect.catch((error) =>
-                  error.reason._tag === "AlreadyExists"
-                    ? Effect.void
-                    : Effect.fail(
-                        mapFileSystemError(operation, parsed.path, error),
-                      ),
-                ),
-              );
-            info = yield* lstat(current).pipe(
-              Effect.mapError((error) =>
-                mapFileSystemError(operation, parsed.path, error),
+    ): Effect.fn.Return<string | undefined, FileSystemError> {
+      yield* ensureRoot(operation);
+      let current = dataDir;
+      for (const segment of parsed.segments.slice(0, -1)) {
+        current = join(current, segment);
+        let info = yield* lstatOptional(operation, parsed.path, current);
+        if (info === undefined && mode === "create") {
+          yield* fileSystem
+            .makeDirectory(current, { mode: 0o700, recursive: false })
+            .pipe(
+              Effect.uninterruptible,
+              Effect.catch((error) =>
+                error.reason._tag === "AlreadyExists"
+                  ? Effect.void
+                  : Effect.fail(
+                      mapFileSystemError(operation, parsed.path, error),
+                    ),
               ),
             );
-          }
-          if (info === undefined) return undefined;
-          yield* requireDirectory(operation, parsed.path, info);
+          info = yield* lstat(current).pipe(
+            Effect.mapError((error) =>
+              mapFileSystemError(operation, parsed.path, error),
+            ),
+          );
         }
-        return current;
-      });
+        if (info === undefined) return undefined;
+        yield* requireDirectory(operation, parsed.path, info);
+      }
+      return current;
+    });
 
-    const requireReadableFile = (
+    const requireReadableFile = Effect.fnUntraced(function* (
       operation: "read-json" | "read-text",
       parsed: ParsedPath,
-    ): Effect.Effect<Stats | undefined, FileSystemError> =>
-      Effect.gen(function* () {
-        const parent = yield* resolveParent(operation, parsed, "lookup");
-        if (parent === undefined) return undefined;
-        const info = yield* lstatOptional(
+    ): Effect.fn.Return<Stats | undefined, FileSystemError> {
+      const parent = yield* resolveParent(operation, parsed, "lookup");
+      if (parent === undefined) return undefined;
+      const info = yield* lstatOptional(
+        operation,
+        parsed.path,
+        parsed.absolute,
+      );
+      if (info === undefined) return undefined;
+      if (!info.isFile()) {
+        return yield* makeError(
           operation,
+          info.isSymbolicLink() ? "invalid-path" : "not-file",
           parsed.path,
-          parsed.absolute,
         );
-        if (info === undefined) return undefined;
-        if (!info.isFile()) {
-          return yield* makeError(
-            operation,
-            info.isSymbolicLink() ? "invalid-path" : "not-file",
-            parsed.path,
-          );
-        }
-        return info;
-      });
+      }
+      return info;
+    });
 
-    const prepareWritableFile = (
+    const prepareWritableFile = Effect.fnUntraced(function* (
       operation: "write-json" | "write-text",
       parsed: ParsedPath,
-    ): Effect.Effect<void, FileSystemError> =>
-      Effect.gen(function* () {
-        yield* resolveParent(operation, parsed, "create");
-        const info = yield* lstatOptional(
+    ): Effect.fn.Return<void, FileSystemError> {
+      yield* resolveParent(operation, parsed, "create");
+      const info = yield* lstatOptional(
+        operation,
+        parsed.path,
+        parsed.absolute,
+      );
+      if (info !== undefined && !info.isFile()) {
+        return yield* makeError(
           operation,
+          info.isSymbolicLink() ? "invalid-path" : "not-file",
           parsed.path,
-          parsed.absolute,
         );
-        if (info !== undefined && !info.isFile()) {
-          return yield* makeError(
-            operation,
-            info.isSymbolicLink() ? "invalid-path" : "not-file",
-            parsed.path,
-          );
-        }
-      });
+      }
+    });
 
     const admit = (
       rendererId: number,
@@ -422,29 +418,28 @@ export const makeScriptFileSystem = Effect.fn("ScriptFileSystem.make")(
         (session) => release(session, mode),
       );
 
-    const closeSession = (
+    const closeSession = Effect.fnUntraced(function* (
       rendererId: number,
       sessionId: string,
-    ): Effect.Effect<void> =>
-      Effect.gen(function* () {
-        const session = sessions.get(sessionId);
-        if (session === undefined || session.rendererId !== rendererId) return;
-        session.closed = true;
+    ): Effect.fn.Return<void> {
+      const session = sessions.get(sessionId);
+      if (session === undefined || session.rendererId !== rendererId) return;
+      session.closed = true;
 
-        const waiter = yield* Deferred.make<void>();
-        const shouldWait = yield* Effect.sync(() => {
-          if (session.activeMutations === 0) return false;
-          session.waiters.add(waiter);
-          return true;
-        });
-        // Reads cannot mutate after close, so only accepted mutations drain.
-        if (shouldWait) yield* Deferred.await(waiter);
-
-        if (sessions.get(sessionId) === session) sessions.delete(sessionId);
-        const owned = rendererSessions.get(rendererId);
-        owned?.delete(sessionId);
-        if (owned?.size === 0) rendererSessions.delete(rendererId);
+      const waiter = yield* Deferred.make<void>();
+      const shouldWait = yield* Effect.sync(() => {
+        if (session.activeMutations === 0) return false;
+        session.waiters.add(waiter);
+        return true;
       });
+      // Reads cannot mutate after close, so only accepted mutations drain.
+      if (shouldWait) yield* Deferred.await(waiter);
+
+      if (sessions.get(sessionId) === session) sessions.delete(sessionId);
+      const owned = rendererSessions.get(rendererId);
+      owned?.delete(sessionId);
+      if (owned?.size === 0) rendererSessions.delete(rendererId);
+    });
 
     // Each script execution gets a session. Closing it rejects later filesystem calls.
     const openSession = (rendererId: number): Effect.Effect<string> =>
@@ -553,31 +548,30 @@ export const makeScriptFileSystem = Effect.fn("ScriptFileSystem.make")(
         }),
       );
 
-    const readTextInternal = (
+    const readTextInternal = Effect.fnUntraced(function* (
       operation: "read-json" | "read-text",
       path: string,
-    ): Effect.Effect<string | undefined, FileSystemError> =>
-      Effect.gen(function* () {
-        const parsed = yield* parsePath(operation, path);
-        const info = yield* requireReadableFile(operation, parsed);
-        if (info === undefined) return undefined;
-        const bytes = yield* readFileBounded(
-          fileSystem,
-          parsed.absolute,
-          SCRIPT_FILE_SYSTEM_MAX_BYTES,
-        ).pipe(
-          Effect.catch((error) =>
-            error._tag === "PlatformError" && error.reason._tag === "NotFound"
-              ? Effect.succeed(undefined)
-              : Effect.fail(mapFileSystemError(operation, path, error)),
-          ),
-        );
-        if (bytes === undefined) return undefined;
-        return yield* Effect.try({
-          try: () => utf8Decoder.decode(bytes),
-          catch: () => makeError(operation, "invalid-utf8", path),
-        });
+    ): Effect.fn.Return<string | undefined, FileSystemError> {
+      const parsed = yield* parsePath(operation, path);
+      const info = yield* requireReadableFile(operation, parsed);
+      if (info === undefined) return undefined;
+      const bytes = yield* readFileBounded(
+        fileSystem,
+        parsed.absolute,
+        SCRIPT_FILE_SYSTEM_MAX_BYTES,
+      ).pipe(
+        Effect.catch((error) =>
+          error._tag === "PlatformError" && error.reason._tag === "NotFound"
+            ? Effect.succeed(undefined)
+            : Effect.fail(mapFileSystemError(operation, path, error)),
+        ),
+      );
+      if (bytes === undefined) return undefined;
+      return yield* Effect.try({
+        try: () => utf8Decoder.decode(bytes),
+        catch: () => makeError(operation, "invalid-utf8", path),
       });
+    });
 
     const readText: ScriptFileSystemShape["readText"] = (
       rendererId,
@@ -617,26 +611,25 @@ export const makeScriptFileSystem = Effect.fn("ScriptFileSystem.make")(
         }),
       );
 
-    const writeTextInternal = (
+    const writeTextInternal = Effect.fnUntraced(function* (
       operation: "write-json" | "write-text",
       path: string,
       contents: string,
-    ): Effect.Effect<void, FileSystemError> =>
-      Effect.gen(function* () {
-        const bytes = utf8Encoder.encode(contents);
-        if (bytes.byteLength > SCRIPT_FILE_SYSTEM_MAX_BYTES) {
-          return yield* makeError(operation, "too-large", path);
-        }
-        const parsed = yield* parsePath(operation, path);
-        yield* prepareWritableFile(operation, parsed);
-        yield* atomicFile
-          .writeToExistingParent(parsed.absolute, bytes, { mode: 0o600 })
-          .pipe(
-            Effect.mapError((error) =>
-              mapFileSystemError(operation, path, error),
-            ),
-          );
-      });
+    ): Effect.fn.Return<void, FileSystemError> {
+      const bytes = utf8Encoder.encode(contents);
+      if (bytes.byteLength > SCRIPT_FILE_SYSTEM_MAX_BYTES) {
+        return yield* makeError(operation, "too-large", path);
+      }
+      const parsed = yield* parsePath(operation, path);
+      yield* prepareWritableFile(operation, parsed);
+      yield* atomicFile
+        .writeToExistingParent(parsed.absolute, bytes, { mode: 0o600 })
+        .pipe(
+          Effect.mapError((error) =>
+            mapFileSystemError(operation, path, error),
+          ),
+        );
+    });
 
     const writeText: ScriptFileSystemShape["writeText"] = (
       rendererId,

@@ -119,21 +119,20 @@ export class Accounts extends Context.Service<Accounts, AccountsShape>()(
   "lucent/desktop/game/accounts/Accounts",
 ) {}
 
-const normalizeRequiredString = (
+const normalizeRequiredString = Effect.fnUntraced(function* (
   value: unknown,
   field: string,
   operation: AccountOperation,
-): Effect.Effect<string, AccountsError> =>
-  Effect.gen(function* () {
-    if (typeof value !== "string") {
-      return yield* accountError(operation, `${field} must be a string`);
-    }
-    const normalized = value.trim();
-    if (normalized === "") {
-      return yield* accountError(operation, `${field} is required`);
-    }
-    return normalized;
-  });
+): Effect.fn.Return<string, AccountsError> {
+  if (typeof value !== "string") {
+    return yield* accountError(operation, `${field} must be a string`);
+  }
+  const normalized = value.trim();
+  if (normalized === "") {
+    return yield* accountError(operation, `${field} is required`);
+  }
+  return normalized;
+});
 
 const normalizeOptionalString = (value: unknown): string | undefined => {
   if (typeof value !== "string") return undefined;
@@ -141,44 +140,42 @@ const normalizeOptionalString = (value: unknown): string | undefined => {
   return normalized === "" ? undefined : normalized;
 };
 
-const normalizeAccountDraft = (
+const normalizeAccountDraft = Effect.fnUntraced(function* (
   draft: ManagedAccountDraft,
   operation: AccountOperation,
-): Effect.Effect<ManagedAccount, AccountsError> =>
-  Effect.gen(function* () {
-    const username = yield* normalizeRequiredString(
-      draft.username,
-      "username",
-      operation,
-    );
-    const password = yield* normalizeRequiredString(
-      draft.password,
-      "password",
-      operation,
-    );
-    const label =
-      typeof draft.label === "string" && draft.label.trim() !== ""
-        ? draft.label.trim()
-        : username;
-    return { label, password, username };
-  });
+): Effect.fn.Return<ManagedAccount, AccountsError> {
+  const username = yield* normalizeRequiredString(
+    draft.username,
+    "username",
+    operation,
+  );
+  const password = yield* normalizeRequiredString(
+    draft.password,
+    "password",
+    operation,
+  );
+  const label =
+    typeof draft.label === "string" && draft.label.trim() !== ""
+      ? draft.label.trim()
+      : username;
+  return { label, password, username };
+});
 
-const normalizeAccountPatch = (
+const normalizeAccountPatch = Effect.fnUntraced(function* (
   patch: ManagedAccountPatch,
-): Effect.Effect<ManagedAccountPatch, AccountsError> =>
-  Effect.gen(function* () {
-    const output: Record<string, string> = {};
-    for (const key of ["label", "username", "password"] as const) {
-      if (patch[key] !== undefined) {
-        output[key] = yield* normalizeRequiredString(
-          patch[key],
-          key,
-          "update-account",
-        );
-      }
+): Effect.fn.Return<ManagedAccountPatch, AccountsError> {
+  const output: Record<string, string> = {};
+  for (const key of ["label", "username", "password"] as const) {
+    if (patch[key] !== undefined) {
+      output[key] = yield* normalizeRequiredString(
+        patch[key],
+        key,
+        "update-account",
+      );
     }
-    return output;
-  });
+  }
+  return output;
+});
 
 const hasAccountUsername = (
   accounts: readonly ManagedAccount[],
@@ -216,86 +213,78 @@ const hasGroupName = (
   );
 };
 
-const normalizeGroupMembers = (
+const normalizeGroupMembers = Effect.fnUntraced(function* (
   value: readonly string[],
   accounts: readonly ManagedAccount[],
   operation: AccountOperation,
-): Effect.Effect<readonly string[], AccountsError> =>
-  Effect.gen(function* () {
-    const accountUsernames = new Set(
-      accounts.map((account) => account.username),
+): Effect.fn.Return<readonly string[], AccountsError> {
+  const accountUsernames = new Set(accounts.map((account) => account.username));
+  const seen = new Set<string>();
+  const usernames: string[] = [];
+  for (const username of value) {
+    const normalized = yield* normalizeRequiredString(
+      username,
+      "group username",
+      operation,
     );
-    const seen = new Set<string>();
-    const usernames: string[] = [];
-    for (const username of value) {
-      const normalized = yield* normalizeRequiredString(
-        username,
-        "group username",
-        operation,
-      );
-      if (!accountUsernames.has(normalized)) {
-        return yield* accountError(
-          operation,
-          `Account not found: ${normalized}`,
-        );
-      }
-      const key = normalized.toLowerCase();
-      if (seen.has(key)) {
-        return yield* accountError(
-          operation,
-          `Duplicate group member: ${normalized}`,
-        );
-      }
-      seen.add(key);
-      usernames.push(normalized);
+    if (!accountUsernames.has(normalized)) {
+      return yield* accountError(operation, `Account not found: ${normalized}`);
     }
-    return usernames;
-  });
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) {
+      return yield* accountError(
+        operation,
+        `Duplicate group member: ${normalized}`,
+      );
+    }
+    seen.add(key);
+    usernames.push(normalized);
+  }
+  return usernames;
+});
 
-const normalizeGroupDraft = (
+const normalizeGroupDraft = Effect.fnUntraced(function* (
   draft: ManagedAccountGroupDraft,
   accounts: readonly ManagedAccount[],
-): Effect.Effect<ManagedAccountGroupDraft, AccountsError> =>
-  Effect.gen(function* () {
-    const name = yield* normalizeRequiredString(
-      draft.name,
-      "group name",
-      "create-group",
-    );
-    const usernames = yield* normalizeGroupMembers(
-      draft.usernames,
-      accounts,
-      "create-group",
-    );
-    return { name, usernames };
-  });
+): Effect.fn.Return<ManagedAccountGroupDraft, AccountsError> {
+  const name = yield* normalizeRequiredString(
+    draft.name,
+    "group name",
+    "create-group",
+  );
+  const usernames = yield* normalizeGroupMembers(
+    draft.usernames,
+    accounts,
+    "create-group",
+  );
+  return { name, usernames };
+});
 
-const normalizeGroupPatch = (
+const normalizeGroupPatch = Effect.fnUntraced(function* (
   patch: ManagedAccountGroupPatch,
   accounts: readonly ManagedAccount[],
-): Effect.Effect<ManagedAccountGroupPatch, AccountsError> =>
-  Effect.gen(function* () {
-    return {
-      ...(patch.name === undefined
-        ? {}
-        : {
-            name: yield* normalizeRequiredString(
-              patch.name,
-              "group name",
-              "update-group",
-            ),
-          }),
-      ...(patch.usernames === undefined
-        ? {}
-        : {
-            usernames: yield* normalizeGroupMembers(
-              patch.usernames,
-              accounts,
-              "update-group",
-            ),
-          }),
-    };
-  });
+): Effect.fn.Return<ManagedAccountGroupPatch, AccountsError> {
+  return {
+    ...(patch.name === undefined
+      ? {}
+      : {
+          name: yield* normalizeRequiredString(
+            patch.name,
+            "group name",
+            "update-group",
+          ),
+        }),
+    ...(patch.usernames === undefined
+      ? {}
+      : {
+          usernames: yield* normalizeGroupMembers(
+            patch.usernames,
+            accounts,
+            "update-group",
+          ),
+        }),
+  };
+});
 
 export const makeAccounts = Effect.gen(function* () {
   const gameWindows = yield* AccountGameWindows;

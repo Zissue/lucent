@@ -297,237 +297,232 @@ interface DesktopUpdatesOptions {
   readonly openExternal: (url: string) => Effect.Effect<boolean>;
 }
 
-const makeDesktopUpdates = (
+const makeDesktopUpdates = Effect.fnUntraced(function* (
   options: DesktopUpdatesOptions,
-): Effect.Effect<DesktopUpdatesShape, never, Scope.Scope> =>
-  Effect.gen(function* () {
-    const currentVersion = normalizeVersion(options.currentVersion);
-    const context = yield* Effect.context<never>();
-    const runFork = Effect.runForkWith(context);
-    const disabledState = (): UpdateCheckState => ({
-      status: "disabled",
-      currentVersion,
-      reason: "Update checks are disabled.",
-    });
-    const updatesEnabled = yield* options.isEnabled.pipe(
-      Effect.catch(() => Effect.succeed(true)),
-    );
-    const stateRef = yield* Ref.make<UpdateCheckState>(
-      updatesEnabled
-        ? {
-            status: "idle",
-            currentVersion,
-          }
-        : disabledState(),
-    );
-    const cacheRef = yield* Ref.make<UpdateReleaseCache | null>(null);
-    const cacheLoadedRef = yield* Ref.make(false);
-    const stateChanges = makeListenerRegistry<UpdateCheckState>();
-    let inFlight: Fiber.Fiber<UpdateCheckState> | null = null;
-    yield* Effect.addFinalizer(() =>
-      inFlight === null ? Effect.void : Fiber.interrupt(inFlight),
+): Effect.fn.Return<DesktopUpdatesShape, never, Scope.Scope> {
+  const currentVersion = normalizeVersion(options.currentVersion);
+  const context = yield* Effect.context<never>();
+  const runFork = Effect.runForkWith(context);
+  const disabledState = (): UpdateCheckState => ({
+    status: "disabled",
+    currentVersion,
+    reason: "Update checks are disabled.",
+  });
+  const updatesEnabled = yield* options.isEnabled.pipe(
+    Effect.catch(() => Effect.succeed(true)),
+  );
+  const stateRef = yield* Ref.make<UpdateCheckState>(
+    updatesEnabled
+      ? {
+          status: "idle",
+          currentVersion,
+        }
+      : disabledState(),
+  );
+  const cacheRef = yield* Ref.make<UpdateReleaseCache | null>(null);
+  const cacheLoadedRef = yield* Ref.make(false);
+  const stateChanges = makeListenerRegistry<UpdateCheckState>();
+  let inFlight: Fiber.Fiber<UpdateCheckState> | null = null;
+  yield* Effect.addFinalizer(() =>
+    inFlight === null ? Effect.void : Fiber.interrupt(inFlight),
+  );
+
+  const setState = (state: UpdateCheckState): Effect.Effect<void> =>
+    Ref.set(stateRef, state).pipe(
+      Effect.flatMap(() => stateChanges.publish(state)),
     );
 
-    const setState = (state: UpdateCheckState): Effect.Effect<void> =>
-      Ref.set(stateRef, state).pipe(
-        Effect.flatMap(() => stateChanges.publish(state)),
-      );
+  const loadCacheOnce = Effect.gen(function* () {
+    const loaded = yield* Ref.get(cacheLoadedRef);
+    if (loaded) {
+      return yield* Ref.get(cacheRef);
+    }
 
-    const loadCacheOnce = Effect.gen(function* () {
-      const loaded = yield* Ref.get(cacheLoadedRef);
-      if (loaded) {
-        return yield* Ref.get(cacheRef);
+    const cache = yield* options.loadCache;
+    yield* Ref.set(cacheRef, cache);
+    yield* Ref.set(cacheLoadedRef, true);
+    return cache;
+  });
+
+  const saveCache = (cache: UpdateReleaseCache) =>
+    options.saveCache(cache).pipe(
+      Effect.tap(() => Ref.set(cacheRef, cache)),
+      Effect.tap(() => Ref.set(cacheLoadedRef, true)),
+    );
+
+  const stateFromRelease = (
+    release: UpdateReleaseInfo,
+    checkedAt: string,
+  ): UpdateCheckState =>
+    gt(release.version, currentVersion)
+      ? {
+          status: "available",
+          currentVersion,
+          latestVersion: release.version,
+          checkedAt,
+          release,
+        }
+      : {
+          status: "current",
+          currentVersion,
+          latestVersion: release.version,
+          checkedAt,
+        };
+
+  const runCheck = (force: boolean) =>
+    Effect.gen(function* () {
+      const enabled = yield* options.isEnabled;
+      if (!enabled && !force) {
+        const disabled = disabledState();
+        yield* setState(disabled);
+        return disabled;
       }
 
-      const cache = yield* options.loadCache;
-      yield* Ref.set(cacheRef, cache);
-      yield* Ref.set(cacheLoadedRef, true);
-      return cache;
-    });
+      const startedAt = (yield* DateTime.nowAsDate).toISOString();
+      yield* setState({
+        status: "checking",
+        currentVersion,
+        startedAt,
+      });
 
-    const saveCache = (cache: UpdateReleaseCache) =>
-      options.saveCache(cache).pipe(
-        Effect.tap(() => Ref.set(cacheRef, cache)),
-        Effect.tap(() => Ref.set(cacheLoadedRef, true)),
-      );
+      const cache = yield* loadCacheOnce;
+      const result = yield* options
+        .fetchRelease(
+          cache?.etag === undefined ? undefined : { etag: cache.etag },
+        )
+        .pipe(
+          Effect.timeoutOrElse({
+            duration: CHECK_TIMEOUT_MS,
+            orElse: () =>
+              Effect.fail(
+                desktopUpdateError(new Error("Update check timed out.")),
+              ),
+          }),
+        );
+      const checkedAt = (yield* DateTime.nowAsDate).toISOString();
 
-    const stateFromRelease = (
-      release: UpdateReleaseInfo,
-      checkedAt: string,
-    ): UpdateCheckState =>
-      gt(release.version, currentVersion)
-        ? {
-            status: "available",
-            currentVersion,
-            latestVersion: release.version,
-            checkedAt,
-            release,
-          }
-        : {
+      if (result.status === "not-modified") {
+        const release = cache?.release;
+        if (release === undefined) {
+          const current: UpdateCheckState = {
             status: "current",
             currentVersion,
-            latestVersion: release.version,
+            latestVersion: currentVersion,
             checkedAt,
           };
-
-    const runCheck = (force: boolean) =>
-      Effect.gen(function* () {
-        const enabled = yield* options.isEnabled;
-        if (!enabled && !force) {
-          const disabled = disabledState();
-          yield* setState(disabled);
-          return disabled;
+          yield* setState(current);
+          return current;
         }
 
-        const startedAt = (yield* DateTime.nowAsDate).toISOString();
-        yield* setState({
-          status: "checking",
-          currentVersion,
-          startedAt,
-        });
-
-        const cache = yield* loadCacheOnce;
-        const result = yield* options
-          .fetchRelease(
-            cache?.etag === undefined ? undefined : { etag: cache.etag },
-          )
-          .pipe(
-            Effect.timeoutOrElse({
-              duration: CHECK_TIMEOUT_MS,
-              orElse: () =>
-                Effect.fail(
-                  desktopUpdateError(new Error("Update check timed out.")),
-                ),
-            }),
-          );
-        const checkedAt = (yield* DateTime.nowAsDate).toISOString();
-
-        if (result.status === "not-modified") {
-          const release = cache?.release;
-          if (release === undefined) {
-            const current: UpdateCheckState = {
-              status: "current",
-              currentVersion,
-              latestVersion: currentVersion,
-              checkedAt,
-            };
-            yield* setState(current);
-            return current;
-          }
-
-          const next = stateFromRelease(release, checkedAt);
-          yield* setState(next);
-          return next;
-        }
-
-        const nextCache: UpdateReleaseCache = {
-          release: result.release,
-          ...(result.etag === undefined ? {} : { etag: result.etag }),
-          ...(cache?.skippedVersion === result.release.version
-            ? { skippedVersion: cache.skippedVersion }
-            : {}),
-        };
-        yield* saveCache(nextCache);
-
-        const next = stateFromRelease(result.release, checkedAt);
+        const next = stateFromRelease(release, checkedAt);
         yield* setState(next);
         return next;
-      }).pipe(
-        Effect.catch((error) =>
-          Effect.gen(function* () {
-            yield* logFailure(
-              "Failed to check for updates",
-              Cause.fail(error),
-              {
-                failure: "warning",
-              },
-            ).pipe(
-              Effect.annotateLogs({
-                component: "updates",
-                data: { currentVersion, force },
-              }),
-            );
-            const checkedAt = (yield* DateTime.nowAsDate).toISOString();
-            const next: UpdateCheckState = {
-              status: "error",
-              currentVersion,
-              checkedAt,
-              message: errorMessage(error, "Failed to check for updates."),
-            };
-            yield* setState(next);
-            return next;
-          }),
-        ),
-      );
+      }
 
-    const getState: DesktopUpdatesShape["getState"] = Ref.get(stateRef);
+      const nextCache: UpdateReleaseCache = {
+        release: result.release,
+        ...(result.etag === undefined ? {} : { etag: result.etag }),
+        ...(cache?.skippedVersion === result.release.version
+          ? { skippedVersion: cache.skippedVersion }
+          : {}),
+      };
+      yield* saveCache(nextCache);
 
-    const onStateChanged: DesktopUpdatesShape["onStateChanged"] =
-      stateChanges.subscribe;
-
-    const openReleasePage: DesktopUpdatesShape["openReleasePage"] = Ref.get(
-      stateRef,
-    ).pipe(
-      Effect.flatMap((state) =>
-        state.status === "available"
-          ? options.openExternal(state.release.htmlUrl)
-          : Effect.succeed(false),
+      const next = stateFromRelease(result.release, checkedAt);
+      yield* setState(next);
+      return next;
+    }).pipe(
+      Effect.catch((error) =>
+        Effect.gen(function* () {
+          yield* logFailure("Failed to check for updates", Cause.fail(error), {
+            failure: "warning",
+          }).pipe(
+            Effect.annotateLogs({
+              component: "updates",
+              data: { currentVersion, force },
+            }),
+          );
+          const checkedAt = (yield* DateTime.nowAsDate).toISOString();
+          const next: UpdateCheckState = {
+            status: "error",
+            currentVersion,
+            checkedAt,
+            message: errorMessage(error, "Failed to check for updates."),
+          };
+          yield* setState(next);
+          return next;
+        }),
       ),
     );
 
-    const shouldPromptForAvailableRelease: DesktopUpdatesShape["shouldPromptForAvailableRelease"] =
-      Effect.fn("DesktopUpdates.shouldPromptForAvailableRelease")(
-        function* (version) {
-          const cache = yield* loadCacheOnce;
-          return cache?.skippedVersion !== version;
-        },
-        Effect.orElseSucceed(() => true),
-      );
+  const getState: DesktopUpdatesShape["getState"] = Ref.get(stateRef);
 
-    const skipAvailableRelease: DesktopUpdatesShape["skipAvailableRelease"] =
-      Effect.fn("DesktopUpdates.skipAvailableRelease")(
-        function* (version) {
-          const state = yield* Ref.get(stateRef);
-          if (state.status !== "available" || state.latestVersion !== version) {
-            return false;
-          }
+  const onStateChanged: DesktopUpdatesShape["onStateChanged"] =
+    stateChanges.subscribe;
 
-          const cache = yield* loadCacheOnce;
-          yield* saveCache({
-            release: state.release,
-            ...(cache?.etag === undefined ? {} : { etag: cache.etag }),
-            skippedVersion: version,
-          });
-          return true;
-        },
-        Effect.orElseSucceed(() => false),
-      );
+  const openReleasePage: DesktopUpdatesShape["openReleasePage"] = Ref.get(
+    stateRef,
+  ).pipe(
+    Effect.flatMap((state) =>
+      state.status === "available"
+        ? options.openExternal(state.release.htmlUrl)
+        : Effect.succeed(false),
+    ),
+  );
 
-    const startCheck = (force: boolean): Fiber.Fiber<UpdateCheckState> => {
-      const fiber = runFork(runCheck(force));
-      inFlight = fiber;
-      fiber.addObserver(() => {
-        if (inFlight === fiber) {
-          inFlight = null;
+  const shouldPromptForAvailableRelease: DesktopUpdatesShape["shouldPromptForAvailableRelease"] =
+    Effect.fn("DesktopUpdates.shouldPromptForAvailableRelease")(
+      function* (version) {
+        const cache = yield* loadCacheOnce;
+        return cache?.skippedVersion !== version;
+      },
+      Effect.orElseSucceed(() => true),
+    );
+
+  const skipAvailableRelease: DesktopUpdatesShape["skipAvailableRelease"] =
+    Effect.fn("DesktopUpdates.skipAvailableRelease")(
+      function* (version) {
+        const state = yield* Ref.get(stateRef);
+        if (state.status !== "available" || state.latestVersion !== version) {
+          return false;
         }
-      });
-      return fiber;
-    };
 
-    const checkNow: DesktopUpdatesShape["checkNow"] = (checkOptions) =>
-      Effect.suspend(() =>
-        Fiber.join(inFlight ?? startCheck(checkOptions?.force === true)),
-      ).pipe(Effect.catchCauseIf(Cause.hasInterruptsOnly, () => getState));
+        const cache = yield* loadCacheOnce;
+        yield* saveCache({
+          release: state.release,
+          ...(cache?.etag === undefined ? {} : { etag: cache.etag }),
+          skippedVersion: version,
+        });
+        return true;
+      },
+      Effect.orElseSucceed(() => false),
+    );
 
-    return {
-      checkNow,
-      getState,
-      onStateChanged,
-      openReleasePage,
-      shouldPromptForAvailableRelease,
-      skipAvailableRelease,
-    };
-  });
+  const startCheck = (force: boolean): Fiber.Fiber<UpdateCheckState> => {
+    const fiber = runFork(runCheck(force));
+    inFlight = fiber;
+    fiber.addObserver(() => {
+      if (inFlight === fiber) {
+        inFlight = null;
+      }
+    });
+    return fiber;
+  };
+
+  const checkNow: DesktopUpdatesShape["checkNow"] = (checkOptions) =>
+    Effect.suspend(() =>
+      Fiber.join(inFlight ?? startCheck(checkOptions?.force === true)),
+    ).pipe(Effect.catchCauseIf(Cause.hasInterruptsOnly, () => getState));
+
+  return {
+    checkNow,
+    getState,
+    onStateChanged,
+    openReleasePage,
+    shouldPromptForAvailableRelease,
+    skipAvailableRelease,
+  };
+});
 
 export const layer = Layer.effect(
   DesktopUpdates,

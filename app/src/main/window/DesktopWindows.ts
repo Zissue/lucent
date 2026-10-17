@@ -529,8 +529,8 @@ const makeDesktopWindows = Effect.gen(function* () {
     );
   };
 
-  const revealRenderer: DesktopWindowsShape["revealRenderer"] = (id) =>
-    Effect.gen(function* () {
+  const revealRenderer: DesktopWindowsShape["revealRenderer"] =
+    Effect.fnUntraced(function* (id) {
       const record = getWindowRenderer(id);
       if (record === undefined) return false;
       if (isGameViewRecord(record)) {
@@ -698,10 +698,8 @@ const makeDesktopWindows = Effect.gen(function* () {
         .map((record) => record.rendererId),
     );
 
-  const markRendererReady: DesktopWindowsShape["markRendererReady"] = (
-    lifetime,
-  ) =>
-    Effect.gen(function* () {
+  const markRendererReady: DesktopWindowsShape["markRendererReady"] =
+    Effect.fnUntraced(function* (lifetime) {
       const { rendererId, generation } = lifetime;
       const readyEvent = yield* Effect.try({
         try: () => {
@@ -1416,11 +1414,8 @@ const makeDesktopWindows = Effect.gen(function* () {
       ),
     );
 
-  const closeGameView: DesktopWindowsShape["closeGameView"] = (
-    hostRendererId,
-    id,
-  ) =>
-    Effect.gen(function* () {
+  const closeGameView: DesktopWindowsShape["closeGameView"] = Effect.fnUntraced(
+    function* (hostRendererId, id) {
       const host = yield* requireGameHost(hostRendererId);
       const record = getGameViewRecord(id);
       if (
@@ -1433,13 +1428,11 @@ const makeDesktopWindows = Effect.gen(function* () {
         });
       }
       yield* closeScope(record.scope, Exit.void);
-    });
+    },
+  );
 
-  const updateGameViewHost: DesktopWindowsShape["updateGameViewHost"] = (
-    rendererId,
-    change,
-  ) =>
-    Effect.gen(function* () {
+  const updateGameViewHost: DesktopWindowsShape["updateGameViewHost"] =
+    Effect.fnUntraced(function* (rendererId, change) {
       const host = yield* requireGameHost(rendererId);
       if (
         change.type === "select" &&
@@ -1549,29 +1542,28 @@ const makeDesktopWindows = Effect.gen(function* () {
     });
 
   const withGameViewGroupControlsNativeDialog: DesktopWindowsShape["withGameViewGroupControlsNativeDialog"] =
-    (hostRendererId, use) =>
-      Effect.gen(function* () {
-        const host = yield* requireGameHost(hostRendererId);
-        host.groupControlsNativeDialogOpen = true;
+    Effect.fnUntraced(function* (hostRendererId, use) {
+      const host = yield* requireGameHost(hostRendererId);
+      host.groupControlsNativeDialogOpen = true;
 
-        return yield* use(host.window.id).pipe(
-          Effect.ensuring(
-            Effect.sync(() => {
-              host.groupControlsNativeDialogOpen = false;
-              if (
-                host.groupControlsOpen &&
-                isElectronWindowUsable(host.window) &&
-                !host.groupControlsView.webContents.isDestroyed()
-              ) {
-                host.window.contentView.addChildView(
-                  host.groupControlsView.native,
-                );
-                host.groupControlsView.webContents.focus();
-              }
-            }),
-          ),
-        );
-      });
+      return yield* use(host.window.id).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            host.groupControlsNativeDialogOpen = false;
+            if (
+              host.groupControlsOpen &&
+              isElectronWindowUsable(host.window) &&
+              !host.groupControlsView.webContents.isDestroyed()
+            ) {
+              host.window.contentView.addChildView(
+                host.groupControlsView.native,
+              );
+              host.groupControlsView.webContents.focus();
+            }
+          }),
+        ),
+      );
+    });
 
   const getGameViewPresentation: DesktopWindowsShape["getGameViewPresentation"] =
     (gameRendererId) =>
