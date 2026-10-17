@@ -154,6 +154,14 @@ describe("log records", () => {
     });
   });
 
+  it("tracks circular and repeated arrays for IPC", () => {
+    const array: unknown[] = [42];
+    array.push(array);
+    expect(desktopLogJsonSafe({ data: [array, array] })).toEqual({
+      data: [[42, "[Circular]"], "[Circular]"],
+    });
+  });
+
   it("retains back-references in objects returned by toJSON", () => {
     const error = new Error("x", { cause: "root" });
     error.stack = "error stack";

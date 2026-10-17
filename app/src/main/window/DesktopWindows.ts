@@ -279,17 +279,6 @@ const nativeWindowForRenderer = (
 ): ElectronNativeWindowHandle =>
   isGameViewRecord(record) ? record.hostWindow : record.window;
 
-const preventWindowClose = (event: unknown): void => {
-  if (
-    typeof event === "object" &&
-    event !== null &&
-    "preventDefault" in event &&
-    typeof event.preventDefault === "function"
-  ) {
-    event.preventDefault();
-  }
-};
-
 const standaloneGameViewPresentation = (
   window: ElectronWindowHandle,
 ): GameViewPresentation => ({
@@ -1838,7 +1827,7 @@ const makeDesktopWindows = Effect.gen(function* () {
             !appIsQuitting &&
             !window.isDestroyed()
           ) {
-            preventWindowClose(event);
+            event.preventDefault();
             window.hide();
             if (isTopLevelWindow) {
               record.hidden = true;

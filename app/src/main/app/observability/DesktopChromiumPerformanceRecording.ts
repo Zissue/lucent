@@ -11,6 +11,7 @@ import * as Scope from "effect/Scope";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
@@ -329,9 +330,6 @@ const createDirectory = (
 const sessionDirectoryName = (startedAt: string): string =>
   `lucent-chromium-recording-${chromiumRecordingTimestamp(startedAt)}-${process.pid}`;
 
-const isDefined = <Value>(value: Value | undefined): value is Value =>
-  value !== undefined;
-
 const makeDesktopChromiumPerformanceRecording = Effect.gen(function* () {
   const chromium = yield* ElectronChromiumPerformance;
   const electronApp = yield* ElectronApp;
@@ -537,7 +535,9 @@ const makeDesktopChromiumPerformanceRecording = Effect.gen(function* () {
     );
 
     if (activeRecording === current) {
-      current.rendererHeapSamples.push(...samples.filter(isDefined));
+      current.rendererHeapSamples.push(
+        ...samples.filter(Predicate.isNotUndefined),
+      );
     }
   });
 
@@ -854,7 +854,7 @@ const makeDesktopChromiumPerformanceRecording = Effect.gen(function* () {
       {
         concurrency: "unbounded",
       },
-    )).filter(isDefined);
+    )).filter(Predicate.isNotUndefined);
     const rendererSnapshots = yield* Effect.forEach(
       rendererMetadata,
       (metadata) => {

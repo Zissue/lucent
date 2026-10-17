@@ -1,4 +1,6 @@
 import { PositiveInt } from "@lucent/core";
+import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 
 export const LoaderGrabberLoadTypes = [
@@ -198,18 +200,13 @@ export const GrabbedDataSchema = Schema.Union([
   Schema.Array(GrabbedMonsterSchema),
 ]);
 
-const loadTypeSet = new Set<string>(LoaderGrabberLoadTypes);
-const grabTypeSet = new Set<string>(LoaderGrabberGrabTypes);
-
-export const isLoaderGrabberLoadType = (
+export const isLoaderGrabberLoadType: (
   value: unknown,
-): value is LoaderGrabberLoadType =>
-  typeof value === "string" && loadTypeSet.has(value);
+) => value is LoaderGrabberLoadType = Schema.is(LoaderGrabberLoadTypeSchema);
 
-export const isLoaderGrabberGrabType = (
+export const isLoaderGrabberGrabType: (
   value: unknown,
-): value is LoaderGrabberGrabType =>
-  typeof value === "string" && grabTypeSet.has(value);
+) => value is LoaderGrabberGrabType = Schema.is(LoaderGrabberGrabTypeSchema);
 
 export const loaderGrabberLoadRequiresId = (
   type: LoaderGrabberLoadType | null | undefined,
@@ -217,19 +214,13 @@ export const loaderGrabberLoadRequiresId = (
   type !== null && type !== undefined && type !== "armor-customizer";
 
 const recordFrom = (value: unknown): Record<string, unknown> =>
-  typeof value === "object" && value !== null
-    ? (value as Record<string, unknown>)
-    : {};
+  Predicate.isObjectOrArray(value) ? (value as Record<string, unknown>) : {};
 
-const positiveIntegerFrom = (value: unknown): number | null => {
-  const number =
-    typeof value === "string" && value.trim() !== ""
-      ? Number(value)
-      : typeof value === "number"
-        ? value
-        : Number.NaN;
-  return Number.isSafeInteger(number) && number > 0 ? number : null;
-};
+const decodePositiveInteger = Schema.decodeUnknownOption(
+  Schema.Union([Schema.Number, Schema.NumberFromString]).pipe(
+    Schema.decodeTo(PositiveInt),
+  ),
+);
 
 export const normalizeLoaderGrabberLoadRequest = (
   value: unknown,
@@ -244,7 +235,7 @@ export const normalizeLoaderGrabberLoadRequest = (
     return { type };
   }
 
-  const id = positiveIntegerFrom(input["id"]);
+  const id = Option.getOrNull(decodePositiveInteger(input["id"]));
   if (id === null) {
     throw new Error("Enter a positive integer ID.");
   }
