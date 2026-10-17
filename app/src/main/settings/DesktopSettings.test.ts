@@ -624,7 +624,7 @@ describe("saved settings recovery", () => {
         expect(
           JSON.parse(yield* Effect.promise(() => readFile(path, "utf8")))
             .version,
-        ).toBe(1);
+        ).toBe(DEFAULT_APP_SETTINGS.version);
       }),
   );
 
@@ -648,7 +648,7 @@ describe("saved settings recovery", () => {
         yield* Effect.promise(() => readFile(path, "utf8")),
       );
       expect(records).toEqual([]);
-      expect(persisted.version).toBe(1);
+      expect(persisted.version).toBe(DEFAULT_APP_SETTINGS.version);
       expect(persisted.appearance?.themes?.dark?.sansFontSize).not.toBe(99);
     }),
   );
