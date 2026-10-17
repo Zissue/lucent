@@ -63,6 +63,7 @@ import {
 import {
   desktopLogErrorDetails,
   desktopLogJsonSafe,
+  type DesktopLogError,
 } from "../shared/logRecord";
 import { createInvoke, createSubscribe } from "./preloadIpcClient";
 
@@ -130,9 +131,7 @@ const writeRendererLog = (record: RendererLogRecord): void => {
   } catch {}
 };
 
-const rendererErrorRepeatKey = (
-  error: ReturnType<typeof desktopLogErrorDetails>,
-): string => {
+const rendererErrorRepeatKey = (error: DesktopLogError): string => {
   const firstFrame = error.stack
     ?.split("\n")
     .map((line) => line.trim())
@@ -156,29 +155,32 @@ const logRenderer = (
   level: RendererLogRecord["level"],
   message: string,
   data: Record<string, unknown>,
-  error?: unknown,
+  error?: DesktopLogError,
   repeatKey?: string,
-): void => {
-  try {
-    const details =
-      error === undefined ? undefined : desktopLogErrorDetails(error);
-    writeRendererLog({
-      level,
-      message,
-      component: "renderer",
-      data,
-      ...(details === undefined
-        ? {}
-        : { error: [details], repeatKey: rendererErrorRepeatKey(details) }),
-      ...(repeatKey === undefined ? {} : { repeatKey }),
-    });
-  } catch {}
-};
+): void =>
+  writeRendererLog({
+    level,
+    message,
+    component: "renderer",
+    data,
+    ...(error === undefined
+      ? {}
+      : { error: [error], repeatKey: rendererErrorRepeatKey(error) }),
+    ...(repeatKey === undefined ? {} : { repeatKey }),
+  });
 
 const logAtLevel =
   (level: RendererLogRecord["level"]) =>
-  (message: string, error?: unknown): void =>
-    logRenderer(level, message, { view: bridgeView }, error);
+  (message: string, error?: unknown): void => {
+    try {
+      logRenderer(
+        level,
+        message,
+        { view: bridgeView },
+        error === undefined ? undefined : desktopLogErrorDetails(error),
+      );
+    } catch {}
+  };
 
 const logBridge: DesktopLogBridge = {
   error: logAtLevel("error"),
@@ -192,28 +194,77 @@ const invoke = createInvoke((channel, payload) =>
   ipcRenderer.invoke(channel, payload),
 );
 
-window.addEventListener("error", (event) => {
+interface RendererFailure {
+  readonly message: "Renderer error" | "Renderer unhandled rejection";
+  readonly reason:
+    | { readonly error: DesktopLogError }
+    | { readonly value: unknown };
+  readonly location?: {
+    readonly columnNumber?: number;
+    readonly lineNumber?: number;
+    readonly source?: string;
+  };
+}
+
+// Error events reach only listeners in the world that threw, so this also runs
+// in the page's world. Electron sends it there as source text, so it must not
+// reference anything outside its own body.
+const watchRendererFailures = (
+  report: (failure: RendererFailure) => void,
+): void => {
+  const reasonOf = (value: unknown): RendererFailure["reason"] =>
+    value instanceof Error
+      ? {
+          error: {
+            name: String(value.name),
+            message: String(value.message),
+            ...(typeof value.stack === "string" ? { stack: value.stack } : {}),
+          },
+        }
+      : { value };
+  window.addEventListener("error", (event) => {
+    try {
+      report({
+        message: "Renderer error",
+        reason: reasonOf(event.error ?? event.message),
+        location: {
+          ...(event.colno === 0 ? {} : { columnNumber: event.colno }),
+          ...(event.lineno === 0 ? {} : { lineNumber: event.lineno }),
+          ...(event.filename === "" ? {} : { source: event.filename }),
+        },
+      });
+    } catch {}
+  });
+  window.addEventListener("unhandledrejection", (event) => {
+    try {
+      report({
+        message: "Renderer unhandled rejection",
+        reason: reasonOf(event.reason),
+      });
+    } catch {}
+  });
+};
+
+const reportRendererFailure = (failure: RendererFailure): void =>
   logRenderer(
     "error",
-    "Renderer error",
+    failure.message,
     {
-      ...(event.colno === 0 ? {} : { columnNumber: event.colno }),
-      ...(event.lineno === 0 ? {} : { lineNumber: event.lineno }),
+      ...failure.location,
       observedAt: new Date().toISOString(),
-      ...(event.filename === "" ? {} : { source: event.filename }),
       view: bridgeView,
     },
-    event.error ?? event.message,
+    "error" in failure.reason
+      ? failure.reason.error
+      : desktopLogErrorDetails(failure.reason.value),
   );
+
+watchRendererFailures(reportRendererFailure);
+contextBridge.executeInMainWorld({
+  func: watchRendererFailures,
+  args: [reportRendererFailure],
 });
-window.addEventListener("unhandledrejection", (event) => {
-  logRenderer(
-    "error",
-    "Renderer unhandled rejection",
-    { observedAt: new Date().toISOString(), view: bridgeView },
-    event.reason === undefined ? "undefined" : event.reason,
-  );
-});
+
 const eventWrappers = new WeakMap<
   (rawPayload: unknown) => void,
   (event: IpcRendererEvent, rawPayload: unknown) => void

@@ -1,14 +1,32 @@
+import { runInThisContext } from "node:vm";
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DesktopBridge } from "../shared/desktopBridge";
 
 const electron = vi.hoisted(() => ({
   bridge: undefined as DesktopBridge | undefined,
   invoke: vi.fn(),
+  page: new EventTarget(),
   send: vi.fn(),
 }));
 
 vi.mock("electron", () => ({
   contextBridge: {
+    executeInMainWorld: ({
+      func,
+      args,
+    }: {
+      func: (...args: unknown[]) => unknown;
+      args: unknown[];
+    }) => {
+      const preloadWindow = window;
+      vi.stubGlobal("window", electron.page);
+      try {
+        return runInThisContext(`(${func.toString()})`)(...args);
+      } finally {
+        vi.stubGlobal("window", preloadWindow);
+      }
+    },
     exposeInMainWorld: (_name: string, bridge: DesktopBridge) => {
       electron.bridge = bridge;
     },
@@ -24,6 +42,7 @@ beforeEach(() => {
   electron.send.mockReset();
   electron.invoke.mockReset();
   electron.bridge = undefined;
+  electron.page = new EventTarget();
   events = new EventTarget();
   vi.stubGlobal("window", events);
   vi.stubGlobal("navigation", new EventTarget());
@@ -184,7 +203,7 @@ describe("preload log bridge", () => {
       const bridge = await loadBridge();
       const error = new Error("bad view");
       error.stack = "renderer stack";
-      events.dispatchEvent(
+      electron.page.dispatchEvent(
         Object.assign(new Event("error"), {
           error,
           message: "bad view",
@@ -193,7 +212,7 @@ describe("preload log bridge", () => {
           filename: "game.js",
         }),
       );
-      events.dispatchEvent(
+      electron.page.dispatchEvent(
         Object.assign(new Event("unhandledrejection"), {
           reason: "request failed",
         }),
@@ -320,7 +339,7 @@ describe("preload log bridge", () => {
     const typeError = new TypeError("bad view");
     typeError.stack = "TypeError: bad view\n    at mount (game.js:12:3)";
     for (const error of [mountError, updateError, typeError]) {
-      events.dispatchEvent(
+      electron.page.dispatchEvent(
         Object.assign(new Event("error"), {
           error,
           message: "bad view",
@@ -335,7 +354,7 @@ describe("preload log bridge", () => {
       "second request failed",
       undefined,
     ]) {
-      events.dispatchEvent(
+      electron.page.dispatchEvent(
         Object.assign(new Event("unhandledrejection"), { reason }),
       );
     }
@@ -406,6 +425,27 @@ describe("preload log bridge", () => {
         data: { observedAt: "2026-10-14T12:00:00.000Z", view: "game" },
         repeatKey: "NonError:undefined",
         error: [{ name: "NonError", message: "undefined" }],
+      },
+    ]);
+  });
+
+  it("reports rejections from the preload's own world", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-14T12:00:00.000Z"));
+    await loadBridge();
+    events.dispatchEvent(
+      Object.assign(new Event("unhandledrejection"), {
+        reason: "listener failed",
+      }),
+    );
+    expect(electron.send.mock.calls.map(([, record]) => record)).toEqual([
+      {
+        level: "error",
+        message: "Renderer unhandled rejection",
+        component: "renderer",
+        data: { observedAt: "2026-10-14T12:00:00.000Z", view: "game" },
+        repeatKey: "NonError:listener failed",
+        error: [{ name: "NonError", message: "listener failed" }],
       },
     ]);
   });
