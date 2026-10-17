@@ -129,6 +129,7 @@ describe("DesktopSettings", () => {
       );
 
       yield* settings.load;
+      yield* settings.updatePreferences({ useGameTabs: true });
       const before = yield* Effect.promise(() =>
         readFile(join(env.appDataDir, "settings.json"), "utf8"),
       );
@@ -587,7 +588,7 @@ describe("saved settings recovery", () => {
   );
 
   it.effect(
-    "loads missing and valid partial settings silently and keeps migration writes",
+    "loads missing and valid partial settings silently without writing",
     () =>
       Effect.gen(function* () {
         const { settings, path } = yield* makeRecoverySettings();
@@ -631,33 +632,48 @@ describe("saved settings recovery", () => {
         expect(
           JSON.parse(yield* Effect.promise(() => readFile(path, "utf8")))
             .version,
-        ).toBe(DEFAULT_APP_SETTINGS.version);
+        ).toBe(0);
       }),
   );
 
-  it.effect("migrates an older file without keeping its invalid entries", () =>
-    Effect.gen(function* () {
-      const { settings, path } = yield* makeRecoverySettings();
-      yield* Effect.promise(() =>
-        writeFile(
-          path,
-          JSON.stringify({
-            version: 0,
-            appearance: { themes: { dark: { sansFontSize: 99 } } },
-          }),
-        ),
-      );
-      const { records, logger } = captureLogs();
-      yield* settings.load.pipe(
-        Effect.provideService(Logger.CurrentLoggers, new Set([logger])),
-      );
-      const persisted = JSON.parse(
-        yield* Effect.promise(() => readFile(path, "utf8")),
-      );
-      expect(records).toEqual([]);
-      expect(persisted.version).toBe(DEFAULT_APP_SETTINGS.version);
-      expect(persisted.appearance?.themes?.dark?.sansFontSize).not.toBe(99);
-    }),
+  it.effect(
+    "migrates an older file in memory and reports invalid entries without rewriting",
+    () =>
+      Effect.gen(function* () {
+        const { settings, path } = yield* makeRecoverySettings();
+        yield* Effect.promise(() =>
+          writeFile(
+            path,
+            JSON.stringify({
+              version: 0,
+              appearance: { themes: { dark: { sansFontSize: 99 } } },
+              preferences: { useGameTabs: true },
+            }),
+          ),
+        );
+        const { records, logger } = captureLogs();
+        const loaded = yield* settings.load.pipe(
+          Effect.provideService(Logger.CurrentLoggers, new Set([logger])),
+        );
+        expect(loaded.preferences.useGameTabs).toBe(true);
+        const persisted = JSON.parse(
+          yield* Effect.promise(() => readFile(path, "utf8")),
+        );
+        expect(records).toEqual([
+          {
+            level: "Warn",
+            message: [
+              "Saved settings had invalid entries; ignoring them until the next save",
+            ],
+            annotations: {
+              component: "settings",
+              data: { path, reset: ["appearance.themes.dark.sansFontSize"] },
+            },
+          },
+        ]);
+        expect(persisted.version).toBe(0);
+        expect(persisted.appearance?.themes?.dark?.sansFontSize).toBe(99);
+      }),
   );
 });
 
@@ -785,4 +801,41 @@ it.effect("reloads settings silently before and after an update", () =>
     expect((yield* settings.load).appearance.themeMode).toBe("system");
     expect(themes).toEqual(["light"]);
   }),
+);
+
+it.effect(
+  "reads newer settings silently and writes the current version on update",
+  () =>
+    Effect.gen(function* () {
+      const { settings, path } = yield* makeRecoverySettings();
+      const source = JSON.stringify({
+        version: DEFAULT_APP_SETTINGS.version + 1,
+        preferences: { useGameTabs: true },
+        futureOnly: "retain",
+      });
+      yield* Effect.promise(() => writeFile(path, source));
+      const { records, logger } = captureLogs();
+      const loaded = yield* settings.load.pipe(
+        Effect.provideService(Logger.CurrentLoggers, new Set([logger])),
+      );
+      expect(loaded.preferences.useGameTabs).toBe(true);
+      expect(records).toEqual([]);
+      expect(yield* Effect.promise(() => readFile(path, "utf8"))).toBe(source);
+      expect(
+        (yield* settings.updatePreferences({ useGameTabs: false })).preferences
+          .useGameTabs,
+      ).toBe(false);
+      const saved = JSON.parse(
+        yield* Effect.promise(() => readFile(path, "utf8")),
+      );
+      expect({
+        version: saved.version,
+        useGameTabs: saved.preferences.useGameTabs,
+        futureOnly: saved.futureOnly,
+      }).toEqual({
+        version: DEFAULT_APP_SETTINGS.version,
+        useGameTabs: false,
+        futureOnly: undefined,
+      });
+    }),
 );

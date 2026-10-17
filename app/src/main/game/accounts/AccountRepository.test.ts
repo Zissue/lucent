@@ -259,7 +259,7 @@ describe("AccountRepository saved data", () => {
                   component: "accounts",
                   data: {
                     path: repository.path,
-                    reset: ["accounts", "groups"],
+                    ignored: { file: 1 },
                   },
                 },
               },
@@ -310,7 +310,6 @@ describe("AccountRepository saved data", () => {
           ),
         ).toEqual({
           accounts: [{ label: "Hero", username: "Hero", password: "secret" }],
-          groups: {},
         });
       }).pipe(Effect.provide(dependencies));
     }),

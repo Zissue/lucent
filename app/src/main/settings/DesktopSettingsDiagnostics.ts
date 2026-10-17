@@ -1,7 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 
 import * as Option from "effect/Option";
-import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 
 import { hexToRgb } from "@lucent/core/appearance";
@@ -9,12 +8,15 @@ import {
   isSettingsCommandId,
   normalizeHotkeyBindingValue,
 } from "@lucent/core/hotkeys";
-import { UnknownRecordSchema, type AppSettings } from "@lucent/core/settings";
+import {
+  DEFAULT_APP_SETTINGS,
+  normalizeAppSettings,
+  UnknownRecordSchema,
+  type AppSettings,
+} from "@lucent/core/settings";
 
 const decodeRecord = Schema.decodeUnknownOption(UnknownRecordSchema);
 
-export const isSettingsRecord = (value: unknown): boolean =>
-  Option.isSome(decodeRecord(value));
 const decodeSavedHotkeys = Schema.decodeUnknownOption(
   Schema.Struct({
     bindings: Schema.Array(
@@ -23,15 +25,7 @@ const decodeSavedHotkeys = Schema.decodeUnknownOption(
   }),
 );
 
-export const settingsResetFields = (
-  raw: unknown,
-  settings: AppSettings,
-): string[] => {
-  const savedVersion = Option.flatMap(decodeRecord(raw), (record) =>
-    Option.liftPredicate(record["version"], Predicate.isNumber),
-  );
-  if (Option.isSome(savedVersion) && savedVersion.value < settings.version)
-    return [];
+const settingsResetFields = (raw: unknown, settings: AppSettings): string[] => {
   const reset: string[] = [];
   const inspect = (value: unknown, normalized: unknown, path: string): void => {
     if (value === undefined) return;
@@ -103,4 +97,14 @@ export const settingsResetFields = (
   };
   inspect(raw, settings, "");
   return reset;
+};
+
+export const settingsVersions = {
+  current: DEFAULT_APP_SETTINGS.version,
+  migrations: {},
+};
+
+export const decodeSettings = (document: Readonly<Record<string, unknown>>) => {
+  const value = normalizeAppSettings(document);
+  return { value, issues: { reset: settingsResetFields(document, value) } };
 };

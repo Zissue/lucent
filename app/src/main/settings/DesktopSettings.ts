@@ -1,6 +1,5 @@
 import { join } from "node:path";
 
-import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -36,6 +35,7 @@ import { type Listener } from "../app/ListenerRegistry";
 import { FileSystem } from "effect/FileSystem";
 import type * as Scope from "effect/Scope";
 import { type JsonFileError, makeJsonFile } from "../filesystem/JsonFile";
+import { makeSavedDocument } from "../filesystem/SavedDocument";
 import * as SettingsDiagnostics from "./DesktopSettingsDiagnostics";
 
 const settingsOperationSchema = Schema.Literals([
@@ -236,74 +236,15 @@ const makeDesktopSettings = Effect.gen(function* () {
   const env = yield* DesktopEnvironment;
   const jsonFile = makeJsonFile(yield* FileSystem);
   const settingsPath = join(env.appDataDir, "settings.json");
-  const readSettingsFromFile = Effect.fnUntraced(function* ({
-    diagnostics,
-  }: {
-    readonly diagnostics: boolean;
-  }) {
-    const result = yield* jsonFile.read(settingsPath).pipe(
-      Effect.catch((error) =>
-        error.operation === "parse"
-          ? Effect.succeed({ status: "malformed" as const, error })
-          : Effect.fail(error),
-      ),
-      Effect.mapError(wrapDataError),
-    );
-    if (
-      result.status === "malformed" ||
-      (result.status === "ok" &&
-        !SettingsDiagnostics.isSettingsRecord(result.value))
-    ) {
-      if (diagnostics) {
-        yield* Effect.logWarning(
-          "Saved settings could not be read; using defaults until the next save",
-          ...(result.status === "malformed" ? [Cause.fail(result.error)] : []),
-        ).pipe(
-          Effect.annotateLogs({
-            component: "settings",
-            data: { path: settingsPath, ignored: { file: 1 } },
-          }),
-        );
-      }
-      return DEFAULT_APP_SETTINGS;
-    }
-    const settings =
-      result.status === "missing"
-        ? DEFAULT_APP_SETTINGS
-        : normalizeAppSettings(result.value);
-    if (result.status === "ok") {
-      const reset = SettingsDiagnostics.settingsResetFields(
-        result.value,
-        settings,
-      );
-      if (reset.length > 0) {
-        if (diagnostics) {
-          yield* Effect.logWarning(
-            "Saved settings had invalid entries; ignoring them until the next save",
-          ).pipe(
-            Effect.annotateLogs({
-              component: "settings",
-              data: { path: settingsPath, reset },
-            }),
-          );
-        }
-        return settings;
-      }
-    }
-    yield* jsonFile
-      .write(settingsPath, serializeAppSettings(settings))
-      .pipe(Effect.mapError(wrapDataError));
-    return settings;
+  const document = yield* makeSavedDocument(jsonFile, {
+    kind: "settings",
+    path: settingsPath,
+    versions: SettingsDiagnostics.settingsVersions,
+    defaults: () => DEFAULT_APP_SETTINGS,
+    decode: SettingsDiagnostics.decodeSettings,
+    encode: serializeAppSettings,
+    mapError: wrapDataError,
   });
-
-  const writeSettingsFile = (
-    settings: AppSettings,
-  ): Effect.Effect<AppSettings, DesktopSettingsError> => {
-    const normalized = normalizeAppSettings(settings);
-    return jsonFile
-      .write(settingsPath, serializeAppSettings(normalized))
-      .pipe(Effect.mapError(wrapDataError), Effect.as(normalized));
-  };
 
   const {
     get,
@@ -311,8 +252,8 @@ const makeDesktopSettings = Effect.gen(function* () {
     update,
     subscribe: onChanged,
   } = yield* makeCommittedState({
-    load: readSettingsFromFile,
-    write: writeSettingsFile,
+    load: document.load,
+    write: document.save,
     shouldPublishReload: () => false,
   });
 

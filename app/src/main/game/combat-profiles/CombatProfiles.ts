@@ -1,6 +1,5 @@
 import { join } from "node:path";
 
-import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -22,6 +21,8 @@ import { makeCommittedState } from "../../app/CommittedState";
 import { FileSystem } from "effect/FileSystem";
 import type * as Scope from "effect/Scope";
 import { type JsonFileError, makeJsonFile } from "../../filesystem/JsonFile";
+
+import { makeSavedDocument } from "../../filesystem/SavedDocument";
 
 const combatProfilesOperationSchema = Schema.Literals([
   "delete-profile",
@@ -100,7 +101,6 @@ type IgnoredCombatProfileData = Partial<
 const isSavedRecord = Schema.is(Schema.Record(Schema.String, Schema.Unknown));
 const isSavedArray = Schema.is(Schema.Array(Schema.Unknown));
 const isSavedString = Schema.is(Schema.String);
-const isSavedInteger = Schema.is(Schema.Int);
 
 const inspectCombatProfiles = (
   source: Record<string, unknown>,
@@ -151,9 +151,6 @@ const inspectCombatProfiles = (
       else inspect(entry, normalized);
     }
   };
-  const version = source["version"];
-  if (version !== undefined && (!isSavedInteger(version) || version < 0))
-    add("fields");
   const ids = new Set<string>();
   inspectEntries(
     source["profiles"],
@@ -294,92 +291,31 @@ const deleteProfileFromLibrary = (
     });
   });
 
+const decodeCombatProfiles = (document: Readonly<Record<string, unknown>>) => {
+  if (document["profiles"] !== undefined && !isSavedArray(document["profiles"]))
+    return undefined;
+  return {
+    value: normalizeCombatProfileLibrary(document),
+    issues: { ignored: inspectCombatProfiles(document) },
+  };
+};
+
 const makeCombatProfiles = Effect.gen(function* () {
   const env = yield* DesktopEnvironment;
   const jsonFile = makeJsonFile(yield* FileSystem);
   const path = join(env.appDataDir, "combat-profiles.json");
-  const readLibraryFromFile = Effect.fnUntraced(function* ({
-    diagnostics,
-  }: {
-    readonly diagnostics: boolean;
-  }) {
-    const unreadable = (error?: JsonFileError) =>
-      diagnostics
-        ? Effect.logWarning(
-            "Saved combat profiles could not be read; using defaults until the next save",
-            ...(error === undefined ? [] : [Cause.fail(error)]),
-          ).pipe(
-            Effect.annotateLogs({
-              component: "combat-profiles",
-              data: { path, ignored: { file: 1 } },
-            }),
-            Effect.map(defaultLibrary),
-          )
-        : Effect.succeed(defaultLibrary());
-    const result = yield* jsonFile.read(path).pipe(
-      Effect.catch((error) =>
-        error.operation === "parse"
-          ? Effect.succeed({ status: "invalid" as const, error })
-          : Effect.fail(error),
-      ),
-      Effect.mapError(wrapDataError),
-    );
-    if (result.status === "invalid") return yield* unreadable(result.error);
-    if (result.status === "missing") {
-      const defaults = defaultLibrary();
-      yield* jsonFile
-        .write(path, serializeCombatProfileLibrary(defaults))
-        .pipe(Effect.mapError(wrapDataError));
-      return defaults;
-    }
-
-    if (!isSavedRecord(result.value)) return yield* unreadable();
-    const library = yield* Effect.try({
-      try: () => normalizeCombatProfileLibrary(result.value),
-      catch: (cause) =>
-        new CombatProfilesError({
-          operation: "parse",
-          detail:
-            cause instanceof Error
-              ? cause.message
-              : "Invalid combat profile library.",
-          cause,
-        }),
-    });
-    if (
-      result.value["profiles"] !== undefined &&
-      !isSavedArray(result.value["profiles"])
-    ) {
-      return yield* unreadable();
-    }
-    const ignored = inspectCombatProfiles(result.value);
-    if (Object.keys(ignored).length > 0) {
-      if (diagnostics) {
-        yield* Effect.logWarning(
-          "Saved combat profiles had invalid entries; ignoring them until the next save",
-        ).pipe(
-          Effect.annotateLogs({
-            component: "combat-profiles",
-            data: { path, ignored },
-          }),
-        );
-      }
-      return library;
-    }
-    yield* jsonFile
-      .write(path, serializeCombatProfileLibrary(library))
-      .pipe(Effect.mapError(wrapDataError));
-    return library;
+  const document = yield* makeSavedDocument(jsonFile, {
+    kind: "combat-profiles",
+    path,
+    versions: {
+      current: DEFAULT_COMBAT_PROFILE_LIBRARY.version,
+      migrations: {},
+    },
+    defaults: defaultLibrary,
+    decode: decodeCombatProfiles,
+    encode: serializeCombatProfileLibrary,
+    mapError: wrapDataError,
   });
-
-  const writeLibraryFile = (
-    library: CombatProfileLibrary,
-  ): Effect.Effect<CombatProfileLibrary, CombatProfilesError> => {
-    const normalized = normalizeCombatProfileLibrary(library);
-    return jsonFile
-      .write(path, serializeCombatProfileLibrary(normalized))
-      .pipe(Effect.mapError(wrapDataError), Effect.as(normalized));
-  };
 
   const {
     get,
@@ -387,8 +323,8 @@ const makeCombatProfiles = Effect.gen(function* () {
     update,
     subscribe: onChanged,
   } = yield* makeCommittedState({
-    load: readLibraryFromFile,
-    write: writeLibraryFile,
+    load: document.load,
+    write: document.save,
   });
 
   const deleteProfile: CombatProfilesShape["deleteProfile"] = (profileId) =>

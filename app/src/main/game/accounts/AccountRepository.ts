@@ -1,7 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { join } from "node:path";
 
-import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -19,6 +18,7 @@ import {
 import { DesktopEnvironment } from "../../app/DesktopEnvironment";
 import { FileSystem } from "effect/FileSystem";
 import { type JsonFileError, makeJsonFile } from "../../filesystem/JsonFile";
+import { makeSavedDocument } from "../../filesystem/SavedDocument";
 import { AccountsError } from "./AccountsError";
 
 const ACCOUNT_MANAGER_STORAGE_FILE = "accounts.json";
@@ -54,110 +54,58 @@ export class AccountRepository extends Context.Service<
   AccountRepositoryShape
 >()("lucent/desktop/game/accounts/AccountRepository") {}
 
+const decodeAccountStorage = (raw: Readonly<Record<string, unknown>>) => {
+  const storage = normalizeAccountManagerStorage(raw);
+  const reset: string[] = [];
+  const accounts = isStoredArray(raw["accounts"]) ? raw["accounts"] : [];
+  const groups = isStoredDocument(raw["groups"]) ? raw["groups"] : {};
+  if (raw["accounts"] !== undefined && !isStoredArray(raw["accounts"]))
+    reset.push("accounts");
+  if (
+    (raw["groups"] !== undefined && !isStoredDocument(raw["groups"])) ||
+    Object.values(groups).some((members) => !isStoredArray(members))
+  )
+    reset.push("groups");
+  const ignored = {
+    accounts: accounts.length - storage.accounts.length,
+    groups: Object.keys(groups).length - Object.keys(storage.groups).length,
+    groupMembers:
+      Object.values(groups).reduce(
+        (count: number, members) =>
+          count + (isStoredArray(members) ? members.length : 0),
+        0,
+      ) -
+      Object.values(storage.groups).reduce(
+        (count, members) => count + members.length,
+        0,
+      ),
+  };
+  return {
+    value: storage,
+    issues: {
+      ...(Object.values(ignored).some((count) => count > 0) ? { ignored } : {}),
+      ...(reset.length > 0 ? { reset } : {}),
+    },
+  };
+};
+
 export const layer = Layer.effect(
   AccountRepository,
   Effect.gen(function* () {
     const env = yield* DesktopEnvironment;
     const jsonFile = makeJsonFile(yield* FileSystem);
     const path = join(env.appDataDir, ACCOUNT_MANAGER_STORAGE_FILE);
-    const readStorageFromFile = Effect.fnUntraced(function* ({
-      diagnostics,
-    }: {
-      readonly diagnostics: boolean;
-    }) {
-      const result = yield* jsonFile.read(path).pipe(
-        Effect.catch((error) =>
-          error.operation === "parse"
-            ? Effect.succeed({ status: "unreadable" as const, error })
-            : Effect.fail(error),
-        ),
-        Effect.mapError(wrapJsonError),
-      );
-      if (
-        result.status === "unreadable" ||
-        (result.status === "ok" && !isStoredDocument(result.value))
-      ) {
-        if (diagnostics) {
-          yield* Effect.logWarning(
-            "Saved accounts could not be read; using defaults until the next save",
-            ...(result.status === "unreadable"
-              ? [Cause.fail(result.error)]
-              : []),
-          ).pipe(
-            Effect.annotateLogs({
-              component: "accounts",
-              data: { path, reset: ["accounts", "groups"] },
-            }),
-          );
-        }
-        return emptyAccountManagerStorage();
-      }
-      const storage =
-        result.status === "missing"
-          ? emptyAccountManagerStorage()
-          : normalizeAccountManagerStorage(result.value);
-      if (result.status === "ok" && isStoredDocument(result.value)) {
-        const raw = result.value;
-        const reset: string[] = [];
-        const accounts = isStoredArray(raw["accounts"]) ? raw["accounts"] : [];
-        const groups = isStoredDocument(raw["groups"]) ? raw["groups"] : {};
-        if (raw["accounts"] !== undefined && !isStoredArray(raw["accounts"]))
-          reset.push("accounts");
-        if (
-          (raw["groups"] !== undefined && !isStoredDocument(raw["groups"])) ||
-          Object.values(groups).some((members) => !isStoredArray(members))
-        )
-          reset.push("groups");
-        const ignored = {
-          accounts: accounts.length - storage.accounts.length,
-          groups:
-            Object.keys(groups).length - Object.keys(storage.groups).length,
-          groupMembers:
-            Object.values(groups).reduce(
-              (count: number, members) =>
-                count + (isStoredArray(members) ? members.length : 0),
-              0,
-            ) -
-            Object.values(storage.groups).reduce(
-              (count, members) => count + members.length,
-              0,
-            ),
-        };
-        if (
-          reset.length > 0 ||
-          Object.values(ignored).some((count) => count > 0)
-        ) {
-          if (diagnostics) {
-            yield* Effect.logWarning(
-              "Saved accounts had invalid entries; ignoring them until the next save",
-            ).pipe(
-              Effect.annotateLogs({
-                component: "accounts",
-                data: {
-                  path,
-                  ...(Object.values(ignored).some((count) => count > 0)
-                    ? { ignored }
-                    : {}),
-                  ...(reset.length > 0 ? { reset } : {}),
-                },
-              }),
-            );
-          }
-          return storage;
-        }
-      }
-      yield* jsonFile
-        .write(path, serializeAccountManagerStorage(storage))
-        .pipe(Effect.mapError(wrapJsonError));
-      return storage;
+    const document = yield* makeSavedDocument(jsonFile, {
+      kind: "accounts",
+      path,
+      defaults: emptyAccountManagerStorage,
+      decode: decodeAccountStorage,
+      encode: serializeAccountManagerStorage,
+      mapError: wrapJsonError,
     });
-
     const state = yield* makeCommittedState({
-      load: readStorageFromFile,
-      write: (storage: AccountManagerStorage) =>
-        jsonFile
-          .write(path, storage)
-          .pipe(Effect.mapError(wrapJsonError), Effect.as(storage)),
+      load: document.load,
+      write: document.save,
       equivalent: isDeepStrictEqual,
       shouldPublishReload: (previous, next) =>
         previous !== null && !isDeepStrictEqual(previous, next),

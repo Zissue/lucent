@@ -1,11 +1,9 @@
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
-import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
@@ -17,6 +15,7 @@ import {
 import { DesktopEnvironment } from "../app/DesktopEnvironment";
 import { FileSystem } from "effect/FileSystem";
 import { type JsonFileError, makeJsonFile } from "../filesystem/JsonFile";
+import { makeSavedDocument } from "../filesystem/SavedDocument";
 
 const inputRepositoryOperationSchema = Schema.Literals(["read", "write"]);
 
@@ -51,29 +50,7 @@ export class ScriptInputRepository extends Context.Service<
 const UnknownRecordSchema = Schema.Record(Schema.String, Schema.Unknown);
 type UnknownRecord = typeof UnknownRecordSchema.Type;
 type Store = Record<string, UnknownRecord>;
-const decodeUnknownRecord = Schema.decodeUnknownOption(UnknownRecordSchema);
-
-const decodeStore = (
-  value: unknown,
-): { readonly store: Store; readonly ignoredScripts: number } | null => {
-  const decodedStore = decodeUnknownRecord(value);
-  if (Option.isNone(decodedStore)) {
-    return null;
-  }
-
-  const store: Store = {};
-  let ignoredScripts = 0;
-  for (const [key, entry] of Object.entries(decodedStore.value)) {
-    const decodedEntry = decodeUnknownRecord(entry);
-    if (Option.isSome(decodedEntry)) {
-      store[key] = decodedEntry.value;
-    } else {
-      ignoredScripts += 1;
-    }
-  }
-  return { store, ignoredScripts };
-};
-
+const isStoredInput = Schema.is(UnknownRecordSchema);
 const ignoredInputFields = (
   definition: ScriptInputsDefinition,
   raw: UnknownRecord,
@@ -95,12 +72,21 @@ const ignoredInputFields = (
   }).length;
 };
 
-const wrapJsonError = (
-  operation: "read" | "write",
-  error: JsonFileError,
-): ScriptInputRepositoryError =>
+const decodeStore =
+  (definition: ScriptInputsDefinition) => (document: UnknownRecord) => {
+    const store: Store = {};
+    let scripts = 0;
+    for (const [key, entry] of Object.entries(document)) {
+      if (isStoredInput(entry)) store[key] = entry;
+      else scripts++;
+    }
+    const fields = ignoredInputFields(definition, store[definition.id] ?? {});
+    return { value: store, issues: { ignored: { scripts, fields } } };
+  };
+
+const wrapJsonError = (error: JsonFileError): ScriptInputRepositoryError =>
   new ScriptInputRepositoryError({
-    operation,
+    operation: error.operation === "read" ? "read" : "write",
     detail: error.message,
     cause: error,
   });
@@ -113,75 +99,23 @@ export const layer = Layer.effect(
     const path = join(env.appDataDir, "script-inputs.json");
     const writes = yield* Semaphore.make(1);
 
-    const readStore = Effect.fnUntraced(function* (
-      definition?: ScriptInputsDefinition,
+    const documentFor = (definition: ScriptInputsDefinition) =>
+      makeSavedDocument(jsonFile, {
+        kind: "script-inputs",
+        path,
+        defaults: (): Store => ({}),
+        decode: decodeStore(definition),
+        encode: (value) => value,
+        mapError: wrapJsonError,
+      });
+
+    const getValues = Effect.fn("ScriptInputRepository.getValues")(function* (
+      definition: ScriptInputsDefinition,
     ) {
-      const result = yield* jsonFile.read(path).pipe(
-        Effect.catch((error) =>
-          error.operation === "parse"
-            ? Effect.succeed({ status: "malformed" as const, error })
-            : Effect.fail(error),
-        ),
-        Effect.mapError((error) => wrapJsonError("read", error)),
-      );
-      if (result.status === "missing") return {};
-      const decoded = result.status === "ok" ? decodeStore(result.value) : null;
-      if (decoded === null) {
-        if (definition !== undefined) {
-          yield* Effect.logWarning(
-            "Saved script inputs could not be read; using defaults until the next save",
-            ...(result.status === "malformed"
-              ? [Cause.fail(result.error)]
-              : []),
-          ).pipe(
-            Effect.annotateLogs({
-              component: "script-inputs",
-              data: { path, ignored: { file: 1 } },
-            }),
-          );
-        }
-        return {};
-      }
-      const fields =
-        definition === undefined
-          ? 0
-          : ignoredInputFields(definition, decoded.store[definition.id] ?? {});
-      if (
-        definition !== undefined &&
-        (decoded.ignoredScripts > 0 || fields > 0)
-      ) {
-        yield* Effect.logWarning(
-          "Saved script inputs had invalid entries; ignoring them until the next save",
-        ).pipe(
-          Effect.annotateLogs({
-            component: "script-inputs",
-            data: {
-              path,
-              ignored: { scripts: decoded.ignoredScripts, fields },
-            },
-          }),
-        );
-      }
-      return decoded.store;
+      const document = yield* documentFor(definition);
+      const store = yield* document.load({ diagnostics: true });
+      return normalizeScriptInputValues(definition, store[definition.id] ?? {});
     });
-
-    const writeStore = (
-      store: Store,
-    ): Effect.Effect<void, ScriptInputRepositoryError> =>
-      jsonFile
-        .write(path, store)
-        .pipe(
-          Effect.mapError((error: JsonFileError) =>
-            wrapJsonError("write", error),
-          ),
-        );
-
-    const getValues = (definition: ScriptInputsDefinition) =>
-      readStore(definition).pipe(
-        Effect.map((store) =>
-          normalizeScriptInputValues(definition, store[definition.id] ?? {}),
-        ),
-      );
 
     const saveValues = (
       definition: ScriptInputsDefinition,
@@ -190,8 +124,9 @@ export const layer = Layer.effect(
       writes.withPermits(1)(
         Effect.gen(function* () {
           const normalized = normalizeScriptInputValues(definition, values);
-          const store = yield* readStore();
-          yield* writeStore({
+          const document = yield* documentFor(definition);
+          const store = yield* document.load({ diagnostics: false });
+          yield* document.save({
             ...store,
             [definition.id]: normalized,
           });

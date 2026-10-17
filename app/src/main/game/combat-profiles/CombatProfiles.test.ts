@@ -366,7 +366,7 @@ describe("CombatProfiles", () => {
       expect(migrated.records).toEqual([]);
       expect(
         JSON.parse(yield* Effect.promise(() => readFile(path, "utf8"))),
-      ).toEqual(migrated.value);
+      ).toEqual({ profiles: [{ id: "legacy", steps: [{ skill: 2 }] }] });
     }),
   );
   it.effect("deletes saved profiles from the library", () =>
@@ -456,59 +456,87 @@ describe("CombatProfiles", () => {
       }),
   );
 
-  it.effect("does not overwrite files with unsupported future versions", () =>
+  it.effect(
+    "loads and saves newer combat profiles at the supported version",
+    () =>
+      Effect.gen(function* () {
+        const { combatProfiles, path } = yield* makeHarness();
+        const source =
+          '{"version":2,"profiles":[{"id":"future","label":"Future","steps":[{"skill":2}]}],"futureOnly":"retain"}';
+        yield* Effect.promise(() => writeFile(path, source));
+        const { value: loaded, records } = yield* captureLogs(
+          combatProfiles.load,
+        );
+        expect(loaded.profiles[1]).toEqual({
+          id: "future",
+          label: "Future",
+          delayMs: 150,
+          cooldownMode: "use-if-ready",
+          steps: [{ skill: 2, conditions: [] }],
+        });
+        expect(records).toEqual([]);
+        expect(yield* Effect.promise(() => readFile(path, "utf8"))).toBe(
+          source,
+        );
+        const saved = yield* combatProfiles.saveProfile(testProfile);
+        expect(saved.profiles.map((profile) => profile.id)).toEqual([
+          "generic-base",
+          "future",
+          "archpaladin-farm",
+        ]);
+        const persisted = JSON.parse(
+          yield* Effect.promise(() => readFile(path, "utf8")),
+        );
+        expect({
+          version: persisted.version,
+          ids: persisted.profiles.map((profile: { id: string }) => profile.id),
+          futureOnly: persisted.futureOnly,
+        }).toEqual({
+          version: 1,
+          ids: ["generic-base", "future", "archpaladin-farm"],
+          futureOnly: undefined,
+        });
+      }),
+  );
+
+  it.effect("warns about undecodable future profiles and permits saves", () =>
     Effect.gen(function* () {
       const { combatProfiles, path } = yield* makeHarness();
-      const original = `${JSON.stringify(
-        {
-          version: COMBAT_PROFILE_LIBRARY_VERSION + 1,
-          profiles: [testProfile],
-        },
-        null,
-        2,
-      )}\n`;
-      yield* Effect.promise(() => writeFile(path, original, "utf8"));
-
-      const error = yield* Effect.flip(combatProfiles.load);
-      const saved = yield* Effect.promise(() => readFile(path, "utf8"));
-
-      expect(error.operation).toBe("parse");
-      expect(saved).toBe(original);
+      const source = '{"version":2,"profiles":42}\n';
+      yield* Effect.promise(() => writeFile(path, source));
+      expect(yield* captureLogs(combatProfiles.load)).toEqual({
+        value: { version: 1, profiles: [genericProfile] },
+        records: [
+          {
+            level: "Warn",
+            message: [
+              "Saved combat profiles could not be read; using defaults until the next save",
+            ],
+            annotations: {
+              component: "combat-profiles",
+              data: { path, ignored: { file: 1 } },
+            },
+          },
+        ],
+      });
+      expect(yield* Effect.promise(() => readFile(path, "utf8"))).toBe(source);
+      const saved = yield* combatProfiles.saveProfile(testProfile);
+      expect(saved.profiles.map((profile) => profile.id)).toEqual([
+        "generic-base",
+        "archpaladin-farm",
+      ]);
+      const persisted = JSON.parse(
+        yield* Effect.promise(() => readFile(path, "utf8")),
+      );
+      expect({
+        version: persisted.version,
+        ids: persisted.profiles.map((profile: { id: string }) => profile.id),
+      }).toEqual({ version: 1, ids: ["generic-base", "archpaladin-farm"] });
     }),
   );
 
   it.effect(
-    "rejects future versions before recovering invalid profile shapes",
-    () =>
-      Effect.gen(function* () {
-        const { combatProfiles, path } = yield* makeHarness();
-        const original = '{"version":2,"profiles":42}\n';
-        yield* Effect.promise(() => writeFile(path, original, "utf8"));
-
-        const { value: error, records } = yield* captureLogs(
-          Effect.flip(combatProfiles.load),
-        );
-        const saveError = yield* Effect.flip(
-          combatProfiles.saveProfile(testProfile),
-        );
-
-        expect(error.operation).toBe("parse");
-        expect(error.detail).toBe(
-          "Unsupported combat profile library version 2",
-        );
-        expect(saveError.operation).toBe("parse");
-        expect(saveError.detail).toBe(
-          "Unsupported combat profile library version 2",
-        );
-        expect(records).toEqual([]);
-        expect(yield* Effect.promise(() => readFile(path, "utf8"))).toBe(
-          original,
-        );
-      }),
-  );
-
-  it.effect(
-    "publishes a successful retry after an invalid file is repaired",
+    "publishes reads before and after a future file is replaced with a supported file",
     () =>
       Effect.gen(function* () {
         const { combatProfiles, path } = yield* makeHarness();
@@ -527,7 +555,7 @@ describe("CombatProfiles", () => {
           ),
         );
 
-        yield* Effect.flip(combatProfiles.load);
+        const newer = yield* combatProfiles.load;
         yield* Effect.promise(() =>
           writeFile(
             path,
@@ -539,9 +567,18 @@ describe("CombatProfiles", () => {
           ),
         );
 
-        const loaded = yield* combatProfiles.load;
+        const supported = yield* combatProfiles.load;
 
-        expect(changes).toEqual([loaded]);
+        for (const library of [newer, supported]) {
+          expect(library).toMatchObject({
+            version: 1,
+            profiles: [
+              { id: "generic-base", label: "Generic" },
+              { id: "archpaladin-farm", label: "Farm Rotation" },
+            ],
+          });
+        }
+        expect(changes).toEqual([newer, supported]);
       }),
   );
 
@@ -568,6 +605,7 @@ describe("CombatProfiles", () => {
             ),
         }));
         const initial = yield* combatProfiles.load;
+        yield* Effect.promise(() => writeFile(path, JSON.stringify(initial)));
         const changes: CombatProfileLibrary[] = [];
         yield* combatProfiles.onChanged((library) => {
           changes.push(library);
