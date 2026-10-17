@@ -9,7 +9,6 @@ import { afterEach, beforeEach, describe, expect, it } from "@effect/vitest";
 import { vi } from "vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
-import { listen } from "../electron/NativeListener";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -19,6 +18,7 @@ import type * as Scope from "effect/Scope";
 import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
 
 import { normalizeAppSettings, type AppSettings } from "@lucent/core/settings";
+import { listen } from "../electron/NativeListener";
 import {
   desktopLogRecord,
   type DesktopLogRecord,

@@ -115,6 +115,7 @@ export const layer = Layer.effect(
           runFork(app.quit);
         },
       }));
+      // Use `on` so a repeated signal cannot reach Node's default handler during cleanup.
       for (const { signal, listener } of signalListeners) {
         yield* listen(process, signal, listener);
       }
