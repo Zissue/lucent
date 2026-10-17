@@ -8,8 +8,8 @@ import {
 } from "../../../shared/gameViews";
 import { GameViewsIpc } from "../../../shared/ipc";
 import { ElectronDialog } from "../../electron/ElectronDialog";
-import { Accounts } from "../../internal/accounts/Accounts";
-import { AccountSessions } from "../../internal/accounts/AccountSessions";
+import { Accounts } from "../../game/accounts/Accounts";
+import { AccountSessions } from "../../game/accounts/AccountSessions";
 import { DesktopScriptLibrary } from "../../scripting/DesktopScriptLibrary";
 import { parseGameViewTabId } from "../../window/DesktopGameHost";
 import {

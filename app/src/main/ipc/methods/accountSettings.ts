@@ -1,7 +1,7 @@
 import * as Effect from "effect/Effect";
 
 import { AccountSettingsIpc } from "../../../shared/ipc";
-import { AccountSettingsRepository } from "../../internal/account-settings/AccountSettingsRepository";
+import { AccountSettingsRepository } from "../../game/account-settings/AccountSettingsRepository";
 import { makeDesktopIpcMethod } from "../DesktopIpc";
 
 const gameSenders = ["game"] as const;

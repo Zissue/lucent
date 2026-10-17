@@ -19,7 +19,7 @@ import { DesktopWindows } from "../../window/DesktopWindows";
 import {
   GameRendererRpc,
   type GameRendererRpcClient,
-} from "../game-renderer/GameRendererRpc";
+} from "../rpc/GameRendererRpc";
 
 export const FOLLOWER_COMMAND_TIMEOUT_MS = 5_000;
 

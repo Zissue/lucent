@@ -12,12 +12,12 @@ import { TestClock } from "effect/testing";
 import { FollowerIpc } from "../../../shared/ipc/follower";
 import { DesktopIpc } from "../../ipc/DesktopIpc";
 import { DesktopWindows } from "../../window/DesktopWindows";
-import { GameRendererRpc } from "../game-renderer/GameRendererRpc";
+import { GameRendererRpc } from "../rpc/GameRendererRpc";
 import {
   makeTestGameRenderer,
   TEST_GAME_RENDERER_ID,
   type GameRendererRpcHandlerMap,
-} from "../game-renderer/GameRendererRpcTesting";
+} from "../rpc/GameRendererRpcTesting";
 import { GameFollowerRequestError, makeGameFollowers } from "./GameFollowers";
 
 const idleIpc = DesktopIpc.of({

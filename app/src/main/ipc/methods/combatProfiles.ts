@@ -1,7 +1,7 @@
 import * as Effect from "effect/Effect";
 
 import { CombatProfilesIpc } from "../../../shared/ipc";
-import { CombatProfiles } from "../../internal/combat-profiles/CombatProfiles";
+import { CombatProfiles } from "../../game/combat-profiles/CombatProfiles";
 import { DesktopIpc, makeDesktopIpcMethod } from "../DesktopIpc";
 
 const combatProfileReaders = ["combat-profiles", "follower", "game"] as const;

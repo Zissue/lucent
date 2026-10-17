@@ -28,7 +28,7 @@ import {
   type AccountServerData,
 } from "./AccountServerPing";
 import { AccountsError, accountError } from "./AccountsError";
-import { getGameRequestHeaders } from "../GameRequestHeaders";
+import { getGameRequestHeaders } from "../session/GameRequestHeaders";
 
 const SERVERS_API_URL = "https://game.aq.com/game/api/data/servers";
 const SERVERS_CACHE_TTL_MS = 5 * 60 * 1_000;

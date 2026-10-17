@@ -6,7 +6,7 @@ import { app } from "electron";
 import appBranding from "../../../appBranding.json";
 import { parseCliOptions, type CliOptions } from "../cli";
 import { type DesktopEnvironmentConfig } from "./DesktopEnvironment";
-import { registerRuffleAssetScheme } from "../ruffle/RuffleAssets";
+import { registerRuffleAssetScheme } from "../game/session/RuffleAssets";
 
 export interface MainProcessBootstrap {
   readonly cliOptions: CliOptions;

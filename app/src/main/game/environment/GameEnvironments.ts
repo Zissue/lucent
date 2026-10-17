@@ -8,7 +8,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import type { EnvironmentBoostDiscovery } from "../../../shared/environmentBoosts";
-import { GameRendererRpc } from "../game-renderer/GameRendererRpc";
+import { GameRendererRpc } from "../rpc/GameRendererRpc";
 import { DesktopWindows } from "../../window/DesktopWindows";
 
 export const ENVIRONMENT_BOOST_FETCH_TIMEOUT_MS = 12_000;

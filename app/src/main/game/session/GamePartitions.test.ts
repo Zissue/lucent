@@ -11,7 +11,7 @@ import {
   managedGamePartition,
   listPersistentGamePartitions,
   retireManagedGamePartitionProfile,
-} from "./ElectronGamePartitions";
+} from "./GamePartitions";
 
 const tempDirs = new Set<string>();
 

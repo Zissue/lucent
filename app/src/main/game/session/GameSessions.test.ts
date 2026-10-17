@@ -1,12 +1,12 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
-import { clearSessionData } from "./ElectronSession";
+import { clearSessionData } from "./GameSessions";
 
 import {
   defaultGamePartition,
   makeGamePartitionRegistry,
   managedGamePartition,
-} from "./ElectronGamePartitions";
+} from "./GamePartitions";
 
 describe("clearing session data", () => {
   it.effect("clears each distinct session once", () =>

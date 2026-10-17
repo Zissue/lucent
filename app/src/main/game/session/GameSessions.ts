@@ -8,13 +8,13 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 
-import { DesktopEnvironment } from "../app/DesktopEnvironment";
-import { allowArtixCors, handleRuffleAssets } from "../ruffle/RuffleAssets";
+import { DesktopEnvironment } from "../../app/DesktopEnvironment";
+import { allowArtixCors, handleRuffleAssets } from "./RuffleAssets";
 import {
   applyLauncherHeaders,
   getGameRequestHeaders,
   getGameUserAgent,
-} from "../internal/GameRequestHeaders";
+} from "./GameRequestHeaders";
 import {
   activateManagedGamePartitionProfile,
   cleanupStaleGamePartitionProfiles,
@@ -23,7 +23,7 @@ import {
   managedGamePartition,
   listPersistentGamePartitions,
   retireManagedGamePartitionProfile,
-} from "./ElectronGamePartitions";
+} from "./GamePartitions";
 
 export class ElectronGamePartitionError extends Schema.TaggedError<ElectronGamePartitionError>()(
   "ElectronGamePartitionError",

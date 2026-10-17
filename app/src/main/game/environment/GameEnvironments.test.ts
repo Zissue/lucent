@@ -5,12 +5,12 @@ import { TestClock } from "effect/testing";
 
 import type { EnvironmentBoostDiscovery } from "../../../shared/environmentBoosts";
 import { DesktopWindows } from "../../window/DesktopWindows";
-import { GameRendererRpc } from "../game-renderer/GameRendererRpc";
+import { GameRendererRpc } from "../rpc/GameRendererRpc";
 import {
   makeTestGameRenderer,
   TEST_GAME_RENDERER_ID,
   type GameRendererRpcHandlerMap,
-} from "../game-renderer/GameRendererRpcTesting";
+} from "../rpc/GameRendererRpcTesting";
 import { makeGameEnvironments } from "./GameEnvironments";
 
 const emptyDiscovery: EnvironmentBoostDiscovery = {

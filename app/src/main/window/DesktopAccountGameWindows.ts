@@ -2,11 +2,11 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import type { AccountLaunchWindowTarget } from "@lucent/core/accounts";
-import { ElectronSession } from "../electron/ElectronSession";
+import { ElectronSession } from "../game/session/GameSessions";
 import {
   AccountGameWindows,
   type AccountGameWindowEvent,
-} from "../internal/accounts/AccountGameWindows";
+} from "../game/accounts/AccountGameWindows";
 import {
   type DesktopGameHostTarget,
   DesktopWindows,

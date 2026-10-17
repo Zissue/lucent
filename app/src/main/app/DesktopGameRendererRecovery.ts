@@ -15,7 +15,7 @@ import * as Fiber from "effect/Fiber";
 import * as FiberSet from "effect/FiberSet";
 import * as Scope from "effect/Scope";
 
-import { Accounts } from "../internal/accounts/Accounts";
+import { Accounts } from "../game/accounts/Accounts";
 import { ElectronDialog } from "../electron/ElectronDialog";
 import {
   DesktopWindows,

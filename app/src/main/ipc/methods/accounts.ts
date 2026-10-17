@@ -1,7 +1,7 @@
 import * as Effect from "effect/Effect";
 
 import { AccountsIpc } from "../../../shared/ipc";
-import { Accounts } from "../../internal/accounts/Accounts";
+import { Accounts } from "../../game/accounts/Accounts";
 import { DesktopWindows } from "../../window/DesktopWindows";
 import { DesktopIpc, makeDesktopIpcMethod } from "../DesktopIpc";
 

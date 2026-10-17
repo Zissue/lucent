@@ -20,7 +20,7 @@ import {
 import { DesktopWindowKindSchema } from "../../shared/ipc/windows";
 import { layer as desktopEnvironmentLayer } from "../app/DesktopEnvironment";
 import { ElectronApp } from "../electron/ElectronApp";
-import { ElectronSession } from "../electron/ElectronSession";
+import { ElectronSession } from "../game/session/GameSessions";
 import { ElectronShell } from "../electron/ElectronShell";
 import { ElectronTheme } from "../electron/ElectronTheme";
 import {
@@ -29,7 +29,7 @@ import {
   type ElectronGameViewHandle,
   type ElectronWindowHandle,
 } from "../electron/ElectronWindow";
-import { RuffleSocketProxy } from "../ruffle/RuffleSocketProxy";
+import { RuffleSocketProxy } from "../game/session/RuffleSocketProxy";
 import { makeDesktopIpcSenders } from "../ipc/DesktopIpcSenders";
 import { DesktopSettings } from "../settings/DesktopSettings";
 import {

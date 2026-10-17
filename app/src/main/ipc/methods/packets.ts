@@ -11,8 +11,8 @@ import { normalizePacketQueuePayload } from "../../../shared/packets";
 import {
   GameRendererRpc,
   type GameRendererRpcClient,
-} from "../../internal/game-renderer/GameRendererRpc";
-import { GamePackets } from "../../internal/packets/GamePackets";
+} from "../../game/rpc/GameRendererRpc";
+import { GamePackets } from "../../game/packets/GamePackets";
 import { DesktopWindows } from "../../window/DesktopWindows";
 import { DesktopIpc, makeDesktopIpcMethod } from "../DesktopIpc";
 import {

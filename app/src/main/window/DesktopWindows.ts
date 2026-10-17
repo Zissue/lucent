@@ -32,7 +32,7 @@ import { makeListenerRegistry } from "../app/ListenerRegistry";
 import { DesktopEnvironment } from "../app/DesktopEnvironment";
 import { logFailure } from "../../shared/logFailure";
 import { ElectronApp } from "../electron/ElectronApp";
-import { ElectronSession } from "../electron/ElectronSession";
+import { ElectronSession } from "../game/session/GameSessions";
 import { ElectronShell } from "../electron/ElectronShell";
 import { ElectronTheme } from "../electron/ElectronTheme";
 import {
@@ -42,7 +42,7 @@ import {
   type ElectronWindowHandle,
   type ElectronNativeWindowHandle,
 } from "../electron/ElectronWindow";
-import { RuffleSocketProxy } from "../ruffle/RuffleSocketProxy";
+import { RuffleSocketProxy } from "../game/session/RuffleSocketProxy";
 import { DesktopSettings } from "../settings/DesktopSettings";
 import {
   getDesktopWindowDefinition,
