@@ -1,7 +1,10 @@
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 
 import {
   GitHubApiClient,
@@ -126,24 +129,35 @@ export class GitHubScriptPackageClient extends Context.Service<
 >()("lucent/desktop/scripting/GitHubScriptPackageClient") {}
 
 export class GitHubRequestQueue {
-  #pending = 0;
-  #tail: Promise<void> = Promise.resolve();
+  readonly #requests = new Set<Deferred.Deferred<void>>();
 
   constructor(private readonly limit: number = QUEUE_LIMIT) {}
 
-  enqueue<Value>(task: () => Promise<Value>): Promise<Value> {
-    if (this.#pending >= this.limit) {
-      return Promise.reject(new Error("GitHub request queue is full."));
-    }
-    this.#pending += 1;
-    const result = this.#tail.then(task, task);
-    this.#tail = result.then(
-      () => undefined,
-      () => undefined,
+  enqueue<Value, Failure, Requirements>(
+    task: Effect.Effect<Value, Failure, Requirements>,
+  ): Effect.Effect<Value, Failure | Error, Requirements> {
+    return Effect.acquireUseRelease(
+      Effect.suspend(() => {
+        if (this.#requests.size >= this.limit) {
+          return Effect.fail(new Error("GitHub request queue is full."));
+        }
+        const turn = Deferred.makeUnsafe<void>();
+        this.#requests.add(turn);
+        if (this.#requests.size === 1) {
+          Deferred.doneUnsafe(turn, Effect.void);
+        }
+        return Effect.succeed(turn);
+      }),
+      (turn) => Effect.andThen(Deferred.await(turn), task),
+      (turn) =>
+        Effect.sync(() => {
+          this.#requests.delete(turn);
+          const next = this.#requests.values().next().value;
+          if (next !== undefined) {
+            Deferred.doneUnsafe(next, Effect.void);
+          }
+        }),
     );
-    return result.finally(() => {
-      this.#pending -= 1;
-    });
   }
 }
 
@@ -190,9 +204,18 @@ export const layer = Layer.effect(
   Effect.gen(function* () {
     const api = yield* GitHubApiClient;
     const credentials = yield* GitHubCredentials;
-    const runPromise = Effect.runPromiseWith(yield* Effect.context<never>());
     const queue = new GitHubRequestQueue();
-    const inFlightMetadata = new Map<string, Promise<GitHubCommitResolution>>();
+    const metadataLock = yield* Semaphore.make(1);
+    const inFlightMetadata = new Map<
+      string,
+      {
+        readonly fiber: Fiber.Fiber<
+          GitHubCommitResolution,
+          GitHubScriptPackageClientError
+        >;
+        waiters: number;
+      }
+    >();
 
     const requestContext = Effect.fn(
       "GitHubScriptPackageClient.requestContext",
@@ -238,19 +261,11 @@ export const layer = Layer.effect(
           ref,
           repository: repository.url,
         });
-        const pending = inFlightMetadata.get(key);
-        if (pending !== undefined) {
-          return yield* Effect.tryPromise({
-            try: () => pending,
-            catch: clientError,
-          });
-        }
-
         const url = new URL(
           `${API_ORIGIN}/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.repository)}/commits/${encodeURIComponent(ref)}`,
         );
-        const operation = queue.enqueue(() =>
-          runPromise(
+        const operation = queue
+          .enqueue(
             Effect.gen(function* () {
               const response = yield* api.get({
                 attempts: MAX_METADATA_ATTEMPTS,
@@ -283,19 +298,43 @@ export const layer = Layer.effect(
                 },
                 catch: clientError,
               });
-            }).pipe(Effect.mapError(clientError)),
+            }),
+          )
+          .pipe(Effect.mapError(clientError));
+        return yield* Effect.acquireUseRelease(
+          metadataLock.withPermit(
+            Effect.gen(function* () {
+              const pending = inFlightMetadata.get(key);
+              if (pending !== undefined) {
+                pending.waiters += 1;
+                return pending;
+              }
+              const fiber = yield* Effect.forkDetach(operation, {
+                startImmediately: true,
+              });
+              const entry = { fiber, waiters: 1 };
+              inFlightMetadata.set(key, entry);
+              fiber.addObserver(() => {
+                if (inFlightMetadata.get(key) === entry) {
+                  inFlightMetadata.delete(key);
+                }
+              });
+              return entry;
+            }),
           ),
-        );
-        inFlightMetadata.set(key, operation);
-        return yield* Effect.tryPromise({
-          try: () =>
-            operation.finally(() => {
-              if (inFlightMetadata.get(key) === operation) {
+          (entry) => Fiber.join(entry.fiber),
+          (entry) =>
+            Effect.suspend(() => {
+              entry.waiters -= 1;
+              if (entry.waiters > 0) {
+                return Effect.void;
+              }
+              if (inFlightMetadata.get(key) === entry) {
                 inFlightMetadata.delete(key);
               }
+              return Fiber.interrupt(entry.fiber);
             }),
-          catch: clientError,
-        });
+        );
       });
 
     const resolveDirectory: GitHubScriptPackageClientShape["resolveDirectory"] =
@@ -313,8 +352,8 @@ export const layer = Layer.effect(
           const parentSegments = segments.slice(0, -1);
           const base = repositoryApiBase(repository);
 
-          const operation = queue.enqueue(() =>
-            runPromise(
+          return yield* queue
+            .enqueue(
               Effect.gen(function* () {
                 const contentsPath = encodedRepositoryPath(parentSegments);
                 const contentsUrl = new URL(
@@ -429,13 +468,9 @@ export const layer = Layer.effect(
                   kind: "unexpected-response",
                   detail: "GitHub returned an incomplete package directory.",
                 });
-              }).pipe(Effect.mapError(clientError)),
-            ),
-          );
-          return yield* Effect.tryPromise({
-            try: () => operation,
-            catch: clientError,
-          });
+              }),
+            )
+            .pipe(Effect.mapError(clientError));
         });
 
     const downloadArchive: GitHubScriptPackageClientShape["downloadArchive"] = (
@@ -443,30 +478,26 @@ export const layer = Layer.effect(
     ) =>
       Effect.gen(function* () {
         const { ref, repository, token } = yield* requestContext(input);
-        return yield* Effect.tryPromise({
-          try: () =>
-            queue.enqueue(() =>
-              runPromise(
-                api
-                  .download({
-                    attempts: MAX_ARCHIVE_ATTEMPTS,
-                    ...(input.credentialId === undefined
-                      ? {}
-                      : { credentialId: input.credentialId }),
-                    maxBytes: SCRIPT_PACKAGE_ARCHIVE_MAX_BYTES,
-                    maxRedirects: MAX_REDIRECTS,
-                    targetPath: input.targetPath,
-                    timeoutMs: REQUEST_TIMEOUT_MS,
-                    ...(token === undefined ? {} : { token }),
-                    url: new URL(
-                      `${API_ORIGIN}/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.repository)}/tarball/${encodeURIComponent(ref)}`,
-                    ),
-                  })
-                  .pipe(Effect.mapError(clientError), Effect.asVoid),
-              ),
-            ),
-          catch: clientError,
-        });
+        return yield* queue
+          .enqueue(
+            api
+              .download({
+                attempts: MAX_ARCHIVE_ATTEMPTS,
+                ...(input.credentialId === undefined
+                  ? {}
+                  : { credentialId: input.credentialId }),
+                maxBytes: SCRIPT_PACKAGE_ARCHIVE_MAX_BYTES,
+                maxRedirects: MAX_REDIRECTS,
+                targetPath: input.targetPath,
+                timeoutMs: REQUEST_TIMEOUT_MS,
+                ...(token === undefined ? {} : { token }),
+                url: new URL(
+                  `${API_ORIGIN}/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.repository)}/tarball/${encodeURIComponent(ref)}`,
+                ),
+              })
+              .pipe(Effect.asVoid),
+          )
+          .pipe(Effect.mapError(clientError));
       });
 
     return GitHubScriptPackageClient.of({
