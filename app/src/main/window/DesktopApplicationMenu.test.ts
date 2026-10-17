@@ -74,7 +74,8 @@ describe("DesktopApplicationMenu logging", () => {
           whenReady: Effect.void,
         }),
         Layer.succeed(DesktopLifecycle, {
-          awaitQuit: Effect.void,
+          awaitQuit: Effect.succeed("will-quit" as const),
+          isForcedExit: Effect.succeed(false),
           isQuitting: Effect.succeed(false),
           attachObservability: Effect.void,
           register: Effect.void,

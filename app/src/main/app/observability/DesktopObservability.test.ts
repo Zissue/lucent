@@ -81,6 +81,51 @@ afterEach(async () => {
 });
 
 describe("DesktopObservability", () => {
+  it.effect(
+    "writes monotonic uptime after finalizer logs and repeat tails",
+    () =>
+      Effect.gen(function* () {
+        const root = yield* Effect.promise(makeFixture);
+        yield* Effect.gen(function* () {
+          const observability = yield* DesktopObservability;
+          yield* Effect.addFinalizer(() =>
+            Effect.logInfo("Cleanup completed").pipe(
+              Effect.andThen(Effect.logInfo("Cleanup completed")),
+            ),
+          );
+          yield* TestClock.adjust(1_234);
+          yield* observability.setSessionStop("SIGINT");
+        }).pipe(Effect.scoped, Effect.provide(makeLayer(root, false)));
+        expect(
+          yield* Effect.promise(() =>
+            readRecords(join(root, "logs", "lucent.log")),
+          ),
+        ).toEqual([
+          {
+            at: "1970-01-01T00:00:01.234Z",
+            level: "info",
+            component: "effect",
+            message: "Cleanup completed",
+          },
+          {
+            at: "1970-01-01T00:00:01.234Z",
+            level: "info",
+            component: "effect",
+            message: "Cleanup completed",
+            suppressed: 1,
+            lastAt: "1970-01-01T00:00:01.234Z",
+          },
+          {
+            at: "1970-01-01T00:00:01.234Z",
+            level: "info",
+            component: "lifecycle",
+            message: "Lucent desktop runtime stopped",
+            data: { source: "SIGINT", uptimeMs: 1234, outcome: "clean" },
+          },
+        ]);
+      }),
+  );
+
   it.effect.each([false, true])(
     "writes failure spans only with debug logging %s",
     (debug) =>

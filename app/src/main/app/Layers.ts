@@ -1,9 +1,7 @@
-import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import * as DesktopEnvironment from "./DesktopEnvironment";
 import * as DesktopGameRendererRecovery from "./DesktopGameRendererRecovery";
-import * as DesktopLifecycle from "./DesktopLifecycle";
 import * as DesktopChromiumPerformanceRecording from "./observability/DesktopChromiumPerformanceRecording";
 import * as DesktopObservability from "./observability/DesktopObservability";
 import * as ArmyConfigRepository from "../game/army/ArmyConfigRepository";
@@ -50,26 +48,16 @@ import * as ElectronWindow from "../electron/ElectronWindow";
 import * as RuffleSocketProxy from "../game/session/RuffleSocketProxy";
 import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
 
-export const makeDesktopLayer = (
+export const makeDesktopObservabilityLayer = (
   envConfig: DesktopEnvironment.DesktopEnvironmentConfig,
-) => {
-  const diagnostics = Layer.effectDiscard(
-    Effect.flatMap(
-      DesktopLifecycle.DesktopLifecycle,
-      (lifecycle) => lifecycle.attachObservability,
-    ),
-  ).pipe(
+) =>
+  DesktopObservability.layer.pipe(
     Layer.provideMerge(
-      DesktopObservability.layer.pipe(
-        Layer.provideMerge(
-          Layer.mergeAll(
-            NodeFileSystem.layer,
-            DesktopEnvironment.layer(envConfig),
-          ),
-        ),
-      ),
+      Layer.mergeAll(NodeFileSystem.layer, DesktopEnvironment.layer(envConfig)),
     ),
   );
+
+export const makeDesktopLayer = () => {
   const platform = Layer.mergeAll(
     ElectronApp.layer,
     ElectronChromiumPerformance.layer,
@@ -82,7 +70,7 @@ export const makeDesktopLayer = (
     RuffleSocketProxy.layer,
     AccountSessions.layer,
     ScriptFiles.layer,
-  ).pipe(Layer.provideMerge(diagnostics));
+  );
 
   const storage = Layer.mergeAll(
     DesktopSettings.layer,

@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, promises as fs, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setImmediate as yieldToEventLoop } from "node:timers/promises";
@@ -61,11 +61,16 @@ import { DesktopApplicationMenu } from "../window/DesktopApplicationMenu";
 import { DesktopWindows } from "../window/DesktopWindows";
 import { DesktopEnvironment } from "./DesktopEnvironment";
 import { DesktopGameRendererRecovery } from "./DesktopGameRendererRecovery";
-import { DesktopLifecycle } from "./DesktopLifecycle";
 import { makeDesktopRuntime } from "./DesktopRuntime";
-import { DesktopObservability } from "./observability/DesktopObservability";
+import {
+  DesktopObservability,
+  layer as desktopObservabilityLayer,
+} from "./observability/DesktopObservability";
 
-vi.mock("electron", () => ({ ipcMain: {} }));
+vi.mock("electron", async () => {
+  const { EventEmitter } = await import("node:events");
+  return { ipcMain: new EventEmitter() };
+});
 
 const availableUpdate: UpdateCheckState = {
   status: "available",
@@ -116,6 +121,10 @@ const servicesStartupNeverCalls = Layer.mergeAll(
 
 const makeStartup = (options: {
   readonly captureSignals?: boolean;
+  readonly synchronousQuit?: boolean;
+  readonly realLog?: boolean;
+  readonly initialLaunchMode?: "game" | "account-manager";
+  readonly cliLaunchMode?: "game" | "account-manager";
   readonly launchMode?: "game" | "account-manager";
   readonly initialize?: Effect.Effect<void>;
   readonly build?: Effect.Effect<void, never, Scope.Scope>;
@@ -161,56 +170,59 @@ const makeStartup = (options: {
           appEvents.removeListener(eventName, listener);
         };
       }),
+    getVersion: Effect.succeed("1.2.3"),
     whenReady: Effect.void,
-    quit: Effect.void,
+    quit: options.synchronousQuit ? Effect.sync(emitWillQuit) : Effect.void,
   });
-  const diagnostics = Layer.effectDiscard(
-    Effect.flatMap(
-      DesktopLifecycle,
-      (lifecycle) => lifecycle.attachObservability,
-    ),
-  ).pipe(
-    Layer.provideMerge(
-      Layer.mergeAll(
-        Layer.succeed(References.MinimumLogLevel, "Debug"),
-        Logger.layer([
-          Logger.make((log) => {
-            records.push(desktopLogRecord(log));
-            if (
-              String(log.message) === "Failed to show startup update dialog"
-            ) {
-              events.push("dialog-failed");
-              Deferred.doneUnsafe(dialogFailed, Exit.void);
-            }
-            if (
-              options.captureSignals &&
-              String(log.message) === "Received termination signal"
-            ) {
-              events.push("termination-signal");
-            }
-            if (log.logLevel === "Error") {
-              events.push(`error:${String(log.message)}`);
-            }
-          }),
-        ]),
-        Layer.succeed(
-          DesktopObservability,
-          DesktopObservability.of({
-            flush: Effect.sync(() => {
-              events.push("flush");
-            }),
-            installProcessHooks: Effect.void,
-            logFilePath: join(directory, "lucent.log"),
-          }),
-        ),
-      ),
+  const diagnostics = Layer.mergeAll(
+    Layer.succeed(References.MinimumLogLevel, "Debug"),
+    Logger.layer([
+      Logger.make((log) => {
+        records.push(desktopLogRecord(log));
+        if (String(log.message) === "Failed to show startup update dialog") {
+          events.push("dialog-failed");
+          Deferred.doneUnsafe(dialogFailed, Exit.void);
+        }
+        if (
+          options.captureSignals &&
+          String(log.message) === "Received termination signal"
+        ) {
+          events.push("termination-signal");
+        }
+        if (log.logLevel === "Error") {
+          events.push(`error:${String(log.message)}`);
+        }
+      }),
+    ]),
+    Layer.succeed(
+      DesktopObservability,
+      DesktopObservability.of({
+        setSessionStop: () => Effect.void,
+        flush: Effect.sync(() => {
+          events.push("flush");
+        }),
+        installProcessHooks: Effect.void,
+        logFilePath: join(directory, "lucent.log"),
+      }),
     ),
   );
 
+  const environment = Layer.succeed(
+    DesktopEnvironment,
+    DesktopEnvironment.of({
+      appDataDir: directory,
+      assetsDir: join(directory, "assets"),
+      isDev: false,
+      platform: "darwin",
+      workspaceDir: join(directory, "workspace"),
+    }),
+  );
+  const logging = options.realLog
+    ? desktopObservabilityLayer.pipe(Layer.provide(environment))
+    : diagnostics;
   const layer = Layer.mergeAll(
     servicesStartupNeverCalls,
     NodeFileSystem.layer,
-    diagnostics,
     Layer.effectDiscard(
       Effect.addFinalizer(() =>
         Effect.sync(() => {
@@ -219,19 +231,8 @@ const makeStartup = (options: {
       ),
     ),
     appLayer,
-    Layer.effectDiscard(options.build ?? Effect.void).pipe(
-      Layer.provide(diagnostics),
-    ),
-    Layer.succeed(
-      DesktopEnvironment,
-      DesktopEnvironment.of({
-        appDataDir: directory,
-        assetsDir: join(directory, "assets"),
-        isDev: false,
-        platform: "darwin",
-        workspaceDir: join(directory, "workspace"),
-      }),
-    ),
+    Layer.effectDiscard(options.build ?? Effect.void),
+    environment,
     Layer.succeed(
       DesktopIpc,
       makeDesktopIpc(
@@ -248,7 +249,12 @@ const makeStartup = (options: {
     ),
     Layer.mock(DesktopSettings, {
       load: Effect.succeed(
-        normalizeAppSettings({ preferences: { checkForUpdates: true } }),
+        normalizeAppSettings({
+          preferences: {
+            checkForUpdates: true,
+            launchMode: options.initialLaunchMode ?? "game",
+          },
+        }),
       ),
       get: Effect.sync(() =>
         normalizeAppSettings({
@@ -307,6 +313,18 @@ const makeStartup = (options: {
     Layer.mock(ArmyLoopTauntOrchestrator, { onCommand: () => unsubscribe }),
   );
 
+  const run = makeDesktopRuntime(
+    options.cliLaunchMode === undefined
+      ? {}
+      : { launchMode: options.cliLaunchMode },
+    layer,
+    logging,
+  ).pipe(Effect.provide(appLayer));
+  const readLog = () =>
+    readFileSync(join(directory, "logs", "lucent.log"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as DesktopLogRecord);
   const quitDuringStartup = (
     waitingOn: Deferred.Deferred<void>,
     onReady: Effect.Effect<void> = Effect.void,
@@ -315,8 +333,7 @@ const makeStartup = (options: {
   ) =>
     Effect.gen(function* () {
       const runtime = yield* Effect.forkDetach(
-        makeDesktopRuntime({}, layer).pipe(
-          Effect.provide(appLayer),
+        run.pipe(
           Effect.ensuring(
             Effect.sync(() => {
               events.push("runtime-settled");
@@ -347,6 +364,7 @@ const makeStartup = (options: {
     }).pipe(
       Effect.ensuring(
         Effect.sync(() => {
+          if (options.realLog) records.push(...readLog());
           rmSync(directory, { recursive: true, force: true });
         }),
       ),
@@ -356,6 +374,10 @@ const makeStartup = (options: {
     appEvents.emit("second-instance", {}, argv, "/tmp", additionalData);
   return {
     quitDuringStartup,
+    events,
+    run,
+    readLog,
+    directory,
     records,
     dialogParents,
     openedWindows,
@@ -372,10 +394,376 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.useRealTimers();
 });
 
 describe("makeDesktopRuntime", () => {
+  it.live.each([
+    { initialLaunchMode: "account-manager" },
+    { initialLaunchMode: "game", cliLaunchMode: "account-manager" },
+  ] as const)(
+    "writes resolved session metadata and a terminal clean stop on a fast disk %#",
+    (modes) =>
+      Effect.gen(function* () {
+        const checking = yield* Deferred.make<void>();
+        const startup = makeStartup({
+          ...modes,
+          realLog: true,
+          build: Effect.addFinalizer(() =>
+            Effect.logInfo("Cleanup completed").pipe(
+              Effect.andThen(Effect.logInfo("Cleanup completed")),
+            ),
+          ),
+          checkNow: Deferred.succeed(checking, undefined).pipe(
+            Effect.andThen(Effect.never),
+          ),
+          showMessageBox: Effect.never,
+        });
+        expect(yield* startup.quitDuringStartup(checking)).toEqual([
+          "cleanup",
+          "runtime-settled",
+        ]);
+        const start = startup.records.filter(
+          (record) => record.message === "Lucent desktop runtime starting",
+        );
+        expect(start).toEqual([
+          {
+            at: expect.any(String),
+            level: "info",
+            component: "startup",
+            message: "Lucent desktop runtime starting",
+            data: {
+              version: "1.2.3",
+              platform: "darwin",
+              arch: process.arch,
+              isDev: false,
+              launchMode: "account-manager",
+              debug: false,
+              pid: process.pid,
+              appDataDir: startup.directory,
+              logFilePath: join(startup.directory, "logs", "lucent.log"),
+              workspaceDir: join(startup.directory, "workspace"),
+            },
+          },
+        ]);
+        expect(startup.records.slice(-2)).toEqual([
+          {
+            at: expect.any(String),
+            level: "info",
+            component: "effect",
+            message: "Cleanup completed",
+            suppressed: 1,
+            lastAt: expect.any(String),
+          },
+          {
+            at: expect.any(String),
+            level: "info",
+            component: "lifecycle",
+            message: "Lucent desktop runtime stopped",
+            data: {
+              source: "will-quit",
+              uptimeMs: expect.any(Number),
+              outcome: "clean",
+            },
+          },
+        ]);
+      }),
+  );
+
+  it.live.each(["layer", "startup"] as const)(
+    "writes %s failure to lucent.log without a clean stop",
+    (stage) =>
+      Effect.gen(function* () {
+        const failure = Effect.die(new Error("startup exploded"));
+        const startup = makeStartup({
+          realLog: true,
+          build: stage === "layer" ? failure : Effect.void,
+          initialize: stage === "startup" ? failure : Effect.void,
+          checkNow: Effect.never,
+          showMessageBox: Effect.never,
+        });
+        expect(yield* startup.run).toBe(1);
+        const records = startup.readLog();
+        expect(
+          records.filter(
+            (record) => record.message === "Lucent desktop runtime failed",
+          ),
+        ).toEqual([
+          {
+            at: expect.any(String),
+            level: "error",
+            component: "startup",
+            message: "Lucent desktop runtime failed",
+            error: [
+              {
+                name: "Error",
+                message: "startup exploded",
+                stack: expect.any(String),
+              },
+            ],
+          },
+        ]);
+        expect(
+          records.filter(
+            (record) => record.message === "Lucent desktop runtime stopped",
+          ),
+        ).toEqual([]);
+        rmSync(startup.directory, { recursive: true, force: true });
+      }),
+  );
+
+  it.live(
+    "keeps the initiating signal when app.quit synchronously emits will-quit",
+    () =>
+      Effect.gen(function* () {
+        const previous = new Set(process.listeners("SIGTERM"));
+        const checking = yield* Deferred.make<void>();
+        const startup = makeStartup({
+          realLog: true,
+          synchronousQuit: true,
+          checkNow: Deferred.succeed(checking, undefined).pipe(
+            Effect.andThen(Effect.never),
+          ),
+          showMessageBox: Effect.never,
+        });
+        yield* startup.quitDuringStartup(
+          checking,
+          Effect.void,
+          undefined,
+          () => {
+            const listener = process
+              .listeners("SIGTERM")
+              .find((entry) => !previous.has(entry));
+            if (listener === undefined)
+              throw new Error("SIGTERM listener is missing");
+            listener("SIGTERM");
+          },
+        );
+        expect(startup.records.at(-1)).toEqual({
+          at: expect.any(String),
+          level: "info",
+          component: "lifecycle",
+          message: "Lucent desktop runtime stopped",
+          data: {
+            source: "SIGTERM",
+            uptimeMs: expect.any(Number),
+            outcome: "clean",
+          },
+        });
+        expect(
+          startup.records.filter(
+            (record) => record.message === "Received termination signal",
+          ),
+        ).toEqual([]);
+      }),
+  );
+
+  it.live(
+    "does not write a clean stop after cleanup reaches the forced exit deadline",
+    () =>
+      Effect.gen(function* () {
+        const building = yield* Deferred.make<void>();
+        const releaseCleanup = yield* Deferred.make<void>();
+        const startup = makeStartup({
+          realLog: true,
+          build: Effect.addFinalizer(() => Deferred.await(releaseCleanup)).pipe(
+            Effect.andThen(Deferred.succeed(building, undefined)),
+            Effect.andThen(Effect.never),
+          ),
+          checkNow: Effect.never,
+          showMessageBox: Effect.never,
+        });
+        const events = yield* startup.quitDuringStartup(
+          building,
+          Effect.void,
+          Deferred.succeed(releaseCleanup, undefined).pipe(Effect.asVoid),
+        );
+        expect(events).toEqual(["exit:0", "cleanup", "runtime-settled"]);
+        expect(startup.records).toEqual([
+          {
+            at: expect.any(String),
+            level: "error",
+            component: "lifecycle",
+            message: "Lucent quit timed out; forcing exit",
+            data: { source: "will-quit", timeoutMs: 1500 },
+          },
+        ]);
+      }),
+  );
+
+  it.live(
+    "logs a cleanup defect without writing a clean stop when quit wins the race",
+    () =>
+      Effect.gen(function* () {
+        const checking = yield* Deferred.make<void>();
+        const startup = makeStartup({
+          realLog: true,
+          build: Effect.addFinalizer(() =>
+            Effect.die(new Error("cleanup exploded")),
+          ),
+          checkNow: Deferred.succeed(checking, undefined).pipe(
+            Effect.andThen(Effect.never),
+          ),
+          showMessageBox: Effect.never,
+        });
+        const running = yield* Effect.forkDetach(startup.run);
+        yield* Deferred.await(checking);
+        startup.emitWillQuit();
+        expect(yield* Fiber.join(running)).toBe(0);
+        const records = startup.readLog();
+        expect(records.at(-1)).toEqual({
+          at: expect.any(String),
+          level: "error",
+          component: "lifecycle",
+          message: "Lucent shutdown failed",
+          error: [
+            {
+              name: "Error",
+              message: "cleanup exploded",
+              stack: expect.any(String),
+            },
+          ],
+        });
+        expect(
+          records.filter(
+            (record) => record.message === "Lucent desktop runtime stopped",
+          ),
+        ).toEqual([]);
+        rmSync(startup.directory, { recursive: true, force: true });
+      }),
+  );
+
+  it.live.each([
+    "every append after quit",
+    "periodic drain",
+    "final stop append",
+  ])("forces exit within 1750 ms when %s stalls", (stalledStep) =>
+    Effect.gen(function* () {
+      const checking = yield* Deferred.make<void>();
+      const appendStarted = yield* Deferred.make<void>();
+      const releaseAppend = Promise.withResolvers<void>();
+      let quitting = false;
+      const appendFile = fs.appendFile;
+      vi.spyOn(fs, "appendFile").mockImplementation(
+        async (path, data, options) => {
+          if (
+            quitting &&
+            (stalledStep !== "final stop append" ||
+              String(data).includes("Lucent desktop runtime stopped"))
+          ) {
+            Deferred.doneUnsafe(appendStarted, Exit.void);
+            await releaseAppend.promise;
+          }
+          await appendFile(path, data, options);
+        },
+      );
+      const startup = makeStartup({
+        realLog: true,
+        build: Effect.addFinalizer(() => Effect.logInfo("Cleanup completed")),
+        checkNow: Deferred.succeed(checking, undefined).pipe(
+          Effect.andThen(Effect.never),
+        ),
+        showMessageBox: Effect.never,
+      });
+      const running = yield* Effect.forkDetach(startup.run);
+      yield* Effect.gen(function* () {
+        yield* Deferred.await(checking);
+        quitting = true;
+        if (stalledStep === "periodic drain") {
+          yield* Effect.promise(() => vi.advanceTimersByTimeAsync(60_000));
+        }
+        startup.emitWillQuit();
+        yield* Deferred.await(appendStarted);
+        yield* Effect.promise(() => vi.advanceTimersByTimeAsync(1_499));
+        expect(startup.events).toEqual(["cleanup"]);
+        yield* Effect.promise(() => vi.advanceTimersByTimeAsync(250));
+        expect(startup.events).toEqual(["cleanup"]);
+        yield* Effect.promise(() => vi.advanceTimersByTimeAsync(1));
+        expect(startup.events).toEqual(["cleanup", "exit:0"]);
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => releaseAppend.resolve()).pipe(
+            Effect.andThen(Fiber.await(running)),
+            Effect.andThen(
+              Effect.sync(() => {
+                rmSync(startup.directory, { recursive: true, force: true });
+              }),
+            ),
+          ),
+        ),
+      );
+    }),
+  );
+
+  it.live(
+    "does not write a clean stop when the drain recovers after the quit deadline",
+    () =>
+      Effect.gen(function* () {
+        const checking = yield* Deferred.make<void>();
+        const appendStarted = yield* Deferred.make<void>();
+        const releaseAppend = Promise.withResolvers<void>();
+        const appendFile = fs.appendFile;
+        let quitting = false;
+        vi.spyOn(fs, "appendFile").mockImplementation(
+          async (path, data, options) => {
+            if (quitting) {
+              Deferred.doneUnsafe(appendStarted, Exit.void);
+              await releaseAppend.promise;
+            }
+            await appendFile(path, data, options);
+          },
+        );
+        const startup = makeStartup({
+          realLog: true,
+          build: Effect.addFinalizer(() => Effect.logInfo("Cleanup completed")),
+          checkNow: Deferred.succeed(checking, undefined).pipe(
+            Effect.andThen(Effect.never),
+          ),
+          showMessageBox: Effect.never,
+        });
+        const running = yield* Effect.forkDetach(startup.run);
+        yield* Effect.gen(function* () {
+          yield* Deferred.await(checking);
+          quitting = true;
+          startup.emitWillQuit();
+          yield* Deferred.await(appendStarted);
+          yield* Effect.promise(() => vi.advanceTimersByTimeAsync(1_500));
+          expect(startup.events).toEqual(["cleanup"]);
+          releaseAppend.resolve();
+          expect(yield* Fiber.join(running)).toBe(0);
+          yield* Effect.promise(() =>
+            vi.waitUntil(() => startup.events.includes("exit:0")),
+          );
+          expect(startup.events).toEqual(["cleanup", "exit:0"]);
+          const records = startup.readLog();
+          expect(records.at(-1)).toEqual({
+            at: expect.any(String),
+            level: "error",
+            component: "lifecycle",
+            message: "Lucent quit timed out; forcing exit",
+            data: { source: "will-quit", timeoutMs: 1500 },
+          });
+          expect(
+            records.filter(
+              (record) => record.message === "Lucent desktop runtime stopped",
+            ),
+          ).toEqual([]);
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => releaseAppend.resolve()).pipe(
+              Effect.andThen(Fiber.await(running)),
+              Effect.andThen(
+                Effect.sync(() =>
+                  rmSync(startup.directory, { recursive: true, force: true }),
+                ),
+              ),
+            ),
+          ),
+        );
+      }),
+  );
+
   it.live.each([
     { state: availableUpdate, level: "debug", data: { status: "available" } },
     {
@@ -495,11 +883,12 @@ describe("makeDesktopRuntime", () => {
           signal,
         );
 
-        expect(events).toEqual([
-          "termination-signal",
-          "cleanup",
-          "runtime-settled",
-        ]);
+        expect(events).toEqual(["cleanup", "runtime-settled"]);
+        expect(
+          startup.records.filter(
+            (record) => record.message === "Received termination signal",
+          ),
+        ).toEqual([]);
         expect(startup.appEvents.listenerCount("will-quit")).toBe(0);
       }),
   );
