@@ -3,6 +3,7 @@ import { tmpdir } from "os";
 import { dirname, join } from "path";
 
 import { afterEach, describe, expect, it } from "@effect/vitest";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
@@ -14,7 +15,7 @@ import {
   ScriptPackageCatalog,
 } from "./ScriptPackageCatalog";
 import {
-  layer as scriptSourceRegistryLayer,
+  makeScriptSourceRegistry,
   ScriptSourceRegistry,
 } from "./ScriptSourceRegistry";
 
@@ -37,7 +38,11 @@ const makeWorkspace = async () => {
   return { packagesDir, scriptsDir };
 };
 
-const makeLayer = (discovery: DiscoveredScriptCatalog) => {
+const makeLayer = (
+  discovery: DiscoveredScriptCatalog,
+  scriptFiles = makeScriptFiles((path) => processScriptFile(path)),
+  limits?: Parameters<typeof makeScriptSourceRegistry>[0],
+) => {
   const overview = {
     packages: discovery.catalog.packages,
     revision: discovery.catalog.revision,
@@ -71,14 +76,14 @@ const makeLayer = (discovery: DiscoveredScriptCatalog) => {
       ),
     updateManagedPackage: () => Effect.succeed(overview),
   });
-  return scriptSourceRegistryLayer.pipe(
+  return Layer.effect(
+    ScriptSourceRegistry,
+    makeScriptSourceRegistry(limits),
+  ).pipe(
     Layer.provide(
       Layer.mergeAll(
         Layer.succeed(ScriptPackageCatalog, catalog),
-        Layer.succeed(
-          ScriptFiles,
-          makeScriptFiles((path) => processScriptFile(path)),
-        ),
+        Layer.succeed(ScriptFiles, scriptFiles),
       ),
     ),
   );
@@ -93,6 +98,181 @@ afterEach(async () => {
 });
 
 describe("script source dependency discovery", () => {
+  it.effect("counts concurrent cache misses for one file once", () =>
+    Effect.gen(function* () {
+      const workspace = yield* Effect.promise(makeWorkspace);
+      const sharedPath = join(workspace.scriptsDir, "shared.js");
+      const otherPath = join(workspace.scriptsDir, "other.js");
+      yield* Effect.promise(() =>
+        Promise.all([
+          write(join(workspace.scriptsDir, "entry.js"), 'require("./shared");'),
+          write(join(workspace.scriptsDir, "probe.js"), 'require("./other");'),
+          write(sharedPath, "exports.value = 1;"),
+          write(otherPath, "exports.value = 2;"),
+        ]),
+      );
+      const discovery = yield* Effect.promise(() =>
+        discoverScriptCatalog({
+          currentVersion: "1.0.0",
+          packagesDir: workspace.packagesDir,
+          scriptsDir: workspace.scriptsDir,
+        }),
+      );
+      const bothReading = yield* Deferred.make<void>();
+      const scriptFiles = makeScriptFiles((path) => processScriptFile(path));
+      let sharedReads = 0;
+      let otherReads = 0;
+      const registry = yield* ScriptSourceRegistry.pipe(
+        Effect.provide(
+          makeLayer(
+            discovery,
+            {
+              ...scriptFiles,
+              analyze: Effect.fnUntraced(function* (path: string) {
+                if (path === sharedPath) {
+                  sharedReads += 1;
+                  if (sharedReads === 2) {
+                    yield* Deferred.succeed(bothReading, undefined);
+                  }
+                  if (sharedReads <= 2) yield* Deferred.await(bothReading);
+                }
+                if (path === otherPath) otherReads += 1;
+                return yield* scriptFiles.analyze(path);
+              }),
+            },
+            { maxBytes: 36, maxEntries: 8 },
+          ),
+        ),
+      );
+      const readShared = registry.readReference({
+        kind: "loose",
+        path: "entry.js",
+      });
+
+      const concurrent = yield* Effect.all([readShared, readShared], {
+        concurrency: 2,
+      });
+      const probe = yield* registry.readReference({
+        kind: "loose",
+        path: "probe.js",
+      });
+      const repeated = yield* readShared;
+
+      expect(
+        [...concurrent, repeated].map(
+          (file) =>
+            file.snapshot?.modules.find((module) => module.path === "shared.js")
+              ?.source,
+        ),
+      ).toEqual([
+        "exports.value = 1;",
+        "exports.value = 1;",
+        "exports.value = 1;",
+      ]);
+      expect(
+        probe.snapshot?.modules.find((module) => module.path === "other.js")
+          ?.source,
+      ).toBe("exports.value = 2;");
+      expect([sharedReads, otherReads]).toEqual([2, 1]);
+    }),
+  );
+
+  it.effect(
+    "enforces the byte limit after concurrent shrinking replacements",
+    () =>
+      Effect.gen(function* () {
+        const workspace = yield* Effect.promise(makeWorkspace);
+        const sharedPath = join(workspace.scriptsDir, "shared.js");
+        yield* Effect.promise(() =>
+          Promise.all([
+            write(
+              join(workspace.scriptsDir, "entry.js"),
+              'require("./shared");',
+            ),
+            write(
+              join(workspace.scriptsDir, "probe.js"),
+              'require("./other"); require("./tiny");',
+            ),
+            write(sharedPath, "exports.value = 100;"),
+            write(join(workspace.scriptsDir, "other.js"), "exports.value = 2;"),
+            write(join(workspace.scriptsDir, "tiny.js"), "0;"),
+          ]),
+        );
+        const discovery = yield* Effect.promise(() =>
+          discoverScriptCatalog({
+            currentVersion: "1.0.0",
+            packagesDir: workspace.packagesDir,
+            scriptsDir: workspace.scriptsDir,
+          }),
+        );
+        const bothReading = yield* Deferred.make<void>();
+        const scriptFiles = makeScriptFiles((path) => processScriptFile(path));
+        let sharedReads = 0;
+        const registry = yield* ScriptSourceRegistry.pipe(
+          Effect.provide(
+            makeLayer(
+              discovery,
+              {
+                ...scriptFiles,
+                analyze: Effect.fnUntraced(function* (path: string) {
+                  if (path === sharedPath) {
+                    sharedReads += 1;
+                    if (sharedReads === 3) {
+                      yield* Deferred.succeed(bothReading, undefined);
+                    }
+                    if (sharedReads === 2 || sharedReads === 3) {
+                      yield* Deferred.await(bothReading);
+                    }
+                  }
+                  return yield* scriptFiles.analyze(path);
+                }),
+              },
+              { maxBytes: 36, maxEntries: 8 },
+            ),
+          ),
+        );
+        const readShared = registry.readReference({
+          kind: "loose",
+          path: "entry.js",
+        });
+        const initial = yield* readShared;
+        yield* Effect.promise(() => write(sharedPath, "exports.value = 1;"));
+
+        const concurrent = yield* Effect.all([readShared, readShared], {
+          concurrency: 2,
+        });
+        const probe = yield* registry.readReference({
+          kind: "loose",
+          path: "probe.js",
+        });
+        const repeated = yield* readShared;
+
+        expect(
+          initial.snapshot?.modules.find(
+            (module) => module.path === "shared.js",
+          )?.source,
+        ).toBe("exports.value = 100;");
+        expect(
+          [...concurrent, repeated].map(
+            (file) =>
+              file.snapshot?.modules.find(
+                (module) => module.path === "shared.js",
+              )?.source,
+          ),
+        ).toEqual([
+          "exports.value = 1;",
+          "exports.value = 1;",
+          "exports.value = 1;",
+        ]);
+        expect(probe.snapshot?.modules.map((module) => module.source)).toEqual([
+          "exports.value = 2;",
+          'require("./other"); require("./tiny");',
+          "0;",
+        ]);
+        expect(sharedReads).toBe(4);
+      }),
+  );
+
   it.effect(
     "collects relative, package, and cyclic reachable modules only",
     () =>
