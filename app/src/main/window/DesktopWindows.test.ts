@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { app } from "electron";
 
 import { describe, expect, it } from "@effect/vitest";
 import { vi } from "vitest";
@@ -20,8 +21,12 @@ import {
   normalizeAppSettings,
 } from "@lucent/core/settings";
 import { DesktopWindowKindSchema } from "../../shared/ipc/windows";
-import { desktopLogRecord } from "../../shared/logRecord";
+import {
+  desktopLogRecord,
+  type DesktopLogRecord,
+} from "../../shared/logRecord";
 import { layer as desktopEnvironmentLayer } from "../app/DesktopEnvironment";
+import { installDesktopRendererObservability } from "../app/observability/DesktopRendererObservability";
 import { ElectronApp } from "../electron/ElectronApp";
 import { GameSessions } from "../game/session/GameSessions";
 import { ElectronShell } from "../electron/ElectronShell";
@@ -32,7 +37,10 @@ import {
   type ElectronGameViewHandle,
   type ElectronWindowHandle,
 } from "../electron/ElectronWindow";
-import { RuffleSocketProxy } from "../game/session/RuffleSocketProxy";
+import {
+  RuffleSocketProxy,
+  RuffleSocketProxyError,
+} from "../game/session/RuffleSocketProxy";
 import { makeDesktopIpcSenders } from "../ipc/DesktopIpcSenders";
 import { DesktopSettings } from "../settings/DesktopSettings";
 import {
@@ -47,7 +55,10 @@ import {
   type DesktopWindowOpenOptions,
 } from "./DesktopWindows";
 
-vi.mock("electron", () => ({}));
+vi.mock("electron", async () => {
+  const { EventEmitter } = await import("node:events");
+  return { app: new EventEmitter() };
+});
 
 const singleInstanceKinds = DesktopWindowKindSchema.literals.filter(
   (kind) => getDesktopWindowDefinition(kind).singleInstance,
@@ -96,6 +107,7 @@ const makeHarness = (
     readonly quit?: Effect.Effect<void>;
     readonly devToolsFailure?: Error;
     readonly openExternal?: Effect.Effect<boolean>;
+    readonly relayUrl?: Effect.Effect<string, RuffleSocketProxyError>;
   } = {},
 ) => {
   let settingsRead: Effect.Effect<void> = Effect.void;
@@ -103,7 +115,7 @@ const makeHarness = (
   let nextRendererId = 101;
   const created = new Map<number, ReturnType<typeof makeWindow>>();
   const openRequests = new Map<number, (url: string) => void>();
-  const records: unknown[] = [];
+  const records: DesktopLogRecord[] = [];
 
   const windowService = ElectronWindow.of({
     create: (_options, onWindowOpenRequest) =>
@@ -210,7 +222,9 @@ const makeHarness = (
     Layer.succeed(ElectronWindow, windowService),
     Layer.succeed(
       RuffleSocketProxy,
-      RuffleSocketProxy.of({ getUrl: Effect.succeed("ws://127.0.0.1:1") }),
+      RuffleSocketProxy.of({
+        getUrl: options.relayUrl ?? Effect.succeed("ws://127.0.0.1:1"),
+      }),
     ),
   );
 
@@ -272,6 +286,104 @@ const startOpen = (
   );
 
 describe("DesktopWindows.open", () => {
+  it.effect.each([-2, -3])(
+    "leaves native game load failure logging to the observer for code %s",
+    (code) => {
+      const harness = makeHarness(true);
+      return Effect.gen(function* () {
+        const windows = yield* DesktopWindows;
+        yield* installDesktopRendererObservability;
+        yield* windows.open("game");
+        yield* Effect.yieldNow;
+        const releaseLoad = yield* Latch.make(false);
+        harness.failNextLoadAfter(releaseLoad.await);
+        yield* windows.addGameView(103);
+        yield* Effect.yieldNow;
+        const contents = harness.created.get(105)!.webContents;
+        app.emit("web-contents-created", {}, contents);
+        contents.emit(
+          "did-fail-load",
+          {},
+          code,
+          code === -3 ? "ERR_ABORTED" : "ERR_FAILED",
+          "file:///game.html?socketProxy=private",
+          true,
+        );
+        yield* releaseLoad.open;
+        yield* Effect.yieldNow.pipe(Effect.repeat({ times: 4 }));
+        expect(
+          harness.records.filter((record) => record.level === "warn"),
+        ).toEqual(
+          code === -3
+            ? []
+            : [
+                {
+                  at: "1970-01-01T00:00:00.000Z",
+                  level: "warn",
+                  component: "renderer",
+                  message: "Renderer load failed",
+                  repeatKey: "105:-2",
+                  data: {
+                    rendererId: 105,
+                    errorCode: -2,
+                    errorDescription: "ERR_FAILED",
+                    isMainFrame: true,
+                  },
+                },
+              ],
+        );
+      }).pipe(Effect.provide(harness.layer));
+    },
+  );
+
+  it.effect(
+    "keeps the game load warning when relay setup fails before loading",
+    () => {
+      let relayAvailable = true;
+      const harness = makeHarness(true, {
+        relayUrl: Effect.suspend(() =>
+          relayAvailable
+            ? Effect.succeed("ws://127.0.0.1:1")
+            : Effect.fail(
+                new RuffleSocketProxyError({ cause: "address unavailable" }),
+              ),
+        ),
+      });
+      return Effect.gen(function* () {
+        const windows = yield* DesktopWindows;
+        yield* installDesktopRendererObservability;
+        yield* windows.open("game");
+        yield* Effect.yieldNow;
+        relayAvailable = false;
+        yield* windows.addGameView(103);
+        yield* Effect.yieldNow.pipe(Effect.repeat({ times: 4 }));
+        expect(
+          harness.records.filter((record) => record.level === "warn"),
+        ).toEqual([
+          {
+            at: "1970-01-01T00:00:00.000Z",
+            level: "warn",
+            component: "window",
+            message: "Failed to load game view",
+            data: { rendererId: 105 },
+            error: [
+              {
+                name: "RuffleSocketProxyError",
+                message: "Failed to start the game's socket relay.",
+                stack: expect.any(String),
+                cause: {
+                  name: "NonError",
+                  message: "address unavailable",
+                  stack: "NonError: address unavailable",
+                },
+              },
+            ],
+          },
+        ]);
+      }).pipe(Effect.provide(harness.layer));
+    },
+  );
+
   it.effect.each([false, true])(
     "logs window opens at Debug with tabs %s",
     (useGameTabs) => {

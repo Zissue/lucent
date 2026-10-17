@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { app } from "electron";
 
 import { describe, expect, it } from "@effect/vitest";
 import { vi } from "vitest";
@@ -15,6 +16,7 @@ import {
 } from "../../shared/logRecord";
 import { makeLifetime } from "../window/RendererLifetimeTesting";
 import { makeListenerRegistry } from "./ListenerRegistry";
+import { installDesktopRendererObservability } from "./observability/DesktopRendererObservability";
 import type {
   DesktopWindows,
   DesktopRendererEvent,
@@ -25,7 +27,10 @@ import {
   type RecoverableGameWebContents,
 } from "./DesktopGameRendererRecovery";
 
-vi.mock("electron", () => ({ app: {}, webContents: {} }));
+vi.mock("electron", async () => {
+  const { EventEmitter } = await import("node:events");
+  return { app: new EventEmitter(), webContents: {} };
+});
 
 const RENDERER_ID = 7;
 const RELOAD = 0;
@@ -39,6 +44,7 @@ const makeHarness = (
     readonly holdPromptCleanup?: boolean;
     readonly suppressionFailure?: Error;
     readonly promptFailure?: Effect.Effect<never, unknown>;
+    readonly observeRenderer?: boolean;
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -146,7 +152,10 @@ const makeHarness = (
     });
 
     const installation = yield* Scope.fork(parentScope);
-    yield* recovery.install.pipe(
+    yield* Effect.gen(function* () {
+      if (options.observeRenderer) yield* installDesktopRendererObservability;
+      yield* recovery.install;
+    }).pipe(
       Scope.provide(installation),
       Effect.provide(
         Logger.layer(
@@ -199,6 +208,12 @@ const makeHarness = (
         events.emit("unresponsive");
       }).pipe(Effect.andThen(settle)),
       crash: Effect.gen(function* () {
+        if (options.observeRenderer) {
+          app.emit("render-process-gone", {}, contents, {
+            reason: "crashed",
+            exitCode: 1,
+          });
+        }
         const cleanup = Scope.closeUnsafe(current.scope, Exit.void);
         if (cleanup !== undefined)
           yield* cleanup.pipe(
@@ -268,18 +283,19 @@ describe("makeDesktopGameRendererRecovery", () => {
     }),
   );
 
-  it.effect("logs a crash and its successful recovery", () =>
+  it.effect("logs one crash occurrence and its successful recovery", () =>
     Effect.gen(function* () {
-      const harness = yield* makeHarness();
+      const harness = yield* makeHarness({ observeRenderer: true });
       yield* harness.crash;
       yield* harness.answer(0, RELOAD);
       expect(harness.records).toEqual([
         {
           at: "1970-01-01T00:00:00.000Z",
-          level: "warn",
-          component: "game-renderer-recovery",
-          message: "Game renderer crashed",
-          data: { reason: "crashed", rendererId: 7 },
+          level: "error",
+          component: "renderer",
+          message: "Renderer process gone",
+          repeatKey: "7:crashed",
+          data: { reason: "crashed", rendererId: 7, exitCode: 1 },
         },
         {
           at: "1970-01-01T00:00:00.000Z",
@@ -323,7 +339,6 @@ describe("makeDesktopGameRendererRecovery", () => {
           },
         ]);
         expect(harness.causes).toEqual([
-          ...(crashed ? [[]] : []),
           [{ name: "Error", message: "suppression unavailable" }],
           [],
         ]);

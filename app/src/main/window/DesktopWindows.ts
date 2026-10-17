@@ -1164,15 +1164,17 @@ const makeDesktopWindows = Effect.gen(function* () {
           ),
           Effect.catch((cause) =>
             Effect.gen(function* () {
-              yield* Effect.logWarning(
-                "Failed to load game view",
-                Cause.fail(cause),
-              ).pipe(
-                Effect.annotateLogs({
-                  component: "window",
-                  data: { rendererId },
-                }),
-              );
+              if (!(cause instanceof ElectronWindowLoadError)) {
+                yield* Effect.logWarning(
+                  "Failed to load game view",
+                  Cause.fail(cause),
+                ).pipe(
+                  Effect.annotateLogs({
+                    component: "window",
+                    data: { rendererId },
+                  }),
+                );
+              }
               updateGameViewPhase(
                 rendererId,
                 "error",

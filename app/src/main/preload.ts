@@ -130,21 +130,47 @@ const writeRendererLog = (record: RendererLogRecord): void => {
   } catch {}
 };
 
+const rendererErrorRepeatKey = (
+  error: ReturnType<typeof desktopLogErrorDetails>,
+): string => {
+  const firstFrame = error.stack
+    ?.split("\n")
+    .map((line) => line.trim())
+    .find((line) => line.startsWith("at "));
+  const identity = (firstFrame ?? error.message).replace(
+    /[a-z][a-z\d+.-]*:\/\/[^\s)]+/gi,
+    (source) => {
+      const coordinates = /:\d+:\d+$/.exec(source)?.[0] ?? "";
+      const url = URL.parse(
+        source.slice(0, source.length - coordinates.length),
+      );
+      return url === null
+        ? "[invalid URL]"
+        : `${url.host}${url.pathname}${coordinates}`;
+    },
+  );
+  return `${error.name}:${identity}`;
+};
+
 const logRenderer = (
   level: RendererLogRecord["level"],
   message: string,
   data: Record<string, unknown>,
   error?: unknown,
+  repeatKey?: string,
 ): void => {
   try {
+    const details =
+      error === undefined ? undefined : desktopLogErrorDetails(error);
     writeRendererLog({
       level,
       message,
       component: "renderer",
       data,
-      ...(error === undefined
+      ...(details === undefined
         ? {}
-        : { error: [desktopLogErrorDetails(error)] }),
+        : { error: [details], repeatKey: rendererErrorRepeatKey(details) }),
+      ...(repeatKey === undefined ? {} : { repeatKey }),
     });
   } catch {}
 };
@@ -166,30 +192,28 @@ const invoke = createInvoke((channel, payload) =>
   ipcRenderer.invoke(channel, payload),
 );
 
-if (debug) {
-  window.addEventListener("error", (event) => {
-    logRenderer(
-      "error",
-      "Renderer error",
-      {
-        ...(event.colno === 0 ? {} : { columnNumber: event.colno }),
-        ...(event.lineno === 0 ? {} : { lineNumber: event.lineno }),
-        observedAt: new Date().toISOString(),
-        ...(event.filename === "" ? {} : { source: event.filename }),
-        view: bridgeView,
-      },
-      event.error ?? event.message,
-    );
-  });
-  window.addEventListener("unhandledrejection", (event) => {
-    logRenderer(
-      "error",
-      "Renderer unhandled rejection",
-      { observedAt: new Date().toISOString(), view: bridgeView },
-      event.reason,
-    );
-  });
-}
+window.addEventListener("error", (event) => {
+  logRenderer(
+    "error",
+    "Renderer error",
+    {
+      ...(event.colno === 0 ? {} : { columnNumber: event.colno }),
+      ...(event.lineno === 0 ? {} : { lineNumber: event.lineno }),
+      observedAt: new Date().toISOString(),
+      ...(event.filename === "" ? {} : { source: event.filename }),
+      view: bridgeView,
+    },
+    event.error ?? event.message,
+  );
+});
+window.addEventListener("unhandledrejection", (event) => {
+  logRenderer(
+    "error",
+    "Renderer unhandled rejection",
+    { observedAt: new Date().toISOString(), view: bridgeView },
+    event.reason === undefined ? "undefined" : event.reason,
+  );
+});
 const eventWrappers = new WeakMap<
   (rawPayload: unknown) => void,
   (event: IpcRendererEvent, rawPayload: unknown) => void
@@ -305,7 +329,13 @@ const scriptingBridge: DesktopScriptingBridge = {
 
 const gameConsoleObservabilityBridge: DesktopGameConsoleObservabilityBridge = {
   message: (method, message) =>
-    logRenderer("debug", "Renderer console message", { method, message }),
+    logRenderer(
+      "debug",
+      "Renderer console message",
+      { method, message },
+      undefined,
+      message,
+    ),
 };
 
 const fileSystemBridge: DesktopFileSystemBridge = {
@@ -542,7 +572,7 @@ const bridges = {
     scripting: scriptingBridge,
     view: "game",
     windows: windowsBridge,
-    ...(gameConsoleObservabilityEnabled
+    ...(debug && gameConsoleObservabilityEnabled
       ? { gameConsoleObservability: gameConsoleObservabilityBridge }
       : {}),
   },
