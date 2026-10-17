@@ -2,7 +2,7 @@ import { promises as fs } from "fs";
 import { join } from "path";
 
 import type { ScriptPackageLeftoverCopy } from "@lucent/core/scriptPackages";
-import { readScriptPackageManifest } from "./ScriptPackageCatalog";
+import { readScriptPackageManifest } from "./ScriptPackageInspection";
 import { isMissingFileError } from "./ScriptPackageFileSystem";
 
 export const SCRIPT_PACKAGE_BACKUP_PREFIX = ".lucent-package-backup-";

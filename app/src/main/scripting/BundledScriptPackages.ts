@@ -19,8 +19,8 @@ import { copyBundledScriptPackage } from "./BundledScriptPackageSnapshot";
 import {
   inspectScriptPackageDirectory,
   readScriptPackageManifest,
-  ScriptPackageCatalog,
-} from "./ScriptPackageCatalog";
+} from "./ScriptPackageInspection";
+import { ScriptPackageCatalog } from "./ScriptPackageCatalog";
 import {
   allocatePackageDirectory,
   packageDirectoryPath,

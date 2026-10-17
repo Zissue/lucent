@@ -12,8 +12,8 @@ import { processScriptFile } from "./ScriptFileAnalysis";
 import {
   discoverScriptCatalog,
   type DiscoveredScriptCatalog,
-  ScriptPackageCatalog,
-} from "./ScriptPackageCatalog";
+} from "./ScriptCatalogDiscovery";
+import { ScriptPackageCatalog } from "./ScriptPackageCatalog";
 import {
   makeScriptSourceRegistry,
   ScriptSourceRegistry,

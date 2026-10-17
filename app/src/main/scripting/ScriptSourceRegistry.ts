@@ -25,10 +25,8 @@ import {
 } from "@lucent/core/scriptPackages";
 import { ScriptFiles } from "./ScriptFiles";
 import type { ScriptFileAnalysis } from "./ScriptFileWorkerProtocol";
-import {
-  type DiscoveredScriptPackage,
-  ScriptPackageCatalog,
-} from "./ScriptPackageCatalog";
+import type { DiscoveredScriptPackage } from "./ScriptCatalogDiscovery";
+import { ScriptPackageCatalog } from "./ScriptPackageCatalog";
 import {
   portablePath,
   regularFileFingerprint,
