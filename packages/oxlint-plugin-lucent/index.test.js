@@ -14,9 +14,7 @@ const { test } = require("node:test");
 const repo = path.resolve(__dirname, "../..");
 
 const lint = (files) => {
-  const directory = mkdtempSync(
-    path.join(__dirname, "node_modules/.logging-lint-"),
-  );
+  const directory = mkdtempSync(path.join(repo, "node_modules/.logging-lint-"));
   try {
     const config = JSON.parse(
       readFileSync(path.join(repo, ".oxlintrc.json"), "utf8"),
