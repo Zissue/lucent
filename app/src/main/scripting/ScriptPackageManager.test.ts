@@ -13,9 +13,11 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as TestClock from "effect/testing/TestClock";
+import { FileSystem } from "effect/FileSystem";
 import { create as createTar } from "tar";
 
 import { DesktopEnvironment } from "../app/DesktopEnvironment";
+import { nativeFileError } from "../filesystem/BoundedFileSystem";
 import { layer as desktopObservabilityLayer } from "../app/observability/DesktopObservability";
 import {
   desktopLogRecord,
@@ -59,6 +61,33 @@ const INSTALLED_TREE = "3".repeat(40);
 const REMOTE_TREE = "4".repeat(40);
 const PACKAGE_NAME = "example";
 const PACKAGE_SUBDIRECTORY = "packages/example";
+
+const packageFileSystemLayer = Layer.effect(
+  FileSystem,
+  Effect.map(FileSystem, (fileSystem) => ({
+    ...fileSystem,
+    makeTempDirectory: (options) => {
+      const prefix = join(
+        options?.directory ?? tmpdir(),
+        options?.prefix ?? "",
+      );
+      return Effect.tryPromise({
+        try: () => fs.mkdtemp(prefix),
+        catch: (cause) => nativeFileError("makeTempDirectory", prefix, cause),
+      });
+    },
+    rename: (from, to) =>
+      Effect.tryPromise({
+        try: () => fs.rename(from, to),
+        catch: (cause) => nativeFileError("rename", from, cause),
+      }),
+    remove: (path, options) =>
+      Effect.tryPromise({
+        try: () => fs.rm(path, options),
+        catch: (cause) => nativeFileError("remove", path, cause),
+      }),
+  })),
+).pipe(Layer.provide(desktopFileSystemLayer));
 
 const makeDirectory = async (): Promise<string> => {
   const path = await fs.mkdtemp(join(tmpdir(), "lucent-package-archive-"));
@@ -221,6 +250,7 @@ const makeManagerHarness = (options: {
     ),
   );
   const layer = scriptPackageManagerLayer.pipe(
+    Layer.provide(packageFileSystemLayer),
     Layer.provideMerge(
       Layer.mergeAll(
         environmentLayer,
@@ -372,6 +402,48 @@ const installedPackage = Effect.promise(async () => {
 });
 
 describe("script package folders", () => {
+  it.effect(
+    "removes staging when interrupted immediately after its creation",
+    () =>
+      Effect.gen(function* () {
+        const root = yield* Effect.promise(makeDirectory);
+        const workspaceDir = join(root, "workspace");
+        const harness = makeManagerHarness({
+          workspaceDir,
+          resolution: { status: "modified", commit: REMOTE_COMMIT },
+        });
+        const { manager } = yield* harness.services;
+        const created = yield* Deferred.make<string>();
+        const resume = Promise.withResolvers<void>();
+        const mkdtemp = fs.mkdtemp;
+        vi.spyOn(fs, "mkdtemp").mockImplementation(async (...args) => {
+          const path = await mkdtemp(...args);
+          Deferred.doneUnsafe(created, Effect.succeed(String(path)));
+          await resume.promise;
+          return path;
+        });
+        const installing = yield* manager
+          .install({
+            repositoryUrl: "https://github.com/example/package",
+          })
+          .pipe(Effect.forkScoped);
+        const staging = yield* Deferred.await(created);
+        expect(yield* Effect.promise(() => fs.readdir(workspaceDir))).toContain(
+          staging.slice(workspaceDir.length + 1),
+        );
+        const stopping = yield* Fiber.interrupt(installing).pipe(
+          Effect.forkScoped,
+        );
+        yield* Effect.yieldNow;
+        resume.resolve();
+        yield* Fiber.join(stopping);
+        expect(yield* Effect.promise(() => fs.readdir(workspaceDir))).toEqual([
+          "packages",
+        ]);
+        expect(harness.downloadCount()).toBe(0);
+      }).pipe(Effect.scoped),
+  );
+
   it("makes a readable folder slug from the complete package name", () => {
     expect(scriptPackageDirectorySlug("tools")).toBe("tools");
     expect(scriptPackageDirectorySlug("@author/daily tools")).toBe(
@@ -1781,6 +1853,153 @@ describe("script package update check races", () => {
         source: { resolvedCommit: REMOTE_COMMIT },
         update: { status: "current" },
       });
+    }),
+  );
+
+  it.effect.each([
+    { label: "directory", patch: { directory: "moved" } },
+    { label: "files", patch: { files: { "index.js": "edited" } } },
+    {
+      label: "installedAt",
+      patch: { installedAt: "2026-10-17T00:00:00.000Z" },
+    },
+    { label: "etag", patch: { etag: "changed-etag" } },
+    {
+      label: "remote revision kind",
+      patch: { remoteRevision: { kind: "commit", sha: INSTALLED_TREE } },
+    },
+    {
+      label: "remote revision sha",
+      patch: { remoteRevision: { kind: "tree", sha: REMOTE_TREE } },
+    },
+    {
+      label: "repository URL",
+      source: { repositoryUrl: "https://github.com/example/other" },
+    },
+    { label: "requested ref", source: { requestedRef: "next" } },
+    { label: "credential", source: { credentialId: "changed-credential" } },
+    { label: "resolved commit", source: { resolvedCommit: REMOTE_COMMIT } },
+    { label: "resolved tree", source: { resolvedTree: REMOTE_TREE } },
+    { label: "subdirectory", source: { subdirectory: "packages/other" } },
+    {
+      label: "source kind",
+      patch: {
+        source: {
+          kind: "repository",
+          repositoryUrl: "https://github.com/example/package",
+          resolvedCommit: INSTALLED_COMMIT,
+        },
+      },
+    },
+    { label: "update status", patch: { update: { status: "unchecked" } } },
+    {
+      label: "update checkedAt",
+      patch: {
+        update: {
+          status: "available",
+          checkedAt: "2026-10-17T00:00:00.000Z",
+          revision: { kind: "tree", sha: INSTALLED_TREE },
+        },
+      },
+    },
+    {
+      label: "update revision kind",
+      patch: {
+        update: {
+          status: "available",
+          checkedAt: "2026-08-01T00:00:00.000Z",
+          revision: { kind: "commit", sha: INSTALLED_TREE },
+        },
+      },
+    },
+    {
+      label: "update revision sha",
+      patch: {
+        update: {
+          status: "available",
+          checkedAt: "2026-08-01T00:00:00.000Z",
+          revision: { kind: "tree", sha: REMOTE_TREE },
+        },
+      },
+    },
+    {
+      label: "update message",
+      initialUpdate: { status: "unknown", message: "before" },
+      patch: { update: { status: "unknown", message: "after" } },
+    },
+    {
+      label: "update retryAt",
+      initialUpdate: {
+        status: "rate-limited",
+        message: "limited",
+        retryAt: "2026-08-01T00:00:00.000Z",
+      },
+      patch: {
+        update: {
+          status: "rate-limited",
+          message: "limited",
+          retryAt: "2026-10-17T00:00:00.000Z",
+        },
+      },
+    },
+  ] satisfies readonly {
+    readonly label: string;
+    readonly patch?: Partial<ManagedScriptPackage>;
+    readonly source?: Partial<ManagedScriptPackage["source"]>;
+    readonly initialUpdate?: ManagedScriptPackage["update"];
+  }[])("drops an update check when $label changes", (change) =>
+    Effect.gen(function* () {
+      const { managed, workspaceDir } = yield* installedPackage;
+      const checkStarted = yield* Deferred.make<void>();
+      const finishCheck = yield* Deferred.make<void>();
+      const initial: ManagedScriptPackage = {
+        ...managed,
+        etag: "initial-etag",
+        remoteRevision: { kind: "tree", sha: INSTALLED_TREE },
+        source: {
+          kind: "directory",
+          repositoryUrl: "https://github.com/example/package",
+          requestedRef: "main",
+          credentialId: "initial-credential",
+          resolvedCommit: INSTALLED_COMMIT,
+          resolvedTree: INSTALLED_TREE,
+          subdirectory: PACKAGE_SUBDIRECTORY,
+        },
+        update: change.initialUpdate ?? {
+          status: "available",
+          checkedAt: "2026-08-01T00:00:00.000Z",
+          revision: { kind: "tree", sha: INSTALLED_TREE },
+        },
+      };
+      let saves = 0;
+      const harness = makeManagerHarness({
+        managed: initial,
+        workspaceDir,
+        resolution: { status: "modified", commit: REMOTE_COMMIT },
+        directoryTree: Deferred.succeed(checkStarted, undefined).pipe(
+          Effect.andThen(Deferred.await(finishCheck)),
+          Effect.as(REMOTE_TREE),
+        ),
+        onSave: () =>
+          Effect.sync(() => {
+            saves += 1;
+          }),
+      });
+      const { manager, state } = yield* harness.services;
+      const checking = yield* manager
+        .checkUpdate({ packageName: PACKAGE_NAME })
+        .pipe(Effect.forkScoped);
+      yield* Deferred.await(checkStarted);
+      const patch: Partial<ManagedScriptPackage> =
+        change.source === undefined
+          ? (change.patch ?? {})
+          : { source: { ...initial.source, ...change.source } };
+      yield* state.save({ ...initial, ...patch });
+      yield* Deferred.succeed(finishCheck, undefined);
+      yield* Fiber.join(checking);
+
+      expect(yield* state.get(PACKAGE_NAME)).toMatchObject(patch);
+      expect(saves).toBe(1);
     }),
   );
 

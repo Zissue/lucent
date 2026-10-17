@@ -89,23 +89,39 @@ export const layer = Layer.effect(
       : join(env.assetsDir, "..", "script-api.d.ts");
 
     const createDirectory = (path: string) =>
-      Effect.tryPromise({
-        try: () => fs.mkdir(path, { recursive: true }),
-        catch: (cause) => makeError("create-directory", path, cause),
-      }).pipe(Effect.asVoid);
+      fileSystem
+        .makeDirectory(path, { recursive: true })
+        .pipe(
+          Effect.mapError((cause) =>
+            makeError("create-directory", path, cause.reason.cause ?? cause),
+          ),
+        );
 
-    const createPrivateDirectory = (path: string) =>
-      Effect.tryPromise({
-        try: async () => {
-          await fs.mkdir(path, { mode: 0o700, recursive: true });
-          const info = await fs.lstat(path);
-          if (!info.isDirectory()) {
-            throw new Error(`Expected a directory at ${path}.`);
-          }
-          if (env.platform !== "win32") await fs.chmod(path, 0o700);
-        },
-        catch: (cause) => makeError("create-directory", path, cause),
-      });
+    const createPrivateDirectory = Effect.fnUntraced(
+      function* (path: string) {
+        yield* fileSystem
+          .makeDirectory(path, { mode: 0o700, recursive: true })
+          .pipe(Effect.mapError((cause) => cause.reason.cause ?? cause));
+        const info = yield* Effect.tryPromise({
+          try: () => fs.lstat(path),
+          catch: (cause) => cause,
+        });
+        if (!info.isDirectory())
+          return yield* Effect.fail(
+            new Error(`Expected a directory at ${path}.`),
+          );
+        if (env.platform !== "win32")
+          yield* fileSystem
+            .chmod(path, 0o700)
+            .pipe(Effect.mapError((cause) => cause.reason.cause ?? cause));
+      },
+      (effect, path) =>
+        effect.pipe(
+          Effect.mapError((cause) =>
+            makeError("create-directory", path, cause),
+          ),
+        ),
+    );
 
     const createConfig = Effect.gen(function* () {
       const current = yield* fileSystem

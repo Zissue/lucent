@@ -15,6 +15,11 @@ export class FileSystemLimitError extends Schema.TaggedError<FileSystemLimitErro
   },
 ) {}
 
+export class FileChangedWhileReading extends Schema.TaggedError<FileChangedWhileReading>()(
+  "FileChangedWhileReading",
+  { path: Schema.String },
+) {}
+
 export const readFileBounded = Effect.fn("readFileBounded")(function* (
   fileSystem: FileSystem,
   path: string,
@@ -31,7 +36,10 @@ export const readFileBounded = Effect.fn("readFileBounded")(function* (
     });
   }
   const chunks = yield* Stream.runCollect(
-    fileSystem.stream(path, { bytesToRead: BigInt(maxBytes) + 1n }),
+    fileSystem.stream(path, {
+      bytesToRead: BigInt(maxBytes) + 1n,
+      chunkSize: 64 * 1024,
+    }),
   );
   const size = chunks.reduce((total, chunk) => total + chunk.byteLength, 0);
   if (size > maxBytes)

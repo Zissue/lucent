@@ -1,8 +1,8 @@
-import { promises as fs } from "fs";
 import { basename } from "path";
 
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import { FileSystem } from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
@@ -112,19 +112,12 @@ const wrapError = (
     ...(path === undefined ? {} : { path }),
   });
 
-const ensureDirectory = (
-  path: string,
-): Effect.Effect<void, DesktopScriptLibraryError> =>
-  Effect.tryPromise({
-    try: () => fs.mkdir(path, { recursive: true }),
-    catch: (cause) => wrapError("mkdir", cause, path),
-  }).pipe(Effect.asVoid);
-
 export const layer = Layer.effect(
   DesktopScriptLibrary,
   Effect.gen(function* () {
     const dialog = yield* ElectronDialog;
     const env = yield* DesktopEnvironment;
+    const fileSystem = yield* FileSystem;
     const files = yield* ScriptFiles;
     const catalog = yield* ScriptPackageCatalog;
     const sources = yield* ScriptSourceRegistry;
@@ -179,7 +172,13 @@ export const layer = Layer.effect(
     const selectPath = Effect.fn("DesktopScriptLibrary.selectPath")(function* (
       parentWindowId?: number,
     ) {
-      yield* ensureDirectory(scriptsDir);
+      yield* fileSystem
+        .makeDirectory(scriptsDir, { recursive: true })
+        .pipe(
+          Effect.mapError((cause) =>
+            wrapError("mkdir", cause.reason.cause ?? cause, scriptsDir),
+          ),
+        );
       const result = yield* dialog
         .showOpenDialog(
           {

@@ -1,12 +1,13 @@
 import { promises as fs } from "fs";
 import { basename, dirname, join, resolve } from "path";
-import { isDeepStrictEqual } from "util";
 
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import { FileSystem } from "effect/FileSystem";
+import { isPlatformError, type PlatformError } from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
@@ -53,12 +54,17 @@ import {
 } from "./ScriptPackageDirectories";
 import {
   ScriptPackageState,
+  ManagedScriptPackageSchema,
   type ManagedScriptPackage,
 } from "./ScriptPackageState";
 import { resolveScriptWorkspacePaths } from "./ScriptWorkspacePaths";
 
 const decodePackageDirectory = Schema.decodeUnknownSync(
   ScriptPackageDirectorySchema,
+);
+
+const managedPackagesEquivalent = Schema.toEquivalence(
+  ManagedScriptPackageSchema,
 );
 
 const packageManagerOperationSchema = Schema.Literals([
@@ -175,6 +181,9 @@ const recordRemoteResolution = (
   ...(resolution.etag === undefined ? {} : { etag: resolution.etag }),
 });
 
+const nativeCause = (cause: unknown): unknown =>
+  isPlatformError(cause) ? (cause.reason.cause ?? cause) : cause;
+
 const managerError = (
   operation: typeof packageManagerOperationSchema.Type,
   detail: string,
@@ -183,7 +192,7 @@ const managerError = (
   new ScriptPackageManagerError({
     operation,
     detail,
-    ...(cause === undefined ? {} : { cause }),
+    ...(cause === undefined ? {} : { cause: nativeCause(cause) }),
   });
 
 const localModifications = (
@@ -194,15 +203,14 @@ const localModifications = (
   reason: "local-modifications",
 });
 
-const movePath = (from: string, to: string) =>
-  Effect.tryPromise(() => fs.rename(from, to));
-
 export const layer = Layer.effect(
   ScriptPackageManager,
   Effect.gen(function* () {
     const catalog = yield* ScriptPackageCatalog;
     const client = yield* GitHubScriptPackageClient;
     const env = yield* DesktopEnvironment;
+    const fileSystem = yield* FileSystem;
+    const movePath = fileSystem.rename;
     const state = yield* ScriptPackageState;
     const { packagesDir } = resolveScriptWorkspacePaths(env.workspaceDir);
     const mutationGate = yield* Semaphore.make(1);
@@ -377,19 +385,21 @@ export const layer = Layer.effect(
               cause,
             ),
         });
-        yield* Effect.tryPromise({
-          try: () => fs.mkdir(dirname(destination), { recursive: true }),
-          catch: (cause) =>
-            managerError(
-              "replace",
-              "Failed to replace the package directory.",
-              cause,
+        yield* fileSystem
+          .makeDirectory(dirname(destination), { recursive: true })
+          .pipe(
+            Effect.mapError((cause) =>
+              managerError(
+                "replace",
+                "Failed to replace the package directory.",
+                cause,
+              ),
             ),
-        });
+          );
 
         if (!destinationExists) {
           yield* movePath(staging, destination).pipe(
-            Effect.mapError(({ cause }) =>
+            Effect.mapError((cause) =>
               managerError(
                 "replace",
                 "Failed to replace the package directory.",
@@ -401,12 +411,12 @@ export const layer = Layer.effect(
             Effect.catch((cause) =>
               movePath(destination, staging).pipe(
                 Effect.matchEffect({
-                  onFailure: ({ cause: undoCause }) =>
+                  onFailure: (undoCause) =>
                     Effect.fail(
                       managerError(
                         "replace",
                         `Failed to save package installation state. The new package was left at ${destination}.`,
-                        { cause, undoCause },
+                        { cause, undoCause: nativeCause(undoCause) },
                       ),
                     ),
                   onSuccess: () =>
@@ -424,20 +434,24 @@ export const layer = Layer.effect(
           return yield* publish;
         }
 
-        const backupRoot = yield* Effect.tryPromise({
-          try: () =>
-            fs.mkdtemp(join(env.workspaceDir, SCRIPT_PACKAGE_BACKUP_PREFIX)),
-          catch: (cause) =>
-            managerError(
-              "replace",
-              "Failed to prepare the package backup.",
-              cause,
+        const backupRoot = yield* fileSystem
+          .makeTempDirectory({
+            directory: env.workspaceDir,
+            prefix: SCRIPT_PACKAGE_BACKUP_PREFIX,
+          })
+          .pipe(
+            Effect.mapError((cause) =>
+              managerError(
+                "replace",
+                "Failed to prepare the package backup.",
+                cause,
+              ),
             ),
-        });
+          );
         const backup = join(backupRoot, basename(destination));
-        const discardBackup = Effect.tryPromise(() =>
-          fs.rm(backupRoot, { recursive: true, force: true }),
-        ).pipe(Effect.ignore);
+        const discardBackup = fileSystem
+          .remove(backupRoot, { recursive: true, force: true })
+          .pipe(Effect.ignore);
         const removeEmptyBackup = Effect.tryPromise(() =>
           fs.rmdir(backupRoot),
         ).pipe(Effect.ignore);
@@ -459,16 +473,16 @@ export const layer = Layer.effect(
           );
         });
         const rollBack = (
-          undo: Effect.Effect<void, Cause.UnknownError>,
+          undo: Effect.Effect<void, PlatformError>,
           cause: unknown,
           restoredDetail: string,
           unrestoredDetail: string,
         ) =>
           undo.pipe(
             Effect.match({
-              onFailure: ({ cause: restoreCause }) => ({
-                cause,
-                restoreCause,
+              onFailure: (restoreCause) => ({
+                cause: nativeCause(cause),
+                restoreCause: nativeCause(restoreCause),
               }),
               onSuccess: () => cause,
             }),
@@ -478,7 +492,7 @@ export const layer = Layer.effect(
           );
 
         yield* movePath(destination, backup).pipe(
-          Effect.catch(({ cause }) =>
+          Effect.catch((cause) =>
             failReplacement(cause, "Failed to replace the package directory."),
           ),
         );
@@ -487,7 +501,7 @@ export const layer = Layer.effect(
           (yield* inspectIntegrity(backup, expected)) !== "verified"
         ) {
           yield* movePath(backup, destination).pipe(
-            Effect.catch(({ cause }) =>
+            Effect.catch((cause) =>
               failReplacement(
                 cause,
                 "Failed to restore the locally modified package.",
@@ -503,7 +517,7 @@ export const layer = Layer.effect(
           return localModifications(expected.name);
         }
         yield* movePath(staging, destination).pipe(
-          Effect.catch(({ cause }) =>
+          Effect.catch((cause) =>
             rollBack(
               movePath(backup, destination),
               cause,
@@ -632,25 +646,33 @@ export const layer = Layer.effect(
           );
         }
 
-        yield* Effect.tryPromise({
-          try: () => fs.mkdir(packagesDir, { recursive: true }),
-          catch: (cause) =>
-            managerError(
-              "install",
-              "Failed to create the package directory.",
-              cause,
+        yield* fileSystem
+          .makeDirectory(packagesDir, { recursive: true })
+          .pipe(
+            Effect.mapError((cause) =>
+              managerError(
+                "install",
+                "Failed to create the package directory.",
+                cause,
+              ),
             ),
-        });
-        const temporaryRoot = yield* Effect.tryPromise({
-          try: () =>
-            fs.mkdtemp(join(env.workspaceDir, ".lucent-package-install-")),
-          catch: (cause) =>
-            managerError("install", "Failed to create package staging.", cause),
-        });
-
+          );
         return yield* Effect.acquireUseRelease(
-          Effect.succeed(temporaryRoot),
-          () =>
+          fileSystem
+            .makeTempDirectory({
+              directory: env.workspaceDir,
+              prefix: ".lucent-package-install-",
+            })
+            .pipe(
+              Effect.mapError((cause) =>
+                managerError(
+                  "install",
+                  "Failed to create package staging.",
+                  cause,
+                ),
+              ),
+            ),
+          (temporaryRoot) =>
             Effect.gen(function* () {
               const archive = join(temporaryRoot, "repository.tgz");
               const staging = join(temporaryRoot, "package");
@@ -865,16 +887,17 @@ export const layer = Layer.effect(
                   : undefined,
               );
             }),
-          () =>
-            Effect.tryPromise({
-              try: () => fs.rm(temporaryRoot, { recursive: true }),
-              catch: (cause) =>
+          (temporaryRoot) =>
+            fileSystem.remove(temporaryRoot, { recursive: true }).pipe(
+              Effect.mapError((cause) =>
                 managerError(
                   "install",
                   "Failed to clean package staging.",
                   cause,
                 ),
-            }).pipe(Effect.catch(() => Effect.void)),
+              ),
+              Effect.catch(() => Effect.void),
+            ),
         );
       },
     );
@@ -1025,16 +1048,20 @@ export const layer = Layer.effect(
           if (!isPathInside(bundledRoot, bundledPath))
             return yield* managerError("restore", unavailable);
           return yield* Effect.acquireUseRelease(
-            Effect.tryPromise({
-              try: () =>
-                fs.mkdtemp(join(env.workspaceDir, ".lucent-package-install-")),
-              catch: (cause) =>
-                managerError(
-                  "restore",
-                  "Failed to create package staging.",
-                  cause,
+            fileSystem
+              .makeTempDirectory({
+                directory: env.workspaceDir,
+                prefix: ".lucent-package-install-",
+              })
+              .pipe(
+                Effect.mapError((cause) =>
+                  managerError(
+                    "restore",
+                    "Failed to create package staging.",
+                    cause,
+                  ),
                 ),
-            }),
+              ),
             (temporaryRoot) =>
               Effect.gen(function* () {
                 const staging = join(temporaryRoot, "package");
@@ -1094,9 +1121,9 @@ export const layer = Layer.effect(
                 });
               }),
             (temporaryRoot) =>
-              Effect.tryPromise(() =>
-                fs.rm(temporaryRoot, { recursive: true, force: true }),
-              ).pipe(Effect.ignore),
+              fileSystem
+                .remove(temporaryRoot, { recursive: true, force: true })
+                .pipe(Effect.ignore),
           );
         }),
       );
@@ -1146,18 +1173,20 @@ export const layer = Layer.effect(
             return localModifications(input.packageName);
           }
           return yield* Effect.gen(function* () {
-            const temporaryRoot = yield* Effect.tryPromise({
-              try: () =>
-                fs.mkdtemp(
-                  join(env.workspaceDir, SCRIPT_PACKAGE_REMOVE_PREFIX),
+            const temporaryRoot = yield* fileSystem
+              .makeTempDirectory({
+                directory: env.workspaceDir,
+                prefix: SCRIPT_PACKAGE_REMOVE_PREFIX,
+              })
+              .pipe(
+                Effect.mapError((cause) =>
+                  managerError(
+                    "remove",
+                    "Failed to create removal staging.",
+                    cause,
+                  ),
                 ),
-              catch: (cause) =>
-                managerError(
-                  "remove",
-                  "Failed to create removal staging.",
-                  cause,
-                ),
-            });
+              );
             const removedPath = join(temporaryRoot, basename(root));
             const removeEmptyStaging = Effect.tryPromise(() =>
               fs.rmdir(temporaryRoot),
@@ -1187,15 +1216,14 @@ export const layer = Layer.effect(
                 cause,
               );
             });
-            yield* Effect.tryPromise({
-              try: () => fs.rename(root, removedPath),
-              catch: (cause) =>
+            yield* fileSystem.rename(root, removedPath).pipe(
+              Effect.mapError((cause) =>
                 managerError(
                   "remove",
                   "Failed to stage the package for removal.",
                   cause,
                 ),
-            }).pipe(
+              ),
               Effect.catch((cause) =>
                 failRemoval(cause, "Failed to stage the package for removal."),
               ),
@@ -1204,15 +1232,14 @@ export const layer = Layer.effect(
               input.confirmModified !== true &&
               (yield* inspectIntegrity(removedPath, managed)) !== "verified"
             ) {
-              yield* Effect.tryPromise({
-                try: () => fs.rename(removedPath, root),
-                catch: (cause) =>
+              yield* fileSystem.rename(removedPath, root).pipe(
+                Effect.mapError((cause) =>
                   managerError(
                     "remove",
                     "Failed to restore the locally modified package.",
                     cause,
                   ),
-              }).pipe(
+                ),
                 Effect.catch((cause) =>
                   failRemoval(
                     cause,
@@ -1238,7 +1265,7 @@ export const layer = Layer.effect(
                 ),
               ),
               Effect.catch((error) =>
-                Effect.tryPromise(() => fs.rename(removedPath, root)).pipe(
+                fileSystem.rename(removedPath, root).pipe(
                   Effect.match({
                     onFailure: (restoreCause) => ({
                       cause: error,
@@ -1256,15 +1283,14 @@ export const layer = Layer.effect(
                 ),
               ),
             );
-            yield* Effect.tryPromise({
-              try: () => fs.rm(temporaryRoot, { recursive: true }),
-              catch: (cause) =>
+            yield* fileSystem.remove(temporaryRoot, { recursive: true }).pipe(
+              Effect.mapError((cause) =>
                 managerError(
                   "remove",
                   "Failed to clean removal staging.",
                   cause,
                 ),
-            }).pipe(
+              ),
               Effect.catch((cause) =>
                 Effect.logWarning(
                   "Failed to clean package removal folder",
@@ -1356,7 +1382,10 @@ export const layer = Layer.effect(
         return yield* mutationGate.withPermits(1)(
           Effect.gen(function* () {
             const current = yield* state.get(input.packageName);
-            if (current === undefined || !isDeepStrictEqual(current, managed)) {
+            if (
+              current === undefined ||
+              !managedPackagesEquivalent(current, managed)
+            ) {
               return yield* catalog.getOverview.pipe(
                 Effect.mapError(mapCatalogError),
               );
