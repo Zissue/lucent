@@ -682,6 +682,7 @@ describe("settings change publication", () => {
                     armed = false;
                     return Deferred.succeed(committed, undefined).pipe(
                       Effect.andThen(Deferred.await(hold)),
+                      Effect.interruptible,
                     );
                   }),
                 ),
@@ -706,12 +707,12 @@ describe("settings change publication", () => {
                 .updateAppearance({ themeMode: "light" })
                 .pipe(Effect.forkChild);
               yield* Deferred.await(committed);
+              yield* Fiber.interrupt(running);
               expect((yield* settings.get).appearance.themeMode).toBe("light");
               expect(
                 JSON.parse(yield* Effect.promise(() => readFile(path, "utf8")))
                   .appearance.themeMode,
               ).toBe("light");
-              yield* Fiber.interrupt(running);
               expect(received).toEqual([["light", "light"]]);
             }),
           (spy) =>
@@ -765,3 +766,61 @@ describe("settings change publication", () => {
       }),
   );
 });
+
+it.effect("commits settings interrupted after the file rename", () =>
+  Effect.gen(function* () {
+    let armed = false;
+    const { settings, path } = yield* makeRecoverySettings((fileSystem) =>
+      FileSystem.of({
+        ...fileSystem,
+        rename: (from, to) =>
+          fileSystem.rename(from, to).pipe(
+            Effect.tap(() =>
+              Effect.withFiber((fiber) => {
+                if (armed) {
+                  armed = false;
+                  fiber.interruptUnsafe();
+                }
+                return Effect.void;
+              }),
+            ),
+          ),
+      }),
+    );
+    yield* settings.load;
+    const received: string[] = [];
+    yield* settings.onChanged((next) => {
+      received.push(next.appearance.themeMode);
+    });
+    const { records, logger } = captureLogs();
+    armed = true;
+    const running = yield* settings
+      .updateAppearance({ themeMode: "light" })
+      .pipe(
+        Effect.provideService(Logger.CurrentLoggers, new Set([logger])),
+        Effect.forkChild,
+      );
+    const exit = yield* Fiber.await(running);
+    expect(exit).toMatchObject({
+      _tag: "Failure",
+      cause: { reasons: [{ _tag: "Interrupt" }] },
+    });
+    expect(
+      JSON.parse(yield* Effect.promise(() => readFile(path, "utf8"))).appearance
+        .themeMode,
+    ).toBe("light");
+    expect((yield* settings.get).appearance.themeMode).toBe("light");
+    expect(received).toEqual(["light"]);
+    yield* settings.updatePreferences({ checkForUpdates: true });
+    const current = yield* settings.get;
+    const persisted = JSON.parse(
+      yield* Effect.promise(() => readFile(path, "utf8")),
+    );
+    expect(current.appearance.themeMode).toBe("light");
+    expect(current.preferences.checkForUpdates).toBe(true);
+    expect(persisted.appearance.themeMode).toBe("light");
+    expect(persisted.preferences.checkForUpdates).toBe(true);
+    expect(received).toEqual(["light", "light"]);
+    expect(records).toEqual([]);
+  }),
+);

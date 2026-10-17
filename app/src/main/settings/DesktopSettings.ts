@@ -5,6 +5,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import {
@@ -239,6 +240,7 @@ const makeDesktopSettings = Effect.gen(function* () {
     readonly value: AppSettings | null;
     readonly publicationRevision: number;
   }>({ value: null, publicationRevision: 0 });
+  const commitLock = yield* Semaphore.make(1);
   const settingsChanges = makeListenerRegistry<AppSettings>();
 
   const readSettingsFromFile = Effect.fnUntraced(function* (
@@ -324,14 +326,14 @@ const makeDesktopSettings = Effect.gen(function* () {
         (settings) => [settings, { ...current, value: settings }] as const,
       ),
     ),
-  );
+  ).pipe(Effect.uninterruptible, Semaphore.withPermit(commitLock));
   const load = SynchronizedRef.modifyEffect(settingsRef, (current) =>
     readSettingsFromFile(true).pipe(
       Effect.map(
         (settings) => [settings, { ...current, value: settings }] as const,
       ),
     ),
-  );
+  ).pipe(Effect.uninterruptible, Semaphore.withPermit(commitLock));
   const update = (
     modify: (
       current: AppSettings,
@@ -355,7 +357,11 @@ const makeDesktopSettings = Effect.gen(function* () {
             ] as const,
         ),
       ),
-    ).pipe(Effect.ensuring(publishCurrent));
+    ).pipe(
+      Effect.uninterruptible,
+      Semaphore.withPermit(commitLock),
+      Effect.ensuring(publishCurrent),
+    );
 
   const onChanged: DesktopSettingsShape["onChanged"] =
     settingsChanges.subscribe;

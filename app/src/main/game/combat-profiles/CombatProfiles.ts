@@ -4,6 +4,7 @@ import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Semaphore from "effect/Semaphore";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 import * as Schema from "effect/Schema";
 
@@ -304,6 +305,7 @@ const makeCombatProfiles = Effect.gen(function* () {
     readonly value: CombatProfileLibrary | null;
     readonly publicationRevision: number;
   }>({ value: null, publicationRevision: 0 });
+  const commitLock = yield* Semaphore.make(1);
   const libraryChanges = makeListenerRegistry<CombatProfileLibrary>();
 
   const readLibraryFromFile = Effect.fnUntraced(function* (
@@ -403,7 +405,7 @@ const makeCombatProfiles = Effect.gen(function* () {
         (library) => [library, { ...current, value: library }] as const,
       ),
     ),
-  );
+  ).pipe(Effect.uninterruptible, Semaphore.withPermit(commitLock));
   const load = SynchronizedRef.modifyEffect(libraryRef, (current) =>
     readLibraryFromFile(true).pipe(
       Effect.map(
@@ -417,7 +419,11 @@ const makeCombatProfiles = Effect.gen(function* () {
           ] as const,
       ),
     ),
-  ).pipe(Effect.ensuring(publishCurrent));
+  ).pipe(
+    Effect.uninterruptible,
+    Semaphore.withPermit(commitLock),
+    Effect.ensuring(publishCurrent),
+  );
   const update = (
     modify: (
       current: CombatProfileLibrary,
@@ -441,7 +447,11 @@ const makeCombatProfiles = Effect.gen(function* () {
             ] as const,
         ),
       ),
-    ).pipe(Effect.ensuring(publishCurrent));
+    ).pipe(
+      Effect.uninterruptible,
+      Semaphore.withPermit(commitLock),
+      Effect.ensuring(publishCurrent),
+    );
 
   const deleteProfile: CombatProfilesShape["deleteProfile"] = (profileId) =>
     update((current) => deleteProfileFromLibrary(current, profileId));

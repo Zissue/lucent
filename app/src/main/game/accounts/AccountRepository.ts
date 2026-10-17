@@ -6,6 +6,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import {
@@ -63,6 +64,7 @@ export const layer = Layer.effect(
     const storageRef = yield* SynchronizedRef.make<VersionedStorage | null>(
       null,
     );
+    const commitLock = yield* Semaphore.make(1);
 
     const readStorageFromFile = Effect.fnUntraced(function* (
       diagnostics: boolean,
@@ -163,7 +165,7 @@ export const layer = Layer.effect(
         };
         return [next.storage, next] as const;
       }),
-    );
+    ).pipe(Effect.uninterruptible, Semaphore.withPermit(commitLock));
     const load = SynchronizedRef.modifyEffect(storageRef, (current) =>
       Effect.gen(function* () {
         const storage = yield* readStorageFromFile(true);
@@ -176,7 +178,7 @@ export const layer = Layer.effect(
               };
         return [next.storage, next] as const;
       }),
-    );
+    ).pipe(Effect.uninterruptible, Semaphore.withPermit(commitLock));
     const update: AccountRepositoryShape["update"] = (modify) =>
       SynchronizedRef.modifyEffect(storageRef, (current) =>
         Effect.gen(function* () {
@@ -195,7 +197,7 @@ export const layer = Layer.effect(
           const next = { storage, revision: previous.revision + 1 };
           return [storage, next] as const;
         }),
-      );
+      ).pipe(Effect.uninterruptible, Semaphore.withPermit(commitLock));
 
     return AccountRepository.of({
       get,
