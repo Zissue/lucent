@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "@effect/vitest";
 import { layer as desktopFileSystemLayer } from "@effect/platform-node/NodeFileSystem";
 import { vi } from "vitest";
 import * as Deferred from "effect/Deferred";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -14,6 +15,8 @@ import * as Logger from "effect/Logger";
 import { create as createTar } from "tar";
 
 import { DesktopEnvironment } from "../app/DesktopEnvironment";
+import { layer as desktopObservabilityLayer } from "../app/observability/DesktopObservability";
+import { desktopLogRecord } from "../../shared/logRecord";
 import { initializeBundledScriptPackages } from "./BundledScriptPackages";
 import { ElectronApp } from "../electron/ElectronApp";
 import {
@@ -40,7 +43,10 @@ import {
   type ManagedScriptPackage,
 } from "./ScriptPackageState";
 
-vi.mock("electron", () => ({ app: {} }));
+vi.mock("electron", async () => {
+  const { EventEmitter } = await import("node:events");
+  return { app: {}, ipcMain: new EventEmitter() };
+});
 
 const directories: string[] = [];
 const INSTALLED_COMMIT = "1".repeat(40);
@@ -1714,16 +1720,20 @@ describe("script package removal failures", () => {
             Object.assign(new Error("EPERM"), { code: "EPERM" }),
           );
         });
-        const logs: { level: string; message: unknown }[] = [];
+        const logs: unknown[] = [];
+        const causes: unknown[] = [];
         const result = yield* manager
           .remove({ packageName: PACKAGE_NAME })
           .pipe(
             Effect.withLogger(
               Logger.make((options) => {
-                logs.push({
-                  level: options.logLevel,
-                  message: options.message,
-                });
+                logs.push(desktopLogRecord(options));
+                causes.push(
+                  Cause.prettyErrors(options.cause).map((error) => ({
+                    name: error.name,
+                    message: error.message,
+                  })),
+                );
               }),
             ),
           );
@@ -1736,13 +1746,112 @@ describe("script package removal failures", () => {
           ),
         ).toBe(OLD_SOURCE);
         expect(logs).toEqual([
-          expect.objectContaining({
-            level: "Warn",
-            message: expect.arrayContaining([
-              `Failed to clean package removal folder at ${removalFolder}.`,
-            ]),
-          }),
+          {
+            at: "1970-01-01T00:00:00.000Z",
+            level: "warn",
+            component: "script-packages",
+            message: "Failed to clean package removal folder",
+            repeatKey: removalFolder,
+            data: { path: removalFolder },
+            error: [
+              {
+                name: "ScriptPackageManagerError",
+                message: "Failed to clean removal staging.",
+                stack: expect.any(String),
+                cause: {
+                  name: "Error",
+                  message: "EPERM",
+                  stack: expect.any(String),
+                },
+              },
+            ],
+          },
         ]);
+        expect(causes).toEqual([
+          [
+            {
+              name: "ScriptPackageManagerError",
+              message: "Failed to clean removal staging.",
+            },
+          ],
+        ]);
+      }),
+  );
+
+  it.effect(
+    "writes every cleanup failure when different removal folders fail",
+    () =>
+      Effect.gen(function* () {
+        const root = yield* Effect.promise(makeDirectory);
+        const first = yield* installedPackage;
+        const second = yield* installedPackage;
+        const paths: string[] = [];
+        const rm = fs.rm;
+        vi.spyOn(fs, "rm").mockImplementation((path, options) => {
+          if (!String(path).includes(".lucent-package-remove-"))
+            return rm(path, options);
+          paths.push(String(path));
+          return Promise.reject(
+            Object.assign(new Error("EPERM"), { code: "EPERM" }),
+          );
+        });
+        const logging = desktopObservabilityLayer.pipe(
+          Layer.provide(
+            Layer.succeed(
+              DesktopEnvironment,
+              DesktopEnvironment.of({
+                appDataDir: root,
+                assetsDir: root,
+                debug: false,
+                isDev: false,
+                platform: "darwin",
+                workspaceDir: root,
+              }),
+            ),
+          ),
+        );
+        yield* Effect.gen(function* () {
+          for (const { managed, workspaceDir } of [first, second]) {
+            const { manager } = yield* makeManagerHarness({
+              managed,
+              workspaceDir,
+              resolution: { status: "modified", commit: REMOTE_COMMIT },
+            }).services;
+            expect(
+              (yield* manager.remove({ packageName: PACKAGE_NAME })).status,
+            ).toBe("completed");
+          }
+        }).pipe(Effect.provide(logging));
+        const source = yield* Effect.promise(() =>
+          fs.readFile(join(root, "logs", "lucent.log"), "utf8"),
+        );
+        expect(paths).toHaveLength(2);
+        expect(
+          source
+            .trim()
+            .split("\n")
+            .map((line) => JSON.parse(line)),
+        ).toEqual(
+          paths.map((path) => ({
+            at: "1970-01-01T00:00:00.000Z",
+            level: "warn",
+            component: "script-packages",
+            message: "Failed to clean package removal folder",
+            data: { path },
+            error: [
+              {
+                name: "ScriptPackageManagerError",
+                message: "Failed to clean removal staging.",
+                stack: expect.any(String),
+                cause: {
+                  name: "Error",
+                  message: "EPERM",
+                  stack: expect.any(String),
+                },
+              },
+            ],
+          })),
+        );
       }),
   );
 

@@ -2,7 +2,7 @@ import { promises as fs } from "fs";
 import { basename, dirname, join, resolve } from "path";
 import { isDeepStrictEqual } from "util";
 
-import type * as Cause from "effect/Cause";
+import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -1254,8 +1254,14 @@ export const layer = Layer.effect(
             }).pipe(
               Effect.catch((cause) =>
                 Effect.logWarning(
-                  `Failed to clean package removal folder at ${temporaryRoot}.`,
-                  cause,
+                  "Failed to clean package removal folder",
+                  Cause.fail(cause),
+                ).pipe(
+                  Effect.annotateLogs({
+                    component: "script-packages",
+                    repeatKey: temporaryRoot,
+                    data: { path: temporaryRoot },
+                  }),
                 ),
               ),
             );

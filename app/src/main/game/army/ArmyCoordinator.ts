@@ -823,7 +823,7 @@ const writeEndLog = (
   };
   return (
     isNormalSessionEnd(cause)
-      ? Effect.logInfo("Army session ended")
+      ? Effect.logDebug("Army session ended")
       : Effect.logWarning("Army session ended")
   ).pipe(Effect.annotateLogs({ component: "army", data }));
 };
@@ -916,7 +916,7 @@ export const makeArmyCoordinator = (): Effect.Effect<
           { discard: true },
         ).pipe(
           Effect.andThen(
-            Effect.logInfo("Army session started").pipe(
+            Effect.logDebug("Army session started").pipe(
               Effect.annotateLogs({
                 component: "army",
                 data: {

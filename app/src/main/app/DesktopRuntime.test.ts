@@ -12,10 +12,15 @@ import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
+import * as References from "effect/References";
 import type * as Scope from "effect/Scope";
 import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
 
 import { normalizeAppSettings } from "@lucent/core/settings";
+import {
+  desktopLogRecord,
+  type DesktopLogRecord,
+} from "../../shared/logRecord";
 import type { MessageBoxReturnValue } from "electron";
 import { UpdateReleaseInfo, type UpdateCheckState } from "../../shared/updates";
 import {
@@ -122,6 +127,7 @@ const makeStartup = (options: {
   >;
 }) => {
   const events: string[] = [];
+  const records: DesktopLogRecord[] = [];
   const dialogParents: (number | undefined)[] = [];
   const dialogFailed = Deferred.makeUnsafe<void>();
   const directory = mkdtempSync(join(tmpdir(), "lucent-runtime-"));
@@ -166,8 +172,10 @@ const makeStartup = (options: {
   ).pipe(
     Layer.provideMerge(
       Layer.mergeAll(
+        Layer.succeed(References.MinimumLogLevel, "Debug"),
         Logger.layer([
           Logger.make((log) => {
+            records.push(desktopLogRecord(log));
             if (
               String(log.message) === "Failed to show startup update dialog"
             ) {
@@ -348,6 +356,7 @@ const makeStartup = (options: {
     appEvents.emit("second-instance", {}, argv, "/tmp", additionalData);
   return {
     quitDuringStartup,
+    records,
     dialogParents,
     openedWindows,
     dialogFailed,
@@ -367,6 +376,57 @@ afterEach(() => {
 });
 
 describe("makeDesktopRuntime", () => {
+  it.live.each([
+    { state: availableUpdate, level: "debug", data: { status: "available" } },
+    {
+      state: {
+        status: "current",
+        currentVersion: "1.0.0",
+        latestVersion: "1.0.0",
+        checkedAt: "2026-01-01T00:00:00.000Z",
+      },
+      level: "debug",
+      data: { status: "current" },
+    },
+    {
+      state: {
+        status: "error",
+        currentVersion: "1.0.0",
+        checkedAt: "2026-01-01T00:00:00.000Z",
+        message: "offline",
+      },
+      level: "debug",
+      data: { status: "error" },
+    },
+  ] as const)(
+    "logs startup update status $data.status at $level",
+    ({ state, level, data }) =>
+      Effect.gen(function* () {
+        const completed = yield* Deferred.make<void>();
+        const startup = makeStartup({
+          checkNow: Effect.succeed(state),
+          parentWindowId: Deferred.succeed(completed, undefined).pipe(
+            Effect.as(84),
+          ),
+          showMessageBox: Effect.never,
+        });
+        yield* startup.quitDuringStartup(completed);
+        expect(
+          startup.records.filter(
+            (record) => record.message === "Startup update check completed",
+          ),
+        ).toEqual([
+          {
+            at: expect.any(String),
+            level,
+            component: "updates",
+            message: "Startup update check completed",
+            data,
+          },
+        ]);
+      }),
+  );
+
   it.live(
     "releases startup handlers before layer cleanup and guards repeated quit during cleanup",
     () =>

@@ -166,7 +166,10 @@ const makeDesktopObservability = Effect.gen(function* () {
   };
 
   const logger = Logger.make<unknown, void>((options) => {
-    writeRecord(desktopLogRecord(options), options.date.getTime());
+    writeRecord(
+      desktopLogRecord(options, env.debug === true),
+      options.date.getTime(),
+    );
   });
 
   const handleRendererRecord = (

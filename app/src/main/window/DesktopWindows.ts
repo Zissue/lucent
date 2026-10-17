@@ -517,7 +517,7 @@ const makeDesktopWindows = Effect.gen(function* () {
                 Effect.annotateLogs({
                   component: "window",
                   data: {
-                    url,
+                    host: url.host,
                   },
                 }),
               ),
@@ -1214,7 +1214,7 @@ const makeDesktopWindows = Effect.gen(function* () {
             }),
         }).pipe(
           Effect.catch((cause) =>
-            Effect.logWarning(
+            Effect.logDebug(
               "Failed to open game view DevTools",
               Cause.fail(cause),
             ).pipe(
@@ -1379,7 +1379,7 @@ const makeDesktopWindows = Effect.gen(function* () {
       initialGameView.gameView.webContents.focus();
     }
     hasOpenedTopLevelWindow = true;
-    yield* Effect.logInfo("Multi-game window opened").pipe(
+    yield* Effect.logDebug("Multi-game window opened").pipe(
       Effect.annotateLogs({
         component: "window",
         data: {
@@ -1882,7 +1882,7 @@ const makeDesktopWindows = Effect.gen(function* () {
               }),
           }).pipe(
             Effect.catch((cause) =>
-              Effect.logWarning(
+              Effect.logDebug(
                 "Failed to open DevTools",
                 Cause.fail(cause),
               ).pipe(
@@ -1902,7 +1902,7 @@ const makeDesktopWindows = Effect.gen(function* () {
           record.hidden = false;
           hasOpenedTopLevelWindow = true;
         }
-        yield* Effect.logInfo("Desktop window opened").pipe(
+        yield* Effect.logDebug("Desktop window opened").pipe(
           Effect.annotateLogs({
             component: "window",
             data: {
