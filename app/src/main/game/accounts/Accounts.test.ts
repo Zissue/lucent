@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -194,29 +194,44 @@ describe("Accounts", () => {
             state.sessions.map((session) => session.connection.state),
           );
         });
-        yield* Effect.promise(() => writeFile(repository.path, "{"));
+        const source =
+          '{"accounts":[{"label":"Hero","username":"Hero","password":"secret"}],"groups":{}}';
+        yield* Effect.promise(() => writeFile(repository.path, source));
+        yield* Effect.promise(() => chmod(repository.path, 0));
+        let gameWindowId = -1;
+        try {
+          gameWindowId = yield* gameWindows
+            .open()
+            .pipe(Effect.orElseSucceed(() => -1));
 
-        const gameWindowId = yield* gameWindows
-          .open()
-          .pipe(Effect.orElseSucceed(() => -1));
+          expect(sessions.snapshot()).toMatchObject([
+            {
+              gameWindowGroupId: 1,
+              gameWindowId: 1,
+              rendererGeneration: 1,
+              connection: { state: "offline" },
+            },
+          ]);
+          expect(gameWindowId).toBe(1);
+          expect(connections).toEqual([]);
+          expect(yield* Effect.flip(accounts.getState)).toBeInstanceOf(
+            AccountsError,
+          );
 
-        expect(sessions.snapshot()).toMatchObject([
-          {
-            gameWindowGroupId: 1,
-            gameWindowId: 1,
-            rendererGeneration: 1,
-            connection: { state: "offline" },
-          },
-        ]);
-        expect(gameWindowId).toBe(1);
-        expect(connections).toEqual([]);
-        expect(yield* Effect.flip(accounts.getState)).toBeInstanceOf(
-          AccountsError,
-        );
-
-        yield* Effect.promise(() =>
-          writeFile(repository.path, '{"accounts":[],"groups":{}}'),
-        );
+          expect(
+            yield* accounts
+              .createAccount({ username: "New", password: "new" })
+              .pipe(Effect.flip),
+          ).toMatchObject({
+            _tag: "AccountsError",
+            operation: "read",
+          });
+        } finally {
+          yield* Effect.promise(() => chmod(repository.path, 0o600));
+        }
+        expect(
+          yield* Effect.promise(() => readFile(repository.path, "utf8")),
+        ).toBe(source);
         yield* accounts.reportSession(gameWindowId, {
           rendererGeneration: 1,
           revision: 1,

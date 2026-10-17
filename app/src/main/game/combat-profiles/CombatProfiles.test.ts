@@ -1,14 +1,16 @@
-import { mkdtemp, readFile, rm, writeFile } from "fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { mkdirSync, renameSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
 import { afterEach, describe, expect, it } from "@effect/vitest";
 import { vi } from "vitest";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as References from "effect/References";
 import * as Stream from "effect/Stream";
 import * as SynchronizedRef from "effect/SynchronizedRef";
@@ -23,6 +25,7 @@ import {
 import { DesktopEnvironment } from "../../app/DesktopEnvironment";
 import { FileSystem } from "effect/FileSystem";
 import { layer as desktopFileSystemLayer } from "@effect/platform-node/NodeFileSystem";
+import { JsonFileError } from "../../filesystem/JsonFile";
 import {
   CombatProfiles,
   layer as desktopCombatProfilesLayer,
@@ -95,7 +98,257 @@ const testProfile: CombatProfile = {
   messageTriggers: [],
 };
 
+const captureLogs = <A, E, R>(effect: Effect.Effect<A, E, R>) => {
+  const records: {
+    readonly level: string;
+    readonly message: unknown;
+    readonly annotations: Readonly<Record<string, unknown>>;
+  }[] = [];
+  const logger = Logger.make((options) => {
+    records.push({
+      level: options.logLevel,
+      message:
+        options.cause.reasons.length === 0
+          ? options.message
+          : [
+              ...(Array.isArray(options.message)
+                ? options.message
+                : [options.message]),
+              options.cause,
+            ],
+      annotations: options.fiber.getRef(References.CurrentLogAnnotations),
+    });
+  });
+  return effect.pipe(
+    Effect.provideService(Logger.CurrentLoggers, new Set([logger])),
+    Effect.map((value) => ({ value, records })),
+  );
+};
+
+const genericProfile = {
+  id: "generic-base",
+  label: "Generic",
+  delayMs: 150,
+  cooldownMode: "use-if-ready",
+  steps: [
+    { skill: 1, conditions: [] },
+    { skill: 2, conditions: [] },
+    { skill: 3, conditions: [] },
+    { skill: 4, conditions: [] },
+  ],
+};
+
 describe("CombatProfiles", () => {
+  it.effect("preserves invalid entries on disk until a real save", () =>
+    Effect.gen(function* () {
+      const { combatProfiles, path } = yield* makeHarness();
+      const original = `${JSON.stringify(
+        {
+          version: 1,
+          profiles: [
+            null,
+            { label: "Missing ID" },
+            {
+              id: "survivor",
+              label: "Survivor",
+              delayMs: 150,
+              cooldownMode: "use-if-ready",
+              classNames: ["Mage", 42],
+              steps: [
+                null,
+                {
+                  skill: 2,
+                  conditions: [
+                    { type: "self-hp", op: "<=", value: 30, unit: "percent" },
+                    { type: "invalid" },
+                  ],
+                },
+              ],
+              messageTriggers: [
+                { messageIncludes: "Enrage", skill: 3, source: "aura" },
+                { messageIncludes: "", skill: 2 },
+              ],
+            },
+          ],
+        },
+        null,
+        4,
+      )}\n`;
+      yield* Effect.promise(() => writeFile(path, original));
+
+      const { value, records } = yield* captureLogs(combatProfiles.load);
+
+      expect(value).toEqual({
+        version: 1,
+        profiles: [
+          genericProfile,
+          {
+            id: "survivor",
+            label: "Survivor",
+            delayMs: 150,
+            cooldownMode: "use-if-ready",
+            classNames: ["Mage"],
+            steps: [
+              {
+                skill: 2,
+                conditions: [
+                  { type: "self-hp", op: "<=", value: 30, unit: "percent" },
+                ],
+              },
+            ],
+            messageTriggers: [
+              { messageIncludes: "Enrage", skill: 3, source: "aura" },
+            ],
+          },
+        ],
+      });
+      expect(records).toEqual([
+        {
+          level: "Warn",
+          message: [
+            "Saved combat profiles had invalid entries; ignoring them until the next save",
+          ],
+          annotations: {
+            component: "combat-profiles",
+            data: {
+              path,
+              ignored: {
+                profiles: 2,
+                classNames: 1,
+                steps: 1,
+                conditions: 1,
+                messageTriggers: 1,
+              },
+            },
+          },
+        },
+      ]);
+      expect(yield* Effect.promise(() => readFile(path, "utf8"))).toBe(
+        original,
+      );
+      const saved = yield* combatProfiles.saveProfile({
+        ...testProfile,
+        label: "Saved",
+      });
+      expect(
+        JSON.parse(yield* Effect.promise(() => readFile(path, "utf8"))),
+      ).toEqual(saved);
+      expect(saved.profiles.at(-1)?.label).toBe("Saved");
+    }),
+  );
+
+  it.effect.each(['{"secret":', "null", "[]", '{"profiles":42}'])(
+    "recovers unreadable combat profile data %s without overwriting it",
+    (original) =>
+      Effect.gen(function* () {
+        const { combatProfiles, path } = yield* makeHarness();
+        yield* Effect.promise(() => writeFile(path, original));
+        const { value, records } = yield* captureLogs(combatProfiles.load);
+        expect(value).toEqual({ version: 1, profiles: [genericProfile] });
+        expect(records).toEqual([
+          {
+            level: "Warn",
+            message: [
+              "Saved combat profiles could not be read; using defaults until the next save",
+              ...(original === '{"secret":'
+                ? [
+                    Cause.fail(
+                      new JsonFileError({
+                        operation: "parse",
+                        path,
+                        cause: new SyntaxError("Invalid JSON"),
+                      }),
+                    ),
+                  ]
+                : []),
+            ],
+            annotations: {
+              component: "combat-profiles",
+              data: { path, ignored: { file: 1 } },
+            },
+          },
+        ]);
+        expect(yield* Effect.promise(() => readFile(path, "utf8"))).toBe(
+          original,
+        );
+        const saved = yield* combatProfiles.saveProfile(testProfile);
+        expect(saved.profiles.at(-1)?.label).toBe("Farm Rotation");
+        expect(
+          JSON.parse(yield* Effect.promise(() => readFile(path, "utf8"))),
+        ).toEqual(saved);
+      }),
+  );
+
+  it.effect("fails unreadable storage without overwriting it on save", () =>
+    Effect.gen(function* () {
+      const { combatProfiles, path } = yield* makeHarness();
+      const source =
+        '{"version":1,"profiles":[{"id":"saved","label":"Saved","delayMs":150,"cooldownMode":"use-if-ready","steps":[{"skill":1,"conditions":[]}]}]}\n';
+      yield* Effect.promise(() => writeFile(path, source));
+      yield* Effect.promise(() => chmod(path, 0));
+      const { value, records } = yield* captureLogs(
+        Effect.gen(function* () {
+          try {
+            const loaded = yield* combatProfiles.load.pipe(Effect.result);
+            const saved = yield* combatProfiles
+              .saveProfile(testProfile)
+              .pipe(Effect.result);
+            return { loaded, saved };
+          } finally {
+            yield* Effect.promise(() => chmod(path, 0o600));
+          }
+        }),
+      );
+      for (const result of [value.loaded, value.saved]) {
+        expect(result).toMatchObject({
+          _tag: "Failure",
+          failure: {
+            _tag: "CombatProfilesError",
+            operation: "read",
+            detail: `JSON file read failed at ${path}.`,
+            cause: { _tag: "JsonFileError", operation: "read", path },
+          },
+        });
+      }
+      expect(yield* Effect.promise(() => readFile(path, "utf8"))).toBe(source);
+      expect(records).toEqual([]);
+    }),
+  );
+
+  it.effect("keeps valid migrations and missing optional fields silent", () =>
+    Effect.gen(function* () {
+      const { combatProfiles, path } = yield* makeHarness();
+      const missing = yield* captureLogs(combatProfiles.load);
+      expect(missing.value).toEqual({ version: 1, profiles: [genericProfile] });
+      expect(missing.records).toEqual([]);
+      yield* Effect.promise(() =>
+        writeFile(
+          path,
+          JSON.stringify({
+            profiles: [{ id: "legacy", steps: [{ skill: 2 }] }],
+          }),
+        ),
+      );
+      const migrated = yield* captureLogs(combatProfiles.load);
+      expect(migrated.value).toEqual({
+        version: 1,
+        profiles: [
+          genericProfile,
+          {
+            id: "legacy",
+            label: "Profile",
+            delayMs: 150,
+            cooldownMode: "use-if-ready",
+            steps: [{ skill: 2, conditions: [] }],
+          },
+        ],
+      });
+      expect(migrated.records).toEqual([]);
+      expect(
+        JSON.parse(yield* Effect.promise(() => readFile(path, "utf8"))),
+      ).toEqual(migrated.value);
+    }),
+  );
   it.effect.each(["save", "reload"] as const)(
     "keeps change events ordered when a %s yields",
     (operation) =>
@@ -173,63 +426,74 @@ describe("CombatProfiles", () => {
     }),
   );
 
-  it.effect("loads profile files into canonical data and re-saves them", () =>
-    Effect.gen(function* () {
-      const { combatProfiles, path } = yield* makeHarness();
-      yield* Effect.promise(() =>
-        writeFile(
-          path,
-          JSON.stringify(
-            {
-              version: COMBAT_PROFILE_LIBRARY_VERSION,
-              profiles: [
-                {
-                  id: "broken-profile",
-                  label: "Broken",
-                  delayMs: -1,
-                  cooldownMode: "invalid",
-                  steps: [{ skill: "bad" }],
-                  messageTriggers: [
-                    {
-                      messageIncludes: " Enrage ",
-                      skill: 99,
-                      source: "invalid",
-                      cooldownMs: 999_999,
-                    },
-                  ],
-                },
-              ],
-            },
-            null,
-            2,
-          ),
-          "utf8",
-        ),
-      );
-
-      const loaded = yield* combatProfiles.load;
-      const saved = yield* Effect.promise(() => readFile(path, "utf8"));
-
-      expect(normalizeCombatProfileLibrary(JSON.parse(saved))).toEqual(loaded);
-      expect(loaded.profiles.map((profile) => profile.id)).toEqual([
-        DEFAULT_COMBAT_PROFILE_ID,
-        "broken-profile",
-      ]);
-      expect(loaded.profiles[1]).toMatchObject({
-        id: "broken-profile",
-        label: "Broken",
-        delayMs: 0,
-        cooldownMode: "use-if-ready",
-        messageTriggers: [
+  it.effect(
+    "loads reset fields into canonical data without re-saving them",
+    () =>
+      Effect.gen(function* () {
+        const { combatProfiles, path } = yield* makeHarness();
+        const original = JSON.stringify(
           {
-            messageIncludes: "Enrage",
-            skill: 5,
-            source: "any",
-            cooldownMs: 60_000,
+            version: COMBAT_PROFILE_LIBRARY_VERSION,
+            profiles: [
+              {
+                id: "broken-profile",
+                label: "Broken",
+                delayMs: -1,
+                cooldownMode: "invalid",
+                steps: [{ skill: "bad" }],
+                messageTriggers: [
+                  {
+                    messageIncludes: " Enrage ",
+                    skill: 99,
+                    source: "invalid",
+                    cooldownMs: 999_999,
+                  },
+                ],
+              },
+            ],
           },
-        ],
-      });
-    }),
+          null,
+          2,
+        );
+        yield* Effect.promise(() => writeFile(path, original, "utf8"));
+
+        const { value: loaded, records } = yield* captureLogs(
+          combatProfiles.load,
+        );
+        const saved = yield* Effect.promise(() => readFile(path, "utf8"));
+
+        expect(saved).toBe(original);
+        expect(loaded.profiles.map((profile) => profile.id)).toEqual([
+          DEFAULT_COMBAT_PROFILE_ID,
+          "broken-profile",
+        ]);
+        expect(loaded.profiles[1]).toMatchObject({
+          id: "broken-profile",
+          label: "Broken",
+          delayMs: 0,
+          cooldownMode: "use-if-ready",
+          messageTriggers: [
+            {
+              messageIncludes: "Enrage",
+              skill: 5,
+              source: "any",
+              cooldownMs: 60_000,
+            },
+          ],
+        });
+        expect(records).toEqual([
+          {
+            level: "Warn",
+            message: [
+              "Saved combat profiles had invalid entries; ignoring them until the next save",
+            ],
+            annotations: {
+              component: "combat-profiles",
+              data: { path, ignored: { fields: 5, steps: 1 } },
+            },
+          },
+        ]);
+      }),
   );
 
   it.effect("does not overwrite files with unsupported future versions", () =>
@@ -251,6 +515,36 @@ describe("CombatProfiles", () => {
       expect(error.operation).toBe("parse");
       expect(saved).toBe(original);
     }),
+  );
+
+  it.effect(
+    "rejects future versions before recovering invalid profile shapes",
+    () =>
+      Effect.gen(function* () {
+        const { combatProfiles, path } = yield* makeHarness();
+        const original = '{"version":2,"profiles":42}\n';
+        yield* Effect.promise(() => writeFile(path, original, "utf8"));
+
+        const { value: error, records } = yield* captureLogs(
+          Effect.flip(combatProfiles.load),
+        );
+        const saveError = yield* Effect.flip(
+          combatProfiles.saveProfile(testProfile),
+        );
+
+        expect(error.operation).toBe("parse");
+        expect(error.detail).toBe(
+          "Unsupported combat profile library version 2",
+        );
+        expect(saveError.operation).toBe("parse");
+        expect(saveError.detail).toBe(
+          "Unsupported combat profile library version 2",
+        );
+        expect(records).toEqual([]);
+        expect(yield* Effect.promise(() => readFile(path, "utf8"))).toBe(
+          original,
+        );
+      }),
   );
 
   it.effect(
@@ -439,3 +733,36 @@ describe("CombatProfiles", () => {
       }),
   );
 });
+
+for (const source of ["{", '{"version":1,"profiles":[null]}']) {
+  it.effect(
+    `saves combat profiles without recovery warnings before loading ${source}`,
+    () =>
+      Effect.gen(function* () {
+        const { combatProfiles, path } = yield* makeHarness();
+        yield* Effect.promise(() => writeFile(path, source));
+        const { value, records } = yield* captureLogs(
+          combatProfiles.saveProfile(testProfile),
+        );
+        const expected = {
+          version: 1,
+          profiles: [
+            genericProfile,
+            {
+              id: "archpaladin-farm",
+              label: "Farm Rotation",
+              classNames: ["ArchPaladin"],
+              delayMs: 150,
+              cooldownMode: "use-if-ready",
+              steps: [{ skill: 1, conditions: [], priority: true }],
+            },
+          ],
+        };
+        expect(value).toEqual(expected);
+        expect(
+          JSON.parse(yield* Effect.promise(() => readFile(path, "utf8"))),
+        ).toEqual(expected);
+        expect(records).toEqual([]);
+      }),
+  );
+}
