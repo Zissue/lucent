@@ -22,6 +22,7 @@ if (!app.requestSingleInstanceLock({ argv: process.argv })) {
       app.exit(exitCode);
     },
     (cause: unknown) => {
+      // oxlint-disable-next-line eslint/no-console -- The Effect runtime has failed, so its logger is unavailable.
       console.error("Lucent desktop runtime failed.", cause);
       app.exit(1);
     },
