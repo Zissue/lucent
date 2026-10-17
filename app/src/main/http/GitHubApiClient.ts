@@ -1,7 +1,6 @@
 import type { IncomingHttpHeaders } from "http";
 
 import * as Clock from "effect/Clock";
-import * as DateTime from "effect/DateTime";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -101,6 +100,7 @@ export const retryAtFromGitHubHeaders = (
   return undefined;
 };
 
+/** Distinguishes GitHub throttling responses from ordinary permission errors. */
 export const isGitHubRateLimitResponse = (
   response: {
     readonly body: Buffer;
@@ -147,7 +147,7 @@ const rateLimitError = (
   rateLimit: RateLimitState,
   statusCode?: number,
 ): GitHubApiClientError => {
-  const retryAt = DateTime.formatIso(DateTime.makeUnsafe(rateLimit.until));
+  const retryAt = new Date(rateLimit.until).toISOString();
   return new GitHubApiClientError({
     kind: "rate-limited",
     detail: `GitHub's request limit has been reached. Try again after ${retryAt}.`,
