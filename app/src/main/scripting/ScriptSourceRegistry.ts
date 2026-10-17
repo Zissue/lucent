@@ -261,7 +261,8 @@ export const makeScriptSourceRegistry = Effect.fn("makeScriptSourceRegistry")(
         module: moduleFromAnalysis(target, analysis),
         requirements: target.format === "commonjs" ? analysis.requirements : [],
       };
-      if (cached !== undefined) sourceCacheBytes -= cached.bytes;
+      const previous = sourceCache.get(target.absolutePath);
+      if (previous !== undefined) sourceCacheBytes -= previous.bytes;
       sourceCache.delete(target.absolutePath);
       sourceCache.set(target.absolutePath, next);
       sourceCacheBytes += next.bytes;
