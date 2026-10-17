@@ -6,11 +6,13 @@ import { afterEach, describe, expect, it } from "@effect/vitest";
 // Vitest requires a direct import for hoisted mocks.
 import { vi } from "vitest";
 import * as Deferred from "effect/Deferred";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
+import * as References from "effect/References";
 import { TestClock } from "effect/testing";
 
 import { DEFAULT_APP_SETTINGS, type AppSettings } from "@lucent/core/settings";
@@ -119,6 +121,24 @@ const testSettings = (checkForUpdates: boolean): AppSettings => ({
 });
 
 const tempDirs = new Set<string>();
+
+const makeLogCapture = () => {
+  const records: {
+    readonly level: string;
+    readonly message: unknown;
+    readonly annotations: Readonly<Record<string, unknown>>;
+    readonly cause: Cause.Cause<unknown>;
+  }[] = [];
+  const logger = Logger.make((options) => {
+    records.push({
+      level: options.logLevel,
+      message: options.message,
+      annotations: options.fiber.getRef(References.CurrentLogAnnotations),
+      cause: options.cause,
+    });
+  });
+  return { records, layer: Logger.layer([logger]) };
+};
 
 const makeTempDir = async (prefix: string): Promise<string> => {
   const path = await mkdtemp(join(tmpdir(), prefix));
@@ -236,6 +256,77 @@ afterEach(async () => {
 });
 
 describe("DesktopUpdates", () => {
+  it.effect.each([false, true])(
+    "logs one warning for a shared failed check with force %s",
+    (force) =>
+      Effect.gen(function* () {
+        const capture = makeLogCapture();
+        const { layer } = yield* makeUpdatesHarness({
+          checkForUpdates: true,
+          currentVersion: "1.0.0",
+          httpClient: {
+            ...httpClient,
+            get: () =>
+              Effect.yieldNow.pipe(
+                Effect.andThen(
+                  Effect.fail(
+                    new DesktopHttpClientError({
+                      kind: "response-too-large",
+                      detail: "Release response is too large.",
+                      url: "https://api.github.com",
+                    }),
+                  ),
+                ),
+              ),
+          },
+        });
+        const states = yield* Effect.gen(function* () {
+          const updates = yield* DesktopUpdates;
+          return yield* Effect.all(
+            [updates.checkNow({ force }), updates.checkNow({ force })],
+            { concurrency: "unbounded" },
+          );
+        }).pipe(Effect.provide(layer.pipe(Layer.provide(capture.layer))));
+
+        expect(states.map((state) => state.status)).toEqual(["error", "error"]);
+        expect(
+          capture.records.map(({ level, message, annotations }) => ({
+            level,
+            message,
+            annotations,
+          })),
+        ).toEqual([
+          {
+            level: "Warn",
+            message: ["Failed to check for updates"],
+            annotations: {
+              component: "updates",
+              data: { currentVersion: "1.0.0", force },
+            },
+          },
+        ]);
+        expect(
+          capture.records.map((record) => Cause.hasFails(record.cause)),
+        ).toEqual([true]);
+      }),
+  );
+
+  it.effect("keeps shutdown cancellation silent", () =>
+    Effect.gen(function* () {
+      const capture = makeLogCapture();
+      const { layer, started, events } = yield* makeHangingCheckHarness;
+      yield* Effect.gen(function* () {
+        const updates = yield* DesktopUpdates;
+        yield* updates.checkNow().pipe(Effect.forkChild);
+        yield* Deferred.await(started);
+        expect((yield* updates.getState).status).toBe("checking");
+      }).pipe(Effect.provide(layer.pipe(Layer.provide(capture.layer))));
+
+      expect(events).toEqual(["check-interrupted"]);
+      expect(capture.records).toEqual([]);
+    }),
+  );
+
   it.effect.each(["1.0.0", "1.0.0-beta.1"])(
     "rejects an oversized release response for %s",
     (currentVersion) =>

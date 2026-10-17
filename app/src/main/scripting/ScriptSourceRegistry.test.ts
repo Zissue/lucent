@@ -6,6 +6,9 @@ import { afterEach, describe, expect, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
+import { vi } from "vitest";
+import { desktopLogRecord } from "../../shared/logRecord";
 
 import { makeScriptFiles, ScriptFiles } from "./ScriptFiles";
 import { processScriptFile } from "./ScriptFileAnalysis";
@@ -13,7 +16,11 @@ import {
   discoverScriptCatalog,
   type DiscoveredScriptCatalog,
 } from "./ScriptCatalogDiscovery";
-import { ScriptPackageCatalog } from "./ScriptPackageCatalog";
+import {
+  ScriptPackageCatalog,
+  ScriptPackageCatalogError,
+  type ScriptPackageCatalogShape,
+} from "./ScriptPackageCatalog";
 import {
   makeScriptSourceRegistry,
   ScriptSourceRegistry,
@@ -42,6 +49,7 @@ const makeLayer = (
   discovery: DiscoveredScriptCatalog,
   scriptFiles = makeScriptFiles((path) => processScriptFile(path)),
   limits?: Parameters<typeof makeScriptSourceRegistry>[0],
+  catalogOverrides: Partial<ScriptPackageCatalogShape> = {},
 ) => {
   const overview = {
     packages: discovery.catalog.packages,
@@ -75,6 +83,7 @@ const makeLayer = (
         ),
       ),
     updateManagedPackage: () => Effect.succeed(overview),
+    ...catalogOverrides,
   });
   return Layer.effect(
     ScriptSourceRegistry,
@@ -550,4 +559,211 @@ describe("script source dependency discovery", () => {
       expect(error.message).toContain("./missing");
     }),
   );
+});
+
+describe("terminal script resolution logging", () => {
+  for (const method of ["resolvePath", "resolveReference"] as const) {
+    it.effect(`logs one worker failure through ${method}`, () =>
+      Effect.gen(function* () {
+        const workspace = yield* Effect.promise(makeWorkspace);
+        const path = join(workspace.scriptsDir, "entry.js");
+        yield* Effect.promise(() =>
+          write(path, "module.exports = function* run() {};"),
+        );
+        const discovery = yield* Effect.promise(() =>
+          discoverScriptCatalog({
+            currentVersion: "1.0.0",
+            packagesDir: workspace.packagesDir,
+            scriptsDir: workspace.scriptsDir,
+          }),
+        );
+        const registry = yield* ScriptSourceRegistry.pipe(
+          Effect.provide(
+            makeLayer(
+              discovery,
+              makeScriptFiles(() =>
+                Promise.reject(new Error("worker crashed")),
+              ),
+            ),
+          ),
+        );
+        const logs: unknown[] = [];
+        const operation =
+          method === "resolvePath"
+            ? registry.resolvePath(path)
+            : registry.resolveReference({ kind: "loose", path: "entry.js" });
+        const result = yield* operation.pipe(
+          Effect.withLogger(
+            Logger.make((options) => {
+              const { level, component, message, data, repeatKey } =
+                desktopLogRecord(options);
+              logs.push({ level, component, message, data, repeatKey });
+            }),
+          ),
+        );
+        expect(result).toMatchObject({
+          status: "failed",
+          path: "entry.js",
+          message: "worker crashed",
+        });
+        expect(logs).toEqual([
+          {
+            level: "error",
+            component: "script-files",
+            message: "Script file analysis failed unexpectedly",
+            data: { path: "entry.js" },
+            repeatKey: "entry.js",
+          },
+        ]);
+      }),
+    );
+  }
+
+  it.effect(
+    "logs unexpected reads once and keeps missing and invalid sources silent",
+    () =>
+      Effect.gen(function* () {
+        const workspace = yield* Effect.promise(makeWorkspace);
+        const path = join(workspace.scriptsDir, "entry.js");
+        yield* Effect.promise(() =>
+          write(path, "module.exports = function* run() {};"),
+        );
+        const discovery = yield* Effect.promise(() =>
+          discoverScriptCatalog({
+            currentVersion: "1.0.0",
+            packagesDir: workspace.packagesDir,
+            scriptsDir: workspace.scriptsDir,
+          }),
+        );
+        const registry = yield* ScriptSourceRegistry.pipe(
+          Effect.provide(makeLayer(discovery)),
+        );
+        const logs: unknown[] = [];
+        const logger = Logger.make((options) => {
+          const { level, component, message, data, repeatKey } =
+            desktopLogRecord(options);
+          logs.push({ level, component, message, data, repeatKey });
+        });
+        const reference = { kind: "loose", path: "entry.js" } as const;
+        vi.spyOn(fs, "stat").mockRejectedValueOnce(
+          Object.assign(new Error("access denied"), { code: "EACCES" }),
+        );
+        const failed = yield* registry
+          .resolveReference(reference)
+          .pipe(Effect.withLogger(logger));
+        vi.restoreAllMocks();
+        yield* Effect.promise(() =>
+          write(path, "module.exports = function* ("),
+        );
+        const malformed = yield* registry
+          .resolveReference(reference)
+          .pipe(Effect.withLogger(logger));
+        yield* Effect.promise(() => write(path, 'require("./missing");'));
+        const invalidImport = yield* registry
+          .resolveReference(reference)
+          .pipe(Effect.withLogger(logger));
+        yield* Effect.promise(() => fs.rm(path));
+        const missing = yield* registry
+          .resolveReference(reference)
+          .pipe(Effect.withLogger(logger));
+        expect(failed).toMatchObject({
+          status: "failed",
+          path: "entry.js",
+          message: "access denied",
+        });
+        expect(malformed).toMatchObject({
+          status: "failed",
+          message: "Script source could not be parsed.",
+        });
+        expect(invalidImport).toMatchObject({
+          status: "failed",
+          message:
+            'entry.js can\'t import "./missing". The relative module was not found.',
+        });
+        expect(missing).toMatchObject({
+          status: "failed",
+          message: `Script file was not found at ${path}.`,
+        });
+        expect(logs).toEqual([
+          {
+            level: "warn",
+            component: "script-files",
+            message: "Failed to resolve script file",
+            data: { path: "entry.js" },
+            repeatKey: "entry.js",
+          },
+        ]);
+      }),
+  );
+
+  for (const method of ["resolvePath", "resolveReference"] as const) {
+    it.effect(
+      `logs a catalog failure converted by ${method} and keeps absent entries silent`,
+      () =>
+        Effect.gen(function* () {
+          const workspace = yield* Effect.promise(makeWorkspace);
+          const discovery = yield* Effect.promise(() =>
+            discoverScriptCatalog({
+              currentVersion: "1.0.0",
+              packagesDir: workspace.packagesDir,
+              scriptsDir: workspace.scriptsDir,
+            }),
+          );
+          const path = join(workspace.scriptsDir, "missing.js");
+          const failing = yield* ScriptSourceRegistry.pipe(
+            Effect.provide(
+              makeLayer(discovery, undefined, undefined, {
+                [method === "resolvePath"
+                  ? "referenceForPath"
+                  : "resolveReference"]: () =>
+                  Effect.fail(
+                    new ScriptPackageCatalogError({
+                      operation: "scan",
+                      cause: new Error("access denied"),
+                    }),
+                  ),
+              }),
+            ),
+          );
+          const normal = yield* ScriptSourceRegistry.pipe(
+            Effect.provide(makeLayer(discovery)),
+          );
+          const logs: unknown[] = [];
+          const logger = Logger.make((options) => {
+            const { level, component, message, data, repeatKey } =
+              desktopLogRecord(options);
+            logs.push({ level, component, message, data, repeatKey });
+          });
+          const request = (registry: typeof normal) =>
+            method === "resolvePath"
+              ? registry.resolvePath(path)
+              : registry.resolveReference({
+                  kind: "loose",
+                  path: "missing.js",
+                });
+          const result = yield* request(failing).pipe(
+            Effect.withLogger(logger),
+          );
+          const missing = yield* request(normal).pipe(
+            Effect.withLogger(logger),
+          );
+          const displayPath = method === "resolvePath" ? path : "missing.js";
+          expect(result).toMatchObject({
+            status: "failed",
+            path: displayPath,
+            message: "Failed to scan the script package catalog.",
+          });
+          expect(missing).toEqual({ status: "missing", path: displayPath });
+          expect(logs).toEqual([
+            {
+              level: "warn",
+              component: "script-files",
+              message: "Failed to resolve script file",
+              data: { path: displayPath },
+              repeatKey: displayPath,
+            },
+          ]);
+        }),
+    );
+  }
 });

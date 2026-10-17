@@ -3,6 +3,8 @@ import { createReadStream, promises as fs } from "fs";
 import { basename } from "path";
 
 import * as Effect from "effect/Effect";
+import * as Cause from "effect/Cause";
+import * as Exit from "effect/Exit";
 
 import {
   formatBytes,
@@ -43,13 +45,18 @@ const errorDetailsText = (error: unknown): string | undefined =>
     ? error.stack
     : undefined;
 
-const failed = (path: string, error: unknown): ScriptFileAnalysisResolution => {
+const failed = (
+  path: string,
+  error: unknown,
+  failureCause?: Cause.Cause<unknown>,
+): ScriptFileAnalysisResolution => {
   const detailsText = errorDetailsText(error);
   return {
     status: "failed",
     path,
     message: errorMessage(error),
     ...(detailsText === undefined ? {} : { detailsText }),
+    ...(failureCause === undefined ? {} : { failureCause }),
   };
 };
 
@@ -61,9 +68,11 @@ const isMissingError = (error: unknown): boolean => {
 const fingerprint = (stat: Awaited<ReturnType<typeof fs.stat>>): string =>
   [stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(":");
 
+class ScriptFileValidationError extends Error {}
+
 const assertFileSize = (path: string, size: number): void => {
   if (size > SCRIPT_FILE_MAX_BYTES) {
-    throw new Error(
+    throw new ScriptFileValidationError(
       `Script file exceeds the ${formatBytes(SCRIPT_FILE_MAX_BYTES)} limit: ${path}.`,
     );
   }
@@ -121,11 +130,16 @@ const readStableFile = async (
     }
   }
 
-  throw new Error(`Script file changed while it was being read: ${path}.`);
+  throw new ScriptFileValidationError(
+    `Script file changed while it was being read: ${path}.`,
+  );
 };
 
 const analyzeSource = (source: string, path: string) =>
-  Effect.runPromise(analyzeScriptSource(source, path));
+  Effect.runPromiseExit(analyzeScriptSource(source, path)).then((exit) => {
+    if (Exit.isFailure(exit)) throw exit.cause;
+    return exit.value;
+  });
 
 const cachedAnalysis = async (
   source: string,
@@ -163,10 +177,23 @@ const cachedAnalysis = async (
 export const processScriptFile = async (
   path: string,
 ): Promise<ScriptFileAnalysisResolution> => {
+  let stable: Awaited<ReturnType<typeof readStableFile>>;
   try {
-    const stable = await readStableFile(path);
-    if ("missing" in stable) return { status: "missing", path };
+    stable = await readStableFile(path);
+  } catch (error) {
+    return isMissingError(error)
+      ? { status: "missing", path }
+      : failed(
+          path,
+          error,
+          error instanceof ScriptFileValidationError
+            ? undefined
+            : Cause.fail(error),
+        );
+  }
+  if ("missing" in stable) return { status: "missing", path };
 
+  try {
     const { contents } = stable;
     const source = contents.toString("utf8");
     const revision = createHash("sha256").update(contents).digest("hex");
@@ -186,8 +213,13 @@ export const processScriptFile = async (
       },
     };
   } catch (error) {
-    return isMissingError(error)
-      ? { status: "missing", path }
-      : failed(path, error);
+    const cause = Cause.isCause(error) ? error : Cause.die(error);
+    return failed(
+      path,
+      Cause.squash(cause),
+      Cause.hasDies(cause) || Cause.hasInterruptsOnly(cause)
+        ? cause
+        : undefined,
+    );
   }
 };

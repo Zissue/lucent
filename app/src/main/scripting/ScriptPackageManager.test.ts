@@ -16,7 +16,10 @@ import { create as createTar } from "tar";
 
 import { DesktopEnvironment } from "../app/DesktopEnvironment";
 import { layer as desktopObservabilityLayer } from "../app/observability/DesktopObservability";
-import { desktopLogRecord } from "../../shared/logRecord";
+import {
+  desktopLogRecord,
+  type DesktopLogRecord,
+} from "../../shared/logRecord";
 import { initializeBundledScriptPackages } from "./BundledScriptPackages";
 import { ElectronApp } from "../electron/ElectronApp";
 import {
@@ -115,7 +118,7 @@ const makeManagerHarness = (options: {
   readonly onDownload?: () => Promise<void>;
   readonly resolution:
     | GitHubCommitResolution
-    | Effect.Effect<GitHubCommitResolution>;
+    | Effect.Effect<GitHubCommitResolution, GitHubScriptPackageClientError>;
   readonly workspaceDir: string;
 }) => {
   let downloadCount = 0;
@@ -1372,6 +1375,279 @@ describe("script package local modifications", () => {
 });
 
 describe("script package update check races", () => {
+  it.effect.each(["update", "remove"] as const)(
+    "logs inspection and fallback scan failures once during %s",
+    (operation) =>
+      Effect.gen(function* () {
+        const { destination, managed, workspaceDir } = yield* installedPackage;
+        const harness = makeManagerHarness({
+          managed,
+          resolution: { status: "modified", commit: INSTALLED_COMMIT },
+          workspaceDir,
+        });
+        const { manager, catalog } = yield* harness.services;
+        expect((yield* catalog.getOverview).packages[0]).toMatchObject({
+          name: "example",
+          integrity: "verified",
+        });
+        const readdir = fs.readdir;
+        vi.spyOn(fs, "readdir").mockImplementation((path, options) =>
+          String(path) === destination ||
+          String(path).includes(".lucent-package-remove-")
+            ? Promise.reject(
+                Object.assign(new Error("EACCES"), { code: "EACCES" }),
+              )
+            : readdir(path, options),
+        );
+        const logs: DesktopLogRecord[] = [];
+        const result = yield* manager[operation]({
+          packageName: "example",
+        }).pipe(
+          Effect.withLogger(
+            Logger.make((options) => logs.push(desktopLogRecord(options))),
+          ),
+        );
+        expect(result).toEqual({
+          status: "confirmation-required",
+          packageName: "example",
+          reason: "local-modifications",
+        });
+        expect((yield* catalog.getOverview).packages[0]).toMatchObject({
+          status: "invalid",
+          name: "example",
+          diagnostic: "EACCES",
+        });
+        expect(
+          logs.map(({ level, component, message, repeatKey, data }) => ({
+            level,
+            component,
+            message,
+            repeatKey,
+            data,
+          })),
+        ).toEqual([
+          {
+            level: "warn",
+            component: "script-packages",
+            message: "Failed to inspect script package files",
+            repeatKey: "example",
+            data: { packageNames: ["example"] },
+          },
+        ]);
+        expect(logs[0]?.error).toEqual([
+          expect.objectContaining({ name: "Error", message: "EACCES" }),
+        ]);
+      }),
+  );
+
+  it.effect.each([
+    { operation: "update", warmed: true },
+    { operation: "update", warmed: false },
+    { operation: "remove", warmed: true },
+    { operation: "remove", warmed: false },
+  ] as const)(
+    "logs unexpected integrity failures once during $operation with warmed catalog $warmed",
+    ({ operation, warmed }) =>
+      Effect.gen(function* () {
+        const { managed, workspaceDir } = yield* installedPackage;
+        const harness = makeManagerHarness({
+          managed,
+          resolution: { status: "modified", commit: INSTALLED_COMMIT },
+          workspaceDir,
+        });
+        const { manager, catalog } = yield* harness.services;
+        if (warmed) {
+          expect((yield* catalog.getOverview).packages[0]).toMatchObject({
+            name: "example",
+            integrity: "verified",
+          });
+        }
+        const stat = fs.stat;
+        vi.spyOn(fs, "stat").mockImplementation(
+          (...args: Parameters<typeof fs.stat>) =>
+            String(args[0]).endsWith("index.js")
+              ? Promise.reject(Object.assign(new Error("EIO"), { code: "EIO" }))
+              : stat(...args),
+        );
+        const logs: DesktopLogRecord[] = [];
+        const result = yield* manager[operation]({
+          packageName: "example",
+        }).pipe(
+          Effect.withLogger(
+            Logger.make((options) => logs.push(desktopLogRecord(options))),
+          ),
+        );
+        expect(result).toEqual({
+          status: "confirmation-required",
+          packageName: "example",
+          reason: "local-modifications",
+        });
+        expect((yield* catalog.getOverview).packages[0]).toMatchObject({
+          name: "example",
+          integrity: "modified",
+        });
+        expect(
+          logs.map(({ level, component, message, repeatKey, data }) => ({
+            level,
+            component,
+            message,
+            repeatKey,
+            data,
+          })),
+        ).toEqual([
+          {
+            level: "warn",
+            component: "script-packages",
+            message: "Failed to inspect script package files",
+            repeatKey: "example",
+            data: { packageNames: ["example"] },
+          },
+        ]);
+        expect(logs[0]?.error).toEqual([
+          expect.objectContaining({ name: "Error", message: "EIO" }),
+        ]);
+      }),
+  );
+
+  it.effect.each(["update", "remove"] as const)(
+    "keeps missing tracked files silent during %s",
+    (operation) =>
+      Effect.gen(function* () {
+        const { destination, managed, workspaceDir } = yield* installedPackage;
+        const harness = makeManagerHarness({
+          managed,
+          resolution: { status: "modified", commit: INSTALLED_COMMIT },
+          workspaceDir,
+        });
+        const { manager, catalog } = yield* harness.services;
+        expect((yield* catalog.getOverview).packages[0]).toMatchObject({
+          name: "example",
+          integrity: "verified",
+        });
+        yield* Effect.promise(() => fs.unlink(join(destination, "index.js")));
+        const logs: DesktopLogRecord[] = [];
+        const result = yield* manager[operation]({
+          packageName: "example",
+        }).pipe(
+          Effect.withLogger(
+            Logger.make((options) => logs.push(desktopLogRecord(options))),
+          ),
+        );
+        expect(result).toEqual({
+          status: "confirmation-required",
+          packageName: "example",
+          reason: "local-modifications",
+        });
+        expect((yield* catalog.getOverview).packages[0]).toMatchObject({
+          name: "example",
+          integrity: "modified",
+        });
+        expect(logs).toEqual([]);
+      }),
+  );
+
+  it.effect(
+    "logs recovered update-check failures with safe package context",
+    () =>
+      Effect.gen(function* () {
+        const { managed, workspaceDir } = yield* installedPackage;
+        const failure = new GitHubScriptPackageClientError({
+          kind: "rate-limited",
+          detail: "GitHub's request limit has been reached.",
+          retryAt: "2026-10-17T12:00:00.000Z",
+        });
+        const harness = makeManagerHarness({
+          managed,
+          resolution: Effect.fail(failure),
+          workspaceDir,
+        });
+        const { manager, state } = yield* harness.services;
+        const logs: DesktopLogRecord[] = [];
+        const catalog = yield* manager
+          .checkUpdate({ packageName: "example" })
+          .pipe(
+            Effect.withLogger(
+              Logger.make((options) => logs.push(desktopLogRecord(options))),
+            ),
+          );
+        expect(catalog.packages[0]).toMatchObject({
+          name: "example",
+          update: {
+            status: "rate-limited",
+            retryAt: "2026-10-17T12:00:00.000Z",
+          },
+        });
+        expect((yield* state.get("example"))?.update).toEqual({
+          status: "rate-limited",
+          message: "GitHub's request limit has been reached.",
+          retryAt: "2026-10-17T12:00:00.000Z",
+        });
+        expect(
+          logs.map(({ level, component, message, repeatKey, data }) => ({
+            level,
+            component,
+            message,
+            repeatKey,
+            data,
+          })),
+        ).toEqual([
+          {
+            level: "warn",
+            component: "script-packages",
+            message: "Failed to check script package updates",
+            repeatKey: "rate-limited",
+            data: {
+              packageName: "example",
+              category: "rate-limited",
+              retryAt: "2026-10-17T12:00:00.000Z",
+            },
+          },
+        ]);
+        expect(logs[0]?.error).toEqual([
+          expect.objectContaining({
+            name: "GitHubScriptPackageClientError",
+            message: "GitHub's request limit has been reached.",
+          }),
+        ]);
+      }),
+  );
+
+  it.effect("keeps successful and interrupted update checks silent", () =>
+    Effect.gen(function* () {
+      const { managed, workspaceDir } = yield* installedPackage;
+      const harness = makeManagerHarness({
+        managed,
+        resolution: { status: "modified", commit: INSTALLED_COMMIT },
+        workspaceDir,
+      });
+      const { manager } = yield* harness.services;
+      const logs: DesktopLogRecord[] = [];
+      const logger = Logger.make((options) =>
+        logs.push(desktopLogRecord(options)),
+      );
+      const result = yield* manager
+        .checkUpdate({ packageName: "example" })
+        .pipe(Effect.withLogger(logger));
+      expect(result.packages[0]).toMatchObject({
+        name: "example",
+        update: { status: "current" },
+      });
+      const interrupted = makeManagerHarness({
+        managed,
+        resolution: Effect.interrupt,
+        workspaceDir,
+      });
+      const interruptedManager = yield* ScriptPackageManager.pipe(
+        Effect.provide(interrupted.layer),
+      );
+      const exit = yield* interruptedManager
+        .checkUpdate({ packageName: "example" })
+        .pipe(Effect.withLogger(logger), Effect.exit);
+      expect(exit).toMatchObject({ _tag: "Failure" });
+      expect(logs).toEqual([]);
+    }),
+  );
+
   it.effect("waits for an in-flight remove before saving a check", () =>
     Effect.gen(function* () {
       const { managed, workspaceDir } = yield* installedPackage;

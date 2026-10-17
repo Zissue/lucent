@@ -12,6 +12,7 @@ import type * as Scope from "effect/Scope";
 import { gt, prerelease, valid } from "semver";
 
 import { UpdateReleaseInfo, type UpdateCheckState } from "../../shared/updates";
+import { logFailure } from "../../shared/logFailure";
 import { DesktopEnvironment } from "../app/DesktopEnvironment";
 import { makeListenerRegistry, type Listener } from "../app/ListenerRegistry";
 import { ElectronApp } from "../electron/ElectronApp";
@@ -435,6 +436,18 @@ const makeDesktopUpdates = (
       }).pipe(
         Effect.catch((error) =>
           Effect.gen(function* () {
+            yield* logFailure(
+              "Failed to check for updates",
+              Cause.fail(error),
+              {
+                failure: "warning",
+              },
+            ).pipe(
+              Effect.annotateLogs({
+                component: "updates",
+                data: { currentVersion, force },
+              }),
+            );
             const checkedAt = now().toISOString();
             const next: UpdateCheckState = {
               status: "error",

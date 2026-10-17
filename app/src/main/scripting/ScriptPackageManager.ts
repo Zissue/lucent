@@ -19,6 +19,7 @@ import type {
 } from "@lucent/core/scriptPackages";
 import { ScriptPackageDirectorySchema } from "@lucent/core/scriptPackages";
 import { DesktopEnvironment } from "../app/DesktopEnvironment";
+import { logFailure } from "../../shared/logFailure";
 import {
   GitHubScriptPackageClient,
   GitHubScriptPackageClientError,
@@ -32,6 +33,9 @@ import {
   inspectScriptPackageDirectory,
   inspectManagedPackageFolder,
   integrityFor,
+  logScriptPackageInspectionFailures,
+  withScriptPackageInspectionFailures,
+  type ScriptPackageInspectionFailure,
 } from "./ScriptPackageInspection";
 import { ScriptPackageCatalog } from "./ScriptPackageCatalog";
 import type { ScriptPackageCatalogReplacement } from "./ScriptCatalogDiscovery";
@@ -202,6 +206,19 @@ export const layer = Layer.effect(
     const state = yield* ScriptPackageState;
     const { packagesDir } = resolveScriptWorkspacePaths(env.workspaceDir);
     const mutationGate = yield* Semaphore.make(1);
+
+    const inspectIntegrity = Effect.fnUntraced(function* (
+      rootPath: string,
+      managed: ManagedScriptPackage | undefined,
+    ) {
+      const failures: ScriptPackageInspectionFailure[] = [];
+      const integrity = yield* Effect.promise(() =>
+        integrityFor(rootPath, managed, (failure) => failures.push(failure)),
+      );
+      if (failures.length > 0)
+        yield* logScriptPackageInspectionFailures(failures);
+      return integrity;
+    });
 
     const mapCatalogError = (cause: unknown) =>
       managerError("validate", "Failed to update the script catalog.", cause);
@@ -467,8 +484,7 @@ export const layer = Layer.effect(
         );
         if (
           expected !== undefined &&
-          (yield* Effect.promise(() => integrityFor(backup, expected))) !==
-            "verified"
+          (yield* inspectIntegrity(backup, expected)) !== "verified"
         ) {
           yield* movePath(backup, destination).pipe(
             Effect.catch(({ cause }) =>
@@ -922,9 +938,7 @@ export const layer = Layer.effect(
                 ),
               ),
             );
-          const integrity = yield* Effect.promise(() =>
-            integrityFor(savedRoot, managed),
-          );
+          const integrity = yield* inspectIntegrity(savedRoot, managed);
           const nextCatalog = yield* (
             integrity === summary.integrity
               ? catalog.updateManagedPackage(observed)
@@ -1187,9 +1201,7 @@ export const layer = Layer.effect(
             );
             if (
               input.confirmModified !== true &&
-              (yield* Effect.promise(() =>
-                integrityFor(removedPath, managed),
-              )) !== "verified"
+              (yield* inspectIntegrity(removedPath, managed)) !== "verified"
             ) {
               yield* Effect.tryPromise({
                 try: () => fs.rename(removedPath, root),
@@ -1287,9 +1299,28 @@ export const layer = Layer.effect(
           );
         }
         const result = yield* resolveManagedRevision(managed).pipe(
-          Effect.match({
-            onFailure: (error) => ({ status: "failed", error }) as const,
-            onSuccess: (value) => ({ status: "succeeded", value }) as const,
+          Effect.matchEffect({
+            onFailure: (error) =>
+              logFailure(
+                "Failed to check script package updates",
+                Cause.fail(error),
+                { failure: "warning" },
+              ).pipe(
+                Effect.annotateLogs({
+                  component: "script-packages",
+                  repeatKey: error.kind,
+                  data: {
+                    packageName: managed.name,
+                    category: error.kind,
+                    ...(error.retryAt === undefined
+                      ? {}
+                      : { retryAt: error.retryAt }),
+                  },
+                }),
+                Effect.as({ status: "failed", error } as const),
+              ),
+            onSuccess: (value) =>
+              Effect.succeed({ status: "succeeded", value } as const),
           }),
         );
 
@@ -1360,10 +1391,10 @@ export const layer = Layer.effect(
             ),
         }),
       ),
-      install,
-      remove,
-      restore,
-      update,
+      install: (input) => withScriptPackageInspectionFailures(install(input)),
+      remove: (input) => withScriptPackageInspectionFailures(remove(input)),
+      restore: (input) => withScriptPackageInspectionFailures(restore(input)),
+      update: (input) => withScriptPackageInspectionFailures(update(input)),
     });
   }),
 );

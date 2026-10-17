@@ -2,6 +2,9 @@ import { promises as fs } from "node:fs";
 import { basename, extname, join, relative, resolve, sep } from "node:path";
 
 import * as Schema from "effect/Schema";
+import * as Cause from "effect/Cause";
+import * as Context from "effect/Context";
+import * as Effect from "effect/Effect";
 import { satisfies, valid, validRange } from "semver";
 
 import type {
@@ -27,6 +30,66 @@ import {
   SCRIPT_PACKAGE_MAX_FILES,
 } from "./ScriptLimits";
 import type { ManagedScriptPackage } from "./ScriptPackageState";
+import { logFailure } from "../../shared/logFailure";
+
+export interface ScriptPackageInspectionFailure {
+  readonly packageName: string;
+  readonly cause: unknown;
+}
+
+const CurrentScriptPackageInspectionFailures = Context.Reference<
+  ScriptPackageInspectionFailure[] | undefined
+>("lucent/desktop/scripting/ScriptPackageInspectionFailures", {
+  defaultValue: () => undefined,
+});
+
+export const isUnexpectedPackageFileError = (cause: unknown): boolean =>
+  cause instanceof Error &&
+  "code" in cause &&
+  typeof cause.code === "string" &&
+  !isMissingFileError(cause);
+
+export const logScriptPackageInspectionFailures = Effect.fnUntraced(function* (
+  failures: readonly ScriptPackageInspectionFailure[],
+) {
+  if (failures.length === 0) return;
+  const collected = yield* CurrentScriptPackageInspectionFailures;
+  if (collected !== undefined) {
+    collected.push(...failures);
+    return;
+  }
+  const packageNames = [
+    ...new Set(failures.map((failure) => failure.packageName)),
+  ].toSorted();
+  const cause = failures.reduce<Cause.Cause<unknown>>(
+    (combined, failure) => Cause.combine(combined, Cause.fail(failure.cause)),
+    Cause.empty,
+  );
+  yield* logFailure("Failed to inspect script package files", cause, {
+    failure: "warning",
+  }).pipe(
+    Effect.annotateLogs({
+      component: "script-packages",
+      repeatKey: packageNames.join(","),
+      data: { packageNames },
+    }),
+  );
+});
+
+export const withScriptPackageInspectionFailures = <A, E, R>(
+  effect: Effect.Effect<A, E, R>,
+): Effect.Effect<A, E, R> =>
+  Effect.suspend(() => {
+    const failures: ScriptPackageInspectionFailure[] = [];
+    return effect.pipe(
+      Effect.provideService(CurrentScriptPackageInspectionFailures, failures),
+      Effect.onExit(() =>
+        failures.length === 0
+          ? Effect.void
+          : logScriptPackageInspectionFailures(failures),
+      ),
+    );
+  });
 
 const NonEmptyManifestStringSchema = Schema.String.check(
   Schema.makeFilter((value) => value.trim() !== "", {
@@ -348,13 +411,16 @@ export const inspectManagedPackageFolder = async (
 export const integrityFor = async (
   rootPath: string,
   managed: ManagedScriptPackage | undefined,
+  onFailure?: (failure: ScriptPackageInspectionFailure) => void,
 ): Promise<"modified" | "unmanaged" | "verified"> => {
   if (managed === undefined) return "unmanaged";
   try {
     return hashesMatch(await hashDirectory(rootPath), managed.files)
       ? "verified"
       : "modified";
-  } catch {
+  } catch (cause) {
+    if (isUnexpectedPackageFileError(cause))
+      onFailure?.({ packageName: managed.name, cause });
     return "modified";
   }
 };

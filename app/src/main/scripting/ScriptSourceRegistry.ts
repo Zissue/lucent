@@ -1,8 +1,10 @@
 import { extname, relative, resolve } from "path";
 
 import * as Context from "effect/Context";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 
 import type {
@@ -23,10 +25,17 @@ import {
   resolveRelativeScriptModulePath,
   scriptModulePathCandidates,
 } from "@lucent/core/scriptPackages";
-import { ScriptFiles } from "./ScriptFiles";
+import {
+  logScriptFileResolutionFailure,
+  ScriptFiles,
+  ScriptFilesError,
+} from "./ScriptFiles";
 import type { ScriptFileAnalysis } from "./ScriptFileWorkerProtocol";
 import type { DiscoveredScriptPackage } from "./ScriptCatalogDiscovery";
-import { ScriptPackageCatalog } from "./ScriptPackageCatalog";
+import {
+  ScriptPackageCatalog,
+  ScriptPackageCatalogError,
+} from "./ScriptPackageCatalog";
 import {
   portablePath,
   regularFileFingerprint,
@@ -159,6 +168,45 @@ const failedResolution = (
     ...(detailsText === undefined ? {} : { detailsText }),
   };
 };
+
+const isScriptFilesError = Schema.is(ScriptFilesError);
+const isScriptSourceRegistryError = Schema.is(ScriptSourceRegistryError);
+const isScriptPackageCatalogError = Schema.is(ScriptPackageCatalogError);
+
+const resolutionFailureCause = (
+  cause: Cause.Cause<unknown>,
+): Cause.Cause<unknown> =>
+  Cause.fromReasons(
+    cause.reasons.flatMap((reason): readonly Cause.Reason<unknown>[] => {
+      if (!Cause.isFailReason(reason)) return [reason];
+      const error = reason.error;
+      if (isScriptFilesError(error)) {
+        return error.failureCause?.reasons ?? [];
+      }
+      if (
+        isScriptSourceRegistryError(error) ||
+        isScriptPackageCatalogError(error)
+      ) {
+        return error.cause === undefined
+          ? []
+          : resolutionFailureCause(Cause.fail(error.cause)).reasons;
+      }
+      if (
+        Predicate.isObject(error) &&
+        "code" in error &&
+        (error["code"] === "ENOENT" || error["code"] === "ENOTDIR")
+      ) {
+        return [];
+      }
+      return [reason];
+    }),
+  );
+
+const resolveFailure = (path: string, error: unknown) =>
+  logScriptFileResolutionFailure(
+    path,
+    resolutionFailureCause(Cause.fail(error)),
+  ).pipe(Effect.as(failedResolution(path, error)));
 
 const moduleFromAnalysis = (
   target: ModuleTarget,
@@ -636,24 +684,20 @@ export const makeScriptSourceRegistry = Effect.fn("makeScriptSourceRegistry")(
       return catalog.resolveReference(reference).pipe(
         Effect.flatMap((entry) =>
           entry === undefined
-            ? Effect.succeed({
+            ? Effect.succeed<ScriptFileResolution>({
                 status: "missing",
                 path: displayPath,
-              } satisfies ScriptFileResolution)
+              })
             : readReference(reference).pipe(
-                Effect.match({
-                  onFailure: (cause) => failedResolution(displayPath, cause),
-                  onSuccess: (file) =>
-                    ({
-                      status: "found",
-                      file,
-                    }) satisfies ScriptFileResolution,
-                }),
+                Effect.map(
+                  (file): ScriptFileResolution => ({
+                    status: "found",
+                    file,
+                  }),
+                ),
               ),
         ),
-        Effect.catch((cause) =>
-          Effect.succeed(failedResolution(displayPath, cause)),
-        ),
+        Effect.catch((cause) => resolveFailure(displayPath, cause)),
       );
     };
 
@@ -664,9 +708,7 @@ export const makeScriptSourceRegistry = Effect.fn("makeScriptSourceRegistry")(
             ? scriptFiles.resolve(path)
             : resolveReference(reference),
         ),
-        Effect.catch((cause) =>
-          Effect.succeed(failedResolution(resolve(path), cause)),
-        ),
+        Effect.catch((cause) => resolveFailure(resolve(path), cause)),
       );
 
     return ScriptSourceRegistry.of({

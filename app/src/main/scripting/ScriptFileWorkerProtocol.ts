@@ -24,6 +24,12 @@ export const ScriptFileAnalysisResolutionSchema = Schema.Union([
     path: Schema.String,
     message: Schema.String,
     detailsText: Schema.optionalKey(Schema.String),
+    failureCause: Schema.optionalKey(
+      Schema.Cause(
+        Schema.Defect({ includeStack: true }),
+        Schema.Defect({ includeStack: true }),
+      ),
+    ),
   }),
 ]);
 export type ScriptFileAnalysisResolution =

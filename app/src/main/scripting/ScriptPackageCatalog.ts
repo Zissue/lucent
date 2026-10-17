@@ -29,7 +29,11 @@ import {
   type ScriptPackageCatalogReplacement,
 } from "./ScriptCatalogDiscovery";
 import { isPathInside } from "./ScriptPackageFileSystem";
-import { resolveLooseScriptReference } from "./ScriptPackageInspection";
+import {
+  resolveLooseScriptReference,
+  logScriptPackageInspectionFailures,
+  type ScriptPackageInspectionFailure,
+} from "./ScriptPackageInspection";
 import {
   ScriptPackageState,
   type ManagedScriptPackage,
@@ -106,7 +110,8 @@ export const layer = Layer.effect(
     }>({ value: null, publicationRevision: 0 });
     const scan = Effect.gen(function* () {
       const managedPackages = yield* state.getAll;
-      return yield* Effect.tryPromise({
+      const failures: ScriptPackageInspectionFailure[] = [];
+      const discovery = yield* Effect.tryPromise({
         try: async () => {
           await Promise.all([
             fs.mkdir(scriptsDir, { recursive: true }),
@@ -117,11 +122,15 @@ export const layer = Layer.effect(
             managedPackages,
             packagesDir,
             scriptsDir,
+            onInspectionFailure: (failure) => failures.push(failure),
           });
         },
         catch: (cause) =>
           new ScriptPackageCatalogError({ operation: "scan", cause }),
       });
+      if (failures.length > 0)
+        yield* logScriptPackageInspectionFailures(failures);
+      return discovery;
     });
     const publishCurrent = SynchronizedRef.get(discoveryRef).pipe(
       Effect.flatMap(({ value, publicationRevision }) =>

@@ -8,11 +8,16 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as References from "effect/References";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import { DesktopEnvironment } from "../app/DesktopEnvironment";
 import { ElectronApp } from "../electron/ElectronApp";
+import {
+  desktopLogRecord,
+  type DesktopLogRecord,
+} from "../../shared/logRecord";
 import { hashDirectory } from "./ScriptPackageFileSystem";
 import { discoverScriptCatalog } from "./ScriptCatalogDiscovery";
 import { inspectScriptPackageDirectory } from "./ScriptPackageInspection";
@@ -431,7 +436,10 @@ describe("discoverScriptCatalog", () => {
   });
 });
 
-const makeCatalogHarness = (onScan: Effect.Effect<void> = Effect.void) =>
+const makeCatalogHarness = (
+  onScan: Effect.Effect<void> = Effect.void,
+  managedPackages: readonly ManagedScriptPackage[] = [],
+) =>
   Effect.gen(function* () {
     const workspace = yield* Effect.promise(makeWorkspace);
     yield* Effect.promise(() =>
@@ -458,7 +466,7 @@ const makeCatalogHarness = (onScan: Effect.Effect<void> = Effect.void) =>
       get: () => Effect.sync((): ManagedScriptPackage | undefined => undefined),
       getAll: Effect.sync(() => {
         scanCount += 1;
-        return [];
+        return managedPackages;
       }).pipe(Effect.tap(() => onScan)),
       remove: () => Effect.void,
       save: () => Effect.void,
@@ -478,6 +486,203 @@ const makeCatalogHarness = (onScan: Effect.Effect<void> = Effect.void) =>
   });
 
 describe("ScriptPackageCatalog", () => {
+  it.effect("logs unexpected package inspection failures once per scan", () =>
+    Effect.gen(function* () {
+      const { catalog, workspace } = yield* makeCatalogHarness();
+      yield* Effect.promise(() =>
+        Promise.all(
+          ["first", "second"].flatMap((name) => [
+            write(
+              join(workspace.packagesDir, name, "package.json"),
+              JSON.stringify({ name }),
+            ),
+            write(
+              join(workspace.packagesDir, name, "index.js"),
+              "exports.value = 1",
+            ),
+          ]),
+        ),
+      );
+      const lstat = fs.lstat;
+      vi.spyOn(fs, "lstat").mockImplementation(
+        (...args: Parameters<typeof fs.lstat>) =>
+          String(args[0]).endsWith("package.json")
+            ? Promise.reject(
+                Object.assign(
+                  new Error(
+                    String(args[0]).includes("second") ? "EIO" : "EACCES",
+                  ),
+                  { code: "EACCES" },
+                ),
+              )
+            : lstat(...args),
+      );
+      const logs: DesktopLogRecord[] = [];
+      const result = yield* catalog.refresh.pipe(
+        Effect.withLogger(
+          Logger.make((options) => logs.push(desktopLogRecord(options))),
+        ),
+      );
+      expect(result.packages).toEqual([
+        {
+          status: "invalid",
+          diagnostic: "EACCES",
+          path: join(workspace.packagesDir, "first"),
+        },
+        {
+          status: "invalid",
+          diagnostic: "EIO",
+          path: join(workspace.packagesDir, "second"),
+        },
+      ]);
+      expect(
+        logs.map(({ level, component, message, repeatKey, data }) => ({
+          level,
+          component,
+          message,
+          repeatKey,
+          data,
+        })),
+      ).toEqual([
+        {
+          level: "warn",
+          component: "script-packages",
+          message: "Failed to inspect script package files",
+          repeatKey: "first,second",
+          data: { packageNames: ["first", "second"] },
+        },
+      ]);
+      expect(
+        logs[0]?.error?.map(({ name, message }) => ({ name, message })),
+      ).toEqual([
+        { name: "Error", message: "EACCES" },
+        { name: "Error", message: "EIO" },
+      ]);
+    }),
+  );
+
+  it.effect(
+    "logs failed integrity reads while retaining the modified result",
+    () =>
+      Effect.gen(function* () {
+        const managedPackages: ManagedScriptPackage[] = [];
+        const { catalog, workspace } = yield* makeCatalogHarness(
+          Effect.void,
+          managedPackages,
+        );
+        const rootPath = join(workspace.packagesDir, "tools");
+        yield* Effect.promise(() =>
+          Promise.all([
+            write(join(rootPath, "package.json"), '{"name":"tools"}'),
+            write(join(rootPath, "index.js"), "exports.value = 1"),
+          ]),
+        );
+        managedPackages.push({
+          directory: "tools",
+          files: yield* Effect.promise(() => hashDirectory(rootPath)),
+          installedAt: "2026-10-17T00:00:00.000Z",
+          name: "tools",
+          source: {
+            kind: "repository",
+            repositoryUrl: "https://github.com/example/tools",
+            resolvedCommit: "abc123",
+          },
+        });
+        const stat = fs.stat;
+        vi.spyOn(fs, "stat").mockImplementation(
+          (...args: Parameters<typeof fs.stat>) =>
+            String(args[0]) === join(rootPath, "index.js")
+              ? Promise.reject(Object.assign(new Error("EIO"), { code: "EIO" }))
+              : stat(...args),
+        );
+        const logs: DesktopLogRecord[] = [];
+        const result = yield* catalog.refresh.pipe(
+          Effect.withLogger(
+            Logger.make((options) => logs.push(desktopLogRecord(options))),
+          ),
+        );
+        expect(result.packages[0]).toMatchObject({
+          status: "valid",
+          name: "tools",
+          integrity: "modified",
+        });
+        expect(
+          logs.map(({ level, component, message, repeatKey, data }) => ({
+            level,
+            component,
+            message,
+            repeatKey,
+            data,
+          })),
+        ).toEqual([
+          {
+            level: "warn",
+            component: "script-packages",
+            message: "Failed to inspect script package files",
+            repeatKey: "tools",
+            data: { packageNames: ["tools"] },
+          },
+        ]);
+        expect(
+          logs[0]?.error?.map(({ name, message }) => ({ name, message })),
+        ).toEqual([{ name: "Error", message: "EIO" }]);
+      }),
+  );
+
+  it.effect(
+    "keeps invalid manifests, missing manifests, and local modifications silent",
+    () =>
+      Effect.gen(function* () {
+        const managedPackages: ManagedScriptPackage[] = [];
+        const { catalog, workspace } = yield* makeCatalogHarness(
+          Effect.void,
+          managedPackages,
+        );
+        const rootPath = join(workspace.packagesDir, "tools");
+        yield* Effect.promise(() =>
+          Promise.all([
+            write(join(rootPath, "package.json"), '{"name":"tools"}'),
+            write(join(rootPath, "index.js"), "exports.value = 1"),
+            write(
+              join(workspace.packagesDir, "invalid", "package.json"),
+              "private invalid contents",
+            ),
+            write(join(workspace.packagesDir, "missing", "index.js"), ""),
+          ]),
+        );
+        managedPackages.push({
+          directory: "tools",
+          files: yield* Effect.promise(() => hashDirectory(rootPath)),
+          installedAt: "2026-10-17T00:00:00.000Z",
+          name: "tools",
+          source: {
+            kind: "repository",
+            repositoryUrl: "https://github.com/example/tools",
+            resolvedCommit: "abc123",
+          },
+        });
+        yield* Effect.promise(() =>
+          write(join(rootPath, "index.js"), "exports.value = 2"),
+        );
+        const logs: DesktopLogRecord[] = [];
+        const result = yield* catalog.refresh.pipe(
+          Effect.withLogger(
+            Logger.make((options) => logs.push(desktopLogRecord(options))),
+          ),
+        );
+        expect(result.packages.map((entry) => entry.status)).toEqual([
+          "invalid",
+          "invalid",
+          "valid",
+        ]);
+        expect(result.packages[2]).toMatchObject({
+          name: "tools",
+          integrity: "modified",
+        });
+        expect(logs).toEqual([]);
+      }),
+  );
+
   it.effect.each([8, 16, 32])(
     "publishes revisions in order with a %i-operation scheduling budget",
     (maxOps) =>
