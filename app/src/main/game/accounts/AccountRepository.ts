@@ -6,7 +6,10 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import { makeCommittedState } from "../../app/CommittedState";
+import {
+  makeCommittedState,
+  type CommittedValue,
+} from "../../app/CommittedState";
 
 import {
   emptyAccountManagerStorage,
@@ -32,13 +35,8 @@ const wrapJsonError = (error: JsonFileError): AccountsError =>
     cause: error,
   });
 
-interface VersionedStorage {
-  readonly storage: AccountManagerStorage;
-  readonly revision: number;
-}
-
 export interface AccountRepositoryShape {
-  readonly getWithRevision: Effect.Effect<VersionedStorage | null>;
+  readonly currentUnsafe: () => CommittedValue<AccountManagerStorage> | null;
   readonly get: Effect.Effect<AccountManagerStorage, AccountsError>;
   readonly load: Effect.Effect<AccountManagerStorage, AccountsError>;
   readonly path: string;
@@ -159,21 +157,10 @@ export const layer = Layer.effect(
         jsonFile
           .write(path, storage)
           .pipe(Effect.mapError(wrapJsonError), Effect.as(storage)),
-      publishValue: (value) => value,
       equivalent: isDeepStrictEqual,
       shouldPublishReload: (previous, next) =>
         previous !== null && !isDeepStrictEqual(previous, next),
     });
-    const getWithRevision = state.current.pipe(
-      Effect.map((current) =>
-        current === null
-          ? null
-          : {
-              storage: current.value,
-              revision: current.revision,
-            },
-      ),
-    );
     const update: AccountRepositoryShape["update"] = (modify) =>
       state.update((storage) =>
         modify(storage).pipe(Effect.map(serializeAccountManagerStorage)),
@@ -181,7 +168,7 @@ export const layer = Layer.effect(
 
     return AccountRepository.of({
       get: state.get,
-      getWithRevision,
+      currentUnsafe: state.currentUnsafe,
       load: state.reload,
       path,
       update,

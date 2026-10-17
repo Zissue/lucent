@@ -390,7 +390,6 @@ const makeCombatProfiles = Effect.gen(function* () {
     load: readLibraryFromFile,
     loadMayWrite: true,
     write: writeLibraryFile,
-    publishValue: (value) => value,
   });
 
   const deleteProfile: CombatProfilesShape["deleteProfile"] = (profileId) =>

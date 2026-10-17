@@ -25,7 +25,6 @@ describe("CommittedState", () => {
               yield* Deferred.await(release);
               return value;
             }),
-          publishValue: (value) => value,
         });
         const received: number[] = [];
         yield* state.subscribe((value) => {
@@ -65,7 +64,6 @@ describe("CommittedState", () => {
               yield* Deferred.await(release);
               return value;
             }),
-          publishValue: (value) => value,
         });
         yield* state.get;
         const updating = yield* state
@@ -94,7 +92,6 @@ describe("CommittedState", () => {
               return file;
             }),
           loadMayWrite: false,
-          publishValue: (value) => value,
         });
         expect(
           yield* Effect.flip(state.update(() => Effect.fail("invalid"))),
@@ -122,7 +119,6 @@ describe("CommittedState", () => {
             writes.push(value);
             return value;
           }),
-        publishValue: (value) => value,
       });
       yield* state.get;
       yield* state.subscribe((value) => {
@@ -158,7 +154,6 @@ describe("CommittedState", () => {
         const state = yield* makeCommittedState({
           loadMayWrite: false,
           load: () => Effect.succeed(0),
-          publishValue: (value) => value,
         });
         const first: number[] = [];
         const second: number[] = [];
@@ -197,7 +192,6 @@ describe("CommittedState", () => {
         const state = yield* makeCommittedState({
           loadMayWrite: false,
           load: () => Effect.succeed(0),
-          publishValue: (value) => value,
         });
         const received: number[] = [];
         let entered = false;
@@ -253,7 +247,6 @@ describe("CommittedState", () => {
               history.push(`write ${value}`);
               return value;
             }),
-          publishValue: (value) => value,
         });
         const loading = yield* state[operation].pipe(Effect.forkChild);
         yield* Deferred.await(started);
@@ -293,7 +286,6 @@ describe("CommittedState", () => {
               return Effect.succeed(file);
             }),
           write: (value: string) => Effect.succeed(value),
-          publishValue: (value) => value,
         });
         const loading = yield* state[operation].pipe(Effect.forkChild);
         expect((yield* Fiber.await(loading))._tag).toBe("Failure");
@@ -317,11 +309,10 @@ describe("CommittedState", () => {
                   file = value;
                   return value;
                 }),
-          publishValue: (value) => `saved ${value}`,
         });
         const received: string[] = [];
         yield* state.subscribe((value) => {
-          received.push(value);
+          received.push(`saved ${value}`);
         });
         yield* state.update(() => Effect.succeed(1));
         expect(yield* Effect.flip(state.update(() => Effect.succeed(9)))).toBe(
@@ -339,7 +330,6 @@ describe("CommittedState", () => {
       const state = yield* makeCommittedState({
         loadMayWrite: false,
         load: () => Effect.succeed(0),
-        publishValue: (value) => value,
       });
       const received: number[] = [];
       const scope = yield* Scope.make();
@@ -371,7 +361,6 @@ describe("CommittedState", () => {
                 )
               : Effect.succeed(1),
           write: (value: number) => Effect.succeed(value),
-          publishValue: (value) => value,
         });
         yield* state.get;
         const received: number[] = [];
@@ -400,7 +389,6 @@ describe("CommittedPublication", () => {
             revision,
             value: { saved: "account", session: revision },
           })),
-          (value) => value,
         );
         const received: { saved: string; session: number }[] = [];
         yield* publication.subscribe((value) => {
@@ -422,3 +410,110 @@ describe("CommittedPublication", () => {
       }),
   );
 });
+
+it.effect("rechecks a cold get after an update commits under the lock", () =>
+  Effect.gen(function* () {
+    let file = 0;
+    const modifying = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const state = yield* makeCommittedState({
+      loadMayWrite: false,
+      load: () => Effect.sync(() => file),
+      write: (value: number) =>
+        Effect.sync(() => {
+          file = value;
+          return value;
+        }),
+    });
+    const received: number[] = [];
+    yield* state.subscribe((value) => {
+      received.push(value);
+    });
+    const updating = yield* state
+      .update(() =>
+        Deferred.succeed(modifying, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+          Effect.as(1),
+        ),
+      )
+      .pipe(Effect.forkChild);
+    yield* Deferred.await(modifying);
+    const getting = yield* state.get.pipe(
+      Effect.forkChild({ startImmediately: true }),
+    );
+    yield* Deferred.succeed(release, undefined);
+    yield* Fiber.join(updating);
+    expect(yield* Fiber.join(getting)).toBe(1);
+    expect(yield* state.current).toEqual({ value: 1, revision: 1 });
+    yield* state.update(() => Effect.succeed(2));
+    expect(received).toEqual([1, 2]);
+    expect(yield* state.current).toEqual({ value: 2, revision: 2 });
+  }),
+);
+
+it.effect(
+  "finishes a normalizing cold load when its update is interrupted",
+  () =>
+    Effect.gen(function* () {
+      let file = " raw ";
+      const loading = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const writes: string[] = [];
+      const state = yield* makeCommittedState({
+        loadMayWrite: true,
+        load: () =>
+          Effect.gen(function* () {
+            const normalized = file.trim();
+            yield* Deferred.succeed(loading, undefined);
+            yield* Deferred.await(release);
+            file = normalized;
+            return normalized;
+          }),
+        write: (value: string) =>
+          Effect.sync(() => {
+            writes.push(value);
+            file = value;
+            return value;
+          }),
+      });
+      const updating = yield* state
+        .update(() => Effect.succeed("changed"))
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(loading);
+      updating.interruptUnsafe();
+      yield* Deferred.succeed(release, undefined);
+      expect((yield* Fiber.await(updating))._tag).toBe("Failure");
+      expect(file).toBe("raw");
+      expect(yield* state.get).toBe("raw");
+      expect(yield* state.current).toEqual({ value: "raw", revision: 0 });
+      expect(writes).toEqual([]);
+      yield* state.update(() => Effect.succeed("after"));
+      expect([file, yield* state.get]).toEqual(["after", "after"]);
+    }),
+);
+
+it.effect("promptly interrupts an update during a read-only cold load", () =>
+  Effect.gen(function* () {
+    const loading = yield* Deferred.make<void>();
+    let block = true;
+    const state = yield* makeCommittedState({
+      loadMayWrite: false,
+      load: () =>
+        block
+          ? Deferred.succeed(loading, undefined).pipe(
+              Effect.andThen(Effect.never),
+            )
+          : Effect.succeed(1),
+    });
+    const updating = yield* state
+      .update(() => Effect.succeed(2))
+      .pipe(Effect.forkChild);
+    yield* Deferred.await(loading);
+    yield* Fiber.interrupt(updating);
+    expect((yield* Fiber.await(updating))._tag).toBe("Failure");
+    expect(yield* state.current).toBe(null);
+    block = false;
+    yield* state.update(() => Effect.succeed(3));
+    expect(yield* state.current).toEqual({ value: 3, revision: 1 });
+  }),
+);

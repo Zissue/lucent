@@ -143,9 +143,7 @@ export const layer = Layer.effect(
     const discovery = yield* makeCommittedState({
       load: () => scan,
       loadMayWrite: false,
-      publishValue: (value) => ({ revision: value.catalog.revision }),
     });
-    const getDiscovery = discovery.get;
     const refresh = discovery.reload.pipe(Effect.map(catalogOverview));
     const updateDiscovery = Effect.fn("ScriptPackageCatalog.updateDiscovery")(
       function* (
@@ -178,16 +176,16 @@ export const layer = Layer.effect(
           return undefined;
         }
 
-        const discovery = yield* getDiscovery;
-        return discovery.paths.get(resolve(path));
+        const current = yield* discovery.get;
+        return current.paths.get(resolve(path));
       },
     );
 
     return ScriptPackageCatalog.of({
-      getDiscovery,
-      getOverview: getDiscovery.pipe(Effect.map(catalogOverview)),
+      getDiscovery: discovery.get,
+      getOverview: discovery.get.pipe(Effect.map(catalogOverview)),
       getPage: (request) =>
-        getDiscovery.pipe(
+        discovery.get.pipe(
           Effect.map((discovery) => {
             const query = request.query.trim().toLocaleLowerCase();
             const matching =
@@ -213,7 +211,10 @@ export const layer = Layer.effect(
             } satisfies ScriptCatalogPage;
           }),
         ),
-      onChanged: discovery.subscribe,
+      onChanged: (listener) =>
+        discovery.subscribe((value) =>
+          listener({ revision: value.catalog.revision }),
+        ),
       referenceForPath,
       refresh,
       removePackage: (packageName) =>
@@ -241,8 +242,8 @@ export const layer = Layer.effect(
               relativePath: resolved.path,
             } satisfies ScriptCatalogEntry;
           }
-          const discovery = yield* getDiscovery;
-          return discovery.scripts.get(referenceKey(reference));
+          const current = yield* discovery.get;
+          return current.scripts.get(referenceKey(reference));
         },
       ),
       updateManagedPackage: (managed) =>

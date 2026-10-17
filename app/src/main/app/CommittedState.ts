@@ -9,19 +9,15 @@ export interface CommittedValue<Value> {
   readonly revision: number;
 }
 
-export const makeCommittedPublication = <Value, Published>(
+export const makeCommittedPublication = <Value>(
   current: Effect.Effect<CommittedValue<Value> | null>,
-  publishValue: (value: Value) => Published,
 ) => {
-  const listeners = makeListenerRegistry<Published>();
+  const listeners = makeListenerRegistry<Value>();
   const publishCurrent = current.pipe(
     Effect.flatMap((snapshot) =>
       snapshot === null || snapshot.revision === 0
         ? Effect.void
-        : listeners.publishLatest(
-            snapshot.revision,
-            publishValue(snapshot.value),
-          ),
+        : listeners.publishLatest(snapshot.revision, snapshot.value),
     ),
   );
 
@@ -38,13 +34,11 @@ interface LoadOptions {
 
 export const makeCommittedState = Effect.fnUntraced(function* <
   Value,
-  Error,
-  Published,
+  E,
 >(options: {
-  readonly load: (options: LoadOptions) => Effect.Effect<Value, Error>;
+  readonly load: (options: LoadOptions) => Effect.Effect<Value, E>;
   readonly loadMayWrite: boolean;
-  readonly write?: (value: Value) => Effect.Effect<Value, Error>;
-  readonly publishValue: (value: Value) => Published;
+  readonly write?: (value: Value) => Effect.Effect<Value, E>;
   readonly equivalent?: (previous: Value, next: Value) => boolean;
   readonly shouldPublishReload?: (
     previous: Value | null,
@@ -55,13 +49,10 @@ export const makeCommittedState = Effect.fnUntraced(function* <
   const commitLock = yield* Semaphore.make(1);
   const equivalent = options.equivalent ?? Object.is;
   const current = Ref.get(state);
-  const publication = makeCommittedPublication(current, options.publishValue);
 
   const read = (
     loadOptions: LoadOptions,
-    restore: (
-      effect: Effect.Effect<Value, Error>,
-    ) => Effect.Effect<Value, Error>,
+    restore: (effect: Effect.Effect<Value, E>) => Effect.Effect<Value, E>,
   ) =>
     options.loadMayWrite
       ? options.load(loadOptions)
@@ -69,9 +60,7 @@ export const makeCommittedState = Effect.fnUntraced(function* <
 
   const readCurrent = Effect.fnUntraced(function* (
     loadOptions: LoadOptions,
-    restore: (
-      effect: Effect.Effect<Value, Error>,
-    ) => Effect.Effect<Value, Error>,
+    restore: (effect: Effect.Effect<Value, E>) => Effect.Effect<Value, E>,
   ) {
     const loaded = yield* current;
     if (loaded !== null) return loaded;
@@ -105,9 +94,11 @@ export const makeCommittedState = Effect.fnUntraced(function* <
       });
       return value;
     }),
-  ).pipe(Semaphore.withPermit(commitLock), publication.withPublication);
+  ).pipe(Semaphore.withPermit(commitLock));
 
-  const update = <E, R>(modify: (value: Value) => Effect.Effect<Value, E, R>) =>
+  const update = <E2, R>(
+    modify: (value: Value) => Effect.Effect<Value, E2, R>,
+  ) =>
     Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
         const previous = yield* readCurrent({ diagnostics: false }, restore);
@@ -123,7 +114,16 @@ export const makeCommittedState = Effect.fnUntraced(function* <
         yield* Ref.set(state, { value, revision: previous.revision + 1 });
         return value;
       }),
-    ).pipe(Semaphore.withPermit(commitLock), publication.withPublication);
+    ).pipe(Semaphore.withPermit(commitLock));
 
-  return { get, current, reload, update, subscribe: publication.subscribe };
+  const publication = makeCommittedPublication(current);
+  return {
+    get,
+    current,
+    currentUnsafe: () => Ref.getUnsafe(state),
+    reload: publication.withPublication(reload),
+    update: <E2, R>(modify: (value: Value) => Effect.Effect<Value, E2, R>) =>
+      publication.withPublication(update(modify)),
+    subscribe: publication.subscribe,
+  };
 });

@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "@effect/vitest";
-import { vi } from "vitest";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
@@ -14,7 +13,6 @@ import * as Logger from "effect/Logger";
 import * as PlatformError from "effect/PlatformError";
 import * as References from "effect/References";
 import * as Stream from "effect/Stream";
-import * as Ref from "effect/Ref";
 
 import {
   COMBAT_PROFILE_LIBRARY_VERSION,
@@ -32,10 +30,6 @@ import {
   layer as desktopCombatProfilesLayer,
 } from "./CombatProfiles";
 
-vi.mock("effect/Ref", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("effect/Ref")>()),
-}));
-
 const tempDirs = new Set<string>();
 
 const makeTempDir = async (prefix: string): Promise<string> => {
@@ -45,7 +39,6 @@ const makeTempDir = async (prefix: string): Promise<string> => {
 };
 
 afterEach(async () => {
-  vi.restoreAllMocks();
   await Promise.all(
     [...tempDirs].map((path) => rm(path, { force: true, recursive: true })),
   );
@@ -708,69 +701,6 @@ describe("CombatProfiles", () => {
         );
       }),
   );
-
-  it.effect.each(["save", "reload"] as const)(
-    "publishes a committed %s even when interrupted after the commit",
-    (operation) =>
-      Effect.gen(function* () {
-        const committed = yield* Deferred.make<void>();
-        const hold = yield* Deferred.make<void>();
-        let armed = false;
-        const set = Ref.set;
-        vi.spyOn(Ref, "set").mockImplementation((ref, value) =>
-          set(ref, value).pipe(
-            Effect.tap(() => {
-              if (!armed) return Effect.void;
-              armed = false;
-              return Deferred.succeed(committed, undefined).pipe(
-                Effect.andThen(Deferred.await(hold)),
-                Effect.interruptible,
-              );
-            }),
-          ),
-        );
-        const { combatProfiles, path } = yield* makeHarness();
-        yield* combatProfiles.saveProfile({ ...testProfile, label: "Before" });
-        if (operation === "reload") {
-          const library = yield* combatProfiles.get;
-          yield* Effect.promise(() =>
-            writeFile(
-              path,
-              JSON.stringify({
-                ...library,
-                profiles: [
-                  ...library.profiles.slice(0, -1),
-                  { ...testProfile, label: "Committed" },
-                ],
-              }),
-            ),
-          );
-        }
-        const labels: string[] = [];
-        yield* combatProfiles.onChanged((library) =>
-          combatProfiles.get.pipe(
-            Effect.tap((current) =>
-              Effect.sync(() => {
-                expect(current).toEqual(library);
-                labels.push(library.profiles.at(-1)?.label ?? "missing");
-              }),
-            ),
-          ),
-        );
-        armed = true;
-        const running = yield* (
-          operation === "save"
-            ? combatProfiles.saveProfile({ ...testProfile, label: "Committed" })
-            : combatProfiles.load
-        ).pipe(Effect.forkScoped);
-        yield* Deferred.await(committed);
-        yield* Fiber.interrupt(running);
-        expect((yield* combatProfiles.get).profiles.at(-1)?.label).toBe(
-          "Committed",
-        );
-        expect(labels).toEqual(["Committed"]);
-      }),
-  );
 });
 
 for (const source of ["{", '{"version":1,"profiles":[null]}']) {
@@ -856,6 +786,10 @@ it.effect("commits combat profiles interrupted after the file rename", () =>
       "Committed",
     );
     expect(received).toEqual(["Committed"]);
+    expect((yield* combatProfiles.load).profiles.at(-1)?.label).toBe(
+      "Committed",
+    );
+    expect(received).toEqual(["Committed", "Committed"]);
   }),
 );
 

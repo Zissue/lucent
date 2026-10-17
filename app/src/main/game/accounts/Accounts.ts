@@ -28,7 +28,10 @@ import {
   type RecentlyClosedGameSession,
 } from "@lucent/core/accounts";
 import type { Listener } from "../../app/ListenerRegistry";
-import { makeCommittedPublication } from "../../app/CommittedState";
+import {
+  makeCommittedPublication,
+  type CommittedValue,
+} from "../../app/CommittedState";
 import {
   AccountGameWindows,
   type AccountGameWindowEvent,
@@ -312,24 +315,22 @@ export const makeAccounts = Effect.gen(function* () {
 
   const getState = repository.get.pipe(Effect.map(toState));
 
+  const readCurrentSnapshot =
+    (): CommittedValue<AccountManagerState> | null => {
+      const current = repository.currentUnsafe();
+      return current === null
+        ? null
+        : {
+            revision: current.revision + sessions.revision,
+            value: toState(current.value),
+          };
+    };
+
   const stateChanges = makeCommittedPublication(
-    repository.getWithRevision.pipe(
-      Effect.flatMap((current) =>
-        current === null
-          ? repository.get.pipe(Effect.andThen(repository.getWithRevision))
-          : Effect.succeed(current),
-      ),
-      Effect.map((current) =>
-        current === null
-          ? null
-          : {
-              revision: current.revision + sessions.revision,
-              value: toState(current.storage),
-            },
-      ),
+    repository.get.pipe(
+      Effect.andThen(Effect.sync(readCurrentSnapshot)),
       Effect.orElseSucceed(() => null),
     ),
-    (value) => value,
   );
 
   const withSessionPublication = <A, E, R>(effect: Effect.Effect<A, E, R>) =>

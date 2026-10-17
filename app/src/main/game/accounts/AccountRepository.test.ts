@@ -62,11 +62,11 @@ describe("AccountRepository", () => {
         const dependencies = yield* makeLayer();
         yield* Effect.gen(function* () {
           const repository = yield* AccountRepository;
-          expect(yield* repository.getWithRevision).toBeNull();
+          expect(repository.currentUnsafe()).toBeNull();
           yield* repository.get;
           yield* repository.load;
-          expect(yield* repository.getWithRevision).toEqual({
-            storage: { accounts: [], groups: {} },
+          expect(repository.currentUnsafe()).toEqual({
+            value: { accounts: [], groups: {} },
             revision: 0,
           });
           yield* repository.update((storage) =>
@@ -74,16 +74,16 @@ describe("AccountRepository", () => {
           );
           yield* repository.update((storage) => Effect.succeed({ ...storage }));
           yield* repository.load;
-          expect(yield* repository.getWithRevision).toEqual({
-            storage: { accounts: [], groups: { Raiders: [] } },
+          expect(repository.currentUnsafe()).toEqual({
+            value: { accounts: [], groups: { Raiders: [] } },
             revision: 1,
           });
           yield* Effect.promise(() =>
             writeFile(repository.path, '{"accounts":[],"groups":{"Alts":[]}}'),
           );
           yield* repository.load;
-          expect(yield* repository.getWithRevision).toEqual({
-            storage: { accounts: [], groups: { Alts: [] } },
+          expect(repository.currentUnsafe()).toEqual({
+            value: { accounts: [], groups: { Alts: [] } },
             revision: 2,
           });
         }).pipe(Effect.provide(dependencies));
@@ -98,8 +98,8 @@ describe("AccountRepository", () => {
         yield* Effect.gen(function* () {
           const repository = yield* AccountRepository;
           yield* repository.update((storage) => Effect.succeed({ ...storage }));
-          expect(yield* repository.getWithRevision).toEqual({
-            storage: { accounts: [], groups: {} },
+          expect(repository.currentUnsafe()).toEqual({
+            value: { accounts: [], groups: {} },
             revision: 0,
           });
           yield* repository.update((storage) =>
@@ -119,8 +119,8 @@ describe("AccountRepository", () => {
             )
             .pipe(Effect.flip);
           expect(error.operation).toBe("rename");
-          expect(yield* repository.getWithRevision).toEqual({
-            storage: { accounts: [], groups: { Raiders: [] } },
+          expect(repository.currentUnsafe()).toEqual({
+            value: { accounts: [], groups: { Raiders: [] } },
             revision: 1,
           });
         }).pipe(Effect.provide(dependencies));
@@ -203,8 +203,8 @@ describe("AccountRepository saved data", () => {
           expect(
             yield* Effect.promise(() => readFile(repository.path, "utf8")),
           ).toBe(source);
-          expect(yield* repository.getWithRevision).toEqual({
-            storage: {
+          expect(repository.currentUnsafe()).toEqual({
+            value: {
               accounts: [
                 { label: "Hero", username: "Hero", password: "secret" },
               ],
@@ -226,8 +226,8 @@ describe("AccountRepository saved data", () => {
             accounts: [{ label: "Hero", username: "Hero", password: "secret" }],
             groups: { Raiders: ["Hero"], Alts: [] },
           });
-          expect(yield* repository.getWithRevision).toEqual({
-            storage: {
+          expect(repository.currentUnsafe()).toEqual({
+            value: {
               accounts: [
                 { label: "Hero", username: "Hero", password: "secret" },
               ],
@@ -446,7 +446,7 @@ it.effect(
               cause: { _tag: "JsonFileError", operation: "read" },
             });
             expect(records).toEqual([]);
-            expect(yield* repository.getWithRevision).toBeNull();
+            expect(repository.currentUnsafe()).toBeNull();
           }
         } finally {
           unreadablePath = undefined;
@@ -496,7 +496,7 @@ it.effect("rejects accounts above the read limit without replacing them", () =>
           },
         });
         expect(records).toEqual([]);
-        expect(yield* repository.getWithRevision).toBeNull();
+        expect(repository.currentUnsafe()).toBeNull();
       }
       expect(
         yield* Effect.promise(() => readFile(repository.path, "utf8")),

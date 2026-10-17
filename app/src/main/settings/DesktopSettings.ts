@@ -314,7 +314,6 @@ const makeDesktopSettings = Effect.gen(function* () {
     load: readSettingsFromFile,
     loadMayWrite: true,
     write: writeSettingsFile,
-    publishValue: (value) => value,
     shouldPublishReload: () => false,
   });
 
