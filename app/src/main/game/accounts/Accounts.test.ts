@@ -1018,16 +1018,22 @@ describe("account profile retirement logging", () => {
 it.effect("keeps missing game profiles silent after account removal", () =>
   Effect.gen(function* () {
     const records: DesktopLogRecord[] = [];
+    const fileSystem = yield* FileSystem.pipe(
+      Effect.provide(desktopFileSystemLayer),
+    );
     const root = yield* Effect.promise(() =>
       mkdtemp(join(tmpdir(), "lucent-missing-profile-")),
     );
     tempDirs.add(root);
     const layer = yield* makeHarness({
       beforeRetireProfile: () =>
-        Effect.sync(() => {
-          expect(retireManagedGamePartitionProfile(join(root, "missing"))).toBe(
-            false,
-          );
+        Effect.gen(function* () {
+          expect(
+            yield* retireManagedGamePartitionProfile(
+              join(root, "missing"),
+              fileSystem,
+            ),
+          ).toBe(false);
         }),
     });
     yield* Effect.gen(function* () {
