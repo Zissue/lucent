@@ -119,7 +119,11 @@ const makeFixture = async () => {
       environment,
       desktopFileSystemLayer,
       state,
-      catalogLayer.pipe(Layer.provide(Layer.mergeAll(environment, state, app))),
+      catalogLayer.pipe(
+        Layer.provide(
+          Layer.mergeAll(environment, state, app, desktopFileSystemLayer),
+        ),
+      ),
     );
   };
 

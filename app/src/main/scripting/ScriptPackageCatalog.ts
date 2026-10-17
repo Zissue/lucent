@@ -1,5 +1,6 @@
-import { promises as fs } from "node:fs";
 import { basename, resolve } from "node:path";
+
+import { FileSystem } from "effect/FileSystem";
 
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -99,6 +100,7 @@ export const layer = Layer.effect(
   Effect.gen(function* () {
     const app = yield* ElectronApp;
     const env = yield* DesktopEnvironment;
+    const fileSystem = yield* FileSystem;
     const state = yield* ScriptPackageState;
     const currentVersion = yield* app.getVersion;
     const { packagesDir, scriptsDir } = resolveScriptWorkspacePaths(
@@ -112,20 +114,30 @@ export const layer = Layer.effect(
     const scan = Effect.gen(function* () {
       const managedPackages = yield* state.getAll;
       const failures: ScriptPackageInspectionFailure[] = [];
+      yield* Effect.all(
+        [
+          fileSystem.makeDirectory(scriptsDir, { recursive: true }),
+          fileSystem.makeDirectory(packagesDir, { recursive: true }),
+        ],
+        { concurrency: "unbounded", discard: true },
+      ).pipe(
+        Effect.mapError(
+          (cause) =>
+            new ScriptPackageCatalogError({
+              operation: "scan",
+              cause: cause.reason.cause ?? cause,
+            }),
+        ),
+      );
       const discovery = yield* Effect.tryPromise({
-        try: async () => {
-          await Promise.all([
-            fs.mkdir(scriptsDir, { recursive: true }),
-            fs.mkdir(packagesDir, { recursive: true }),
-          ]);
-          return discoverScriptCatalog({
+        try: () =>
+          discoverScriptCatalog({
             currentVersion,
             managedPackages,
             packagesDir,
             scriptsDir,
             onInspectionFailure: (failure) => failures.push(failure),
-          });
-        },
+          }),
         catch: (cause) =>
           new ScriptPackageCatalogError({ operation: "scan", cause }),
       });
