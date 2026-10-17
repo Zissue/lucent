@@ -8,6 +8,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import type { EnvironmentBoostDiscovery } from "../../../shared/environmentBoosts";
+import { logGameRendererRequestFailure } from "../rpc/GameRendererRequestFailure";
 import { GameRendererRpc } from "../rpc/GameRendererRpc";
 import { DesktopWindows } from "../../window/DesktopWindows";
 
@@ -85,7 +86,16 @@ export const makeGameEnvironments = Effect.gen(function* () {
       .call(gameRendererId, (client) => client.EnvironmentFetchBoosts(), {
         timeout: ENVIRONMENT_BOOST_FETCH_TIMEOUT_MS,
       })
-      .pipe(Effect.catchCause(() => Effect.succeed(emptyBoostDiscovery())));
+      .pipe(
+        Effect.catchCause((cause) =>
+          logGameRendererRequestFailure(
+            windows,
+            gameRendererId,
+            "EnvironmentFetchBoosts",
+            cause,
+          ).pipe(Effect.as(emptyBoostDiscovery())),
+        ),
+      );
 
   const withdrawBoosts: GameEnvironmentsShape["withdrawBoosts"] = (
     gameRendererId,
@@ -106,7 +116,16 @@ export const makeGameEnvironments = Effect.gen(function* () {
             ENVIRONMENT_BOOST_WITHDRAW_ITEM_TIMEOUT_MS * uniqueItemIds.length,
         },
       )
-      .pipe(Effect.catchCause(() => Effect.succeed([])));
+      .pipe(
+        Effect.catchCause((cause) =>
+          logGameRendererRequestFailure(
+            windows,
+            gameRendererId,
+            "EnvironmentWithdrawBoosts",
+            cause,
+          ).pipe(Effect.as([])),
+        ),
+      );
   };
 
   yield* windows.observe({ kind: "game" }, (event) =>

@@ -1,3 +1,12 @@
+import { ipcRenderer } from "electron";
+import * as Cause from "effect/Cause";
+import * as Effect from "effect/Effect";
+import * as Logger from "effect/Logger";
+import * as References from "effect/References";
+import { logFailure } from "../shared/logFailure";
+import { desktopLogJsonSafe, desktopLogRecord } from "../shared/logRecord";
+import { RendererLogIpc } from "../shared/ipc/rendererLog";
+
 import type {
   IpcEventDescriptor,
   IpcInvokeDescriptor,
@@ -52,17 +61,59 @@ export const createInvoke =
     return descriptor.decodeResult(envelope.value);
   };
 
+const eventFailureLogger = Logger.make((options) => {
+  try {
+    const { level, message, component, data, repeatKey, error } =
+      desktopLogRecord(options);
+    ipcRenderer.send(
+      RendererLogIpc.record.channel,
+      desktopLogJsonSafe({ level, message, component, data, repeatKey, error }),
+    );
+  } catch {}
+});
+
 export const createSubscribe =
   (transport: IpcEventTransport) =>
   <Payload>(
     descriptor: IpcEventDescriptor<Payload>,
     listener: (payload: Payload) => void,
   ): (() => void) => {
+    const failed = { decode: false, callback: false };
     const subscription = (rawPayload: unknown): void => {
+      let phase: "decode" | "callback" = "decode";
       try {
-        listener(descriptor.decodePayload(rawPayload));
-      } catch (cause) {
-        console.error(`Failed to decode ${descriptor.name} event`, cause);
+        const payload = descriptor.decodePayload(rawPayload);
+        failed.decode = false;
+        phase = "callback";
+        listener(payload);
+        failed.callback = false;
+      } catch {
+        if (failed[phase]) return;
+        failed[phase] = true;
+        const cause = Cause.die(
+          new Error(
+            phase === "decode"
+              ? "IPC event decoding failed"
+              : "IPC event callback failed",
+          ),
+        );
+        Effect.runSync(
+          logFailure("Renderer event handler failed", cause).pipe(
+            Effect.annotateLogs({
+              component: "preload",
+              data: {
+                channel: descriptor.channel,
+                eventName: descriptor.name,
+                phase,
+              },
+              repeatKey: `${descriptor.channel}:${descriptor.name}:${phase}`,
+            }),
+            Effect.provideService(
+              References.CurrentLoggers,
+              new Set([eventFailureLogger]),
+            ),
+          ),
+        );
       }
     };
 

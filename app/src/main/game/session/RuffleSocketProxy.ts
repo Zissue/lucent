@@ -13,6 +13,7 @@ import * as Scope from "effect/Scope";
 import * as ScopedCache from "effect/ScopedCache";
 import { createWebSocketStream, WebSocketServer, type WebSocket } from "ws";
 
+import { logFailure } from "../../../shared/logFailure";
 import { isArtixHost } from "./GameRequestHeaders";
 
 interface RelayTarget {
@@ -69,20 +70,34 @@ const relay = (
   ws: WebSocket,
   target: RelayTarget,
   connections: Set<Socket>,
+  onFailure: (error: Error) => void,
+  isClosing: () => boolean,
 ): void => {
+  let failed = false;
+  let closedNormally = false;
+  ws.once("close", (code) => {
+    closedNormally = code === 1000 || code === 1001 || code === 1005;
+  });
+  const reportFailure = (error: Error): void => {
+    if (failed || closedNormally || isClosing()) return;
+    failed = true;
+    onFailure(error);
+  };
   const tcp = createConnection({ ...target, noDelay: true });
   connections.add(tcp);
   tcp.once("close", () => connections.delete(tcp));
-  tcp.on("error", (error) =>
+  tcp.on("error", (error) => {
+    reportFailure(error);
     ws.close(
       INTERNAL_ERROR,
       Buffer.from(error.message)
         .subarray(0, MAX_CLOSE_REASON_BYTES)
         .toString("utf8"),
-    ),
-  );
+    );
+  });
   const stream = createWebSocketStream(ws, { highWaterMark: 64 * 1024 });
-  pipeline(tcp, stream, tcp, () => {
+  pipeline(tcp, stream, tcp, (error) => {
+    if (error) reportFailure(error);
     tcp.destroy();
     stream.destroy();
   });
@@ -93,6 +108,7 @@ const startRelay = Effect.gen(function* () {
   const runFork = Effect.runForkWith(context);
   const token = randomBytes(32).toString("hex");
   const connections = new Set<Socket>();
+  let closing = false;
   const server = yield* Effect.acquireRelease(
     Effect.sync(() =>
       createServer((_request, response) => {
@@ -125,6 +141,7 @@ const startRelay = Effect.gen(function* () {
       Effect.promise(
         () =>
           new Promise<void>((resolve) => {
+            closing = true;
             for (const client of websockets.clients) client.terminate();
             websockets.close(() => resolve());
           }),
@@ -136,7 +153,25 @@ const startRelay = Effect.gen(function* () {
       ws.close(POLICY_VIOLATION, "host not allowed");
       return;
     }
-    relay(ws, target, connections);
+    relay(
+      ws,
+      target,
+      connections,
+      (error) => {
+        runFork(
+          logFailure("Ruffle socket connection failed", Cause.fail(error), {
+            failure: "warning",
+          }).pipe(
+            Effect.annotateLogs({
+              component: "ruffle-socket-relay",
+              data: { host: target.host, port: target.port },
+              repeatKey: `${target.host}:${target.port}`,
+            }),
+          ),
+        );
+      },
+      () => closing,
+    );
   });
   return yield* Effect.callback<string, RuffleSocketProxyError>((resume) => {
     let listening = false;

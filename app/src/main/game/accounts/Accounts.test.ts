@@ -6,6 +6,11 @@ import { afterEach, describe, expect, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as Logger from "effect/Logger";
+import {
+  desktopLogRecord,
+  type DesktopLogRecord,
+} from "../../../shared/logRecord";
 import * as Layer from "effect/Layer";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 import { vi } from "vitest";
@@ -18,6 +23,7 @@ import {
   type AccountGameWindowEvent,
 } from "./AccountGameWindows";
 import * as AccountRepository from "./AccountRepository";
+import { retireManagedGamePartitionProfile } from "../session/GamePartitions";
 import { Accounts, layer as accountsLayer } from "./Accounts";
 import { AccountsError } from "./AccountsError";
 import { AccountServers } from "./AccountServers";
@@ -42,6 +48,7 @@ interface HarnessOptions {
   readonly beforeOpen?: () => Effect.Effect<void, unknown>;
   readonly onManagedProfileKey?: (key: string | undefined) => void;
   readonly onRetireProfile?: (key: string) => void;
+  readonly beforeRetireProfile?: () => Effect.Effect<void, unknown>;
   readonly onSetName?: (gameWindowId: number, name: string) => void;
   readonly onWindowTarget?: (
     windowTarget: AccountLaunchWindowTarget | undefined,
@@ -138,7 +145,11 @@ const makeHarness = (harnessOptions: HarnessOptions = {}) =>
         }),
       reveal: () => Effect.succeed(true),
       retireProfile: (key) =>
-        Effect.sync(() => harnessOptions.onRetireProfile?.(key)),
+        (harnessOptions.beforeRetireProfile?.() ?? Effect.void).pipe(
+          Effect.andThen(
+            Effect.sync(() => harnessOptions.onRetireProfile?.(key)),
+          ),
+        ),
       setName: (gameWindowId, name) =>
         (harnessOptions.beforeSetName?.() ?? Effect.void).pipe(
           Effect.andThen(
@@ -906,3 +917,90 @@ describe("Accounts", () => {
     }),
   );
 });
+
+describe("account profile retirement logging", () => {
+  it.effect(
+    "aggregates failures per mutation without identities and keeps success silent",
+    () =>
+      Effect.gen(function* () {
+        const records: DesktopLogRecord[] = [];
+        let fail = true;
+        const layer = yield* makeHarness({
+          beforeRetireProfile: () =>
+            fail
+              ? Effect.fail(new Error("profile cleanup failed"))
+              : Effect.void,
+        });
+        yield* Effect.gen(function* () {
+          const accounts = yield* Accounts;
+          for (const username of ["Alice", "Bob", "Cara"])
+            yield* accounts.createAccount({ username, password: "secret" });
+          expect(
+            (yield* accounts.deleteAccounts(["Alice", "Bob"])).accounts.map(
+              (account) => account.username,
+            ),
+          ).toEqual(["Cara"]);
+          expect(records).toMatchObject([
+            {
+              level: "warn",
+              message: "Failed to retire game profiles",
+              component: "accounts",
+              data: { count: 2 },
+              error: [
+                { message: "profile cleanup failed" },
+                { message: "profile cleanup failed" },
+              ],
+            },
+          ]);
+          expect(records[0]?.data).toEqual({ count: 2 });
+          fail = false;
+          expect((yield* accounts.deleteAccount("Cara")).accounts).toEqual([]);
+          expect(records).toHaveLength(1);
+        }).pipe(
+          Effect.provide(layer),
+          Effect.provide(
+            Logger.layer(
+              [
+                Logger.make((options) =>
+                  records.push(desktopLogRecord(options)),
+                ),
+              ],
+              { mergeWithExisting: false },
+            ),
+          ),
+        );
+      }),
+  );
+});
+
+it.effect("keeps missing game profiles silent after account removal", () =>
+  Effect.gen(function* () {
+    const records: DesktopLogRecord[] = [];
+    const root = yield* Effect.promise(() =>
+      mkdtemp(join(tmpdir(), "lucent-missing-profile-")),
+    );
+    tempDirs.add(root);
+    const layer = yield* makeHarness({
+      beforeRetireProfile: () =>
+        Effect.sync(() => {
+          expect(retireManagedGamePartitionProfile(join(root, "missing"))).toBe(
+            false,
+          );
+        }),
+    });
+    yield* Effect.gen(function* () {
+      const accounts = yield* Accounts;
+      yield* accounts.createAccount({ username: "Alice", password: "secret" });
+      expect((yield* accounts.deleteAccount("Alice")).accounts).toEqual([]);
+      expect(records).toEqual([]);
+    }).pipe(
+      Effect.provide(layer),
+      Effect.provide(
+        Logger.layer(
+          [Logger.make((options) => records.push(desktopLogRecord(options)))],
+          { mergeWithExisting: false },
+        ),
+      ),
+    );
+  }),
+);

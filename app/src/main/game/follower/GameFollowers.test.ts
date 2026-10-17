@@ -6,6 +6,12 @@ import {
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
+import {
+  desktopLogRecord,
+  type DesktopLogRecord,
+} from "../../../shared/logRecord";
 import * as Ref from "effect/Ref";
 import { RpcClientDefect, RpcClientError } from "effect/rpc/RpcClientError";
 import { TestClock } from "effect/testing";
@@ -188,5 +194,89 @@ describe("GameFollowers", () => {
         }),
       );
     }),
+  );
+});
+
+describe("follower reconciliation logging", () => {
+  it.effect(
+    "logs reconciliation failure once and keeps renderer teardown silent",
+    () =>
+      Effect.gen(function* () {
+        const records: DesktopLogRecord[] = [];
+        let ready = true;
+        let connected: (id: number) => Effect.Effect<void> = () => Effect.void;
+        const followers = yield* makeGameFollowers.pipe(
+          Effect.provideService(DesktopIpc, idleIpc),
+          Effect.provideService(
+            GameRendererRpc,
+            GameRendererRpc.of({
+              call: () =>
+                Effect.fail(
+                  new GameRendererUnavailableError({
+                    detail: "request timed out",
+                  }),
+                ),
+              onConnected: (listener) =>
+                Effect.sync(() => {
+                  connected = listener;
+                  return () => {};
+                }),
+            }),
+          ),
+          Effect.provide(
+            Layer.mock(DesktopWindows, {
+              describe: (rendererId) =>
+                Effect.sync(() =>
+                  ready
+                    ? {
+                        rendererId,
+                        kind: "game" as const,
+                        windowId: 1,
+                        ownerId: undefined,
+                        generation: 1,
+                        ready: true,
+                      }
+                    : undefined,
+                ),
+              observe: () => Effect.void,
+            }),
+          ),
+        );
+        yield* followers
+          .configure(42, normalizeFollowerConfig({ targetName: "private" }))
+          .pipe(Effect.flip);
+        yield* Effect.gen(function* () {
+          yield* connected(42);
+          expect(records).toMatchObject([
+            {
+              level: "warn",
+              message: "Game renderer request failed",
+              component: "game-renderer",
+              data: { rendererId: 42, operation: "FollowerConfigure" },
+              repeatKey: "42:FollowerConfigure",
+              error: [{ message: "request timed out" }],
+            },
+          ]);
+          expect(records[0]?.data).toEqual({
+            rendererId: 42,
+            operation: "FollowerConfigure",
+          });
+          ready = false;
+          yield* connected(42);
+          expect(records).toHaveLength(1);
+          expect(yield* followers.get(42)).toEqual(createIdleFollowerState());
+        }).pipe(
+          Effect.provide(
+            Logger.layer(
+              [
+                Logger.make((options) =>
+                  records.push(desktopLogRecord(options)),
+                ),
+              ],
+              { mergeWithExisting: false },
+            ),
+          ),
+        );
+      }),
   );
 });

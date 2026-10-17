@@ -1,4 +1,9 @@
-import { once } from "events";
+import { once } from "node:events";
+import type { Duplex } from "node:stream";
+import {
+  desktopLogRecord,
+  type DesktopLogRecord,
+} from "../../../shared/logRecord";
 import { Server as HttpServer } from "node:http";
 import { createServer, type Socket, type TcpNetConnectOpts } from "node:net";
 import * as Effect from "effect/Effect";
@@ -19,6 +24,7 @@ import { WebSocket, type WebSocketServer } from "ws";
 
 const relayTest = vi.hoisted(() => ({
   servers: [] as WebSocketServer[],
+  streams: [] as Duplex[],
   targetPort: 0,
   connect: vi.fn(),
   failStarts: 0,
@@ -29,6 +35,13 @@ vi.mock("ws", async (importOriginal) => {
   const actual = await importOriginal<typeof import("ws")>();
   return {
     ...actual,
+    createWebSocketStream: (
+      ...args: Parameters<typeof actual.createWebSocketStream>
+    ) => {
+      const stream = actual.createWebSocketStream(...args);
+      relayTest.streams.push(stream);
+      return stream;
+    },
     WebSocketServer: class extends actual.WebSocketServer {
       constructor(
         options: ConstructorParameters<typeof actual.WebSocketServer>[0],
@@ -95,6 +108,7 @@ beforeAll(async () => {
 afterEach(() => {
   for (const client of clients) client.terminate();
   clients.clear();
+  relayTest.streams.length = 0;
   relayTest.connect.mockClear();
   relayTest.slowReader = false;
   for (const socket of echoConnections) socket.resume();
@@ -258,4 +272,98 @@ testLayer(proxyLayer)("Ruffle socket relay", (it) => {
         expect(received).toBe(totalBytes);
       }),
   );
+});
+
+testLayer(proxyLayer)("Ruffle connection failure logging", (it) => {
+  it.effect.each(["tcp", "pipeline"] as const)(
+    "logs %s failure once per connection",
+    (source) => {
+      const records: DesktopLogRecord[] = [];
+      return Effect.gen(function* () {
+        const originalPort = relayTest.targetPort;
+        if (source === "tcp") {
+          const unused = createServer();
+          unused.listen(0, "127.0.0.1");
+          yield* Effect.promise(() => once(unused, "listening"));
+          const address = unused.address();
+          if (address === null || typeof address === "string")
+            throw new Error("Missing test address");
+          relayTest.targetPort = address.port;
+          yield* Effect.promise(
+            () => new Promise<void>((resolve) => unused.close(() => resolve())),
+          );
+        }
+        try {
+          yield* withProxy(async (url) => {
+            const client = connect(`${url}?host=game.aq.com&port=5588`);
+            const closed = once(client, "close");
+            await once(client, "open");
+            if (source === "pipeline") {
+              await vi.waitFor(() => expect(relayTest.streams.length).toBe(1));
+              relayTest.streams[0]!.destroy(new Error("stream failed"));
+            }
+            await closed;
+            await new Promise<void>((resolve) => setImmediate(resolve));
+          });
+          expect(records).toMatchObject([
+            {
+              level: "warn",
+              message: "Ruffle socket connection failed",
+              component: "ruffle-socket-relay",
+              data: { host: "game.aq.com", port: 5588 },
+            },
+          ]);
+          expect(records[0]?.data).toEqual({ host: "game.aq.com", port: 5588 });
+          expect(records[0]?.error?.[0]?.message).toEqual(
+            source === "pipeline"
+              ? "stream failed"
+              : expect.stringContaining("ECONNREFUSED"),
+          );
+        } finally {
+          relayTest.targetPort = originalPort;
+        }
+      }).pipe(
+        Effect.provide(Layer.fresh(proxyLayer)),
+        Effect.provide(
+          Logger.layer(
+            [Logger.make((options) => records.push(desktopLogRecord(options)))],
+            { mergeWithExisting: false },
+          ),
+        ),
+      );
+    },
+  );
+
+  it.effect("keeps normal close and scope teardown silent", () => {
+    const records: DesktopLogRecord[] = [];
+    return Effect.gen(function* () {
+      yield* Effect.gen(function* () {
+        yield* withProxy(async (url) => {
+          const client = connect(`${url}?host=game.aq.com&port=5588`);
+          await once(client, "open");
+          const response = once(client, "message");
+          client.send(Buffer.from([1, 2, 3]));
+          expect((await response)[0]).toEqual(Buffer.from([1, 2, 3]));
+          const closed = once(client, "close");
+          client.close();
+          expect((await closed)[0]).toBe(1005);
+          const pending = connect(`${url}?host=game.aq.com&port=5588`);
+          await once(pending, "open");
+          pending.send(Buffer.alloc(1024));
+        });
+      }).pipe(
+        Effect.provide(Layer.fresh(proxyLayer)),
+        Effect.provide(
+          Logger.layer(
+            [Logger.make((options) => records.push(desktopLogRecord(options)))],
+            { mergeWithExisting: false },
+          ),
+        ),
+      );
+      yield* Effect.promise(
+        () => new Promise<void>((resolve) => setImmediate(resolve)),
+      );
+      expect(records).toEqual([]);
+    });
+  });
 });

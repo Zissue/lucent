@@ -1,3 +1,5 @@
+import * as Cause from "effect/Cause";
+import { logFailure } from "../../../shared/logFailure";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -350,13 +352,34 @@ export const makeAccounts = Effect.gen(function* () {
       .update(modify)
       .pipe(Effect.map(toState), Effect.ensuring(publishCurrent));
 
-  const retireGameProfiles = (keys: Iterable<string>) =>
-    Effect.forEach(
+  const retireGameProfiles = Effect.fnUntraced(function* (
+    keys: Iterable<string>,
+  ) {
+    const failures: Cause.Cause<unknown>[] = [];
+    yield* Effect.forEach(
       keys,
       (key) =>
-        gameWindows.retireProfile(key).pipe(Effect.catch(() => Effect.void)),
+        gameWindows.retireProfile(key).pipe(
+          Effect.catch((error) =>
+            Effect.sync(() => {
+              failures.push(Cause.fail(error));
+            }),
+          ),
+        ),
       { discard: true },
     );
+    if (failures.length === 0) return;
+    yield* logFailure(
+      "Failed to retire game profiles",
+      Cause.fromReasons(failures.flatMap((cause) => cause.reasons)),
+      { failure: "warning" },
+    ).pipe(
+      Effect.annotateLogs({
+        component: "accounts",
+        data: { count: failures.length },
+      }),
+    );
+  });
 
   const removeWindowSession = (gameWindowId: number) =>
     withSessionPublication(Effect.sync(() => sessions.remove(gameWindowId)));
