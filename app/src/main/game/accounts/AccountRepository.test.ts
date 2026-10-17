@@ -1,11 +1,4 @@
-import {
-  chmod,
-  mkdir,
-  mkdtemp,
-  readFile,
-  rm,
-  writeFile,
-} from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -13,9 +6,12 @@ import { layer as fileSystemLayer } from "@effect/platform-node/NodeFileSystem";
 import { afterEach, describe, expect, it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import { FileSystem } from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
+import * as PlatformError from "effect/PlatformError";
 import * as References from "effect/References";
+import * as Stream from "effect/Stream";
 
 import { DesktopEnvironment } from "../../app/DesktopEnvironment";
 import { JsonFileError } from "../../filesystem/JsonFile";
@@ -30,33 +26,38 @@ afterEach(async () => {
   tempDirs.clear();
 });
 
-const makeLayer = Effect.gen(function* () {
-  const appDataDir = yield* Effect.promise(() =>
-    mkdtemp(join(tmpdir(), "lucent-account-repository-")),
-  );
-  tempDirs.add(appDataDir);
-  return layer.pipe(
-    Layer.provide(
-      Layer.mergeAll(
-        fileSystemLayer,
-        Layer.succeed(DesktopEnvironment, {
-          appDataDir,
-          assetsDir: join(appDataDir, "assets"),
-          isDev: true,
-          platform: "darwin",
-          workspaceDir: join(appDataDir, "workspace"),
-        }),
+const makeLayer = (
+  wrapFileSystem: (fs: FileSystem) => FileSystem = (fs) => fs,
+) =>
+  Effect.gen(function* () {
+    const appDataDir = yield* Effect.promise(() =>
+      mkdtemp(join(tmpdir(), "lucent-account-repository-")),
+    );
+    tempDirs.add(appDataDir);
+    return layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.effect(FileSystem, Effect.map(FileSystem, wrapFileSystem)).pipe(
+            Layer.provide(fileSystemLayer),
+          ),
+          Layer.succeed(DesktopEnvironment, {
+            appDataDir,
+            assetsDir: join(appDataDir, "assets"),
+            isDev: true,
+            platform: "darwin",
+            workspaceDir: join(appDataDir, "workspace"),
+          }),
+        ),
       ),
-    ),
-  );
-});
+    );
+  });
 
 describe("AccountRepository", () => {
   it.effect(
     "advances revisions only for changed storage across loads and updates",
     () =>
       Effect.gen(function* () {
-        const dependencies = yield* makeLayer;
+        const dependencies = yield* makeLayer();
         yield* Effect.gen(function* () {
           const repository = yield* AccountRepository;
           expect(yield* repository.getWithRevision).toBeNull();
@@ -91,7 +92,7 @@ describe("AccountRepository", () => {
     "keeps revisions and storage when a save fails or changes nothing",
     () =>
       Effect.gen(function* () {
-        const dependencies = yield* makeLayer;
+        const dependencies = yield* makeLayer();
         yield* Effect.gen(function* () {
           const repository = yield* AccountRepository;
           yield* repository.update((storage) => Effect.succeed({ ...storage }));
@@ -157,7 +158,7 @@ describe("AccountRepository saved data", () => {
     "keeps valid entries and preserves invalid source until a changed save",
     () =>
       Effect.gen(function* () {
-        const dependencies = yield* makeLayer;
+        const dependencies = yield* makeLayer();
         yield* Effect.gen(function* () {
           const repository = yield* AccountRepository;
           const source = JSON.stringify({
@@ -241,7 +242,7 @@ describe("AccountRepository saved data", () => {
       `uses defaults without overwriting unreadable source ${source}`,
       () =>
         Effect.gen(function* () {
-          const dependencies = yield* makeLayer;
+          const dependencies = yield* makeLayer();
           yield* Effect.gen(function* () {
             const repository = yield* AccountRepository;
             yield* Effect.promise(() => writeFile(repository.path, source));
@@ -293,7 +294,7 @@ describe("AccountRepository saved data", () => {
 
   it.effect("loads missing and valid optional fields silently", () =>
     Effect.gen(function* () {
-      const dependencies = yield* makeLayer;
+      const dependencies = yield* makeLayer();
       yield* Effect.gen(function* () {
         const repository = yield* AccountRepository;
         const missing = yield* captureLogs(repository.get);
@@ -332,7 +333,7 @@ it.effect(
   "keeps valid account data when a collection has the wrong shape",
   () =>
     Effect.gen(function* () {
-      const dependencies = yield* makeLayer;
+      const dependencies = yield* makeLayer();
       yield* Effect.gen(function* () {
         const repository = yield* AccountRepository;
         const source =
@@ -366,7 +367,7 @@ it.effect(
   "reports both ignored accounts and reset group fields in one warning",
   () =>
     Effect.gen(function* () {
-      const dependencies = yield* makeLayer;
+      const dependencies = yield* makeLayer();
       yield* Effect.gen(function* () {
         const repository = yield* AccountRepository;
         const source =
@@ -404,13 +405,29 @@ it.effect(
   "fails reads and updates without replacing unreadable valid accounts",
   () =>
     Effect.gen(function* () {
-      const dependencies = yield* makeLayer;
+      let unreadablePath: string | undefined;
+      const dependencies = yield* makeLayer((fileSystem) =>
+        FileSystem.of({
+          ...fileSystem,
+          stream: (path, options) =>
+            path === unreadablePath
+              ? Stream.fail(
+                  PlatformError.systemError({
+                    _tag: "PermissionDenied",
+                    module: "FileSystem",
+                    method: "stream",
+                    pathOrDescriptor: path,
+                  }),
+                )
+              : fileSystem.stream(path, options),
+        }),
+      );
       yield* Effect.gen(function* () {
         const repository = yield* AccountRepository;
         const source =
           '{"accounts":[{"label":"Hero","username":"Hero","password":"secret"}],"groups":{}}';
         yield* Effect.promise(() => writeFile(repository.path, source));
-        yield* Effect.promise(() => chmod(repository.path, 0));
+        unreadablePath = repository.path;
         try {
           for (const operation of [
             repository.get,
@@ -430,7 +447,7 @@ it.effect(
             expect(yield* repository.getWithRevision).toBeNull();
           }
         } finally {
-          yield* Effect.promise(() => chmod(repository.path, 0o600));
+          unreadablePath = undefined;
         }
         expect(
           yield* Effect.promise(() => readFile(repository.path, "utf8")),
@@ -445,7 +462,7 @@ it.effect(
 
 it.effect("rejects accounts above the read limit without replacing them", () =>
   Effect.gen(function* () {
-    const dependencies = yield* makeLayer;
+    const dependencies = yield* makeLayer();
     yield* Effect.gen(function* () {
       const repository = yield* AccountRepository;
       const source = JSON.stringify({
@@ -491,7 +508,7 @@ for (const source of ["{", '{"accounts":[null],"groups":{}}']) {
     `saves accounts without recovery warnings before loading ${source}`,
     () =>
       Effect.gen(function* () {
-        const dependencies = yield* makeLayer;
+        const dependencies = yield* makeLayer();
         yield* Effect.gen(function* () {
           const repository = yield* AccountRepository;
           yield* Effect.promise(() => writeFile(repository.path, source));

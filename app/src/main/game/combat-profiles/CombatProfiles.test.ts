@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { mkdirSync, renameSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -11,6 +11,7 @@ import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
+import * as PlatformError from "effect/PlatformError";
 import * as References from "effect/References";
 import * as Stream from "effect/Stream";
 import * as SynchronizedRef from "effect/SynchronizedRef";
@@ -281,11 +282,27 @@ describe("CombatProfiles", () => {
 
   it.effect("fails unreadable storage without overwriting it on save", () =>
     Effect.gen(function* () {
-      const { combatProfiles, path } = yield* makeHarness();
+      let unreadablePath: string | undefined;
+      const { combatProfiles, path } = yield* makeHarness((fileSystem) =>
+        FileSystem.of({
+          ...fileSystem,
+          stream: (path, options) =>
+            path === unreadablePath
+              ? Stream.fail(
+                  PlatformError.systemError({
+                    _tag: "PermissionDenied",
+                    module: "FileSystem",
+                    method: "stream",
+                    pathOrDescriptor: path,
+                  }),
+                )
+              : fileSystem.stream(path, options),
+        }),
+      );
       const source =
         '{"version":1,"profiles":[{"id":"saved","label":"Saved","delayMs":150,"cooldownMode":"use-if-ready","steps":[{"skill":1,"conditions":[]}]}]}\n';
       yield* Effect.promise(() => writeFile(path, source));
-      yield* Effect.promise(() => chmod(path, 0));
+      unreadablePath = path;
       const { value, records } = yield* captureLogs(
         Effect.gen(function* () {
           try {
@@ -295,7 +312,7 @@ describe("CombatProfiles", () => {
               .pipe(Effect.result);
             return { loaded, saved };
           } finally {
-            yield* Effect.promise(() => chmod(path, 0o600));
+            unreadablePath = undefined;
           }
         }),
       );
@@ -312,6 +329,17 @@ describe("CombatProfiles", () => {
       }
       expect(yield* Effect.promise(() => readFile(path, "utf8"))).toBe(source);
       expect(records).toEqual([]);
+      expect(
+        (yield* combatProfiles.load).profiles.find(
+          (profile) => profile.id === "saved",
+        ),
+      ).toEqual({
+        id: "saved",
+        label: "Saved",
+        delayMs: 150,
+        cooldownMode: "use-if-ready",
+        steps: [{ skill: 1, conditions: [] }],
+      });
     }),
   );
 

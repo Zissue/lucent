@@ -1,13 +1,16 @@
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
 
 import { afterEach, describe, expect, it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import { FileSystem } from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
+import * as PlatformError from "effect/PlatformError";
 import * as References from "effect/References";
+import * as Stream from "effect/Stream";
 
 import { DEFAULT_APP_SETTINGS } from "@lucent/core/settings";
 import { DesktopEnvironment } from "../app/DesktopEnvironment";
@@ -27,33 +30,39 @@ const makeTempDir = async (prefix: string): Promise<string> => {
   return path;
 };
 
-const makeSettings = Effect.gen(function* () {
-  const appDataDir = yield* Effect.promise(() =>
-    makeTempDir("lucent-settings-recovery-"),
-  );
-  const settings = yield* DesktopSettings.pipe(
-    Effect.provide(
-      desktopSettingsLayer.pipe(
-        Layer.provide(
-          Layer.mergeAll(
-            Layer.succeed(
-              DesktopEnvironment,
-              DesktopEnvironment.of({
-                appDataDir,
-                assetsDir: join(appDataDir, "assets"),
-                isDev: true,
-                platform: "darwin",
-                workspaceDir: appDataDir,
-              }),
+const makeSettings = (
+  wrapFileSystem: (fs: FileSystem) => FileSystem = (fs) => fs,
+) =>
+  Effect.gen(function* () {
+    const appDataDir = yield* Effect.promise(() =>
+      makeTempDir("lucent-settings-recovery-"),
+    );
+    const settings = yield* DesktopSettings.pipe(
+      Effect.provide(
+        desktopSettingsLayer.pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              Layer.succeed(
+                DesktopEnvironment,
+                DesktopEnvironment.of({
+                  appDataDir,
+                  assetsDir: join(appDataDir, "assets"),
+                  isDev: true,
+                  platform: "darwin",
+                  workspaceDir: appDataDir,
+                }),
+              ),
+              Layer.effect(
+                FileSystem,
+                Effect.map(FileSystem, wrapFileSystem),
+              ).pipe(Layer.provide(desktopFileSystemLayer)),
             ),
-            desktopFileSystemLayer,
           ),
         ),
       ),
-    ),
-  );
-  return { settings, path: join(appDataDir, "settings.json") };
-});
+    );
+    return { settings, path: join(appDataDir, "settings.json") };
+  });
 
 const captureLogs = () => {
   const records: unknown[] = [];
@@ -80,7 +89,7 @@ describe("saved settings recovery", () => {
     "keeps valid settings and preserves invalid bytes until an edit",
     () =>
       Effect.gen(function* () {
-        const { settings, path } = yield* makeSettings;
+        const { settings, path } = yield* makeSettings();
         const source =
           JSON.stringify(
             {
@@ -136,7 +145,7 @@ describe("saved settings recovery", () => {
 
   it.effect("preserves invalid enum strings that reset to the default", () =>
     Effect.gen(function* () {
-      const { settings, path } = yield* makeSettings;
+      const { settings, path } = yield* makeSettings();
       const source = JSON.stringify({
         preferences: { launchMode: " game " },
         appearance: { themeMode: " dark ", reduceMotion: " system " },
@@ -174,7 +183,7 @@ describe("saved settings recovery", () => {
 
   it.effect("reports hotkey overrides discarded by normalization", () =>
     Effect.gen(function* () {
-      const { settings, path } = yield* makeSettings;
+      const { settings, path } = yield* makeSettings();
       const source = JSON.stringify({
         hotkeys: {
           bindings: [
@@ -211,7 +220,7 @@ describe("saved settings recovery", () => {
     "reports invalid theme fields without exposing arbitrary token names",
     () =>
       Effect.gen(function* () {
-        const { settings, path } = yield* makeSettings;
+        const { settings, path } = yield* makeSettings();
         const source = JSON.stringify({
           appearance: {
             themes: {
@@ -267,7 +276,7 @@ describe("saved settings recovery", () => {
   for (const source of ["{invalid secret", "[]", "null"]) {
     it.effect(`recovers unreadable settings from ${source.slice(0, 1)}`, () =>
       Effect.gen(function* () {
-        const { settings, path } = yield* makeSettings;
+        const { settings, path } = yield* makeSettings();
         yield* Effect.promise(() => writeFile(path, source));
         const { records, logger } = captureLogs();
         const loaded = yield* settings.load.pipe(
@@ -309,11 +318,27 @@ describe("saved settings recovery", () => {
 
   it.effect("fails unreadable storage without overwriting it on update", () =>
     Effect.gen(function* () {
-      const { settings, path } = yield* makeSettings;
+      let unreadablePath: string | undefined;
+      const { settings, path } = yield* makeSettings((fileSystem) =>
+        FileSystem.of({
+          ...fileSystem,
+          stream: (path, options) =>
+            path === unreadablePath
+              ? Stream.fail(
+                  PlatformError.systemError({
+                    _tag: "PermissionDenied",
+                    module: "FileSystem",
+                    method: "stream",
+                    pathOrDescriptor: path,
+                  }),
+                )
+              : fileSystem.stream(path, options),
+        }),
+      );
       const source =
         '{"version":1,"preferences":{"useGameTabs":true,"launchMode":"account-manager"},"appearance":{"themeMode":"light"}}\n';
       yield* Effect.promise(() => writeFile(path, source));
-      yield* Effect.promise(() => chmod(path, 0));
+      unreadablePath = path;
       const { records, logger } = captureLogs();
       const results = yield* Effect.gen(function* () {
         try {
@@ -323,7 +348,7 @@ describe("saved settings recovery", () => {
             .pipe(Effect.result);
           return [loaded, updated];
         } finally {
-          yield* Effect.promise(() => chmod(path, 0o600));
+          unreadablePath = undefined;
         }
       }).pipe(Effect.provideService(Logger.CurrentLoggers, new Set([logger])));
       for (const result of results) {
@@ -339,6 +364,10 @@ describe("saved settings recovery", () => {
       }
       expect(yield* Effect.promise(() => readFile(path, "utf8"))).toBe(source);
       expect(records).toEqual([]);
+      const loaded = yield* settings.load;
+      expect(loaded.preferences.useGameTabs).toBe(true);
+      expect(loaded.preferences.launchMode).toBe("account-manager");
+      expect(loaded.appearance.themeMode).toBe("light");
     }),
   );
 
@@ -346,7 +375,7 @@ describe("saved settings recovery", () => {
     "loads missing and valid partial settings silently and keeps migration writes",
     () =>
       Effect.gen(function* () {
-        const { settings, path } = yield* makeSettings;
+        const { settings, path } = yield* makeSettings();
         const { records, logger } = captureLogs();
         expect(
           (yield* settings.load.pipe(
@@ -582,7 +611,7 @@ for (const source of ["{", '{"appearance":{"themeMode":"invalid"}}']) {
     `saves settings without recovery warnings before loading ${source}`,
     () =>
       Effect.gen(function* () {
-        const { settings, path } = yield* makeSettings;
+        const { settings, path } = yield* makeSettings();
         yield* Effect.promise(() => writeFile(path, source));
         const { records, logger } = captureLogs();
         const value = yield* settings

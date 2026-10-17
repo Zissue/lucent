@@ -1,5 +1,4 @@
 import {
-  chmod,
   mkdir,
   mkdtemp,
   readFile,
@@ -13,9 +12,12 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import { FileSystem } from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
+import * as PlatformError from "effect/PlatformError";
 import * as References from "effect/References";
+import * as Stream from "effect/Stream";
 
 import { DEFAULT_ACCOUNT_SETTINGS } from "@lucent/core/accountSettings";
 import { DesktopEnvironment } from "../../app/DesktopEnvironment";
@@ -41,7 +43,9 @@ afterEach(async () => {
   tempDirs.clear();
 });
 
-const makeRepository = () =>
+const makeRepository = (
+  wrapFileSystem: (fs: FileSystem) => FileSystem = (fs) => fs,
+) =>
   Effect.gen(function* () {
     const appDataDir = yield* Effect.promise(() =>
       makeTempDir("lucent-account-settings-data-"),
@@ -62,7 +66,10 @@ const makeRepository = () =>
           Layer.provide(
             Layer.mergeAll(
               Layer.succeed(DesktopEnvironment, env),
-              desktopFileSystemLayer,
+              Layer.effect(
+                FileSystem,
+                Effect.map(FileSystem, wrapFileSystem),
+              ).pipe(Layer.provide(desktopFileSystemLayer)),
             ),
           ),
         ),
@@ -346,13 +353,29 @@ describe("AccountSettingsRepository saved data", () => {
 
   it.effect("fails unreadable storage without overwriting it on update", () =>
     Effect.gen(function* () {
-      const { repository } = yield* makeRepository();
+      let unreadablePath: string | undefined;
+      const { repository } = yield* makeRepository((fileSystem) =>
+        FileSystem.of({
+          ...fileSystem,
+          stream: (path, options) =>
+            path === unreadablePath
+              ? Stream.fail(
+                  PlatformError.systemError({
+                    _tag: "PermissionDenied",
+                    module: "FileSystem",
+                    method: "stream",
+                    pathOrDescriptor: path,
+                  }),
+                )
+              : fileSystem.stream(path, options),
+        }),
+      );
       const path = yield* repository.pathFor("Hero");
       const source =
         '{"version":1,"scripts":{"restartAfterReconnect":true,"roomPolicy":{"kind":"specific","roomNumber":42},"safeStartStop":false}}\n';
       yield* Effect.promise(() => mkdir(dirname(path), { recursive: true }));
       yield* Effect.promise(() => writeFile(path, source));
-      yield* Effect.promise(() => chmod(path, 0));
+      unreadablePath = path;
       const { value, records } = yield* captureLogs(
         Effect.gen(function* () {
           try {
@@ -362,7 +385,7 @@ describe("AccountSettingsRepository saved data", () => {
               .pipe(Effect.result);
             return { loaded, updated };
           } finally {
-            yield* Effect.promise(() => chmod(path, 0o600));
+            unreadablePath = undefined;
           }
         }),
       );
@@ -379,6 +402,14 @@ describe("AccountSettingsRepository saved data", () => {
       }
       expect(yield* Effect.promise(() => readFile(path, "utf8"))).toBe(source);
       expect(records).toEqual([]);
+      expect(yield* repository.get("Hero")).toEqual({
+        version: 1,
+        scripts: {
+          restartAfterReconnect: true,
+          roomPolicy: { kind: "specific", roomNumber: 42 },
+          safeStartStop: false,
+        },
+      });
     }),
   );
 
