@@ -10,6 +10,7 @@ import * as Schedule from "effect/Schedule";
 import * as Scope from "effect/Scope";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as DateTime from "effect/DateTime";
 import * as Layer from "effect/Layer";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
@@ -366,10 +367,7 @@ const makeDesktopChromiumPerformanceRecording = Effect.gen(function* () {
     ...(endedAt === undefined
       ? {}
       : {
-          durationMs: Math.max(
-            0,
-            new Date(endedAt).getTime() - current.startedAtMs,
-          ),
+          durationMs: Math.max(0, Date.parse(endedAt) - current.startedAtMs),
           endedAt,
         }),
     heapCheckpoints: current.heapCheckpoints,
@@ -467,7 +465,7 @@ const makeDesktopChromiumPerformanceRecording = Effect.gen(function* () {
       const mainV8Heap = yield* chromium.getMainHeapUsage;
       const capturedAtMs = yield* Clock.currentTimeMillis;
       current.resourceSamples.push({
-        capturedAt: new Date(capturedAtMs).toISOString(),
+        capturedAt: DateTime.formatIso(DateTime.makeUnsafe(capturedAtMs)),
         elapsedMs: Math.max(0, capturedAtMs - current.startedAtMs),
         mainV8Heap,
         processes: metrics.map(normalizeChromiumProcessMetric),
@@ -521,7 +519,7 @@ const makeDesktopChromiumPerformanceRecording = Effect.gen(function* () {
           const capturedAtMs = yield* Clock.currentTimeMillis;
           return {
             ...metadata,
-            capturedAt: new Date(capturedAtMs).toISOString(),
+            capturedAt: DateTime.formatIso(DateTime.makeUnsafe(capturedAtMs)),
             elapsedMs: Math.max(0, capturedAtMs - current.startedAtMs),
             ...(usage === undefined
               ? {}
@@ -552,7 +550,7 @@ const makeDesktopChromiumPerformanceRecording = Effect.gen(function* () {
     }
 
     const endedAtMs = yield* Clock.currentTimeMillis;
-    const endedAt = new Date(endedAtMs).toISOString();
+    const endedAt = DateTime.formatIso(DateTime.makeUnsafe(endedAtMs));
     const index = current.segments.length;
     const requestedFilePath = join(
       current.sessionPath,
@@ -574,7 +572,9 @@ const makeDesktopChromiumPerformanceRecording = Effect.gen(function* () {
     "DesktopChromiumPerformanceRecording.startTraceSegment",
   )(function* (current: ActiveChromiumPerformanceRecording) {
     const segmentStartedAtMs = yield* Clock.currentTimeMillis;
-    const segmentStartedAt = new Date(segmentStartedAtMs).toISOString();
+    const segmentStartedAt = DateTime.formatIso(
+      DateTime.makeUnsafe(segmentStartedAtMs),
+    );
     yield* chromium.startRecording(current.traceConfig);
     current.segmentStartedAt = segmentStartedAt;
     current.segmentStartedAtMs = segmentStartedAtMs;
@@ -692,7 +692,7 @@ const makeDesktopChromiumPerformanceRecording = Effect.gen(function* () {
     const appVersion = yield* electronApp.getVersion;
     const availableCategoriesAtStart = yield* chromium.getCategories;
     const startedAtMs = yield* Clock.currentTimeMillis;
-    const startedAt = new Date(startedAtMs).toISOString();
+    const startedAt = DateTime.formatIso(DateTime.makeUnsafe(startedAtMs));
     const sessionPath = join(recordingsRoot, sessionDirectoryName(startedAt));
     yield* createRecordingDirectory(recordingsRoot, sessionPath);
 
@@ -824,7 +824,7 @@ const makeDesktopChromiumPerformanceRecording = Effect.gen(function* () {
     const current = activeRecording;
     yield* setState({ startedAt: current.startedAt, status: "snapshotting" });
 
-    const checkpointStartedAt = new Date().toISOString();
+    const checkpointStartedAt = (yield* DateTime.nowAsDate).toISOString();
     const checkpointIndex = current.heapCheckpoints.length;
     const directoryName = chromiumHeapCheckpointDirectoryName(
       checkpointIndex,
@@ -876,7 +876,7 @@ const makeDesktopChromiumPerformanceRecording = Effect.gen(function* () {
       },
       { concurrency: 1 },
     );
-    const endedAt = new Date().toISOString();
+    const endedAt = (yield* DateTime.nowAsDate).toISOString();
     const snapshots = [mainSnapshot, ...rendererSnapshots];
     current.heapCheckpoints.push({
       directoryName,
@@ -962,7 +962,7 @@ const makeDesktopChromiumPerformanceRecording = Effect.gen(function* () {
     yield* chromium.releaseRendererDebuggers;
 
     const endedAtMs = yield* Clock.currentTimeMillis;
-    const endedAt = new Date(endedAtMs).toISOString();
+    const endedAt = DateTime.formatIso(DateTime.makeUnsafe(endedAtMs));
     const resources: ChromiumPerformanceResourcesDocument = {
       mainResourceSampleIntervalMs: CHROMIUM_RESOURCE_SAMPLE_INTERVAL_MS,
       rendererHeapSampleIntervalMs: CHROMIUM_RENDERER_HEAP_SAMPLE_INTERVAL_MS,

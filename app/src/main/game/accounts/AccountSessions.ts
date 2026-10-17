@@ -1,3 +1,4 @@
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -106,7 +107,8 @@ export class AccountSessions extends Context.Service<
 
 export const layer = Layer.effect(
   AccountSessions,
-  Effect.sync(() => {
+  Effect.gen(function* () {
+    const clock = yield* Clock.Clock;
     const sessions = new Map<number, TrackedSession>();
     let revision = 0;
     const closedByGroup = new Map<
@@ -232,7 +234,7 @@ export const layer = Layer.effect(
             message,
             state: "failed",
           },
-          updatedAt: Date.now(),
+          updatedAt: clock.currentTimeMillisUnsafe(),
         },
       });
       revision += 1;
@@ -274,7 +276,7 @@ export const layer = Layer.effect(
             previous.launchPayload === undefined
               ? runtime.login
               : { state: "waiting-for-game" },
-          updatedAt: Date.now(),
+          updatedAt: clock.currentTimeMillisUnsafe(),
         },
       });
       revision += 1;
@@ -306,7 +308,7 @@ export const layer = Layer.effect(
           rendererGeneration,
           revision: 1,
           ...idleRuntime(),
-          updatedAt: Date.now(),
+          updatedAt: clock.currentTimeMillisUnsafe(),
         },
       });
       revision += 1;
@@ -357,7 +359,7 @@ export const layer = Layer.effect(
             launchScriptName === undefined
               ? { state: "idle" }
               : { name: launchScriptName, state: "idle" },
-          updatedAt: Date.now(),
+          updatedAt: clock.currentTimeMillisUnsafe(),
         },
       });
       revision += 1;
@@ -390,7 +392,7 @@ export const layer = Layer.effect(
         ...previous.snapshot,
         ...report.runtime,
         revision: previous.snapshot.revision + 1,
-        updatedAt: Date.now(),
+        updatedAt: clock.currentTimeMillisUnsafe(),
       };
       sessions.set(gameWindowId, {
         ...(previous.launchPayload === undefined

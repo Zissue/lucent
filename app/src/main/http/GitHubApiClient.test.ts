@@ -87,6 +87,36 @@ const makeHttpClient = (
 });
 
 describe("GitHubApiClient", () => {
+  it.effect(
+    "pins response retry timestamps and cooldown admission to the clock",
+    () =>
+      Effect.gen(function* () {
+        yield* TestClock.setTime(1234567890000);
+        const requestCount = { value: 0 };
+        const client = makeGitHubApiClient(
+          makeHttpClient(
+            [
+              response({ statusCode: 403, headers: { "retry-after": "30" } }),
+              response({ statusCode: 200 }),
+            ],
+            requestCount,
+          ),
+          "Lucent/test",
+        );
+        const limited = yield* client.get({ url: API_URL }).pipe(Effect.flip);
+        expect(limited).toMatchObject({
+          kind: "rate-limited",
+          retryAt: "2009-02-13T23:32:00.000Z",
+        });
+        yield* TestClock.adjust(29999);
+        const blocked = yield* client.get({ url: API_URL }).pipe(Effect.flip);
+        expect(blocked.retryAt).toBe("2009-02-13T23:32:00.000Z");
+        expect(requestCount.value).toBe(1);
+        yield* TestClock.adjust(1);
+        expect((yield* client.get({ url: API_URL })).statusCode).toBe(200);
+        expect(requestCount.value).toBe(2);
+      }),
+  );
   it("derives cooldowns from Retry-After and primary reset headers", () => {
     const now = Date.parse("2026-08-01T00:00:00.000Z");
     expect(retryAtFromGitHubHeaders({ "retry-after": "30" }, now)).toBe(
@@ -105,25 +135,34 @@ describe("GitHubApiClient", () => {
 
   it("distinguishes rate limits from ordinary permission failures", () => {
     expect(
-      isGitHubRateLimitResponse({
-        body: Buffer.from("secondary rate limit"),
-        headers: {},
-        statusCode: 403,
-      }),
+      isGitHubRateLimitResponse(
+        {
+          body: Buffer.from("secondary rate limit"),
+          headers: {},
+          statusCode: 403,
+        },
+        0,
+      ),
     ).toBe(true);
     expect(
-      isGitHubRateLimitResponse({
-        body: Buffer.from("organization policy denied access"),
-        headers: {},
-        statusCode: 403,
-      }),
+      isGitHubRateLimitResponse(
+        {
+          body: Buffer.from("organization policy denied access"),
+          headers: {},
+          statusCode: 403,
+        },
+        0,
+      ),
     ).toBe(false);
     expect(
-      isGitHubRateLimitResponse({
-        body: Buffer.alloc(0),
-        headers: {},
-        statusCode: 429,
-      }),
+      isGitHubRateLimitResponse(
+        {
+          body: Buffer.alloc(0),
+          headers: {},
+          statusCode: 429,
+        },
+        0,
+      ),
     ).toBe(true);
   });
 

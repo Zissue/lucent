@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as TestClock from "effect/testing/TestClock";
 
 import type { AccountSessionReport } from "@lucent/core/accounts";
 import { AccountSessions, layer } from "./AccountSessions";
@@ -19,6 +20,42 @@ const report = (
 });
 
 describe("AccountSessions", () => {
+  it.effect(
+    "timestamps synchronous session transitions with the captured clock",
+    () =>
+      Effect.gen(function* () {
+        const sessions = yield* AccountSessions;
+        yield* TestClock.setTime(1000);
+        sessions.openWindow(42, 7, 1);
+        expect(sessions.snapshot()[0]?.updatedAt).toBe(1000);
+        yield* TestClock.setTime(2000);
+        sessions.trackLaunch(42, 7, 1, {
+          account: { label: "Alice", password: "secret", username: "Alice" },
+          requestedAt: 1500,
+        });
+        expect(sessions.snapshot()[0]?.updatedAt).toBe(2000);
+        yield* TestClock.setTime(3000);
+        sessions.suppressLaunchScript(42, "Missing script");
+        expect(sessions.snapshot()[0]?.updatedAt).toBe(3000);
+        yield* TestClock.setTime(4000);
+        sessions.reloadWindow(42, 7, 2);
+        expect(sessions.snapshot()[0]?.updatedAt).toBe(4000);
+        yield* TestClock.setTime(5000);
+        sessions.applyReport(42, report(2, 1, "Alice"));
+        expect(sessions.snapshot()[0]?.updatedAt).toBe(5000);
+        yield* TestClock.setTime(6000);
+        sessions.openWindow(77, 7, 1);
+        expect(
+          sessions.snapshot().map(({ gameWindowId, updatedAt }) => ({
+            gameWindowId,
+            updatedAt,
+          })),
+        ).toEqual([
+          { gameWindowId: 77, updatedAt: 6000 },
+          { gameWindowId: 42, updatedAt: 5000 },
+        ]);
+      }).pipe(Effect.provide(layer)),
+  );
   it.effect(
     "advances revisions for accepted session changes and ignores stale mutations",
     () =>

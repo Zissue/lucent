@@ -12,17 +12,21 @@ import {
   vi,
 } from "@effect/vitest";
 
+import * as Clock from "effect/Clock";
+import * as Effect from "effect/Effect";
+import * as TestClock from "effect/testing/TestClock";
+
 import { makeBufferedDesktopLogWriter } from "./DesktopLogWriter";
 
 const fixtureDirectories = new Set<string>();
 const at = "2026-10-12T12:34:56.789Z";
 const backupName = "lucent.log.2026-10-12T12-34-56-789Z";
 
-const makeFixture = async () => {
+const makeFixture = async (clock?: Clock.Clock) => {
   const logsDir = await fs.mkdtemp(join(tmpdir(), "lucent-log-writer-"));
   fixtureDirectories.add(logsDir);
   const logFilePath = join(logsDir, "lucent.log");
-  const writer = makeBufferedDesktopLogWriter(logsDir, logFilePath);
+  const writer = makeBufferedDesktopLogWriter(logsDir, logFilePath, clock);
   return { logsDir, logFilePath, writer };
 };
 
@@ -57,6 +61,55 @@ afterEach(async () => {
 });
 
 describe("DesktopLogWriter", () => {
+  it.effect(
+    "uses the captured clock for fallback, loss, and rotation timestamps",
+    () =>
+      Effect.gen(function* () {
+        vi.useRealTimers();
+        yield* TestClock.setTime(1234567890000);
+        const clock = yield* Clock.Clock;
+        const { logsDir, logFilePath, writer } = yield* Effect.promise(() =>
+          makeFixture(clock),
+        );
+        writer.write(undefined);
+        yield* TestClock.setTime(1234567891000);
+        for (let sequence = 0; sequence < 256; sequence += 1)
+          writer.write({ sequence });
+        yield* Effect.promise(() => writer.flush());
+        const records = yield* Effect.promise(() => readRecords(logFilePath));
+        expect(records.slice(0, 2)).toEqual([
+          {
+            at: "2009-02-13T23:31:31.000Z",
+            level: "warn",
+            component: "observability",
+            message: "Log records lost",
+            event: "records.lost",
+            data: { dropped: { info: 1 } },
+          },
+          {
+            at: "2009-02-13T23:31:30.000Z",
+            level: "error",
+            component: "observability",
+            message: "Failed to serialize log record",
+          },
+        ]);
+        yield* Effect.promise(() => writer.close());
+        yield* Effect.promise(() => fs.truncate(logFilePath, 10 * 1024 * 1024));
+        yield* TestClock.setTime(1234567892000);
+        const nextWriter = makeBufferedDesktopLogWriter(
+          logsDir,
+          logFilePath,
+          clock,
+        );
+        yield* Effect.promise(() => nextWriter.close({ sequence: "rotated" }));
+        expect(
+          (yield* Effect.promise(() => fs.readdir(logsDir))).toSorted(),
+        ).toEqual(["lucent.log", "lucent.log.2009-02-13T23-31-32-000Z"]);
+        expect(yield* Effect.promise(() => readRecords(logFilePath))).toEqual([
+          { sequence: "rotated" },
+        ]);
+      }),
+  );
   it("flushes pending records without closing the writer", async () => {
     const { logFilePath, writer } = await makeFixture();
     writer.write({ sequence: "first" });

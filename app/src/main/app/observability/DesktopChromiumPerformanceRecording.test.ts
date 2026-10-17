@@ -34,6 +34,73 @@ const environment = (root: string) =>
   });
 
 describe("recording lifetimes", () => {
+  it.effect("pins recording and heap checkpoint timestamps to the clock", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(1234567890000);
+      const root = yield* fixture;
+      const services = chromiumLayer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            environment(root),
+            Layer.mock(ElectronApp, {
+              getVersion: Effect.succeed("1.0.0"),
+              getAppMetrics: Effect.succeed([]),
+            }),
+            Layer.mock(DesktopWindows, {}),
+            Layer.mock(ElectronChromiumPerformance, {
+              getCategories: Effect.succeed([]),
+              getTraceBufferUsage: Effect.succeed({ percentage: 0, value: 0 }),
+              getMainHeapUsage: Effect.succeed({
+                externalBytes: 1,
+                heapTotalBytes: 2,
+                heapUsedBytes: 1,
+                rssBytes: 3,
+              }),
+              getRendererTargets: Effect.succeed([]),
+              startRecording: () => Effect.void,
+              stopRecording: (path) => Effect.succeed(path),
+              takeMainHeapSnapshot: () => TestClock.adjust(25),
+              releaseRendererDebuggers: Effect.void,
+            }),
+          ),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const recording = yield* DesktopChromiumPerformanceRecording;
+        yield* recording.start;
+        yield* TestClock.adjust(100);
+        expect(yield* recording.captureHeapSnapshot).toMatchObject({
+          failedSnapshotCount: 0,
+          snapshotCount: 1,
+        });
+        const saved = yield* recording.stop;
+        expect(saved).toMatchObject({ durationMs: 125 });
+        expect(
+          JSON.parse(
+            yield* Effect.promise(() => readFile(saved!.manifestPath, "utf8")),
+          ),
+        ).toMatchObject({
+          startedAt: "2009-02-13T23:31:30.000Z",
+          endedAt: "2009-02-13T23:31:30.125Z",
+          heapCheckpoints: [
+            {
+              startedAt: "2009-02-13T23:31:30.100Z",
+              endedAt: "2009-02-13T23:31:30.125Z",
+            },
+          ],
+          trace: {
+            segments: [
+              {
+                startedAt: "2009-02-13T23:31:30.000Z",
+                endedAt: "2009-02-13T23:31:30.125Z",
+                durationMs: 125,
+              },
+            ],
+          },
+        });
+      }).pipe(Effect.provide(services));
+    }),
+  );
   it.effect(
     "interrupts pending Chromium samples before releasing debuggers and saving",
     () =>

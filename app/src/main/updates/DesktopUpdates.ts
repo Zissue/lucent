@@ -3,6 +3,7 @@ import { join } from "path";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as DateTime from "effect/DateTime";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -290,7 +291,6 @@ interface DesktopUpdatesOptions {
   }) => Effect.Effect<UpdateReleaseFetchResult, DesktopUpdateError>;
   readonly isEnabled: Effect.Effect<boolean, unknown>;
   readonly loadCache: Effect.Effect<UpdateReleaseCache | null, unknown>;
-  readonly now?: () => Date;
   readonly saveCache: (
     cache: UpdateReleaseCache,
   ) => Effect.Effect<void, unknown>;
@@ -302,7 +302,6 @@ const makeDesktopUpdates = (
 ): Effect.Effect<DesktopUpdatesShape, never, Scope.Scope> =>
   Effect.gen(function* () {
     const currentVersion = normalizeVersion(options.currentVersion);
-    const now = options.now ?? (() => new Date());
     const context = yield* Effect.context<never>();
     const runFork = Effect.runForkWith(context);
     const disabledState = (): UpdateCheckState => ({
@@ -380,7 +379,7 @@ const makeDesktopUpdates = (
           return disabled;
         }
 
-        const startedAt = now().toISOString();
+        const startedAt = (yield* DateTime.nowAsDate).toISOString();
         yield* setState({
           status: "checking",
           currentVersion,
@@ -401,7 +400,7 @@ const makeDesktopUpdates = (
                 ),
             }),
           );
-        const checkedAt = now().toISOString();
+        const checkedAt = (yield* DateTime.nowAsDate).toISOString();
 
         if (result.status === "not-modified") {
           const release = cache?.release;
@@ -448,7 +447,7 @@ const makeDesktopUpdates = (
                 data: { currentVersion, force },
               }),
             );
-            const checkedAt = now().toISOString();
+            const checkedAt = (yield* DateTime.nowAsDate).toISOString();
             const next: UpdateCheckState = {
               status: "error",
               currentVersion,

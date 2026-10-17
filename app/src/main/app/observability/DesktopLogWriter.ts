@@ -1,5 +1,7 @@
 import { promises as fs } from "fs";
 import { basename, join } from "path";
+import * as Clock from "effect/Clock";
+import * as DateTime from "effect/DateTime";
 import * as Predicate from "effect/Predicate";
 
 import { desktopLogErrorDetails } from "../../../shared/logRecord";
@@ -44,14 +46,14 @@ const recordLevel = (record: unknown): LogLevel => {
   }
 };
 
-const fallbackSerializationRecord = () => ({
-  at: new Date().toISOString(),
+const fallbackSerializationRecord = (clock: Clock.Clock) => ({
+  at: DateTime.formatIso(DateTime.makeUnsafe(clock.currentTimeMillisUnsafe())),
   level: "error",
   component: "observability",
   message: "Failed to serialize log record",
 });
 
-const serializeDiagnostic = (record: unknown): string => {
+const serializeDiagnostic = (record: unknown, clock: Clock.Clock): string => {
   const seen = new WeakSet<object>();
   try {
     const source = JSON.stringify(record, (_key, value: unknown) => {
@@ -70,7 +72,7 @@ const serializeDiagnostic = (record: unknown): string => {
       return value;
     });
     if (source === undefined) {
-      return `${JSON.stringify(fallbackSerializationRecord())}\n`;
+      return `${JSON.stringify(fallbackSerializationRecord(clock))}\n`;
     }
 
     const bytes = Buffer.byteLength(source, "utf8");
@@ -95,7 +97,7 @@ const serializeDiagnostic = (record: unknown): string => {
       truncated: { bytes },
     })}\n`;
   } catch {
-    return `${JSON.stringify(fallbackSerializationRecord())}\n`;
+    return `${JSON.stringify(fallbackSerializationRecord(clock))}\n`;
   }
 };
 
@@ -113,6 +115,7 @@ export interface DesktopLogWriter {
 export const makeBufferedDesktopLogWriter = (
   logsDir: string,
   logFilePath: string,
+  clock: Clock.Clock = Clock.Clock.defaultValue(),
 ): DesktopLogWriter => {
   const backupPrefix = `${basename(logFilePath)}.`;
   let closed = false;
@@ -156,7 +159,9 @@ export const makeBufferedDesktopLogWriter = (
   };
 
   const rotate = async (): Promise<void> => {
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const stamp = DateTime.formatIso(
+      DateTime.makeUnsafe(clock.currentTimeMillisUnsafe()),
+    ).replace(/[:.]/g, "-");
     await fs.rename(logFilePath, join(logsDir, `${backupPrefix}${stamp}`));
     fileBytes = 0;
   };
@@ -211,24 +216,29 @@ export const makeBufferedDesktopLogWriter = (
     const serializedRecords: string[] = [];
     if (Object.keys(batchDropped).length > 0 || batchFailedWrites > 0) {
       serializedRecords.push(
-        serializeDiagnostic({
-          at: new Date().toISOString(),
-          level: "warn",
-          component: "observability",
-          message: "Log records lost",
-          event: "records.lost",
-          data: {
-            ...(Object.keys(batchDropped).length > 0
-              ? { dropped: batchDropped }
-              : {}),
-            ...(batchFailedWrites > 0
-              ? { failedWrites: batchFailedWrites }
-              : {}),
-            ...(Object.keys(batchFailedRecords).length > 0
-              ? { failedRecords: batchFailedRecords }
-              : {}),
+        serializeDiagnostic(
+          {
+            at: DateTime.formatIso(
+              DateTime.makeUnsafe(clock.currentTimeMillisUnsafe()),
+            ),
+            level: "warn",
+            component: "observability",
+            message: "Log records lost",
+            event: "records.lost",
+            data: {
+              ...(Object.keys(batchDropped).length > 0
+                ? { dropped: batchDropped }
+                : {}),
+              ...(batchFailedWrites > 0
+                ? { failedWrites: batchFailedWrites }
+                : {}),
+              ...(Object.keys(batchFailedRecords).length > 0
+                ? { failedRecords: batchFailedRecords }
+                : {}),
+            },
           },
-        }),
+          clock,
+        ),
       );
     }
     for (const { line } of records) {
@@ -289,7 +299,7 @@ export const makeBufferedDesktopLogWriter = (
       }
       pending.splice(evictionIndex, 1);
     }
-    pending.push({ line: serializeDiagnostic(record), level });
+    pending.push({ line: serializeDiagnostic(record, clock), level });
     scheduleFlush(
       pending.length === MAX_PENDING_RECORDS ? 0 : FLUSH_INTERVAL_MS,
     );
@@ -311,7 +321,7 @@ export const makeBufferedDesktopLogWriter = (
     }
     if (finalRecord !== undefined) {
       pending.push({
-        line: serializeDiagnostic(finalRecord),
+        line: serializeDiagnostic(finalRecord, clock),
         level: recordLevel(finalRecord),
       });
     }

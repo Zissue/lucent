@@ -258,7 +258,7 @@ export const layer = Layer.effect(
             : { ref: managed.source.requestedRef }),
         });
         return {
-          checkedAt: new Date().toISOString(),
+          checkedAt: (yield* DateTime.nowAsDate).toISOString(),
           revision: { kind: "tree", sha: result.tree },
         } satisfies ResolvedPackageRevision;
       }
@@ -275,7 +275,7 @@ export const layer = Layer.effect(
           : { ref: managed.source.requestedRef }),
         ...(etag === undefined ? {} : { etag }),
       });
-      const checkedAt = new Date().toISOString();
+      const checkedAt = (yield* DateTime.nowAsDate).toISOString();
       if (result.status === "modified") {
         return {
           checkedAt,
@@ -339,7 +339,7 @@ export const layer = Layer.effect(
           : { credentialId: managed.source.credentialId }),
       });
       return {
-        checkedAt: new Date().toISOString(),
+        checkedAt: (yield* DateTime.nowAsDate).toISOString(),
         commit: commit.commit,
         revision: { kind: "tree", sha: directory.tree },
       } satisfies ResolvedInstallSource;
@@ -587,7 +587,7 @@ export const layer = Layer.effect(
                         "GitHub couldn't resolve the selected Git ref to a commit.",
                       );
                     }
-                    const checkedAt = new Date().toISOString();
+                    const checkedAt = (yield* DateTime.nowAsDate).toISOString();
                     if (subdirectory === undefined) {
                       return {
                         checkedAt,
@@ -803,17 +803,18 @@ export const layer = Layer.effect(
                     cause,
                   ),
               });
+              const installedAt = (yield* DateTime.nowAsDate).toISOString();
               const managed: ManagedScriptPackage =
                 resolvedSource.kind === "restore"
                   ? {
                       ...resolvedSource.installed,
                       files,
-                      installedAt: new Date().toISOString(),
+                      installedAt,
                     }
                   : {
                       directory,
                       files,
-                      installedAt: new Date().toISOString(),
+                      installedAt,
                       name: packageName,
                       remoteRevision: resolvedSource.revision,
                       source:
