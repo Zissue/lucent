@@ -17,23 +17,23 @@ import {
 } from "@lucent/core/army";
 
 import {
+  type ArmyAuthenticatedParticipant,
   type ArmyLoopTauntError,
-  endLoopTaunt,
+  type ArmyParticipantId,
   type LoopTauntSlot,
   type LoopTauntStep,
   type MutationEffects,
   noEffects,
-} from "./ArmyLoopTauntState";
+} from "./ArmyLoopTauntModel";
+import { endLoopTaunt } from "./ArmyLoopTauntAssignments";
 
 import {
   ARMY_START_TIMEOUT_MS,
   ArmyParticipantError,
   type ArmyCoordinatorError,
-  type ArmyParticipantId,
   type ArmyParticipant,
   type ArmySessionEndCause,
   type ArmySessionEndedEvent,
-  type ArmyAuthenticatedParticipant,
   type StepSignature,
   type ArmySessionState,
   type ArmySessionSnapshot,

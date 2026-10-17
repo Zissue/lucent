@@ -13,8 +13,8 @@ import type {
 } from "@lucent/core/army";
 import { ArmyCoordinator, makeArmyCoordinator } from "./ArmyCoordinator";
 import type { ArmyCoordinatorError } from "./ArmySession";
+import type { ArmyLoopTauntCommandEvent } from "./ArmyLoopTauntModel";
 import {
-  type ArmyLoopTauntCommandEvent,
   type ArmyLoopTauntOrchestratorShape,
   makeArmyLoopTauntOrchestrator,
 } from "./ArmyLoopTauntOrchestrator";

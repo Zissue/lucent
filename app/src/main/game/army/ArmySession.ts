@@ -9,7 +9,11 @@ import {
   type ArmySessionPayload,
 } from "@lucent/core/army";
 
-import { initialLoopTauntSlot, type LoopTauntSlot } from "./ArmyLoopTauntState";
+import {
+  type ArmyParticipantId,
+  initialLoopTauntSlot,
+  type LoopTauntSlot,
+} from "./ArmyLoopTauntModel";
 
 export const ARMY_START_TIMEOUT_MS = 120_000;
 export const ARMY_SYNC_TIMEOUT_MS = 10 * 60_000;
@@ -77,8 +81,6 @@ export type ArmyCoordinatorError =
   | ArmyParticipantError
   | ArmySynchronizationError;
 
-export type ArmyParticipantId = number;
-
 export interface ArmyParticipant {
   readonly rendererId: ArmyParticipantId;
   readonly isCurrent: () => boolean;
@@ -103,13 +105,6 @@ export interface ArmySessionEndCause {
 export interface ArmySessionEndedEvent {
   readonly participantIds: readonly ArmyParticipantId[];
   readonly reason: string;
-  readonly sessionId: string;
-}
-
-export interface ArmyAuthenticatedParticipant {
-  readonly playerCount: number;
-  readonly playerName: string;
-  readonly playerNumber: number;
   readonly sessionId: string;
 }
 
