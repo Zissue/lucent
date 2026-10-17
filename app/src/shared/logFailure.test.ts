@@ -4,7 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Logger from "effect/Logger";
 import * as References from "effect/References";
 
-import { logFailure } from "../../../shared/logFailure";
+import { logFailure } from "./logFailure";
 
 describe("logFailure", () => {
   it.effect("chooses the level from the cause", () =>
