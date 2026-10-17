@@ -36,10 +36,7 @@ export const readFileBounded = Effect.fn("readFileBounded")(function* (
     });
   }
   const chunks = yield* Stream.runCollect(
-    fileSystem.stream(path, {
-      bytesToRead: BigInt(maxBytes) + 1n,
-      chunkSize: 64 * 1024,
-    }),
+    fileSystem.stream(path, { bytesToRead: BigInt(maxBytes) + 1n }),
   );
   const size = chunks.reduce((total, chunk) => total + chunk.byteLength, 0);
   if (size > maxBytes)

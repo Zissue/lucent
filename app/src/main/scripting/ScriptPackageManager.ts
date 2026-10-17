@@ -1269,7 +1269,7 @@ export const layer = Layer.effect(
                   Effect.match({
                     onFailure: (restoreCause) => ({
                       cause: error,
-                      restoreCause,
+                      restoreCause: nativeCause(restoreCause),
                     }),
                     onSuccess: () => error,
                   }),
