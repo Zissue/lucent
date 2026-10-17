@@ -74,7 +74,7 @@ describe("GameFollowers", () => {
           GameRendererRpc,
           GameRendererRpc.of({
             call: () => Effect.fail(original),
-            onConnected: () => Effect.succeed(() => {}),
+            onConnected: () => Effect.void,
           }),
         ),
       );
@@ -219,7 +219,6 @@ describe("follower reconciliation logging", () => {
               onConnected: (listener) =>
                 Effect.sync(() => {
                   connected = listener;
-                  return () => {};
                 }),
             }),
           ),

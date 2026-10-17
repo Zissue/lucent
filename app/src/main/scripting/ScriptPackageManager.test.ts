@@ -240,7 +240,7 @@ const makeManagerHarness = (options: {
             exit: () => Effect.void,
             getAppMetrics: Effect.succeed([]),
             getVersion: Effect.succeed("1.0.0"),
-            on: () => Effect.succeed(() => {}),
+            on: () => Effect.void,
             relaunch: Effect.void,
             quit: Effect.void,
             whenReady: Effect.void,

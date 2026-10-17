@@ -8,6 +8,7 @@ import * as Fiber from "effect/Fiber";
 import * as Logger from "effect/Logger";
 import * as Layer from "effect/Layer";
 
+import { listen } from "../electron/NativeListener";
 import {
   ElectronApp,
   type ElectronWillQuitEvent,
@@ -55,13 +56,7 @@ const makeHarness = (flushCompletes: boolean) => {
       }),
     getAppMetrics: Effect.succeed([]),
     getVersion: Effect.succeed("1.0.0"),
-    on: (eventName, listener) =>
-      Effect.sync(() => {
-        appEvents.on(eventName, listener);
-        return () => {
-          appEvents.removeListener(eventName, listener);
-        };
-      }),
+    on: (eventName, listener) => listen(appEvents, eventName, listener),
     quit: Effect.void,
     relaunch: Effect.void,
     whenReady: Effect.void,

@@ -19,6 +19,30 @@ vi.mock("electron", async () => {
 });
 
 describe("DesktopRendererObservability", () => {
+  it.effect(
+    "removes only the destroyed WebContents listeners immediately",
+    () =>
+      Effect.gen(function* () {
+        const first = Object.assign(new EventEmitter(), { id: 42 });
+        const second = Object.assign(new EventEmitter(), { id: 43 });
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            yield* installDesktopRendererObservability;
+            app.emit("web-contents-created", {}, first);
+            app.emit("web-contents-created", {}, second);
+            expect(first.listenerCount("responsive")).toBe(1);
+            expect(second.listenerCount("responsive")).toBe(1);
+            first.emit("destroyed");
+            expect(first.eventNames()).toEqual([]);
+            expect(second.listenerCount("responsive")).toBe(1);
+            first.emit("destroyed");
+          }),
+        );
+        expect(second.eventNames()).toEqual([]);
+        expect(app.listenerCount("web-contents-created")).toBe(0);
+      }),
+  );
+
   it.effect("interrupts in-flight callback logging when its scope closes", () =>
     Effect.gen(function* () {
       const started = yield* Deferred.make<void>();

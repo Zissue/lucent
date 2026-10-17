@@ -8,6 +8,7 @@ import * as Scope from "effect/Scope";
 
 import { DesktopObservability } from "./observability/DesktopObservability";
 import { ElectronApp } from "../electron/ElectronApp";
+import { listen } from "../electron/NativeListener";
 
 const QUIT_DEADLINE_MS = 1_500;
 const FORCED_EXIT_FLUSH_TIMEOUT_MS = 250;
@@ -31,21 +32,6 @@ export class DesktopLifecycle extends Context.Service<
   DesktopLifecycle,
   DesktopLifecycleShape
 >()("lucent/desktop/app/DesktopLifecycle") {}
-
-// Use `on` so a repeated signal cannot reach Node's default handler during cleanup.
-const addProcessSignalListener = (
-  signal: NodeJS.Signals,
-  listener: () => void,
-): Effect.Effect<void, never, Scope.Scope> =>
-  Effect.acquireRelease(
-    Effect.sync(() => {
-      (process as EventEmitter).on(signal, listener);
-    }),
-    () =>
-      Effect.sync(() => {
-        (process as EventEmitter).removeListener(signal, listener);
-      }),
-  ).pipe(Effect.asVoid);
 
 export const layer = Layer.effect(
   DesktopLifecycle,
@@ -103,24 +89,21 @@ export const layer = Layer.effect(
         }),
       );
 
-      const disposeBeforeQuit = yield* app.on("before-quit", () => {
+      yield* app.on("before-quit", () => {
         isQuitting = true;
       });
-      yield* Effect.addFinalizer(() => Effect.sync(disposeBeforeQuit));
 
-      const disposeWillQuit = yield* app.on("will-quit", (event) => {
+      yield* app.on("will-quit", (event) => {
         event.preventDefault();
         beginShutdown("will-quit");
         Deferred.doneUnsafe(quitRequested, Effect.succeed("will-quit"));
       });
-      yield* Effect.addFinalizer(() => Effect.sync(disposeWillQuit));
 
-      const disposeWindowAllClosed = yield* app.on("window-all-closed", () => {
+      yield* app.on("window-all-closed", () => {
         if (process.platform !== "darwin") {
           runFork(app.quit);
         }
       });
-      yield* Effect.addFinalizer(() => Effect.sync(disposeWindowAllClosed));
 
       const signalListeners = TERMINATION_SIGNALS.map((signal) => ({
         signal,
@@ -133,7 +116,7 @@ export const layer = Layer.effect(
         },
       }));
       for (const { signal, listener } of signalListeners) {
-        yield* addProcessSignalListener(signal, listener);
+        yield* listen(process, signal, listener);
       }
       yield* app.whenReady.pipe(
         Effect.andThen(

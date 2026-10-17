@@ -32,6 +32,7 @@ import { makeListenerRegistry } from "../app/ListenerRegistry";
 import { DesktopEnvironment } from "../app/DesktopEnvironment";
 import { logFailure } from "../../shared/logFailure";
 import { ElectronApp } from "../electron/ElectronApp";
+import { listen as listenNative } from "../electron/NativeListener";
 import { GameSessions } from "../game/session/GameSessions";
 import { ElectronShell } from "../electron/ElectronShell";
 import { ElectronTheme } from "../electron/ElectronTheme";
@@ -329,33 +330,25 @@ const makeDesktopWindows = Effect.gen(function* () {
     event: string,
     handler: (...args: Args) => void,
   ): Effect.Effect<void, never, Scope.Scope> =>
-    Effect.acquireRelease(
-      Effect.sync(() => {
-        const listener = (...args: Args): void => {
-          try {
-            handler(...args);
-          } catch (cause) {
-            run(
-              logFailure(
-                "Electron event handler failed",
-                Cause.die(cause),
-              ).pipe(
-                Effect.annotateLogs({
-                  component: "window",
-                  data: { event, targetId: target.id },
-                }),
-              ),
-            );
-          }
-        };
-        target.on(event, listener);
-        return listener;
-      }),
-      (listener) =>
-        Effect.sync(() => {
-          if (!target.isDestroyed()) target.removeListener(event, listener);
-        }),
-    ).pipe(Effect.asVoid);
+    listenNative(
+      target,
+      event,
+      (...args: Args): void => {
+        try {
+          handler(...args);
+        } catch (cause) {
+          run(
+            logFailure("Electron event handler failed", Cause.die(cause)).pipe(
+              Effect.annotateLogs({
+                component: "window",
+                data: { event, targetId: target.id },
+              }),
+            ),
+          );
+        }
+      },
+      () => !target.isDestroyed(),
+    );
   const closeScope = (
     scope: Scope.Closeable,
     exit: Exit.Exit<unknown, unknown>,
@@ -454,21 +447,17 @@ const makeDesktopWindows = Effect.gen(function* () {
     onStateChanged: refreshGameHostWindowTitle,
     platform: env.platform,
   });
-  const unsubscribeWindowTitleSettings = yield* settings.onChanged(
-    (nextSettings) => {
-      const nextValue = nextSettings.preferences.showGameUsernameInWindowTitle;
-      if (showGameUsernameInWindowTitle === nextValue) return;
-      showGameUsernameInWindowTitle = nextValue;
-      for (const record of renderers.values()) {
-        if (record.kind === "game-host")
-          refreshGameHostWindowTitle(record.host);
-        if (record.kind === "game" && !isGameViewRecord(record)) {
-          refreshStandaloneGameWindowTitle(record);
-        }
+  yield* settings.onChanged((nextSettings) => {
+    const nextValue = nextSettings.preferences.showGameUsernameInWindowTitle;
+    if (showGameUsernameInWindowTitle === nextValue) return;
+    showGameUsernameInWindowTitle = nextValue;
+    for (const record of renderers.values()) {
+      if (record.kind === "game-host") refreshGameHostWindowTitle(record.host);
+      if (record.kind === "game" && !isGameViewRecord(record)) {
+        refreshStandaloneGameWindowTitle(record);
       }
-    },
-  );
-  yield* Effect.addFinalizer(() => Effect.sync(unsubscribeWindowTitleSettings));
+    }
+  });
   const events = makeListenerRegistry<DesktopRendererEvent>();
   const publish = (event: DesktopRendererEvent) =>
     events.publish(
@@ -476,14 +465,11 @@ const makeDesktopWindows = Effect.gen(function* () {
       event.type === "created" || event.type === "ready" ? 1 : "unbounded",
     );
   const observe: DesktopWindowsShape["observe"] = (filter, listener) =>
-    Effect.acquireRelease(
-      events.subscribe((event) =>
-        filter.kind === undefined || filter.kind === event.kind
-          ? listener(event)
-          : Effect.void,
-      ),
-      (unsubscribe) => Effect.sync(unsubscribe),
-    ).pipe(Effect.asVoid);
+    events.subscribe((event) =>
+      filter.kind === undefined || filter.kind === event.kind
+        ? listener(event)
+        : Effect.void,
+    );
 
   let appIsQuitting = false;
   let hasOpenedTopLevelWindow = false;
@@ -500,10 +486,9 @@ const makeDesktopWindows = Effect.gen(function* () {
     run(electronShell.openExternal(url).pipe(Effect.asVoid));
   };
 
-  const unsubscribeBeforeQuit = yield* app.on("before-quit", () => {
+  yield* app.on("before-quit", () => {
     appIsQuitting = true;
   });
-  yield* Effect.addFinalizer(() => Effect.sync(unsubscribeBeforeQuit));
 
   const hasPresentableTopLevelWindow = (): boolean =>
     [...renderers.values()].some(
@@ -1983,7 +1968,7 @@ const makeDesktopWindows = Effect.gen(function* () {
   );
 
   if (env.platform === "darwin") {
-    const unsubscribeActivate = yield* app.on("activate", () => {
+    yield* app.on("activate", () => {
       run(
         restorePrimaryWindow().pipe(
           Effect.catch((cause) =>
@@ -1995,7 +1980,6 @@ const makeDesktopWindows = Effect.gen(function* () {
         ),
       );
     });
-    yield* Effect.addFinalizer(() => Effect.sync(unsubscribeActivate));
   }
 
   return DesktopWindows.of({

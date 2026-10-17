@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from "@effect/vitest";
 import { vi } from "vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import { listen } from "../electron/NativeListener";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -217,7 +218,6 @@ const availableUpdate: UpdateCheckState = {
   }),
 };
 
-const unsubscribe = Effect.succeed(() => undefined);
 const originalSecondArgv = [
   "/Electron",
   "/Lucent",
@@ -296,13 +296,7 @@ const makeStartup = (options: {
       Effect.sync(() => {
         events.push(`exit:${code}`);
       }),
-    on: (eventName, listener) =>
-      Effect.sync(() => {
-        appEvents.on(eventName, listener);
-        return () => {
-          appEvents.removeListener(eventName, listener);
-        };
-      }),
+    on: (eventName, listener) => listen(appEvents, eventName, listener),
     getVersion: Effect.succeed("1.2.3"),
     whenReady: Effect.void,
     quit: options.synchronousQuit ? Effect.sync(emitWillQuit) : Effect.void,
@@ -397,11 +391,11 @@ const makeStartup = (options: {
           },
         }),
       ),
-      onChanged: () => unsubscribe,
+      onChanged: () => Effect.void,
     }),
     Layer.mock(DesktopUpdates, {
       checkNow: () => options.checkNow,
-      onStateChanged: () => unsubscribe,
+      onStateChanged: () => Effect.void,
       shouldPromptForAvailableRelease: () => Effect.succeed(true),
       skipAvailableRelease: (version) =>
         Effect.sync(() => {
@@ -437,13 +431,13 @@ const makeStartup = (options: {
       initialize: options.initialize ?? Effect.void,
     }),
     Layer.mock(ScriptPackageCatalog, {
-      onChanged: () => unsubscribe,
+      onChanged: () => Effect.void,
       refresh: Effect.succeed({ packages: [], revision: "r0", scriptCount: 0 }),
     }),
-    Layer.mock(Accounts, { onChanged: () => unsubscribe }),
-    Layer.mock(CombatProfiles, { onChanged: () => unsubscribe }),
-    Layer.mock(ArmyCoordinator, { onSessionEnded: () => unsubscribe }),
-    Layer.mock(ArmyLoopTauntOrchestrator, { onCommand: () => unsubscribe }),
+    Layer.mock(Accounts, { onChanged: () => Effect.void }),
+    Layer.mock(CombatProfiles, { onChanged: () => Effect.void }),
+    Layer.mock(ArmyCoordinator, { onSessionEnded: () => Effect.void }),
+    Layer.mock(ArmyLoopTauntOrchestrator, { onCommand: () => Effect.void }),
   );
 
   const run = makeDesktopRuntime(

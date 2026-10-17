@@ -46,10 +46,7 @@ export const installEventForwarding = Effect.fn(
   const combatProfiles = yield* CombatProfiles;
   const ipc = yield* DesktopIpc;
 
-  yield* Effect.acquireRelease(
-    combatProfiles.onChanged((library) =>
-      ipc.sendToAll(CombatProfilesIpc.changed, library),
-    ),
-    (unsubscribe) => Effect.sync(unsubscribe),
+  yield* combatProfiles.onChanged((library) =>
+    ipc.sendToAll(CombatProfilesIpc.changed, library),
   );
 });

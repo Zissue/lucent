@@ -64,7 +64,7 @@ export interface DesktopUpdatesShape {
   readonly getState: Effect.Effect<UpdateCheckState>;
   readonly onStateChanged: (
     listener: Listener<UpdateCheckState>,
-  ) => Effect.Effect<() => void>;
+  ) => Effect.Effect<void, never, Scope.Scope>;
   readonly openReleasePage: Effect.Effect<boolean>;
   readonly shouldPromptForAvailableRelease: (
     version: string,

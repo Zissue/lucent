@@ -35,6 +35,7 @@ import {
 import { DesktopEnvironment } from "../app/DesktopEnvironment";
 import { makeListenerRegistry, type Listener } from "../app/ListenerRegistry";
 import { FileSystem } from "effect/FileSystem";
+import type * as Scope from "effect/Scope";
 import { type JsonFileError, makeJsonFile } from "../filesystem/JsonFile";
 import * as SettingsDiagnostics from "./DesktopSettingsDiagnostics";
 
@@ -66,7 +67,7 @@ export interface DesktopSettingsShape {
   readonly load: Effect.Effect<AppSettings, DesktopSettingsError>;
   readonly onChanged: (
     listener: Listener<AppSettings>,
-  ) => Effect.Effect<() => void>;
+  ) => Effect.Effect<void, never, Scope.Scope>;
   readonly resetAppearance: Effect.Effect<AppSettings, DesktopSettingsError>;
   readonly resetHotkeys: Effect.Effect<AppSettings, DesktopSettingsError>;
   readonly updateAppearance: (

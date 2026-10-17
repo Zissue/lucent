@@ -6,6 +6,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SynchronizedRef from "effect/SynchronizedRef";
+import type * as Scope from "effect/Scope";
 
 import type {
   ScriptCatalogChange,
@@ -66,7 +67,7 @@ export interface ScriptPackageCatalogShape {
   ) => Effect.Effect<ScriptCatalogPage, ScriptPackageCatalogError>;
   readonly onChanged: (
     listener: Listener<ScriptCatalogChange>,
-  ) => Effect.Effect<() => void>;
+  ) => Effect.Effect<void, never, Scope.Scope>;
   readonly referenceForPath: (
     path: string,
   ) => Effect.Effect<ScriptReference | undefined, ScriptPackageCatalogError>;

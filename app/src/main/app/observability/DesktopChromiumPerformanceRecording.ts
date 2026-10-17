@@ -142,7 +142,7 @@ export interface DesktopChromiumPerformanceRecordingShape {
   readonly getState: Effect.Effect<DesktopChromiumPerformanceRecordingState>;
   readonly onChanged: (
     listener: (state: DesktopChromiumPerformanceRecordingState) => void,
-  ) => Effect.Effect<() => void>;
+  ) => Effect.Effect<void, never, Scope.Scope>;
   readonly start: Effect.Effect<
     void,
     | DesktopChromiumPerformanceRecordingBusyError

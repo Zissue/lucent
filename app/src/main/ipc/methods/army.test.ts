@@ -63,14 +63,11 @@ const makeGameWindows = () => {
         : { rendererId: id, kind: "game", lifetime };
     });
   const observe: DesktopWindows["Service"]["observe"] = (filter, listener) =>
-    Effect.acquireRelease(
-      events.subscribe((event) =>
-        filter.kind === undefined || filter.kind === event.kind
-          ? listener(event)
-          : Effect.void,
-      ),
-      (unsubscribe) => Effect.sync(unsubscribe),
-    ).pipe(Effect.asVoid);
+    events.subscribe((event) =>
+      filter.kind === undefined || filter.kind === event.kind
+        ? listener(event)
+        : Effect.void,
+    );
   const end = (lifecycle: "closed" | "reloaded" | "crashed") =>
     Effect.gen(function* () {
       const current = lifetimes.get(rendererId)!;
@@ -156,7 +153,7 @@ const runStartIpc = <A, E>(
         Layer.succeed(DesktopIpcSenders, makeDesktopIpcSenders(windows)),
         Layer.succeed(ArmyConfigRepository, { read }),
         Layer.mock(ArmyLoopTauntOrchestrator, {
-          onCommand: () => Effect.succeed(() => {}),
+          onCommand: () => Effect.void,
         }),
       ),
     ),

@@ -457,7 +457,7 @@ const makeCatalogHarness = (
       exit: () => Effect.void,
       getAppMetrics: Effect.succeed([]),
       getVersion: Effect.succeed("1.0.0"),
-      on: () => Effect.succeed(() => undefined),
+      on: () => Effect.void,
       quit: Effect.void,
       relaunch: Effect.void,
       whenReady: Effect.void,

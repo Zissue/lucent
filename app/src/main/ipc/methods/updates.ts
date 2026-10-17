@@ -41,8 +41,7 @@ export const installEventForwarding = Effect.fn(
   const ipc = yield* DesktopIpc;
   const updates = yield* DesktopUpdates;
 
-  yield* Effect.acquireRelease(
-    updates.onStateChanged((state) => ipc.sendToAll(UpdatesIpc.changed, state)),
-    (unsubscribe) => Effect.sync(unsubscribe),
+  yield* updates.onStateChanged((state) =>
+    ipc.sendToAll(UpdatesIpc.changed, state),
   );
 });

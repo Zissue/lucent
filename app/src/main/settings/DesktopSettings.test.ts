@@ -7,12 +7,14 @@ import { vi } from "vitest";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import { FileSystem } from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as PlatformError from "effect/PlatformError";
 import * as References from "effect/References";
+import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 
@@ -72,13 +74,16 @@ describe("DesktopSettings", () => {
       yield* settings.load;
       let emitted = 0;
       let lastThemeMode: string | null = null;
-      const unsubscribe = yield* settings.onChanged((nextSettings) => {
-        emitted += 1;
-        lastThemeMode = nextSettings.appearance.themeMode;
-      });
+      const scope = yield* Scope.make();
+      yield* settings
+        .onChanged((nextSettings) => {
+          emitted += 1;
+          lastThemeMode = nextSettings.appearance.themeMode;
+        })
+        .pipe(Scope.provide(scope));
 
       const updated = yield* settings.updateAppearance({ themeMode: "light" });
-      unsubscribe();
+      yield* Scope.close(scope, Exit.void);
       const persisted = JSON.parse(
         yield* Effect.promise(() =>
           readFile(join(env.appDataDir, "settings.json"), "utf8"),

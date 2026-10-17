@@ -61,9 +61,7 @@ const makeHarness = (
     const lifecycle = makeListenerRegistry<DesktopRendererEvent>();
     let current = makeLifetime(RENDERER_ID, 1, Scope.forkUnsafe(parentScope));
     const observe: DesktopWindows["Service"]["observe"] = (_filter, listener) =>
-      Effect.acquireRelease(lifecycle.subscribe(listener), (unsubscribe) =>
-        Effect.sync(unsubscribe),
-      ).pipe(Effect.asVoid);
+      lifecycle.subscribe(listener);
     const commit = Effect.gen(function* () {
       const old = current;
       generation += 1;

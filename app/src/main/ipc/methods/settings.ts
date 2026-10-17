@@ -83,10 +83,7 @@ export const installEventForwarding = Effect.fn(
   const ipc = yield* DesktopIpc;
   const settings = yield* DesktopSettings;
 
-  yield* Effect.acquireRelease(
-    settings.onChanged((nextSettings) =>
-      ipc.sendToAll(SettingsIpc.changed, nextSettings),
-    ),
-    (unsubscribe) => Effect.sync(unsubscribe),
+  yield* settings.onChanged((nextSettings) =>
+    ipc.sendToAll(SettingsIpc.changed, nextSettings),
   );
 });

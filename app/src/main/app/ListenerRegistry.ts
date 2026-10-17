@@ -1,4 +1,5 @@
 import * as Effect from "effect/Effect";
+import type * as Scope from "effect/Scope";
 
 import { logFailure } from "../../shared/logFailure";
 
@@ -15,7 +16,9 @@ export interface ListenerRegistry<Value> {
     value: Value,
     concurrency?: 1 | "unbounded",
   ) => Effect.Effect<void>;
-  readonly subscribe: (listener: Listener<Value>) => Effect.Effect<() => void>;
+  readonly subscribe: (
+    listener: Listener<Value>,
+  ) => Effect.Effect<void, never, Scope.Scope>;
 }
 
 export const makeListenerRegistry = <Value>(
@@ -47,12 +50,15 @@ export const makeListenerRegistry = <Value>(
     );
 
   const subscribe: ListenerRegistry<Value>["subscribe"] = (listener) =>
-    Effect.sync(() => {
-      listeners.add(listener);
-      return () => {
-        listeners.delete(listener);
-      };
-    });
+    Effect.acquireRelease(
+      Effect.sync(() => {
+        listeners.add(listener);
+      }),
+      () =>
+        Effect.sync(() => {
+          listeners.delete(listener);
+        }),
+    );
 
   return {
     publishLatest: (revision, value) =>

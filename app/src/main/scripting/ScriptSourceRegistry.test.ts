@@ -69,7 +69,7 @@ const makeLayer = (
         revision: discovery.catalog.revision,
         total: discovery.catalog.scripts.length,
       }),
-    onChanged: () => Effect.succeed(() => undefined),
+    onChanged: () => Effect.void,
     referenceForPath: (path) => Effect.succeed(discovery.paths.get(path)),
     refresh: Effect.succeed(overview),
     removePackage: () => Effect.succeed(overview),

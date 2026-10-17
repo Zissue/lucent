@@ -573,21 +573,16 @@ const makeDesktopApplicationMenu = Effect.gen(function* () {
         );
       }
       yield* rebuild;
-      const unsubscribe = yield* settings.onChanged(() => {
+      yield* settings.onChanged(() => {
         run(rebuild.pipe(catchMenuFailure("rebuild")));
       });
-      yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
-      const unsubscribeChromiumPerformanceRecording =
-        yield* chromiumPerformanceRecording.onChanged(() => {
-          run(
-            rebuild.pipe(
-              catchMenuFailure("rebuild-chromium-performance-recording"),
-            ),
-          );
-        });
-      yield* Effect.addFinalizer(() =>
-        Effect.sync(unsubscribeChromiumPerformanceRecording),
-      );
+      yield* chromiumPerformanceRecording.onChanged(() => {
+        run(
+          rebuild.pipe(
+            catchMenuFailure("rebuild-chromium-performance-recording"),
+          ),
+        );
+      });
     },
   );
 

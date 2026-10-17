@@ -24,6 +24,7 @@ import {
   type Listener,
 } from "../../app/ListenerRegistry";
 import { FileSystem } from "effect/FileSystem";
+import type * as Scope from "effect/Scope";
 import { type JsonFileError, makeJsonFile } from "../../filesystem/JsonFile";
 
 const combatProfilesOperationSchema = Schema.Literals([
@@ -58,7 +59,7 @@ export interface CombatProfilesShape {
   readonly load: Effect.Effect<CombatProfileLibrary, CombatProfilesError>;
   readonly onChanged: (
     listener: Listener<CombatProfileLibrary>,
-  ) => Effect.Effect<() => void>;
+  ) => Effect.Effect<void, never, Scope.Scope>;
   readonly saveProfile: (
     profile: CombatProfile,
   ) => Effect.Effect<CombatProfileLibrary, CombatProfilesError>;

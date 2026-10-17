@@ -171,25 +171,19 @@ export const installLifecycle = Effect.fn("desktop.ipc.army.installLifecycle")(
     const ipc = yield* DesktopIpc;
     const windows = yield* DesktopWindows;
 
-    yield* Effect.acquireRelease(
-      loopTauntOrchestrator.onCommand((event) =>
-        ipc.sendToRendererIds(
-          event.participantIds,
-          ArmyIpc.loopTauntCommand,
-          event.command,
-        ),
+    yield* loopTauntOrchestrator.onCommand((event) =>
+      ipc.sendToRendererIds(
+        event.participantIds,
+        ArmyIpc.loopTauntCommand,
+        event.command,
       ),
-      (unsubscribe) => Effect.sync(unsubscribe),
     );
 
-    yield* Effect.acquireRelease(
-      coordinator.onSessionEnded((event) =>
-        ipc.sendToRendererIds(event.participantIds, ArmyIpc.ended, {
-          reason: event.reason,
-          sessionId: event.sessionId,
-        }),
-      ),
-      (unsubscribe) => Effect.sync(unsubscribe),
+    yield* coordinator.onSessionEnded((event) =>
+      ipc.sendToRendererIds(event.participantIds, ArmyIpc.ended, {
+        reason: event.reason,
+        sessionId: event.sessionId,
+      }),
     );
 
     yield* windows.observe({ kind: "game" }, (event) => {
