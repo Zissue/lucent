@@ -13,7 +13,7 @@ import {
 import {
   analyzeScriptSource,
   type ScriptSourceAnalysis,
-} from "./ScriptInputsExtractor";
+} from "./ScriptSourceParser";
 import type { ScriptFileAnalysisResolution } from "./ScriptFileWorkerProtocol";
 
 interface ExtractionCacheEntry {

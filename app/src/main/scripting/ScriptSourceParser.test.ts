@@ -5,36 +5,13 @@ import * as Effect from "effect/Effect";
 
 import { normalizeScriptInputValues } from "@lucent/core/scriptInputs";
 
-import {
-  ScriptInputsExtractor,
-  ScriptInputsExtractorError,
-  layer as scriptInputsExtractorLayer,
-} from "./ScriptInputsExtractor";
+import { analyzeScriptSource } from "./ScriptSourceParser";
 
-const extractInputs = (source: string, fallbackId = "fallback-script-id") =>
-  Effect.gen(function* () {
-    const extractor = yield* ScriptInputsExtractor;
-    return yield* extractor.extract(source, fallbackId);
-  }).pipe(Effect.provide(scriptInputsExtractorLayer));
-
-const analyzeSource = (source: string) =>
-  Effect.gen(function* () {
-    const extractor = yield* ScriptInputsExtractor;
-    return yield* extractor.analyze(source, "fallback-script-id");
-  }).pipe(Effect.provide(scriptInputsExtractorLayer));
-
-const extractInputsResult = (source: string) =>
-  extractInputs(source).pipe(
-    Effect.match({
-      onFailure: (error) => ({ error, ok: false }) as const,
-      onSuccess: (value) => ({ ok: true, value }) as const,
-    }),
-  );
-
-describe("ScriptInputsExtractor service", () => {
+describe("ScriptSourceParser", () => {
   it.effect("finds only direct string-literal require calls", () =>
     Effect.gen(function* () {
-      const analysis = yield* analyzeSource(`
+      const analysis = yield* analyzeScriptSource(
+        `
         require("./direct");
         require("./direct");
         const path = "./computed";
@@ -42,7 +19,9 @@ describe("ScriptInputsExtractor service", () => {
         const load = require;
         load("./aliased");
         require(\`./template\`);
-      `);
+      `,
+        "fallback-script-id",
+      );
 
       expect(analysis.requirements).toEqual(["./direct"]);
     }),
@@ -50,7 +29,8 @@ describe("ScriptInputsExtractor service", () => {
 
   it.effect("extracts static inputs and fills a missing id", () =>
     Effect.gen(function* () {
-      const definition = yield* extractInputs(`
+      const { inputs: definition } = yield* analyzeScriptSource(
+        `
         module.exports = function* run() {};
         module.exports.inputs = {
           fields: [
@@ -62,7 +42,9 @@ describe("ScriptInputsExtractor service", () => {
             },
           ],
         };
-      `);
+      `,
+        "fallback-script-id",
+      );
 
       expect(definition).toEqual({
         id: "fallback-script-id",
@@ -89,7 +71,10 @@ describe("ScriptInputsExtractor service", () => {
           "utf8",
         ),
       );
-      const definition = yield* extractInputs(source);
+      const { inputs: definition } = yield* analyzeScriptSource(
+        source,
+        "fallback-script-id",
+      );
 
       expect(definition?.id).toBe("lucent-consumables");
       if (definition === null) return;
@@ -107,7 +92,8 @@ describe("ScriptInputsExtractor service", () => {
 
   it.effect("extracts multi-select inputs", () =>
     Effect.gen(function* () {
-      const definition = yield* extractInputs(`
+      const { inputs: definition } = yield* analyzeScriptSource(
+        `
         module.exports.inputs = {
           id: "multi-select",
           fields: [
@@ -120,7 +106,9 @@ describe("ScriptInputsExtractor service", () => {
             },
           ],
         };
-      `);
+      `,
+        "fallback-script-id",
+      );
 
       expect(definition).toEqual({
         id: "multi-select",
@@ -148,7 +136,10 @@ describe("ScriptInputsExtractor service", () => {
           "utf8",
         ),
       );
-      const definition = yield* extractInputs(source);
+      const { inputs: definition } = yield* analyzeScriptSource(
+        source,
+        "fallback-script-id",
+      );
 
       expect(definition?.id).toBe("lucent-dailies-spin-wheel-of-doom");
       if (definition === null) return;
@@ -160,7 +151,8 @@ describe("ScriptInputsExtractor service", () => {
 
   it.effect("rejects duplicate field keys", () =>
     Effect.gen(function* () {
-      const result = yield* extractInputsResult(`
+      const error = yield* analyzeScriptSource(
+        `
         module.exports.inputs = {
           id: "duplicate-fields",
           fields: [
@@ -168,37 +160,53 @@ describe("ScriptInputsExtractor service", () => {
             { key: "target", type: "string", label: "Target Again" },
           ],
         };
-      `);
+      `,
+        "fallback-script-id",
+      ).pipe(Effect.flip);
 
-      expect(result.ok).toBe(false);
-      if (!result.ok) {
-        expect(result.error).toBeInstanceOf(ScriptInputsExtractorError);
-        expect(result.error).toMatchObject({
-          operation: "validate",
-          message: expect.stringContaining(
-            "Script inputs definition is invalid:",
-          ),
-        });
-      }
+      expect(error).toMatchObject({
+        operation: "validate",
+        message: expect.stringContaining(
+          "Script inputs definition is invalid:",
+        ),
+      });
     }),
   );
 
   it.effect("rejects dynamic, spread, and computed input definitions", () =>
     Effect.gen(function* () {
-      const dynamic = yield* extractInputsResult(`
+      const dynamic = yield* analyzeScriptSource(
+        `
         const fields = [];
         module.exports.inputs = { id: "dynamic", fields };
-      `);
-      const spread = yield* extractInputsResult(`
+      `,
+        "fallback-script-id",
+      ).pipe(Effect.flip);
+      const spread = yield* analyzeScriptSource(
+        `
         module.exports.inputs = { id: "spread", fields: [], ...extra };
-      `);
-      const computed = yield* extractInputsResult(`
+      `,
+        "fallback-script-id",
+      ).pipe(Effect.flip);
+      const computed = yield* analyzeScriptSource(
+        `
         module.exports.inputs = { id: "computed", ["fields"]: [] };
-      `);
+      `,
+        "fallback-script-id",
+      ).pipe(Effect.flip);
 
-      expect(dynamic.ok).toBe(false);
-      expect(spread.ok).toBe(false);
-      expect(computed.ok).toBe(false);
+      expect(dynamic).toMatchObject({
+        operation: "static-evaluate",
+        message: "Script inputs must be a static object expression.",
+      });
+      expect(spread).toMatchObject({
+        operation: "static-evaluate",
+        message: "Input objects cannot use spread properties.",
+      });
+      expect(computed).toMatchObject({
+        operation: "static-evaluate",
+        message: "Computed properties are not supported in inputs.",
+      });
     }),
   );
 });

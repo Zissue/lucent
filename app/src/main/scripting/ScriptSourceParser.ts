@@ -1,7 +1,5 @@
 import * as acorn from "acorn";
-import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
@@ -27,7 +25,7 @@ const inputExtractorOperationSchema = Schema.Literals([
   "validate",
 ]);
 
-export class ScriptInputsExtractorError extends Schema.TaggedError<ScriptInputsExtractorError>()(
+class ScriptInputsExtractorError extends Schema.TaggedError<ScriptInputsExtractorError>()(
   "ScriptInputsExtractorError",
   {
     operation: inputExtractorOperationSchema,
@@ -39,22 +37,6 @@ export class ScriptInputsExtractorError extends Schema.TaggedError<ScriptInputsE
     return this.detail;
   }
 }
-
-export interface ScriptInputsExtractorShape {
-  readonly analyze: (
-    source: string,
-    fallbackId: string,
-  ) => Effect.Effect<ScriptSourceAnalysis, ScriptInputsExtractorError>;
-  readonly extract: (
-    source: string,
-    fallbackId: string,
-  ) => Effect.Effect<ScriptInputsDefinition | null, ScriptInputsExtractorError>;
-}
-
-export class ScriptInputsExtractor extends Context.Service<
-  ScriptInputsExtractor,
-  ScriptInputsExtractorShape
->()("lucent/desktop/scripting/ScriptInputsExtractor") {}
 
 export interface ScriptSourceAnalysis {
   readonly inputs: ScriptInputsDefinition | null;
@@ -295,10 +277,10 @@ const parseSource = (
       }),
   });
 
-export const analyzeScriptSource: ScriptInputsExtractorShape["analyze"] = (
-  source,
-  fallbackId,
-) =>
+export const analyzeScriptSource = (
+  source: string,
+  fallbackId: string,
+): Effect.Effect<ScriptSourceAnalysis, ScriptInputsExtractorError> =>
   Effect.gen(function* () {
     const program = yield* parseSource(source);
     const requirements = findLiteralRequirements(program);
@@ -321,19 +303,3 @@ export const analyzeScriptSource: ScriptInputsExtractorShape["analyze"] = (
     const inputs = yield* normalizeDefinition(value, fallbackId);
     return { inputs, requirements };
   });
-
-export const extractScriptInputs: ScriptInputsExtractorShape["extract"] = (
-  source,
-  fallbackId,
-) =>
-  analyzeScriptSource(source, fallbackId).pipe(
-    Effect.map((analysis) => analysis.inputs),
-  );
-
-export const layer = Layer.succeed(
-  ScriptInputsExtractor,
-  ScriptInputsExtractor.of({
-    analyze: analyzeScriptSource,
-    extract: extractScriptInputs,
-  }),
-);
