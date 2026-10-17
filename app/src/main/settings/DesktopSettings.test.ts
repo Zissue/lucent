@@ -627,4 +627,29 @@ describe("saved settings recovery", () => {
         ).toBe(1);
       }),
   );
+
+  it.effect("migrates an older file without keeping its invalid entries", () =>
+    Effect.gen(function* () {
+      const { settings, path } = yield* makeRecoverySettings();
+      yield* Effect.promise(() =>
+        writeFile(
+          path,
+          JSON.stringify({
+            version: 0,
+            appearance: { themes: { dark: { sansFontSize: 99 } } },
+          }),
+        ),
+      );
+      const { records, logger } = captureLogs();
+      yield* settings.load.pipe(
+        Effect.provideService(Logger.CurrentLoggers, new Set([logger])),
+      );
+      const persisted = JSON.parse(
+        yield* Effect.promise(() => readFile(path, "utf8")),
+      );
+      expect(records).toEqual([]);
+      expect(persisted.version).toBe(1);
+      expect(persisted.appearance?.themes?.dark?.sansFontSize).not.toBe(99);
+    }),
+  );
 });

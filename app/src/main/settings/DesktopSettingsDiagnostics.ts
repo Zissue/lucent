@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 
 import { hexToRgb } from "@lucent/core/appearance";
@@ -26,9 +27,14 @@ export const settingsResetFields = (
   raw: unknown,
   settings: AppSettings,
 ): string[] => {
+  const savedVersion = Option.flatMap(decodeRecord(raw), (record) =>
+    Option.liftPredicate(record["version"], Predicate.isNumber),
+  );
+  if (Option.isSome(savedVersion) && savedVersion.value < settings.version)
+    return [];
   const reset: string[] = [];
   const inspect = (value: unknown, normalized: unknown, path: string): void => {
-    if (value === undefined || (path === "version" && value === 0)) return;
+    if (value === undefined) return;
     const record = decodeRecord(value);
     if (path === "hotkeys") {
       if (Option.isNone(record)) {
