@@ -5,7 +5,9 @@ import { join } from "node:path";
 import { layer as fileSystemLayer } from "@effect/platform-node/NodeFileSystem";
 import { afterEach, describe, expect, it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import { FileSystem } from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
@@ -528,3 +530,33 @@ for (const source of ["{", '{"accounts":[null],"groups":{}}']) {
       }),
   );
 }
+
+it.effect("interrupts an update while its change is still being computed", () =>
+  Effect.gen(function* () {
+    const dependencies = yield* makeLayer();
+    yield* Effect.gen(function* () {
+      const repository = yield* AccountRepository;
+      yield* Effect.promise(() =>
+        writeFile(repository.path, '{"accounts":[],"groups":{}}'),
+      );
+      yield* repository.get;
+      const before = yield* Effect.promise(() =>
+        readFile(repository.path, "utf8"),
+      );
+      const started = yield* Deferred.make<void>();
+      const updating = yield* repository
+        .update(() =>
+          Deferred.succeed(started, undefined).pipe(
+            Effect.andThen(Effect.never),
+          ),
+        )
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(started);
+      yield* Fiber.interrupt(updating);
+      expect(
+        yield* Effect.promise(() => readFile(repository.path, "utf8")),
+      ).toBe(before);
+      expect(yield* repository.get).toEqual({ accounts: [], groups: {} });
+    }).pipe(Effect.provide(dependencies));
+  }),
+);

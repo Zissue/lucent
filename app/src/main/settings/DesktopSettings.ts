@@ -339,29 +339,27 @@ const makeDesktopSettings = Effect.gen(function* () {
       current: AppSettings,
     ) => Effect.Effect<AppSettings, DesktopSettingsError>,
   ) =>
-    SynchronizedRef.modifyEffect(settingsRef, (current) =>
-      (current.value === null
-        ? readSettingsFromFile(false)
-        : Effect.succeed(current.value)
-      ).pipe(
-        Effect.flatMap(modify),
-        Effect.flatMap(writeSettingsFile),
-        Effect.map(
-          (saved) =>
-            [
-              saved,
-              {
-                value: saved,
-                publicationRevision: current.publicationRevision + 1,
-              },
-            ] as const,
+    Effect.uninterruptibleMask((restore) =>
+      SynchronizedRef.modifyEffect(settingsRef, (current) =>
+        (current.value === null
+          ? readSettingsFromFile(false)
+          : Effect.succeed(current.value)
+        ).pipe(
+          Effect.flatMap((value) => restore(modify(value))),
+          Effect.flatMap(writeSettingsFile),
+          Effect.map(
+            (saved) =>
+              [
+                saved,
+                {
+                  value: saved,
+                  publicationRevision: current.publicationRevision + 1,
+                },
+              ] as const,
+          ),
         ),
       ),
-    ).pipe(
-      Effect.uninterruptible,
-      Semaphore.withPermit(commitLock),
-      Effect.ensuring(publishCurrent),
-    );
+    ).pipe(Semaphore.withPermit(commitLock), Effect.ensuring(publishCurrent));
 
   const onChanged: DesktopSettingsShape["onChanged"] =
     settingsChanges.subscribe;

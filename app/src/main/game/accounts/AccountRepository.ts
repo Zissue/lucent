@@ -180,24 +180,26 @@ export const layer = Layer.effect(
       }),
     ).pipe(Effect.uninterruptible, Semaphore.withPermit(commitLock));
     const update: AccountRepositoryShape["update"] = (modify) =>
-      SynchronizedRef.modifyEffect(storageRef, (current) =>
-        Effect.gen(function* () {
-          const previous = current ?? {
-            storage: yield* readStorageFromFile(false),
-            revision: 0,
-          };
-          const storage = serializeAccountManagerStorage(
-            yield* modify(previous.storage),
-          );
-          if (isDeepStrictEqual(previous.storage, storage))
-            return [previous.storage, previous] as const;
-          yield* jsonFile
-            .write(path, storage)
-            .pipe(Effect.mapError(wrapJsonError));
-          const next = { storage, revision: previous.revision + 1 };
-          return [storage, next] as const;
-        }),
-      ).pipe(Effect.uninterruptible, Semaphore.withPermit(commitLock));
+      Effect.uninterruptibleMask((restore) =>
+        SynchronizedRef.modifyEffect(storageRef, (current) =>
+          Effect.gen(function* () {
+            const previous = current ?? {
+              storage: yield* readStorageFromFile(false),
+              revision: 0,
+            };
+            const storage = serializeAccountManagerStorage(
+              yield* restore(modify(previous.storage)),
+            );
+            if (isDeepStrictEqual(previous.storage, storage))
+              return [previous.storage, previous] as const;
+            yield* jsonFile
+              .write(path, storage)
+              .pipe(Effect.mapError(wrapJsonError));
+            const next = { storage, revision: previous.revision + 1 };
+            return [storage, next] as const;
+          }),
+        ),
+      ).pipe(Semaphore.withPermit(commitLock));
 
     return AccountRepository.of({
       get,

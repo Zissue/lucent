@@ -429,29 +429,27 @@ const makeCombatProfiles = Effect.gen(function* () {
       current: CombatProfileLibrary,
     ) => Effect.Effect<CombatProfileLibrary, CombatProfilesError>,
   ) =>
-    SynchronizedRef.modifyEffect(libraryRef, (current) =>
-      (current.value === null
-        ? readLibraryFromFile(false)
-        : Effect.succeed(current.value)
-      ).pipe(
-        Effect.flatMap(modify),
-        Effect.flatMap(writeLibraryFile),
-        Effect.map(
-          (saved) =>
-            [
-              saved,
-              {
-                value: saved,
-                publicationRevision: current.publicationRevision + 1,
-              },
-            ] as const,
+    Effect.uninterruptibleMask((restore) =>
+      SynchronizedRef.modifyEffect(libraryRef, (current) =>
+        (current.value === null
+          ? readLibraryFromFile(false)
+          : Effect.succeed(current.value)
+        ).pipe(
+          Effect.flatMap((value) => restore(modify(value))),
+          Effect.flatMap(writeLibraryFile),
+          Effect.map(
+            (saved) =>
+              [
+                saved,
+                {
+                  value: saved,
+                  publicationRevision: current.publicationRevision + 1,
+                },
+              ] as const,
+          ),
         ),
       ),
-    ).pipe(
-      Effect.uninterruptible,
-      Semaphore.withPermit(commitLock),
-      Effect.ensuring(publishCurrent),
-    );
+    ).pipe(Semaphore.withPermit(commitLock), Effect.ensuring(publishCurrent));
 
   const deleteProfile: CombatProfilesShape["deleteProfile"] = (profileId) =>
     update((current) => deleteProfileFromLibrary(current, profileId));
