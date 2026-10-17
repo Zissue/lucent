@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -128,7 +129,8 @@ export const makeScriptHttp = (
                   cause,
                 }),
             ),
-            Effect.flatMap((url) =>
+            Effect.zip(Clock.currentTimeMillis),
+            Effect.flatMap(([url, now]) =>
               http
                 .request({
                   url,
@@ -140,7 +142,7 @@ export const makeScriptHttp = (
                     : {
                         timeoutMs: Math.min(
                           2_147_483_647,
-                          Math.max(0, payload.deadline - Date.now()),
+                          Math.max(0, payload.deadline - now),
                         ),
                       }),
                   redirect: payload.redirect,
