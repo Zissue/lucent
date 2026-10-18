@@ -3,7 +3,6 @@ import { basename, extname, join, relative, resolve, sep } from "node:path";
 
 import * as Schema from "effect/Schema";
 import * as Cause from "effect/Cause";
-import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import { FileSystem } from "effect/FileSystem";
@@ -41,12 +40,6 @@ export interface ScriptPackageInspectionFailure {
   readonly cause: unknown;
 }
 
-const CurrentScriptPackageInspectionFailures = Context.Reference<
-  ScriptPackageInspectionFailure[] | undefined
->("lucent/desktop/scripting/ScriptPackageInspectionFailures", {
-  defaultValue: () => undefined,
-});
-
 export const isUnexpectedPackageFileError = (cause: unknown): boolean =>
   cause instanceof Error &&
   "code" in cause &&
@@ -57,11 +50,6 @@ export const logScriptPackageInspectionFailures = Effect.fnUntraced(function* (
   failures: readonly ScriptPackageInspectionFailure[],
 ) {
   if (failures.length === 0) return;
-  const collected = yield* CurrentScriptPackageInspectionFailures;
-  if (collected !== undefined) {
-    collected.push(...failures);
-    return;
-  }
   const packageNames = [
     ...new Set(failures.map((failure) => failure.packageName)),
   ].toSorted();
@@ -79,21 +67,6 @@ export const logScriptPackageInspectionFailures = Effect.fnUntraced(function* (
     }),
   );
 });
-
-export const withScriptPackageInspectionFailures = <A, E, R>(
-  effect: Effect.Effect<A, E, R>,
-): Effect.Effect<A, E, R> =>
-  Effect.suspend(() => {
-    const failures: ScriptPackageInspectionFailure[] = [];
-    return effect.pipe(
-      Effect.provideService(CurrentScriptPackageInspectionFailures, failures),
-      Effect.onExit(() =>
-        failures.length === 0
-          ? Effect.void
-          : logScriptPackageInspectionFailures(failures),
-      ),
-    );
-  });
 
 const NonEmptyManifestStringSchema = Schema.String.check(
   Schema.makeFilter((value) => value.trim() !== "", {

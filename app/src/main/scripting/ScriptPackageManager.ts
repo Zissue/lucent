@@ -33,7 +33,6 @@ import {
   inspectManagedPackageFolder,
   integrityFor,
   logScriptPackageInspectionFailures,
-  withScriptPackageInspectionFailures,
   type ScriptPackageInspectionFailure,
 } from "./ScriptPackageInspection";
 import { ScriptPackageCatalog } from "./ScriptPackageCatalog";
@@ -1273,10 +1272,10 @@ export const layer = Layer.effect(
 
     return ScriptPackageManager.of({
       checkUpdate,
-      install: (input) => withScriptPackageInspectionFailures(install(input)),
-      remove: (input) => withScriptPackageInspectionFailures(remove(input)),
-      restore: (input) => withScriptPackageInspectionFailures(restore(input)),
-      update: (input) => withScriptPackageInspectionFailures(update(input)),
+      install,
+      remove,
+      restore,
+      update,
     });
   }),
 );
