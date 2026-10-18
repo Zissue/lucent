@@ -388,7 +388,6 @@ const makeCombatProfiles = Effect.gen(function* () {
     subscribe: onChanged,
   } = yield* makeCommittedState({
     load: readLibraryFromFile,
-    loadMayWrite: true,
     write: writeLibraryFile,
   });
 

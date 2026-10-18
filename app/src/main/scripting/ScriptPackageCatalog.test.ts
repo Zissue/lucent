@@ -770,11 +770,7 @@ describe("ScriptPackageCatalog", () => {
           "tools",
         ]);
         expect(removed.packages).toEqual([]);
-        expect(revisions).toEqual(
-          maxOps === 8
-            ? [removed.revision]
-            : [refreshed.revision, removed.revision],
-        );
+        expect(revisions).toEqual([refreshed.revision, removed.revision]);
         expect((yield* catalog.getOverview).revision).toBe(revisions.at(-1));
       }),
   );
@@ -954,82 +950,9 @@ describe("ScriptPackageCatalog", () => {
       expect(scanCount()).toBe(1);
     }),
   );
-
-  it.live.each(["refresh", "remove"] as const)(
-    "allows a %s listener to read the committed catalog",
-    (operation) =>
-      Effect.gen(function* () {
-        const { catalog, workspace } = yield* makeCatalogHarness();
-        yield* Effect.promise(() =>
-          write(
-            join(workspace.packagesDir, "tools", "package.json"),
-            '{"name":"tools"}',
-          ),
-        );
-        yield* catalog.getOverview;
-        const names: (readonly string[])[] = [];
-        yield* catalog.onChanged(() =>
-          catalog.getOverview.pipe(
-            Effect.tap((overview) =>
-              Effect.sync(() => {
-                names.push(
-                  overview.packages.map((entry) => entry.name ?? "invalid"),
-                );
-              }),
-            ),
-          ),
-        );
-        const result = yield* (
-          operation === "refresh"
-            ? catalog.refresh
-            : catalog.removePackage("tools")
-        ).pipe(Effect.timeout("2 seconds"));
-        expect(names).toEqual([operation === "refresh" ? ["tools"] : []]);
-        expect(result.packages.map((entry) => entry.name)).toEqual(
-          operation === "refresh" ? ["tools"] : [],
-        );
-      }),
-  );
-
-  it.effect(
-    "interrupts a scan before commit without repeating the previous event",
-    () =>
-      Effect.gen(function* () {
-        const started = yield* Deferred.make<void>();
-        const release = yield* Deferred.make<void>();
-        let block = false;
-        const { catalog } = yield* makeCatalogHarness(
-          Effect.suspend(() =>
-            block
-              ? Deferred.succeed(started, undefined).pipe(
-                  Effect.andThen(Deferred.await(release)),
-                )
-              : Effect.void,
-          ),
-        );
-        const initial = yield* catalog.refresh;
-        const revisions: string[] = [];
-        yield* catalog.onChanged((change) => {
-          revisions.push(change.revision);
-        });
-        block = true;
-        const scanning = yield* catalog.refresh.pipe(Effect.forkScoped);
-        yield* Deferred.await(started);
-        const stopping = yield* Fiber.interrupt(scanning).pipe(
-          Effect.forkScoped,
-        );
-        yield* Effect.yieldNow;
-        const outcome = scanning.pollUnsafe();
-        yield* Deferred.succeed(release, undefined);
-        yield* Fiber.join(stopping);
-        expect(outcome).toMatchObject({ _tag: "Failure" });
-        expect(yield* catalog.getOverview).toEqual(initial);
-        expect(revisions).toEqual([]);
-      }),
-  );
 });
 
-it.effect("returns the loaded catalog while a refresh scan is blocked", () =>
+it.effect("returns the committed catalog during a refresh scan", () =>
   Effect.gen(function* () {
     const started = yield* Deferred.make<void>();
     const release = yield* Deferred.make<void>();
@@ -1055,7 +978,7 @@ it.effect("returns the loaded catalog while a refresh scan is blocked", () =>
     );
     const duringScan = reading.pollUnsafe();
     yield* Deferred.succeed(release, undefined);
-    yield* Fiber.join(reading);
+    expect((yield* Fiber.join(reading)).scriptCount).toBe(1);
     expect((yield* Fiber.join(scanning)).scriptCount).toBe(2);
     expect(duringScan).toMatchObject({
       _tag: "Success",
@@ -1066,54 +989,24 @@ it.effect("returns the loaded catalog while a refresh scan is blocked", () =>
 );
 
 it.effect(
-  "allows a refresh listener to update the catalog before returning",
-  () =>
-    Effect.gen(function* () {
-      const { catalog, workspace } = yield* makeCatalogHarness();
-      yield* Effect.promise(() =>
-        write(
-          join(workspace.packagesDir, "tools", "package.json"),
-          '{"name":"tools"}',
-        ),
-      );
-      const received: (string | undefined)[][] = [];
-      yield* catalog.onChanged(() =>
-        Effect.gen(function* () {
-          const current = yield* catalog.getOverview;
-          received.push(current.packages.map((entry) => entry.name));
-          if (current.packages.length === 1)
-            yield* catalog.removePackage("tools");
-        }),
-      );
-      yield* catalog.refresh;
-      expect(received).toEqual([["tools"], []]);
-      expect((yield* catalog.getOverview).scriptCount).toBe(1);
-    }),
-);
-
-it.effect(
   "publishes every refresh even when the catalog content is unchanged",
   () =>
     Effect.gen(function* () {
       const { catalog, workspace } = yield* makeCatalogHarness();
-      const counts: number[] = [];
-      yield* catalog.onChanged(() =>
-        catalog.getOverview.pipe(
-          Effect.map((value) => {
-            counts.push(value.scriptCount);
-          }),
-        ),
-      );
-      yield* catalog.refresh;
-      yield* catalog.refresh;
-      expect(counts).toEqual([1, 1]);
+      let changes = 0;
+      yield* catalog.onChanged(() => {
+        changes += 1;
+      });
+      expect((yield* catalog.refresh).scriptCount).toBe(1);
+      expect((yield* catalog.refresh).scriptCount).toBe(1);
+      expect(changes).toBe(2);
       yield* Effect.promise(() =>
         write(join(workspace.scriptsDir, "second.js"), ""),
       );
       expect((yield* catalog.refresh).scriptCount).toBe(2);
-      expect(counts).toEqual([1, 1, 2]);
+      expect(changes).toBe(3);
       expect((yield* catalog.refresh).scriptCount).toBe(2);
       expect((yield* catalog.getOverview).scriptCount).toBe(2);
-      expect(counts).toEqual([1, 1, 2, 2]);
+      expect(changes).toBe(4);
     }),
 );

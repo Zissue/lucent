@@ -6,10 +6,9 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import {
-  makeCommittedState,
-  type CommittedValue,
-} from "../../app/CommittedState";
+import { makeCommittedState } from "../../app/CommittedState";
+import type { Listener } from "../../app/ListenerRegistry";
+import type * as Scope from "effect/Scope";
 
 import {
   emptyAccountManagerStorage,
@@ -36,10 +35,13 @@ const wrapJsonError = (error: JsonFileError): AccountsError =>
   });
 
 export interface AccountRepositoryShape {
-  readonly currentUnsafe: () => CommittedValue<AccountManagerStorage> | null;
+  readonly current: () => AccountManagerStorage | null;
   readonly get: Effect.Effect<AccountManagerStorage, AccountsError>;
   readonly load: Effect.Effect<AccountManagerStorage, AccountsError>;
   readonly path: string;
+  readonly subscribe: (
+    listener: Listener<AccountManagerStorage>,
+  ) => Effect.Effect<void, never, Scope.Scope>;
   readonly update: (
     modify: (
       storage: AccountManagerStorage,
@@ -152,7 +154,6 @@ export const layer = Layer.effect(
 
     const state = yield* makeCommittedState({
       load: readStorageFromFile,
-      loadMayWrite: true,
       write: (storage: AccountManagerStorage) =>
         jsonFile
           .write(path, storage)
@@ -168,9 +169,10 @@ export const layer = Layer.effect(
 
     return AccountRepository.of({
       get: state.get,
-      currentUnsafe: state.currentUnsafe,
+      current: state.current,
       load: state.reload,
       path,
+      subscribe: state.subscribe,
       update,
     });
   }),

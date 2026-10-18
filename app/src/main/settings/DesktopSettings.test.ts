@@ -688,15 +688,17 @@ describe("settings change publication", () => {
           .updateAppearance({ themeMode: "light" })
           .pipe(Effect.forkChild);
         yield* Deferred.await(started);
-        const second = yield* settings.updateAppearance({
-          themeMode: "system",
-        });
+        const second = yield* settings
+          .updateAppearance({
+            themeMode: "system",
+          })
+          .pipe(Effect.forkChild({ startImmediately: true }));
         yield* Deferred.succeed(finish, undefined);
         const firstResult = yield* Fiber.join(first);
         expect(firstResult.appearance.themeMode).toBe("light");
-        expect(second.appearance.themeMode).toBe("system");
+        expect((yield* Fiber.join(second)).appearance.themeMode).toBe("system");
         expect(publications).toEqual(["light", "system"]);
-        expect(received).toEqual(["system"]);
+        expect(received).toEqual(["light", "system"]);
         expect((yield* settings.get).appearance.themeMode).toBe("system");
         expect(
           JSON.parse(yield* Effect.promise(() => readFile(path, "utf8")))

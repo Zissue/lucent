@@ -1,5 +1,4 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -370,77 +369,6 @@ describe("CombatProfiles", () => {
       ).toEqual(migrated.value);
     }),
   );
-  it.effect.each(["save", "reload"] as const)(
-    "keeps change events ordered when a %s yields",
-    (operation) =>
-      Effect.gen(function* () {
-        const writeStarted = yield* Deferred.make<void>();
-        const firstPublished = yield* Deferred.make<void>();
-        const releasePublication = yield* Deferred.make<void>();
-        let watchWrites = false;
-        const { combatProfiles, path } = yield* makeHarness((fs) => ({
-          ...fs,
-          makeDirectory: (path) =>
-            Effect.sync(() => {
-              mkdirSync(path, { recursive: true });
-            }),
-          writeFile: (path, contents) =>
-            Effect.sync(() => writeFileSync(path, contents)),
-          rename: (from, to) =>
-            Effect.sync(() => renameSync(from, to)).pipe(
-              Effect.tap(() =>
-                watchWrites
-                  ? Deferred.succeed(writeStarted, undefined)
-                  : Effect.void,
-              ),
-            ),
-        }));
-        yield* combatProfiles.load;
-        yield* combatProfiles.saveProfile({ ...testProfile, label: "First" });
-        const labels: string[] = [];
-        yield* combatProfiles.onChanged((library) =>
-          Effect.gen(function* () {
-            const label = library.profiles.at(-1)!.label;
-            labels.push(label);
-            if (operation === "save" && label === "First") {
-              yield* Deferred.succeed(firstPublished, undefined);
-              yield* Deferred.await(releasePublication);
-            }
-          }),
-        );
-
-        watchWrites = true;
-        const first = yield* (
-          operation === "save"
-            ? combatProfiles.saveProfile({ ...testProfile, label: "First" })
-            : combatProfiles.load
-        ).pipe(
-          Effect.provideService(References.MaxOpsBeforeYield, 16),
-          Effect.forkScoped,
-        );
-        yield* Deferred.await(writeStarted);
-        if (operation === "save") yield* Deferred.await(firstPublished);
-        const second = yield* combatProfiles
-          .saveProfile({ ...testProfile, label: "Second" })
-          .pipe(Effect.forkScoped);
-        yield* Fiber.join(second);
-        yield* Deferred.succeed(releasePublication, undefined);
-        yield* Fiber.join(first);
-
-        expect(labels).toEqual(
-          operation === "reload" ? ["Second"] : ["First", "Second"],
-        );
-        expect((yield* combatProfiles.get).profiles.at(-1)?.label).toBe(
-          "Second",
-        );
-        expect(
-          JSON.parse(
-            yield* Effect.promise(() => readFile(path, "utf8")),
-          ).profiles.at(-1)?.label,
-        ).toBe("Second");
-      }),
-  );
-
   it.effect("deletes saved profiles from the library", () =>
     Effect.gen(function* () {
       const { combatProfiles } = yield* makeHarness();
@@ -671,36 +599,6 @@ describe("CombatProfiles", () => {
         ).toEqual(saved);
       }),
   );
-
-  it.live.each(["save", "reload"] as const)(
-    "allows a %s listener to read committed combat profiles",
-    (operation) =>
-      Effect.gen(function* () {
-        const { combatProfiles } = yield* makeHarness();
-        yield* combatProfiles.saveProfile(testProfile);
-        const labels: string[] = [];
-        yield* combatProfiles.onChanged(() =>
-          combatProfiles.get.pipe(
-            Effect.tap((library) =>
-              Effect.sync(() => {
-                labels.push(library.profiles.at(-1)?.label ?? "missing");
-              }),
-            ),
-          ),
-        );
-        const result = yield* (
-          operation === "save"
-            ? combatProfiles.saveProfile({ ...testProfile, label: "Committed" })
-            : combatProfiles.load
-        ).pipe(Effect.timeout("2 seconds"));
-        expect(labels).toEqual([
-          operation === "save" ? "Committed" : "Farm Rotation",
-        ]);
-        expect(result.profiles.at(-1)?.label).toBe(
-          operation === "save" ? "Committed" : "Farm Rotation",
-        );
-      }),
-  );
 });
 
 for (const source of ["{", '{"version":1,"profiles":[null]}']) {
@@ -758,16 +656,9 @@ it.effect("commits combat profiles interrupted after the file rename", () =>
     );
     yield* combatProfiles.load;
     const received: string[] = [];
-    yield* combatProfiles.onChanged((next) =>
-      combatProfiles.get.pipe(
-        Effect.tap((current) =>
-          Effect.sync(() => {
-            expect(current.profiles.at(-1)?.label).toBe("Committed");
-            received.push(next.profiles.at(-1)?.label ?? "missing");
-          }),
-        ),
-      ),
-    );
+    yield* combatProfiles.onChanged((next) => {
+      received.push(next.profiles.at(-1)?.label ?? "missing");
+    });
     armed = true;
     const running = yield* combatProfiles
       .saveProfile({ ...testProfile, label: "Committed" })

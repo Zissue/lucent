@@ -312,7 +312,6 @@ const makeDesktopSettings = Effect.gen(function* () {
     subscribe: onChanged,
   } = yield* makeCommittedState({
     load: readSettingsFromFile,
-    loadMayWrite: true,
     write: writeSettingsFile,
     shouldPublishReload: () => false,
   });

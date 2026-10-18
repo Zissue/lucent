@@ -8,10 +8,6 @@ export type Listener<Value> = (
 ) => void | Effect.Effect<void, unknown>;
 
 export interface ListenerRegistry<Value> {
-  readonly publishLatest: (
-    revision: number,
-    value: Value,
-  ) => Effect.Effect<void>;
   readonly publish: (
     value: Value,
     concurrency?: 1 | "unbounded",
@@ -21,24 +17,14 @@ export interface ListenerRegistry<Value> {
   ) => Effect.Effect<void, never, Scope.Scope>;
 }
 
-export const makeListenerRegistry = <Value>(
-  options: { readonly concurrency?: 1 | "unbounded" } = {},
-): ListenerRegistry<Value> => {
+export const makeListenerRegistry = <Value>(): ListenerRegistry<Value> => {
   const listeners = new Set<Listener<Value>>();
-  let lastDeliveredRevision = -Infinity;
 
-  const publish = (
-    value: Value,
-    concurrency: 1 | "unbounded" | undefined = options.concurrency,
-    revision?: number,
-  ) =>
+  const publish = (value: Value, concurrency?: 1 | "unbounded") =>
     Effect.forEach(
       [...listeners],
       (listener) =>
         Effect.suspend(() => {
-          if (revision !== undefined && revision < lastDeliveredRevision) {
-            return Effect.void;
-          }
           const result = listener(value);
           return Effect.isEffect(result) ? result : Effect.void;
         }).pipe(
@@ -61,12 +47,6 @@ export const makeListenerRegistry = <Value>(
     );
 
   return {
-    publishLatest: (revision, value) =>
-      Effect.suspend(() => {
-        if (revision <= lastDeliveredRevision) return Effect.void;
-        lastDeliveredRevision = revision;
-        return publish(value, options.concurrency, revision);
-      }),
     publish,
     subscribe,
   };

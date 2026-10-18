@@ -142,7 +142,6 @@ export const layer = Layer.effect(
     });
     const discovery = yield* makeCommittedState({
       load: () => scan,
-      loadMayWrite: false,
     });
     const refresh = discovery.reload.pipe(Effect.map(catalogOverview));
     const updateDiscovery = Effect.fn("ScriptPackageCatalog.updateDiscovery")(

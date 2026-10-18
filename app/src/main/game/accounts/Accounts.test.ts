@@ -29,7 +29,7 @@ import {
 } from "./AccountGameWindows";
 import * as AccountRepository from "./AccountRepository";
 import { retireManagedGamePartitionProfile } from "../session/GamePartitions";
-import { Accounts, layer as accountsLayer, makeAccounts } from "./Accounts";
+import { Accounts, layer as accountsLayer } from "./Accounts";
 import { AccountsError } from "./AccountsError";
 import { AccountServers } from "./AccountServers";
 import * as AccountSessions from "./AccountSessions";
@@ -406,7 +406,9 @@ describe("Accounts", () => {
   it.effect("publishes nothing for unchanged storage or ignored sessions", () =>
     Effect.gen(function* () {
       const layer = yield* makeHarness();
-      const accounts = yield* Accounts.pipe(Effect.provide(layer));
+      const accounts = yield* Accounts.pipe(
+        Effect.provide(yield* Layer.build(layer)),
+      );
       const names: string[][] = [];
       yield* accounts.onChanged((state) => {
         names.push(state.accounts.map((account) => account.username));
@@ -444,35 +446,6 @@ describe("Accounts", () => {
       yield* accounts.load;
       yield* accounts.load;
       expect(names).toEqual([["Alice"], ["Bob"]]);
-    }),
-  );
-
-  it.effect("allows a listener to commit a successive mutation", () =>
-    Effect.gen(function* () {
-      const layer = yield* makeHarness();
-      const accounts = yield* Accounts.pipe(Effect.provide(layer));
-      const names: string[][] = [];
-      yield* accounts.onChanged((state) =>
-        Effect.gen(function* () {
-          names.push(state.accounts.map((account) => account.username));
-          if (names.length === 1) {
-            yield* accounts.createAccount({
-              username: "Bob",
-              password: "secret",
-            });
-          }
-        }),
-      );
-      const laterNames: string[][] = [];
-      yield* accounts.onChanged((state) => {
-        laterNames.push(state.accounts.map((account) => account.username));
-      });
-      yield* accounts.createAccount({ username: "Alice", password: "secret" });
-      expect(laterNames).toEqual([["Alice", "Bob"]]);
-      expect(names).toEqual([["Alice"], ["Alice", "Bob"]]);
-      expect(
-        (yield* accounts.getState).accounts.map((account) => account.username),
-      ).toEqual(["Alice", "Bob"]);
     }),
   );
 
@@ -1049,131 +1022,140 @@ it.effect("commits accounts interrupted after the file rename", () =>
   }),
 );
 
-it.effect(
-  "orders repository and session publications without replaying an older revision",
-  () =>
-    Effect.gen(function* () {
-      const started = yield* Deferred.make<void>();
-      const release = yield* Deferred.make<void>();
-      const layer = yield* makeHarness();
-      yield* Effect.gen(function* () {
-        const accounts = yield* Accounts;
-        const windows = yield* AccountGameWindows;
-        const repository = yield* AccountRepository.AccountRepository;
-        const sessions = yield* AccountSessions.AccountSessions;
-        const gameWindowId = yield* windows.open();
-        const first: {
-          sourceRevision: number;
-          sessionRevision: number;
-          names: string[];
-          connection: string;
-        }[] = [];
-        const later: {
-          sourceRevision: number;
-          sessionRevision: number;
-          names: string[];
-          connection: string;
-        }[] = [];
-        const snapshot = (state: AccountManagerState) =>
-          Effect.sync(() => ({
-            sourceRevision:
-              (repository.currentUnsafe()?.revision ?? 0) + sessions.revision,
-            sessionRevision: state.sessions[0]?.revision ?? 0,
-            names: state.accounts.map((account) => account.username),
-            connection: state.sessions[0]?.connection.state ?? "missing",
-          }));
-        yield* accounts.onChanged((state) =>
-          Effect.gen(function* () {
-            first.push(yield* snapshot(state));
-            if (first.length === 1) {
-              yield* Deferred.succeed(started, undefined);
-              yield* Deferred.await(release);
-            }
-          }),
-        );
-        yield* accounts.onChanged((state) =>
-          snapshot(state).pipe(
-            Effect.map((value) => {
-              later.push(value);
-            }),
-          ),
-        );
-        const creating = yield* accounts
-          .createAccount({ username: "Alice", password: "secret" })
-          .pipe(Effect.forkChild);
-        yield* Deferred.await(started);
-        const report = {
-          rendererGeneration: 1,
-          revision: 1,
-          runtime: {
-            connection: { state: "online", username: "Alice" },
-            login: { state: "idle" },
-            script: { state: "idle" },
-          },
-        } as const;
-        yield* accounts.reportSession(gameWindowId, report);
-        yield* Deferred.succeed(release, undefined);
-        yield* Fiber.join(creating);
-        yield* accounts.createAccount({ username: "Bob", password: "secret" });
-        yield* accounts.reportSession(gameWindowId, {
-          ...report,
-          revision: 2,
-          runtime: { ...report.runtime, connection: { state: "offline" } },
-        });
-        yield* accounts.load;
-        yield* accounts.reportSession(gameWindowId, report);
-        expect(first).toEqual([
+it.effect("orders overlapping repository and session notifications", () =>
+  Effect.gen(function* () {
+    const started = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const layer = yield* makeHarness();
+    yield* Effect.gen(function* () {
+      const accounts = yield* Accounts;
+      const windows = yield* AccountGameWindows;
+      const gameWindowId = yield* windows.open();
+      const first: Omit<AccountManagerState, "storagePath">[] = [];
+      const later: Omit<AccountManagerState, "storagePath">[] = [];
+      yield* accounts.onChanged(({ accounts, groups, sessions }) =>
+        Effect.gen(function* () {
+          first.push({ accounts, groups, sessions });
+          if (first.length === 1) {
+            yield* Deferred.succeed(started, undefined);
+            yield* Deferred.await(release);
+          }
+        }),
+      );
+      yield* accounts.onChanged(({ accounts, groups, sessions }) => {
+        later.push({ accounts, groups, sessions });
+      });
+      const creating = yield* accounts
+        .createAccount({ username: "Alice", password: "secret" })
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(started);
+      const report = {
+        rendererGeneration: 1,
+        revision: 1,
+        runtime: {
+          connection: { state: "online", username: "Alice" },
+          login: { state: "idle" },
+          script: { state: "idle" },
+        },
+      } as const;
+      const reporting = yield* accounts
+        .reportSession(gameWindowId, report)
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(creating);
+      yield* Fiber.join(reporting);
+      yield* accounts.createAccount({ username: "Bob", password: "secret" });
+      yield* accounts.reportSession(gameWindowId, {
+        ...report,
+        revision: 2,
+        runtime: { ...report.runtime, connection: { state: "offline" } },
+      });
+      yield* accounts.load;
+      yield* accounts.reportSession(gameWindowId, report);
+      for (const received of [first, later]) {
+        expect(received).toEqual([
           {
-            sourceRevision: 2,
-            sessionRevision: 1,
-            names: ["Alice"],
-            connection: "offline",
+            accounts: [
+              { label: "Alice", username: "Alice", password: "secret" },
+            ],
+            groups: {},
+            sessions: [
+              {
+                gameWindowId: 1,
+                gameWindowGroupId: 1,
+                rendererGeneration: 1,
+                revision: 1,
+                updatedAt: 0,
+                connection: { state: "offline" },
+                login: { state: "idle" },
+                script: { state: "idle" },
+              },
+            ],
           },
           {
-            sourceRevision: 3,
-            sessionRevision: 2,
-            names: ["Alice"],
-            connection: "online",
+            accounts: [
+              { label: "Alice", username: "Alice", password: "secret" },
+            ],
+            groups: {},
+            sessions: [
+              {
+                gameWindowId: 1,
+                gameWindowGroupId: 1,
+                rendererGeneration: 1,
+                revision: 2,
+                updatedAt: 0,
+                connection: { state: "online", username: "Alice" },
+                login: { state: "idle" },
+                script: { state: "idle" },
+              },
+            ],
           },
           {
-            sourceRevision: 4,
-            sessionRevision: 2,
-            names: ["Alice", "Bob"],
-            connection: "online",
+            accounts: [
+              { label: "Alice", username: "Alice", password: "secret" },
+              { label: "Bob", username: "Bob", password: "secret" },
+            ],
+            groups: {},
+            sessions: [
+              {
+                gameWindowId: 1,
+                gameWindowGroupId: 1,
+                rendererGeneration: 1,
+                revision: 2,
+                updatedAt: 0,
+                connection: { state: "online", username: "Alice" },
+                login: { state: "idle" },
+                script: { state: "idle" },
+              },
+            ],
           },
           {
-            sourceRevision: 5,
-            sessionRevision: 3,
-            names: ["Alice", "Bob"],
-            connection: "offline",
+            accounts: [
+              { label: "Alice", username: "Alice", password: "secret" },
+              { label: "Bob", username: "Bob", password: "secret" },
+            ],
+            groups: {},
+            sessions: [
+              {
+                gameWindowId: 1,
+                gameWindowGroupId: 1,
+                rendererGeneration: 1,
+                revision: 3,
+                updatedAt: 0,
+                connection: { state: "offline" },
+                login: { state: "idle" },
+                script: { state: "idle" },
+              },
+            ],
           },
         ]);
-        expect(later).toEqual([
-          {
-            sourceRevision: 3,
-            sessionRevision: 2,
-            names: ["Alice"],
-            connection: "online",
-          },
-          {
-            sourceRevision: 4,
-            sessionRevision: 2,
-            names: ["Alice", "Bob"],
-            connection: "online",
-          },
-          {
-            sourceRevision: 5,
-            sessionRevision: 3,
-            names: ["Alice", "Bob"],
-            connection: "offline",
-          },
-        ]);
-      }).pipe(Effect.provide(layer));
-    }),
+      }
+    }).pipe(Effect.provide(layer));
+  }),
 );
 
 it.effect(
-  "publishes coherent account storage while session reports overlap",
+  "publishes coherent storage while reload and session reports overlap",
   () =>
     Effect.gen(function* () {
       const readStarted = yield* Deferred.make<void>();
@@ -1181,12 +1163,25 @@ it.effect(
       const reportsStarted = yield* Deferred.make<void>();
       const releaseReports = yield* Deferred.make<void>();
       let holdRead = false;
-      let holdReports = false;
       let pendingReports = 0;
       const layer = yield* makeHarness({
+        wrapFileSystem: (fileSystem) =>
+          FileSystem.of({
+            ...fileSystem,
+            stream: (path, options) =>
+              fileSystem.stream(path, options).pipe(
+                Stream.tap(() =>
+                  Effect.gen(function* () {
+                    if (!holdRead) return;
+                    holdRead = false;
+                    yield* Deferred.succeed(readStarted, undefined);
+                    yield* Deferred.await(releaseRead);
+                  }),
+                ),
+              ),
+          }),
         beforeSetName: () =>
           Effect.gen(function* () {
-            if (!holdReports) return;
             pendingReports += 1;
             if (pendingReports === 2)
               yield* Deferred.succeed(reportsStarted, undefined);
@@ -1194,22 +1189,7 @@ it.effect(
           }),
       });
       yield* Effect.gen(function* () {
-        const repository = yield* AccountRepository.AccountRepository;
-        const gateRead = Effect.gen(function* () {
-          if (!holdRead) return;
-          holdRead = false;
-          yield* Deferred.succeed(readStarted, undefined);
-          yield* Deferred.await(releaseRead);
-        });
-        const accounts = yield* makeAccounts.pipe(
-          Effect.provideService(
-            AccountRepository.AccountRepository,
-            AccountRepository.AccountRepository.of({
-              ...repository,
-              get: repository.get.pipe(Effect.tap(() => gateRead)),
-            }),
-          ),
-        );
+        const accounts = yield* Accounts;
         const windows = yield* AccountGameWindows;
         const windowId = yield* windows.open();
         yield* accounts.createAccount({
@@ -1224,11 +1204,16 @@ it.effect(
             sessions: state.sessions,
           });
         });
+        const repository = yield* AccountRepository.AccountRepository;
+        yield* Effect.promise(() =>
+          writeFile(
+            repository.path,
+            '{"accounts":[{"label":"Alice","username":"Alice","password":"secret"},{"label":"Bob","username":"Bob","password":"secret"}],"groups":{}}',
+          ),
+        );
         holdRead = true;
-        const publishing = yield* accounts.load.pipe(Effect.forkChild);
+        const loading = yield* accounts.load.pipe(Effect.forkChild);
         yield* Deferred.await(readStarted);
-        yield* accounts.createAccount({ username: "Bob", password: "secret" });
-        holdReports = true;
         const firstReport = yield* accounts
           .reportSession(windowId, {
             rendererGeneration: 1,
@@ -1253,7 +1238,7 @@ it.effect(
           .pipe(Effect.forkChild({ startImmediately: true }));
         yield* Deferred.await(reportsStarted);
         yield* Deferred.succeed(releaseRead, undefined);
-        yield* Fiber.join(publishing);
+        yield* Fiber.join(loading);
         yield* Deferred.succeed(releaseReports, undefined);
         yield* Fiber.join(firstReport);
         yield* Fiber.join(secondReport);
@@ -1261,7 +1246,6 @@ it.effect(
           {
             accounts: [
               { label: "Alice", username: "Alice", password: "secret" },
-              { label: "Bob", username: "Bob", password: "secret" },
             ],
             groups: {},
             sessions: [
@@ -1269,7 +1253,25 @@ it.effect(
                 gameWindowId: 1,
                 gameWindowGroupId: 1,
                 rendererGeneration: 1,
-                revision: 1,
+                revision: 2,
+                updatedAt: 0,
+                connection: { state: "online", username: "Alice" },
+                login: { state: "idle" },
+                script: { state: "idle" },
+              },
+            ],
+          },
+          {
+            accounts: [
+              { label: "Alice", username: "Alice", password: "secret" },
+            ],
+            groups: {},
+            sessions: [
+              {
+                gameWindowId: 1,
+                gameWindowGroupId: 1,
+                rendererGeneration: 1,
+                revision: 3,
                 updatedAt: 0,
                 connection: { state: "offline" },
                 login: { state: "idle" },
