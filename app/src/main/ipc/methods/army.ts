@@ -20,15 +20,6 @@ import {
 
 const gameSenders = ["game"] as const;
 
-export const loadConfig = makeDesktopIpcMethod({
-  descriptor: ArmyIpc.loadConfig,
-  allowedSenders: gameSenders,
-  handler: Effect.fn("desktop.ipc.army.loadConfig")(function* (payload) {
-    const configs = yield* ArmyConfigRepository;
-    return yield* configs.read(payload.configName);
-  }),
-});
-
 export const start = makeDesktopIpcMethod({
   descriptor: ArmyIpc.start,
   allowedSenders: gameSenders,
@@ -151,7 +142,6 @@ type ArmyIpcMethod = DesktopIpcMethodRegistration<
 >;
 
 export const methods: readonly ArmyIpcMethod[] = [
-  loadConfig,
   start,
   leave,
   sync,

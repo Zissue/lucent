@@ -2600,17 +2600,8 @@ export function AccountManagerView(
   const deleteAccountUsernames = async (usernames: readonly string[]) => {
     setBusy(true);
     try {
-      const deleteAccounts = props.callbacks?.deleteAccounts;
-      let nextState =
-        deleteAccounts === undefined
-          ? state()
-          : await deleteAccounts(usernames);
-      if (deleteAccounts === undefined) {
-        for (const username of usernames) {
-          nextState = await (props.callbacks?.deleteAccount?.(username) ??
-            Promise.resolve(nextState));
-        }
-      }
+      const nextState = await (props.callbacks?.deleteAccounts?.(usernames) ??
+        Promise.resolve(state()));
       applyState(nextState);
       setSelectedAccountUsernames((previous) => {
         const next = new Set(previous);
@@ -2815,21 +2806,9 @@ export function AccountManagerView(
 
     const gameWindowIds = [...sessionsByWindowId.keys()];
     try {
-      if (props.callbacks?.closeGameWindows !== undefined) {
-        applyState(await props.callbacks.closeGameWindows(gameWindowIds));
-        return;
-      }
-
-      let nextState = state();
-      for (const gameWindowId of gameWindowIds) {
-        try {
-          nextState = await (props.callbacks?.closeGameWindow?.({
-            gameWindowId,
-          }) ?? Promise.resolve(nextState));
-        } catch (error) {
-          console.error("Failed to close tracked game window:", error);
-        }
-      }
+      const nextState = await (props.callbacks?.closeGameWindows?.(
+        gameWindowIds,
+      ) ?? Promise.resolve(state()));
       applyState(nextState);
     } catch (error) {
       console.error("Failed to close tracked game windows:", error);
@@ -5154,12 +5133,10 @@ export function App(props: DesktopRendererProps): JSX.Element {
   return (
     <AccountManagerView
       callbacks={{
-        closeGameWindow: (request) => accounts.closeGameWindow(request),
         closeGameWindows: (gameWindowIds) =>
           accounts.closeGameWindows(gameWindowIds),
         createAccount: (draft) => accounts.createAccount(draft),
         createGroup: (draft) => accounts.createGroup(draft),
-        deleteAccount: (username) => accounts.deleteAccount(username),
         deleteAccounts: (usernames) => accounts.deleteAccounts(usernames),
         deleteGroup: (name) => accounts.deleteGroup(name),
         focusGameWindow: (request) => accounts.focusGameWindow(request),

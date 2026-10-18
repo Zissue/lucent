@@ -62,7 +62,6 @@ const makeClientBridge = (
     fail: (payload) =>
       run(coordinator.fail(payload.sessionId, participantId, payload.reason)),
     leave: () => run(coordinator.leave(participantId)),
-    loadConfig: async () => config,
     loopTauntAwait: async () => ({ status: "completed" }),
     loopTauntLeave: async () => undefined,
     loopTauntRegister: async () => ({ runId: "unused" }),

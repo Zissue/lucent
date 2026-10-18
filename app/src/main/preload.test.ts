@@ -204,102 +204,10 @@ describe("preload log bridge", () => {
     });
   });
 
-  it("exposes all log levels outside debug mode with the view and error details", async () => {
-    const bridge = await loadBridge();
-    const error = new Error("x");
-    error.stack = "error stack";
-    bridge.log.error("Failed", error);
-    bridge.log.warn("Warning", "plain cause");
-    bridge.log.info("Ready");
-    bridge.log.debug("Detail", undefined);
-    expect(electron.send.mock.calls).toEqual([
-      [
-        "desktop:renderer-log:record",
-        {
-          level: "error",
-          message: "Failed",
-          component: "renderer",
-          data: { view: "game" },
-          repeatKey: "Error:x",
-          error: [{ name: "Error", message: "x", stack: "error stack" }],
-        },
-      ],
-      [
-        "desktop:renderer-log:record",
-        {
-          level: "warn",
-          message: "Warning",
-          component: "renderer",
-          data: { view: "game" },
-          repeatKey: "NonError:plain cause",
-          error: [{ name: "NonError", message: "plain cause" }],
-        },
-      ],
-      [
-        "desktop:renderer-log:record",
-        {
-          level: "info",
-          message: "Ready",
-          component: "renderer",
-          data: { view: "game" },
-        },
-      ],
-      [
-        "desktop:renderer-log:record",
-        {
-          level: "debug",
-          message: "Detail",
-          component: "renderer",
-          data: { view: "game" },
-        },
-      ],
-    ]);
-  });
-
-  it.each(["error", "warn", "info", "debug"] as const)(
-    "preserves page-world error names, stacks, and causes at the %s level",
-    async (level) => {
-      const bridge = await loadBridge();
-      const cause = new RangeError("request exhausted");
-      cause.stack =
-        "RangeError: request exhausted\n    at request (game.js:20:4)";
-      const error = new TypeError("load failed", { cause });
-      error.stack =
-        "TypeError: load failed\n    at load (game.js:12:3)\n    at mount (game.js:4:1)";
-
-      bridge.log[level]("Failed", error);
-
-      expect(electron.send.mock.calls).toEqual([
-        [
-          "desktop:renderer-log:record",
-          {
-            level,
-            message: "Failed",
-            component: "renderer",
-            data: { view: "game" },
-            repeatKey: "TypeError:at load (game.js:12:3)",
-            error: [
-              {
-                name: "TypeError",
-                message: "load failed",
-                stack:
-                  "TypeError: load failed\n    at load (game.js:12:3)\n    at mount (game.js:4:1)",
-                cause: {
-                  name: "RangeError",
-                  message: "request exhausted",
-                  stack:
-                    "RangeError: request exhausted\n    at request (game.js:20:4)",
-                },
-              },
-            ],
-          },
-        ],
-      ]);
-    },
-  );
-
   it("keeps the root error and five causes from a longer page-world cause chain", async () => {
-    const bridge = await loadBridge();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-14T12:00:00.000Z"));
+    await loadBridge();
     let error: Error | undefined;
     for (const message of [
       "discarded",
@@ -314,16 +222,18 @@ describe("preload log bridge", () => {
       error.stack = `Error: ${message}`;
     }
 
-    bridge.log.error("Failed", error);
+    electron.page.dispatchEvent(
+      Object.assign(new Event("unhandledrejection"), { reason: error }),
+    );
 
     expect(electron.send.mock.calls).toEqual([
       [
         "desktop:renderer-log:record",
         {
           level: "error",
-          message: "Failed",
+          message: "Renderer unhandled rejection",
           component: "renderer",
-          data: { view: "game" },
+          data: { observedAt: "2026-10-14T12:00:00.000Z", view: "game" },
           repeatKey: "Error:root",
           error: [
             {
@@ -363,21 +273,25 @@ describe("preload log bridge", () => {
   });
 
   it("bounds cyclic page-world causes to the root error and five causes", async () => {
-    const bridge = await loadBridge();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-14T12:00:00.000Z"));
+    await loadBridge();
     const error = new Error("cycle");
     error.stack = "Error: cycle";
     error.cause = error;
 
-    bridge.log.error("Failed", error);
+    electron.page.dispatchEvent(
+      Object.assign(new Event("unhandledrejection"), { reason: error }),
+    );
 
     expect(electron.send.mock.calls).toEqual([
       [
         "desktop:renderer-log:record",
         {
           level: "error",
-          message: "Failed",
+          message: "Renderer unhandled rejection",
           component: "renderer",
-          data: { view: "game" },
+          data: { observedAt: "2026-10-14T12:00:00.000Z", view: "game" },
           repeatKey: "Error:cycle",
           error: [
             {
@@ -417,20 +331,24 @@ describe("preload log bridge", () => {
   });
 
   it("preserves non-Error page-world causes", async () => {
-    const bridge = await loadBridge();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-14T12:00:00.000Z"));
+    await loadBridge();
     const error = new TypeError("load failed", { cause: "request failed" });
     error.stack = "TypeError: load failed\n    at load (game.js:12:3)";
 
-    bridge.log.warn("Failed", error);
+    electron.page.dispatchEvent(
+      Object.assign(new Event("unhandledrejection"), { reason: error }),
+    );
 
     expect(electron.send.mock.calls).toEqual([
       [
         "desktop:renderer-log:record",
         {
-          level: "warn",
-          message: "Failed",
+          level: "error",
+          message: "Renderer unhandled rejection",
           component: "renderer",
-          data: { view: "game" },
+          data: { observedAt: "2026-10-14T12:00:00.000Z", view: "game" },
           repeatKey: "TypeError:at load (game.js:12:3)",
           error: [
             {
@@ -445,7 +363,37 @@ describe("preload log bridge", () => {
     ]);
   });
 
-  it("serializes write payloads and drops serialization, error conversion, and send failures", async () => {
+  it("drops error conversion failures and keeps reporting global rejections", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-14T12:00:00.000Z"));
+    await loadBridge();
+    const error = new Error("bad getter");
+    Object.defineProperty(error, "message", {
+      get() {
+        throw new Error("bad getter");
+      },
+    });
+    for (const reason of [error, "recovered"]) {
+      electron.page.dispatchEvent(
+        Object.assign(new Event("unhandledrejection"), { reason }),
+      );
+    }
+    expect(electron.send.mock.calls).toEqual([
+      [
+        "desktop:renderer-log:record",
+        {
+          level: "error",
+          message: "Renderer unhandled rejection",
+          component: "renderer",
+          data: { observedAt: "2026-10-14T12:00:00.000Z", view: "game" },
+          repeatKey: "NonError:recovered",
+          error: [{ name: "NonError", message: "recovered" }],
+        },
+      ],
+    ]);
+  });
+
+  it("serializes write payloads and drops serialization and send failures", async () => {
     const bridge = await loadBridge();
     bridge.log.write({ level: "info", message: "Count", data: { count: 42n } });
     bridge.log.write({
@@ -457,18 +405,11 @@ describe("preload log bridge", () => {
         },
       },
     });
-    const error = new Error("bad getter");
-    Object.defineProperty(error, "message", {
-      get() {
-        throw new Error("bad getter");
-      },
-    });
-    bridge.log.error("Broken error", error);
     electron.send.mockImplementationOnce(() => {
       throw new Error("closed");
     });
-    bridge.log.warn("Closed");
-    bridge.log.info("Recovered");
+    bridge.log.write({ level: "warn", message: "Closed" });
+    bridge.log.write({ level: "info", message: "Recovered" });
     expect(electron.send.mock.calls).toEqual([
       [
         "desktop:renderer-log:record",
@@ -479,8 +420,6 @@ describe("preload log bridge", () => {
         {
           level: "warn",
           message: "Closed",
-          component: "renderer",
-          data: { view: "game" },
         },
       ],
       [
@@ -488,8 +427,6 @@ describe("preload log bridge", () => {
         {
           level: "info",
           message: "Recovered",
-          component: "renderer",
-          data: { view: "game" },
         },
       ],
     ]);
@@ -529,7 +466,6 @@ describe("preload log bridge", () => {
       if (bridge.view !== "game") throw new Error("Expected game bridge");
       bridge.gameConsoleObservability?.message("warn", "hello");
       bridge.gameConsoleObservability?.message("log", "world");
-      bridge.log.info("Ready");
       expect(electron.send.mock.calls).toEqual([
         [
           "desktop:renderer-log:record",
@@ -597,15 +533,6 @@ describe("preload log bridge", () => {
               ],
             ]
           : []),
-        [
-          "desktop:renderer-log:record",
-          {
-            level: "info",
-            message: "Ready",
-            component: "renderer",
-            data: { view: "game" },
-          },
-        ],
       ]);
       expect(bridge.gameConsoleObservability === undefined).toBe(
         !(debug && consoleObservability),
@@ -614,19 +541,23 @@ describe("preload log bridge", () => {
   }
 
   it("omits URL credentials, queries, fragments, and schemes from error repeat keys", async () => {
-    const bridge = await loadBridge();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-14T12:00:00.000Z"));
+    await loadBridge();
     const error = new Error("bad view");
     error.stack =
       "Error: bad view\n    at mount (https://user:p@ss@assets.example/game.js?token=secret#section:12:3)";
-    bridge.log.error("Failed", error);
+    electron.page.dispatchEvent(
+      Object.assign(new Event("unhandledrejection"), { reason: error }),
+    );
     expect(electron.send.mock.calls).toEqual([
       [
         "desktop:renderer-log:record",
         {
           level: "error",
-          message: "Failed",
+          message: "Renderer unhandled rejection",
           component: "renderer",
-          data: { view: "game" },
+          data: { observedAt: "2026-10-14T12:00:00.000Z", view: "game" },
           repeatKey: "Error:at mount (assets.example/game.js:12:3)",
           error: [
             {

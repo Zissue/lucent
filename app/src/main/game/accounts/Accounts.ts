@@ -54,9 +54,6 @@ export interface AccountsShape {
     readonly gameWindowGroupId: number;
     readonly windowTarget: AccountLaunchWindowTarget;
   }) => Effect.Effect<AccountLaunchResult, AccountsError>;
-  readonly closeGameWindow: (
-    gameWindowId: number,
-  ) => Effect.Effect<AccountManagerState, AccountsError>;
   readonly closeGameWindows: (
     gameWindowIds: readonly number[],
   ) => Effect.Effect<AccountManagerState, AccountsError>;
@@ -65,9 +62,6 @@ export interface AccountsShape {
   ) => Effect.Effect<AccountManagerState, AccountsError>;
   readonly createGroup: (
     draft: ManagedAccountGroupDraft,
-  ) => Effect.Effect<AccountManagerState, AccountsError>;
-  readonly deleteAccount: (
-    username: string,
   ) => Effect.Effect<AccountManagerState, AccountsError>;
   readonly deleteAccounts: (
     usernames: readonly string[],
@@ -440,9 +434,6 @@ const makeAccounts = Effect.gen(function* () {
     );
   };
 
-  const closeGameWindow: AccountsShape["closeGameWindow"] = (gameWindowId) =>
-    closeGameWindows([gameWindowId]);
-
   const createAccount: AccountsShape["createAccount"] = (draft) =>
     updateStorage((storage) =>
       Effect.gen(function* () {
@@ -515,9 +506,6 @@ const makeAccounts = Effect.gen(function* () {
       yield* retireGameProfiles(requestedUsernames);
       return state;
     });
-
-  const deleteAccount: AccountsShape["deleteAccount"] = (username) =>
-    deleteAccounts([username]);
 
   const deleteGroup: AccountsShape["deleteGroup"] = (name) =>
     updateStorage((storage) =>
@@ -826,11 +814,9 @@ const makeAccounts = Effect.gen(function* () {
     );
 
   return Accounts.of({
-    closeGameWindow,
     closeGameWindows,
     createAccount,
     createGroup,
-    deleteAccount,
     deleteAccounts,
     deleteGroup,
     focusGameWindow,

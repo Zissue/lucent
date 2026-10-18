@@ -248,8 +248,6 @@ const ArmyConfigPayloadFields = {
   sets: Schema.Record(Schema.String, ArmySetConfigSchema),
 } as const;
 
-export const ArmyConfigPayloadSchema = Schema.Struct(ArmyConfigPayloadFields);
-
 export const ArmySessionPayloadSchema = Schema.Struct({
   ...ArmyConfigPayloadFields,
   playerName: Schema.String,

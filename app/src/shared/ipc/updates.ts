@@ -15,9 +15,7 @@ export const UpdatesIpc = {
   checkNow: defineInvoke({
     channel: `${namespace}:check-now`,
     name: "updates.checkNow",
-    payload: Schema.Struct({
-      force: Schema.optionalKey(Schema.Boolean),
-    }),
+    payload: Schema.Void,
     result: UpdateCheckStateSchema,
   }),
   openReleasePage: defineInvoke({

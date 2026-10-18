@@ -184,11 +184,6 @@ interface RendererFailure {
 // function to the page as source text, so its whole body must be self-contained.
 const installRendererLogging = (
   reportFailure: (failure: RendererFailure) => void,
-  reportLog: (
-    level: RendererLogRecord["level"],
-    message: string,
-    error?: DesktopLogError,
-  ) => void,
   write: DesktopLogBridge["write"],
 ): DesktopLogBridge => {
   const errorDetails = (value: unknown, depth = 0): DesktopLogError => {
@@ -241,25 +236,7 @@ const installRendererLogging = (
     } catch {}
   });
 
-  const logAtLevel =
-    (level: RendererLogRecord["level"]) =>
-    (message: string, error?: unknown): void => {
-      try {
-        reportLog(
-          level,
-          message,
-          error === undefined ? undefined : errorDetails(error),
-        );
-      } catch {}
-    };
-
-  return {
-    error: logAtLevel("error"),
-    warn: logAtLevel("warn"),
-    info: logAtLevel("info"),
-    debug: logAtLevel("debug"),
-    write,
-  };
+  return { write };
 };
 
 const reportRendererFailure = (failure: RendererFailure): void =>
@@ -274,20 +251,10 @@ const reportRendererFailure = (failure: RendererFailure): void =>
     failure.error,
   );
 
-const reportRendererLog = (
-  level: RendererLogRecord["level"],
-  message: string,
-  error?: DesktopLogError,
-): void => logRenderer(level, message, { view: bridgeView }, error);
-
-installRendererLogging(
-  reportRendererFailure,
-  reportRendererLog,
-  writeRendererLog,
-);
+installRendererLogging(reportRendererFailure, writeRendererLog);
 const logBridge: DesktopLogBridge = contextBridge.executeInMainWorld({
   func: installRendererLogging,
-  args: [reportRendererFailure, reportRendererLog, writeRendererLog],
+  args: [reportRendererFailure, writeRendererLog],
 });
 
 const eventWrappers = new WeakMap<
@@ -334,12 +301,10 @@ const combatProfilesBridge: DesktopCombatProfilesBridge = {
 };
 
 const accountsBridge: DesktopAccountsBridge = {
-  closeGameWindow: (request) => invoke(AccountsIpc.closeGameWindow, request),
   closeGameWindows: (gameWindowIds) =>
     invoke(AccountsIpc.closeGameWindows, { gameWindowIds }),
   createAccount: (draft) => invoke(AccountsIpc.createAccount, draft),
   createGroup: (draft) => invoke(AccountsIpc.createGroup, draft),
-  deleteAccount: (username) => invoke(AccountsIpc.deleteAccount, { username }),
   deleteAccounts: (usernames) =>
     invoke(AccountsIpc.deleteAccounts, { usernames }),
   deleteGroup: (name) => invoke(AccountsIpc.deleteGroup, { name }),
@@ -541,7 +506,7 @@ const environmentBridge: DesktopEnvironmentBridge = {
 };
 
 const updatesBridge: DesktopUpdatesBridge = {
-  checkNow: (options) => invoke(UpdatesIpc.checkNow, options ?? {}),
+  checkNow: () => invoke(UpdatesIpc.checkNow, undefined),
   getState: () => invoke(UpdatesIpc.getState, undefined),
   onChanged: (listener) => subscribe(UpdatesIpc.changed, listener),
   openReleasePage: () => invoke(UpdatesIpc.openReleasePage, undefined),
@@ -596,7 +561,6 @@ const bridges = {
     army: {
       fail: (payload) => invoke(ArmyIpc.fail, payload),
       leave: () => invoke(ArmyIpc.leave, undefined),
-      loadConfig: (configName) => invoke(ArmyIpc.loadConfig, { configName }),
       loopTauntAwait: (payload) => invoke(ArmyIpc.loopTauntAwait, payload),
       loopTauntLeave: (payload) => invoke(ArmyIpc.loopTauntLeave, payload),
       loopTauntRegister: (payload) =>
