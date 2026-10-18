@@ -16,12 +16,12 @@ import type {
   ScriptReference,
 } from "@lucent/core/scriptPackages";
 import {
-  isMissingFileError,
   isPathInside,
   listRegularFilePaths,
   portablePath,
   sha256Revision,
 } from "./ScriptPackageFileSystem";
+import { isMissingFileError } from "../filesystem/BoundedFileSystem";
 import {
   compatibilityFor,
   decodePackageDirectory,

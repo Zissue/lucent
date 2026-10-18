@@ -21,7 +21,6 @@ import * as GitHubApiClient from "../http/GitHubApiClient";
 import * as DesktopHttpClient from "../http/DesktopHttpClient";
 import * as DesktopIpc from "../ipc/DesktopIpc";
 import * as DesktopSettings from "../settings/DesktopSettings";
-import * as ScriptFiles from "../scripting/ScriptFiles";
 import * as ScriptInputRepository from "../scripting/ScriptInputRepository";
 import * as DesktopScriptLibrary from "../scripting/DesktopScriptLibrary";
 import * as GitHubCredentials from "../scripting/GitHubCredentials";
@@ -68,7 +67,6 @@ export const makeDesktopLayer = () => {
     DesktopHttpClient.layer,
     RuffleSocketProxy.layer,
     AccountSessions.layer,
-    ScriptFiles.layer,
   );
 
   const storage = Layer.mergeAll(

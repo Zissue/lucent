@@ -9,15 +9,13 @@ import {
 } from "@lucent/core/scriptInputs";
 
 const UnknownRecordSchema = Schema.Record(Schema.String, Schema.Unknown);
-const AstNodeSchema = Schema.Struct({ type: Schema.String });
 const isUnknownRecord = Schema.is(UnknownRecordSchema);
-const hasAstNodeShape = Schema.is(AstNodeSchema);
 const decodeScriptInputsDefinition = Schema.decodeUnknownEffect(
   ScriptInputsDefinitionSchema,
   { onExcessProperty: "error" },
 );
 
-type AstNode = typeof AstNodeSchema.Type & Record<string, unknown>;
+type AstNode = { readonly type: string } & Record<string, unknown>;
 
 const inputExtractorOperationSchema = Schema.Literals([
   "parse",
@@ -43,7 +41,11 @@ export interface ScriptSourceAnalysis {
   readonly requirements: readonly string[];
 }
 
-const isNode = (value: unknown): value is AstNode => hasAstNodeShape(value);
+const isNode = (value: unknown): value is AstNode =>
+  typeof value === "object" &&
+  value !== null &&
+  "type" in value &&
+  typeof value.type === "string";
 
 const staticError = (detail: string, cause?: unknown) =>
   new ScriptInputsExtractorError({

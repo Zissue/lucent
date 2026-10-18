@@ -8,7 +8,7 @@ import {
   ScriptPackageNameSchema,
   type ScriptPackageDirectory,
 } from "@lucent/core/scriptPackages";
-import { isMissingFileError } from "./ScriptPackageFileSystem";
+import { isMissingFileError } from "../filesystem/BoundedFileSystem";
 import { SCRIPT_PACKAGE_DIRECTORY_SLUG_MAX_BYTES } from "./ScriptLimits";
 
 const decodePackageDirectory = Schema.decodeUnknownSync(

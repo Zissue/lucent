@@ -80,6 +80,33 @@ describe("readStableFile", () => {
     expect(await fs.readFile(path, "utf8")).toBe("123456789");
     expect(checks).toBe(1);
   });
+
+  it("rejects directories before reading", async () => {
+    const root = await fs.mkdtemp(join(tmpdir(), "lucent-stable-file-"));
+    directories.push(root);
+    await expect(readStableFile(root, 16)).rejects.toThrow(
+      `Expected a regular file: ${root}.`,
+    );
+  });
+
+  it("does not retry when the file disappears after reading", async () => {
+    const root = await fs.mkdtemp(join(tmpdir(), "lucent-stable-file-"));
+    directories.push(root);
+    const path = join(root, "value.js");
+    await fs.writeFile(path, "initial");
+    const stat = fs.stat;
+    let checks = 0;
+    vi.spyOn(fs, "stat").mockImplementation(async (...args) => {
+      checks += 1;
+      if (checks === 2) {
+        throw Object.assign(new Error("File disappeared"), { code: "ENOENT" });
+      }
+      return stat(...args);
+    });
+
+    await expect(readStableFile(path, 16)).rejects.toThrow("File disappeared");
+    expect(checks).toBe(2);
+  });
 });
 
 describe("listRegularFilePaths", () => {

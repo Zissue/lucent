@@ -6,12 +6,14 @@ import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
-import { FileSystem } from "effect/FileSystem";
 import * as Schedule from "effect/Schedule";
 
 import {
   FileChangedWhileReading,
-  readFileBounded,
+  FileSystemLimitError,
+  fileFingerprint,
+  isMissingFileError,
+  readStableFile as readStableFileEffect,
 } from "../filesystem/BoundedFileSystem";
 
 import {
@@ -30,11 +32,6 @@ interface ListRegularFilesOptions {
   readonly rejectSymlinks?: boolean;
 }
 
-const errorCode = (cause: unknown): string | undefined =>
-  cause instanceof Error && "code" in cause
-    ? String((cause as { readonly code?: unknown }).code)
-    : undefined;
-
 const systemMetadataNames = new Set(["desktop.ini", "thumbs.db"]);
 
 const isSystemMetadataFile = (name: string): boolean =>
@@ -42,11 +39,6 @@ const isSystemMetadataFile = (name: string): boolean =>
   name === ".directory" ||
   name.startsWith("._") ||
   systemMetadataNames.has(name.toLowerCase());
-
-export const isMissingFileError = (cause: unknown): boolean => {
-  const code = errorCode(cause);
-  return code === "ENOENT" || code === "ENOTDIR";
-};
 
 export const portablePath = (value: string): string =>
   value.split(sep).join("/");
@@ -58,66 +50,36 @@ export const isPathInside = (root: string, candidate: string): boolean => {
   return path === "" || (!path.startsWith(`..${sep}`) && path !== "..");
 };
 
-const fingerprint = (stat: Awaited<ReturnType<typeof fs.stat>>): string =>
-  [stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(":");
-
-const readStableFileEffect = Effect.fnUntraced(function* (
-  path: string,
-  maxBytes: number,
-) {
-  const fileSystem = yield* FileSystem;
-  const before = yield* Effect.tryPromise({
-    try: () => fs.stat(path),
-    catch: (cause) => cause,
-  });
-  if (!before.isFile())
-    return yield* Effect.fail(new Error(`Expected a regular file: ${path}.`));
-  const sizeError = () =>
-    new Error(`File exceeds the ${formatBytes(maxBytes)} limit: ${path}.`);
-  if (before.size > maxBytes) return yield* Effect.fail(sizeError());
-  const contents = yield* readFileBounded(fileSystem, path, maxBytes).pipe(
-    Effect.mapError((cause) =>
-      cause._tag === "FileSystemLimitError"
-        ? sizeError()
-        : (cause.reason.cause ?? cause),
-    ),
-  );
-  const after = yield* Effect.tryPromise({
-    try: () => fs.stat(path),
-    catch: (cause) => cause,
-  });
-  if (fingerprint(before) !== fingerprint(after)) {
-    return yield* new FileChangedWhileReading({ path });
-  }
-  return Buffer.from(contents.buffer, contents.byteOffset, contents.byteLength);
-});
-
 export const readStableFile = async (
   path: string,
   maxBytes: number,
 ): Promise<Buffer> => {
   const exit = await Effect.runPromiseExit(
-    readStableFileEffect(path, maxBytes).pipe(
+    readStableFileEffect(path, maxBytes, { requireRegularFile: true }).pipe(
       Effect.retry({
         schedule: Schedule.recurs(2),
         while: (cause) => cause instanceof FileChangedWhileReading,
       }),
       Effect.mapError((cause) =>
-        cause instanceof FileChangedWhileReading
-          ? new Error(`File changed while it was being read: ${path}.`)
-          : cause,
+        cause instanceof FileSystemLimitError
+          ? new Error(
+              `File exceeds the ${formatBytes(maxBytes)} limit: ${path}.`,
+            )
+          : cause instanceof FileChangedWhileReading
+            ? new Error(`File changed while it was being read: ${path}.`)
+            : cause,
       ),
       Effect.provide(NodeFileSystem.layer),
     ),
   );
   if (Exit.isFailure(exit)) throw Cause.squash(exit.cause);
-  return exit.value;
+  return exit.value.contents;
 };
 
 export const regularFileFingerprint = async (path: string): Promise<string> => {
   const stat = await fs.stat(path);
   if (!stat.isFile()) throw new Error(`Expected a regular file: ${path}.`);
-  return fingerprint(stat);
+  return fileFingerprint(stat);
 };
 
 export const sha256Revision = (contents: Buffer | string): string =>
