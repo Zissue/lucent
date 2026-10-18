@@ -1,13 +1,15 @@
 import { ipcMain, type IpcMainInvokeEvent } from "electron";
 
+import * as Array from "effect/Array";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Order from "effect/Order";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 
 import { electronRendererRegistry } from "../electron/ElectronRendererRegistry";
-import type { DesktopRendererKind } from "../window/DesktopWindowCatalog";
+import { DesktopRendererKindSchema } from "../../shared/ipc/windows";
 import {
   type IpcEventDescriptor,
   type IpcEventPayload,
@@ -233,16 +235,7 @@ export const layer = Layer.succeed(
   makeDesktopIpc(ipcMain, electronRendererRegistry),
 );
 
-export const ALL_DESKTOP_RENDERER_KINDS = [
-  "about",
-  "account-manager",
-  "combat-profiles",
-  "environment",
-  "follower",
-  "game",
-  "game-group-controls",
-  "game-host",
-  "loader-grabber",
-  "packets",
-  "settings",
-] as const satisfies readonly [DesktopRendererKind, ...DesktopRendererKind[]];
+export const ALL_DESKTOP_RENDERER_KINDS: DesktopIpcSenderKinds = Array.sort(
+  DesktopRendererKindSchema.literals,
+  Order.String,
+);

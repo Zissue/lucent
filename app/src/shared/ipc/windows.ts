@@ -16,6 +16,12 @@ export const DesktopWindowKindSchema = Schema.Literals([
   "settings",
 ]);
 
+export const DesktopRendererKindSchema = Schema.Literals([
+  ...DesktopWindowKindSchema.literals,
+  "game-group-controls",
+  "game-host",
+]);
+
 export const WindowsIpc = {
   open: defineInvoke({
     channel: `${namespace}:open`,

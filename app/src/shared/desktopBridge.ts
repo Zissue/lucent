@@ -1,4 +1,8 @@
 import type { RendererLogRecord } from "./ipc/rendererLog";
+import type {
+  DesktopRendererKindSchema,
+  DesktopWindowKindSchema,
+} from "./ipc/windows";
 import type { RecentlyClosedGameSession } from "@lucent/core/accounts";
 import type {
   AppSettings,
@@ -114,28 +118,8 @@ import type {
 } from "./gameViews";
 
 export type AppPlatform = "linux" | "mac" | "windows";
-export type DesktopBridgeView =
-  | "about"
-  | "account-manager"
-  | "combat-profiles"
-  | "environment"
-  | "follower"
-  | "game"
-  | "game-group-controls"
-  | "game-host"
-  | "loader-grabber"
-  | "packets"
-  | "settings";
-export type DesktopBridgeWindowKind =
-  | "about"
-  | "account-manager"
-  | "combat-profiles"
-  | "environment"
-  | "follower"
-  | "game"
-  | "loader-grabber"
-  | "packets"
-  | "settings";
+export type DesktopBridgeView = typeof DesktopRendererKindSchema.Type;
+export type DesktopBridgeWindowKind = typeof DesktopWindowKindSchema.Type;
 
 export interface DesktopSettingsBridge {
   readonly initial: AppSettings | null;

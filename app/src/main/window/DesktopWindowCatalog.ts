@@ -1,17 +1,10 @@
-export type DesktopWindowKind =
-  | "about"
-  | "account-manager"
-  | "combat-profiles"
-  | "environment"
-  | "follower"
-  | "game"
-  | "loader-grabber"
-  | "packets"
-  | "settings";
-export type DesktopRendererKind =
-  | DesktopWindowKind
-  | "game-group-controls"
-  | "game-host";
+import type {
+  DesktopRendererKindSchema,
+  DesktopWindowKindSchema,
+} from "../../shared/ipc/windows";
+
+export type DesktopWindowKind = typeof DesktopWindowKindSchema.Type;
+export type DesktopRendererKind = typeof DesktopRendererKindSchema.Type;
 export type DesktopWindowCloseBehavior = "destroy" | "hide";
 export type DesktopWindowScope = "application" | "game" | "game-child";
 
