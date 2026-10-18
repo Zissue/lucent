@@ -9,6 +9,7 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 
 import { electronRendererRegistry } from "../electron/ElectronRendererRegistry";
+import { DesktopWindows } from "../window/DesktopWindows";
 import { DesktopRendererKindSchema } from "../../shared/ipc/windows";
 import {
   type IpcEventDescriptor,
@@ -21,29 +22,17 @@ import { createDesktopIpcInvokeHandler } from "./DesktopIpcInvoke";
 import {
   type DesktopIpcSender,
   type DesktopIpcSenderKinds,
-  DesktopIpcSenders,
+  requireSender,
 } from "./DesktopIpcSenders";
 
 export interface DesktopIpcMethodRegistration<E, R> {
   readonly allowedSenders: DesktopIpcSenderKinds;
   readonly descriptor: IpcInvokeDescriptor<unknown, unknown>;
-  readonly invoke: (
+  readonly handler: (
     payload: unknown,
     sender: DesktopIpcSender,
   ) => Effect.Effect<unknown, E, R>;
 }
-
-export type DesktopIpcMethod<
-  Descriptor extends IpcInvokeDescriptor<unknown, unknown>,
-  E,
-  R,
-> = DesktopIpcMethodRegistration<E, R> & {
-  readonly descriptor: Descriptor;
-  readonly handler: (
-    payload: IpcInvokePayload<Descriptor>,
-    sender: DesktopIpcSender,
-  ) => Effect.Effect<IpcInvokeResult<Descriptor>, E, R>;
-};
 
 export const makeDesktopIpcMethod = <
   Descriptor extends IpcInvokeDescriptor<unknown, unknown>,
@@ -56,10 +45,9 @@ export const makeDesktopIpcMethod = <
     payload: IpcInvokePayload<Descriptor>,
     sender: DesktopIpcSender,
   ) => Effect.Effect<IpcInvokeResult<Descriptor>, E, R>;
-}): DesktopIpcMethod<Descriptor, E, R> => ({
+}): DesktopIpcMethodRegistration<E, R> => ({
   ...method,
-  invoke: (payload, sender) =>
-    method.handler(payload as IpcInvokePayload<Descriptor>, sender),
+  handler: method.handler as DesktopIpcMethodRegistration<E, R>["handler"],
 });
 
 export class DesktopIpcRegistrationError extends Schema.TaggedError<DesktopIpcRegistrationError>()(
@@ -71,18 +59,6 @@ export class DesktopIpcRegistrationError extends Schema.TaggedError<DesktopIpcRe
 ) {
   override get message(): string {
     return `Failed to register the IPC handler for ${this.channel}.`;
-  }
-}
-
-export class DesktopIpcUnregistrationError extends Schema.TaggedError<DesktopIpcUnregistrationError>()(
-  "DesktopIpcUnregistrationError",
-  {
-    channel: Schema.String,
-    cause: Schema.Defect(),
-  },
-) {
-  override get message(): string {
-    return `Failed to unregister the IPC handler for ${this.channel}.`;
   }
 }
 
@@ -110,7 +86,7 @@ export interface DesktopIpcShape {
   ) => Effect.Effect<
     void,
     DesktopIpcRegistrationError,
-    DesktopIpcSenders | R | Scope.Scope
+    DesktopWindows | R | Scope.Scope
   >;
   readonly sendToAll: <Descriptor extends IpcEventDescriptor<unknown>>(
     descriptor: Descriptor,
@@ -185,9 +161,9 @@ export const makeDesktopIpc = (
   ): Effect.fn.Return<
     void,
     DesktopIpcRegistrationError,
-    DesktopIpcSenders | R | Scope.Scope
+    DesktopWindows | R | Scope.Scope
   > {
-    const senders = yield* DesktopIpcSenders;
+    const windows = yield* DesktopWindows;
     const context = yield* Effect.context<R>();
     const runPromise = Effect.runPromiseWith(context);
     const { descriptor } = method;
@@ -195,9 +171,9 @@ export const makeDesktopIpc = (
     const handler = createDesktopIpcInvokeHandler(
       descriptor,
       (payload, event: IpcMainInvokeEvent) =>
-        senders
-          .require(event, method.allowedSenders)
-          .pipe(Effect.flatMap((sender) => method.invoke(payload, sender))),
+        requireSender(windows, event, method.allowedSenders).pipe(
+          Effect.flatMap((sender) => method.handler(payload, sender)),
+        ),
       runPromise,
     );
 
@@ -210,15 +186,7 @@ export const makeDesktopIpc = (
             cause,
           }),
       }),
-      () =>
-        Effect.try({
-          try: () => main.removeHandler(descriptor.channel),
-          catch: (cause) =>
-            new DesktopIpcUnregistrationError({
-              channel: descriptor.channel,
-              cause,
-            }),
-        }).pipe(Effect.orDie),
+      () => Effect.sync(() => main.removeHandler(descriptor.channel)),
     );
   });
 

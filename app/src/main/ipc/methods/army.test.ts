@@ -22,7 +22,6 @@ import {
   type DesktopRendererEvent,
 } from "../../window/DesktopWindows";
 import { DesktopIpc, makeDesktopIpc, type DesktopIpcMain } from "../DesktopIpc";
-import { DesktopIpcSenders, makeDesktopIpcSenders } from "../DesktopIpcSenders";
 import { installLifecycle, start } from "./army";
 
 const rendererId = 7;
@@ -49,18 +48,9 @@ const makeGameWindows = () => {
             kind: "game",
             windowId: id,
             ownerId: undefined,
-            generation: lifetime.generation,
+            lifetime,
             ready: true,
           };
-    });
-  const lifetime: DesktopWindows["Service"]["lifetime"] = (id) =>
-    Effect.sync(() => lifetimes.get(id));
-  const identify: DesktopWindows["Service"]["identify"] = (id) =>
-    Effect.sync(() => {
-      const lifetime = lifetimes.get(id);
-      return lifetime === undefined
-        ? undefined
-        : { rendererId: id, kind: "game", lifetime };
     });
   const observe: DesktopWindows["Service"]["observe"] = (filter, listener) =>
     events.subscribe((event) =>
@@ -104,7 +94,7 @@ const makeGameWindows = () => {
         );
       }
     });
-  return { describe, end, identify, lifetime, observe };
+  return { describe, end, observe };
 };
 
 const runStartIpc = <A, E>(
@@ -146,11 +136,8 @@ const runStartIpc = <A, E>(
         Layer.succeed(DesktopIpc, ipc),
         Layer.mock(DesktopWindows, {
           describe: windows.describe,
-          lifetime: windows.lifetime,
-          identify: windows.identify,
           observe: windows.observe,
         }),
-        Layer.succeed(DesktopIpcSenders, makeDesktopIpcSenders(windows)),
         Layer.succeed(ArmyConfigRepository, { read }),
         Layer.mock(ArmyLoopTauntOrchestrator, {
           onCommand: () => Effect.void,

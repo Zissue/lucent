@@ -25,6 +25,7 @@ import {
 } from "../../electron/ElectronChromiumPerformance";
 import { layer as environmentLayer } from "../DesktopEnvironment";
 import { DesktopWindows } from "../../window/DesktopWindows";
+import { makeLifetime } from "../../window/RendererLifetimeTesting";
 import {
   DesktopChromiumPerformanceRecording,
   type DesktopChromiumPerformanceRecordingState,
@@ -84,7 +85,7 @@ const services = (
                     kind,
                     windowId: rendererId,
                     ownerId: undefined,
-                    generation: 1,
+                    lifetime: makeLifetime(rendererId),
                     ready: true,
                   },
             );

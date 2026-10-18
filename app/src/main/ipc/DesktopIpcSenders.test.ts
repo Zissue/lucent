@@ -10,7 +10,7 @@ import { DesktopWindows } from "../window/DesktopWindows";
 import { ALL_DESKTOP_RENDERER_KINDS } from "./DesktopIpc";
 import {
   DesktopIpcSenderError,
-  makeDesktopIpcSenders,
+  requireSender,
   resolveGameRendererId,
 } from "./DesktopIpcSenders";
 
@@ -19,12 +19,19 @@ const makeWindows = (kind: DesktopRendererKind | null) => {
   const lifetimes = new Map(kind === null ? [] : [[42, makeLifetime(42)]]);
   return {
     lifetimes,
-    identify: (rendererId: number) =>
+    describe: (rendererId: number) =>
       Effect.sync(() => {
         const lifetime = lifetimes.get(rendererId);
         return kind === null || lifetime === undefined
           ? undefined
-          : { rendererId, kind, lifetime };
+          : {
+              rendererId,
+              kind,
+              windowId: 1,
+              ownerId: undefined,
+              lifetime,
+              ready: true,
+            };
       }),
   };
 };
@@ -33,9 +40,7 @@ describe("DesktopIpcSenders", () => {
   it.effect("resolves an allowed sender with its managed window identity", () =>
     Effect.gen(function* () {
       const windows = makeWindows("game");
-      const senders = makeDesktopIpcSenders(windows);
-
-      const sender = yield* senders.require(event, ["game"]);
+      const sender = yield* requireSender(windows, event, ["game"]);
 
       expect(sender.rendererId).toBe(42);
       expect(sender.kind).toBe("game");
@@ -50,9 +55,9 @@ describe("DesktopIpcSenders", () => {
 
   it.effect("rejects a managed window of the wrong kind", () =>
     Effect.gen(function* () {
-      const senders = makeDesktopIpcSenders(makeWindows("settings"));
-
-      const error = yield* Effect.flip(senders.require(event, ["game"]));
+      const error = yield* Effect.flip(
+        requireSender(makeWindows("settings"), event, ["game"]),
+      );
 
       expect(error).toBeInstanceOf(DesktopIpcSenderError);
       expect(error.message).toBe("IPC sender must be one of: game");
@@ -61,11 +66,8 @@ describe("DesktopIpcSenders", () => {
 
   it.effect("rejects unmanaged web contents", () =>
     Effect.gen(function* () {
-      const unmanagedWindows = makeWindows(null);
-      const unmanagedSenders = makeDesktopIpcSenders(unmanagedWindows);
-
       const error = yield* Effect.flip(
-        unmanagedSenders.require(event, ["game"]),
+        requireSender(makeWindows(null), event, ["game"]),
       );
 
       expect(error).toBeInstanceOf(DesktopIpcSenderError);
@@ -77,10 +79,8 @@ describe("DesktopIpcSenders", () => {
     "lists all renderer kinds in order when rejecting unmanaged contents",
     () =>
       Effect.gen(function* () {
-        const senders = makeDesktopIpcSenders(makeWindows(null));
-
         const error = yield* Effect.flip(
-          senders.require(event, ALL_DESKTOP_RENDERER_KINDS),
+          requireSender(makeWindows(null), event, ALL_DESKTOP_RENDERER_KINDS),
         );
 
         expect(error.message).toBe(
@@ -106,7 +106,7 @@ describe("DesktopIpcSenders", () => {
                   kind: rendererId === 8 ? "packets" : "game",
                   windowId: 1,
                   ownerId: rendererId === 8 ? 42 : undefined,
-                  generation: 1,
+                  lifetime: makeLifetime(rendererId),
                   ready: false,
                 }),
             }),
@@ -128,7 +128,7 @@ describe("DesktopIpcSenders", () => {
                         kind: "packets",
                         windowId: 1,
                         ownerId: 42,
-                        generation: 1,
+                        lifetime: makeLifetime(rendererId),
                         ready: false,
                       }
                     : kind === null
@@ -138,7 +138,7 @@ describe("DesktopIpcSenders", () => {
                           kind,
                           windowId: 1,
                           ownerId: 42,
-                          generation: 1,
+                          lifetime: makeLifetime(rendererId),
                           ready: false,
                         },
                 ),

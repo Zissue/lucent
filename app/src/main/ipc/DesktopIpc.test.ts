@@ -3,9 +3,11 @@ import type { IpcMainInvokeEvent } from "electron";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
 import { makeLifetime } from "../window/RendererLifetimeTesting";
+import { DesktopWindows } from "../window/DesktopWindows";
 import { defineEvent, defineInvoke } from "../../shared/ipc";
 import {
   DesktopIpcRegistrationError,
@@ -14,10 +16,6 @@ import {
   type DesktopIpcMain,
   type DesktopIpcWebContents,
 } from "./DesktopIpc";
-import {
-  DesktopIpcSenders,
-  type DesktopIpcSendersShape,
-} from "./DesktopIpcSenders";
 
 const descriptor = defineInvoke({
   channel: "desktop:test:echo",
@@ -37,17 +35,17 @@ const method = makeDesktopIpcMethod({
     Effect.succeed(`${payload}:${sender.rendererId}`),
 });
 
-const senders = DesktopIpcSenders.of({
-  require: (_event, allowedKinds) =>
-    Effect.sync(() => {
-      expect(allowedKinds).toEqual(["game"]);
-      return {
-        rendererId: 42,
-        kind: "game" as const,
-        lifetime: makeLifetime(42, 1),
-      };
+const windows = Layer.mock(DesktopWindows, {
+  describe: (rendererId) =>
+    Effect.succeed({
+      rendererId,
+      kind: "game",
+      windowId: 1,
+      ownerId: undefined,
+      lifetime: makeLifetime(rendererId, 1),
+      ready: true,
     }),
-} satisfies DesktopIpcSendersShape);
+});
 
 const makeIpcMain = () => {
   const handlers = new Map<string, Parameters<DesktopIpcMain["handle"]>[1]>();
@@ -75,11 +73,11 @@ describe("DesktopIpc", () => {
 
       expect(listener).toBeDefined();
       const envelope = yield* Effect.promise(() =>
-        listener!({} as IpcMainInvokeEvent, "hello"),
+        listener!({ sender: { id: 42 } } as IpcMainInvokeEvent, "hello"),
       );
 
       expect(envelope).toEqual({ ok: true, value: "hello:42" });
-    }).pipe(Effect.provideService(DesktopIpcSenders, senders)),
+    }).pipe(Effect.provide(windows)),
   );
 
   it.effect(
@@ -94,7 +92,7 @@ describe("DesktopIpc", () => {
 
         expect(error).toBeInstanceOf(DesktopIpcRegistrationError);
         expect(error.channel).toBe(descriptor.channel);
-      }).pipe(Effect.provideService(DesktopIpcSenders, senders)),
+      }).pipe(Effect.provide(windows)),
   );
 
   it.effect("continues delivery after a destroyed-renderer race", () =>

@@ -33,8 +33,8 @@ export const installDesktopIpcHandlers = Effect.fn(
 
   for (const method of desktopIpcMethods) {
     yield* ipc.handle<
-      Effect.Error<ReturnType<typeof method.invoke>>,
-      Effect.Services<ReturnType<typeof method.invoke>>
+      Effect.Error<ReturnType<typeof method.handler>>,
+      Effect.Services<ReturnType<typeof method.handler>>
     >(method);
   }
 });
