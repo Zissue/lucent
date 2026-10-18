@@ -20,7 +20,6 @@ import * as GameRendererRpc from "../game/rpc/GameRendererRpc";
 import * as GitHubApiClient from "../http/GitHubApiClient";
 import * as DesktopHttpClient from "../http/DesktopHttpClient";
 import * as DesktopIpc from "../ipc/DesktopIpc";
-import * as DesktopIpcSenders from "../ipc/DesktopIpcSenders";
 import * as DesktopSettings from "../settings/DesktopSettings";
 import * as ScriptFiles from "../scripting/ScriptFiles";
 import * as ScriptInputRepository from "../scripting/ScriptInputRepository";
@@ -98,7 +97,6 @@ export const makeDesktopLayer = () => {
   const game = Layer.mergeAll(
     DesktopAccountGameWindows.layer,
     DesktopChromiumPerformanceRecording.layer,
-    DesktopIpcSenders.layer,
     GameRendererRpc.layer,
     GamePackets.layer,
     ArmyLoopTauntOrchestrator.layer,

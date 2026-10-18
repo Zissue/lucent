@@ -56,7 +56,6 @@ export type RecoverableGameWebContents = Pick<
 export interface DesktopGameRendererRecoveryDependencies {
   readonly allWebContents: () => readonly RecoverableGameWebContents[];
   readonly describe: DesktopWindows["Service"]["describe"];
-  readonly lifetime: DesktopWindows["Service"]["lifetime"];
   readonly observe: DesktopWindows["Service"]["observe"];
   readonly onWebContentsCreated: (
     listener: (contents: RecoverableGameWebContents) => void,
@@ -137,9 +136,9 @@ export const makeDesktopGameRendererRecovery = (
     lifetime: RendererLifetime,
   ): Effect.Effect<boolean> =>
     Effect.map(
-      dependencies.lifetime(target.id),
-      (current) =>
-        current === lifetime && !target.isDestroyed() && !appIsQuitting,
+      dependencies.describe(target.id),
+      (info) =>
+        info?.lifetime === lifetime && !target.isDestroyed() && !appIsQuitting,
     );
 
   const beginScriptExecution: DesktopGameRendererRecoveryShape["beginScriptExecution"] =
@@ -286,7 +285,8 @@ export const makeDesktopGameRendererRecovery = (
         if (event.type === "reloaded" || event.type === "closed") {
           yield* dismissPrompt(event.rendererId);
         } else if (event.type === "crashed") {
-          const lifetime = yield* dependencies.lifetime(event.rendererId);
+          const lifetime = (yield* dependencies.describe(event.rendererId))
+            ?.lifetime;
           if (
             lifetime === undefined ||
             lifetime.generation !== event.generation
@@ -320,7 +320,8 @@ export const makeDesktopGameRendererRecovery = (
       const handleUnresponsive = (): void =>
         run(
           Effect.gen(function* () {
-            const lifetime = yield* dependencies.lifetime(contents.id);
+            const lifetime = (yield* dependencies.describe(contents.id))
+              ?.lifetime;
             if (lifetime !== undefined && hasActiveExecution(lifetime))
               yield* startAttempt(contents, lifetime);
           }),
@@ -366,7 +367,6 @@ const makeLiveDesktopGameRendererRecovery = Effect.gen(function* () {
   return makeDesktopGameRendererRecovery({
     allWebContents: () => webContents.getAllWebContents(),
     describe: windows.describe,
-    lifetime: windows.lifetime,
     observe: windows.observe,
     onWebContentsCreated: (listener) => {
       const handleCreated = (

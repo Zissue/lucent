@@ -18,6 +18,7 @@ import { TestClock } from "effect/testing";
 import { FollowerIpc } from "../../../shared/ipc/follower";
 import { DesktopIpc } from "../../ipc/DesktopIpc";
 import { DesktopWindows } from "../../window/DesktopWindows";
+import { makeLifetime } from "../../window/RendererLifetimeTesting";
 import {
   GameRendererRpc,
   GameRendererUnavailableError,
@@ -255,7 +256,7 @@ describe("follower reconciliation logging", () => {
                         kind: "game" as const,
                         windowId: 1,
                         ownerId: undefined,
-                        generation: 1,
+                        lifetime: makeLifetime(rendererId),
                         ready: true,
                       }
                     : undefined,

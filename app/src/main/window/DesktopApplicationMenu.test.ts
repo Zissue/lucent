@@ -132,8 +132,6 @@ describe("DesktopApplicationMenu logging", () => {
           describe: unused,
           getVisibleParentWindowId: Effect.die("Unused"),
           isVisibleParentWindow: unused,
-          identify: unused,
-          lifetime: unused,
           getOwnedRendererIds: unused,
           markRendererReady: unused,
           addGameView: unused,

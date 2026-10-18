@@ -118,12 +118,11 @@ const makeHarness = (
                 kind: "game" as const,
                 windowId: 3,
                 ownerId: undefined,
-                generation,
+                lifetime: current,
                 ready: true,
               }
             : undefined,
         ),
-      lifetime: () => Effect.sync(() => current),
       observe,
       onWebContentsCreated: () => () => undefined,
       onBeforeQuit: (listener) => {

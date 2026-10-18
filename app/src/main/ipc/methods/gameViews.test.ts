@@ -78,7 +78,7 @@ describe("game view lifecycle IPC", () => {
               kind: rendererId === 100 ? "game-host" : "game",
               windowId: 1,
               ownerId: undefined,
-              generation: 1,
+              lifetime: makeLifetime(rendererId),
               ready: false,
             }),
           closeGameView: (_hostId, id) =>
@@ -170,7 +170,7 @@ describe("game view lifecycle IPC", () => {
                 kind: rendererId === 100 ? "game-host" : "game",
                 windowId: 1,
                 ownerId: undefined,
-                generation: 1,
+                lifetime: makeLifetime(rendererId),
                 ready: false,
               }),
           }),
@@ -191,7 +191,7 @@ describe("game view lifecycle IPC", () => {
         const state = yield* reopen
           .handler({ id: 9 }, sender)
           .pipe(Effect.provide(dependencies));
-        expect(state.sessions).toHaveLength(7);
+        expect(state).toHaveProperty("sessions.length", 7);
         expect(reopened).toEqual([
           {
             id: 9,

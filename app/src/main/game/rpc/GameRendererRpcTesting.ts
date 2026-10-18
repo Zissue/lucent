@@ -12,6 +12,7 @@ import {
   DesktopWindows,
   type DesktopRendererEvent,
 } from "../../window/DesktopWindows";
+import { makeLifetime } from "../../window/RendererLifetimeTesting";
 import {
   makeGameRendererRpc,
   type GameRendererRpcPort,
@@ -92,7 +93,7 @@ export const makeTestGameRenderer = Effect.fn(function* (
         kind: "game",
         windowId: 1,
         ownerId: undefined,
-        generation: 1,
+        lifetime: makeLifetime(rendererId),
         ready: rendererReady,
       })),
     observe,

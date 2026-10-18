@@ -49,7 +49,6 @@ import { GameFollowers } from "../game/follower/GameFollowers";
 import { GamePackets } from "../game/packets/GamePackets";
 import { GameRendererRpc } from "../game/rpc/GameRendererRpc";
 import { DesktopIpc, makeDesktopIpc } from "../ipc/DesktopIpc";
-import { DesktopIpcSenders } from "../ipc/DesktopIpcSenders";
 import { DesktopScriptLibrary } from "../scripting/DesktopScriptLibrary";
 import { ScriptFileSystem } from "../scripting/ScriptFileSystem";
 import { ScriptHttp } from "../scripting/ScriptHttp";
@@ -221,7 +220,6 @@ const servicesStartupNeverCalls = Layer.mergeAll(
   Layer.mock(AccountServers, {}),
   Layer.mock(AccountSettingsRepository, {}),
   Layer.mock(ArmyConfigRepository, {}),
-  Layer.mock(DesktopIpcSenders, {}),
   Layer.mock(DesktopScriptLibrary, {}),
   Layer.mock(ElectronShell, {}),
   Layer.mock(GameEnvironments, {}),

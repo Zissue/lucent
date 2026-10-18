@@ -2,7 +2,7 @@ import * as Effect from "effect/Effect";
 
 import { GameRendererIpc } from "../../../shared/ipc";
 import { DesktopGameRendererRecovery } from "../../app/DesktopGameRendererRecovery";
-import { DesktopWindows, requireRenderer } from "../../window/DesktopWindows";
+import { DesktopWindows } from "../../window/DesktopWindows";
 import { makeDesktopIpcMethod } from "../DesktopIpc";
 
 export const ready = makeDesktopIpcMethod({
@@ -41,12 +41,7 @@ export const finishScriptExecution = makeDesktopIpcMethod({
 export const getGeneration = makeDesktopIpcMethod({
   descriptor: GameRendererIpc.getGeneration,
   allowedSenders: ["game"],
-  handler: Effect.fn("desktop.ipc.gameRenderer.getGeneration")(
-    function* (_payload, sender) {
-      const windows = yield* DesktopWindows;
-      return (yield* requireRenderer(windows, sender.rendererId)).generation;
-    },
-  ),
+  handler: (_payload, sender) => Effect.succeed(sender.lifetime.generation),
 });
 
 export const methods = [

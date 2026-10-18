@@ -94,7 +94,7 @@ it.effect(
             kind: rendererId === 42 ? ("game" as const) : ("follower" as const),
             windowId: 1,
             ownerId: rendererId === 42 ? undefined : 42,
-            generation: 1,
+            lifetime: makeLifetime(rendererId),
             ready,
           })),
         getOwnedRendererIds: () => Effect.succeed([]),

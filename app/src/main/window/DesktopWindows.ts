@@ -111,16 +111,9 @@ export interface DesktopRendererInfo {
   readonly kind: DesktopRendererKind;
   readonly windowId: number;
   readonly ownerId: number | undefined;
-  readonly generation: number;
+  readonly lifetime: RendererLifetime;
   readonly ready: boolean;
 }
-
-export type DesktopRendererIdentity = Pick<
-  DesktopRendererInfo,
-  "rendererId" | "kind"
-> & {
-  readonly lifetime: RendererLifetime;
-};
 
 export interface DesktopWindowsShape {
   readonly updateGameViewHost: (
@@ -136,12 +129,6 @@ export interface DesktopWindowsShape {
   ) => Effect.Effect<DesktopRendererInfo | undefined>;
   readonly getVisibleParentWindowId: Effect.Effect<number | undefined>;
   readonly isVisibleParentWindow: (windowId: number) => Effect.Effect<boolean>;
-  readonly identify: (
-    rendererId: number,
-  ) => Effect.Effect<DesktopRendererIdentity | undefined>;
-  readonly lifetime: (
-    rendererId: number,
-  ) => Effect.Effect<RendererLifetime | undefined>;
   readonly getOwnedRendererIds: (
     ownerRendererId: number,
     kind?: DesktopWindowKind,
@@ -649,25 +636,10 @@ const makeDesktopWindows = Effect.gen(function* () {
           ? record.host.window.id
           : nativeWindowForRenderer(record).id,
         ownerId: chrome ? undefined : record.ownerId,
-        generation: record.lifetime.generation,
+        lifetime: record.lifetime,
         ready: chrome ? false : record.rendererReady,
       };
     });
-
-  const identify: DesktopWindowsShape["identify"] = (rendererId) =>
-    Effect.sync(() => {
-      const record = renderers.get(rendererId);
-      return record === undefined
-        ? undefined
-        : {
-            rendererId,
-            kind: record.kind,
-            lifetime: record.lifetime,
-          };
-    });
-
-  const lifetime: DesktopWindowsShape["lifetime"] = (rendererId) =>
-    Effect.sync(() => renderers.get(rendererId)?.lifetime);
 
   const makeLifetime = (
     rendererId: number,
@@ -1925,8 +1897,6 @@ const makeDesktopWindows = Effect.gen(function* () {
     closeGameView,
     getRendererIds,
     describe,
-    identify,
-    lifetime,
     getVisibleParentWindowId,
     isVisibleParentWindow,
     getGameViewHostState,

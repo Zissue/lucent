@@ -51,7 +51,7 @@ export const layer = Layer.effect(
     ) =>
       Effect.map(
         requireRenderer(windows, gameWindowId),
-        (info) => info.generation,
+        (info) => info.lifetime.generation,
       );
 
     const getGroupId: AccountGameWindows["Service"]["getGroupId"] = (
