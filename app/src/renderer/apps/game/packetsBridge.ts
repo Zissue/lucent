@@ -2,12 +2,10 @@ import * as Effect from "effect/Effect";
 import * as Semaphore from "effect/Semaphore";
 
 import { PacketsError, PacketsRpcs } from "../../../shared/gameRendererRpc";
-import {
-  clampPacketQueueDelay,
-  normalizePacketQueuePayload,
-  type PacketQueuePayload,
-  type PacketSendPayload,
-  type PacketSendTarget,
+import type {
+  PacketQueuePayload,
+  PacketSendPayload,
+  PacketSendTarget,
 } from "../../../shared/packets";
 import type { DesktopGamePacketsBridge } from "../../../shared/desktopBridge";
 import { Api } from "./flash";
@@ -184,14 +182,13 @@ export const installPacketsBridge = (
   };
 
   const startQueue = (payload: PacketQueuePayload): void => {
-    const normalized = normalizePacketQueuePayload(payload);
     stopQueue(false);
     queueState = {
-      delayMs: clampPacketQueueDelay(normalized.delayMs),
+      delayMs: payload.delayMs,
       index: 0,
-      packets: normalized.packets,
+      packets: payload.packets,
       stopped: false,
-      target: normalized.target,
+      target: payload.target,
       timeout: undefined,
     };
     void runQueueOnce();

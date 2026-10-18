@@ -6,7 +6,6 @@ export interface Immediate {
     ...args: Args
   ) => number;
   readonly clearImmediate: (handle: number) => void;
-  readonly close: () => void;
 }
 
 export const makeMessageChannelImmediate = (): Immediate => {
@@ -33,10 +32,6 @@ export const makeMessageChannelImmediate = (): Immediate => {
     },
     clearImmediate: (handle) => {
       pending.delete(handle);
-    },
-    close: () => {
-      pending.clear();
-      channel.port1.close();
     },
   };
 };
