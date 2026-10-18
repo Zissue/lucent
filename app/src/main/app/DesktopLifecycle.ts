@@ -20,6 +20,7 @@ export interface DesktopLifecycleShape {
   readonly awaitQuit: Effect.Effect<QuitSource>;
   readonly isForcedExit: Effect.Effect<boolean>;
   readonly isQuitting: Effect.Effect<boolean>;
+  readonly isQuittingSync: () => boolean;
   readonly attachObservability: Effect.Effect<
     void,
     never,
@@ -99,11 +100,7 @@ export const layer = Layer.effect(
         Deferred.doneUnsafe(quitRequested, Effect.succeed("will-quit"));
       });
 
-      yield* app.on("window-all-closed", () => {
-        if (process.platform !== "darwin") {
-          runFork(app.quit);
-        }
-      });
+      yield* app.on("window-all-closed", () => {});
 
       const signalListeners = TERMINATION_SIGNALS.map((signal) => ({
         signal,
@@ -139,6 +136,7 @@ export const layer = Layer.effect(
       awaitQuit,
       isForcedExit: Effect.sync(() => isForcedExit),
       isQuitting: Effect.sync(() => isQuitting),
+      isQuittingSync: () => isQuitting,
       attachObservability,
       register,
     });

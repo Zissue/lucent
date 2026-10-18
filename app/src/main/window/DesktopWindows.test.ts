@@ -26,8 +26,13 @@ import {
   type DesktopLogRecord,
 } from "../../shared/logRecord";
 import { layer as desktopEnvironmentLayer } from "../app/DesktopEnvironment";
+import {
+  DesktopLifecycle,
+  layer as desktopLifecycleLayer,
+} from "../app/DesktopLifecycle";
 import { installDesktopRendererObservability } from "../app/observability/DesktopRendererObservability";
 import { ElectronApp } from "../electron/ElectronApp";
+import { listen } from "../electron/NativeListener";
 import { GameSessions } from "../game/session/GameSessions";
 import { ElectronShell } from "../electron/ElectronShell";
 import { ElectronTheme } from "../electron/ElectronTheme";
@@ -117,6 +122,7 @@ const makeHarness = (
   const created = new Map<number, ReturnType<typeof makeWindow>>();
   const openRequests = new Map<number, (url: string) => void>();
   const records: DesktopLogRecord[] = [];
+  const appEvents = new EventEmitter();
 
   const windowService = ElectronWindow.of({
     create: (_options, onWindowOpenRequest) =>
@@ -161,6 +167,7 @@ const makeHarness = (
     reveal: (window) => Effect.sync(() => window.show()),
   });
   const dependencies = Layer.mergeAll(
+    desktopLifecycleLayer,
     desktopEnvironmentLayer({
       appDataDir: "/tmp/lucent-app-data",
       assetsDir: "/tmp/lucent-assets",
@@ -189,7 +196,7 @@ const makeHarness = (
         exit: () => Effect.void,
         getAppMetrics: Effect.succeed([]),
         getVersion: Effect.succeed("0.0.0"),
-        on: () => Effect.void,
+        on: (event, listener) => listen(appEvents, event, listener),
         quit: options.quit ?? Effect.void,
         relaunch: Effect.void,
         whenReady: Effect.void,
@@ -229,6 +236,7 @@ const makeHarness = (
   );
 
   return {
+    appEvents,
     created,
     openRequests,
     records,
@@ -250,7 +258,7 @@ const makeHarness = (
       return heldSettings;
     }),
     layer: desktopWindowsLayer.pipe(
-      Layer.provide(dependencies),
+      Layer.provideMerge(dependencies),
       Layer.provideMerge(
         Layer.mergeAll(
           Logger.layer(
@@ -286,6 +294,51 @@ const startOpen = (
   );
 
 describe("DesktopWindows.open", () => {
+  it.effect(
+    "keeps an opening top-level window alive after the last window closes",
+    () => {
+      let quits = 0;
+      const harness = makeHarness(false, {
+        platform: "linux",
+        quit: Effect.sync(() => {
+          quits += 1;
+        }),
+      });
+      return Effect.gen(function* () {
+        const platform = process.platform;
+        Object.defineProperty(process, "platform", { value: "linux" });
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            Object.defineProperty(process, "platform", { value: platform });
+          }),
+        );
+        const lifecycle = yield* DesktopLifecycle;
+        yield* lifecycle.register;
+        const windows = yield* DesktopWindows;
+        const first = yield* windows.open("game");
+        const heldSettings = yield* harness.holdSettings;
+        const opening = yield* startOpen("game", undefined);
+        harness.created.get(first)!.emit("closed");
+        harness.appEvents.emit("window-all-closed");
+        yield* Effect.yieldNow.pipe(Effect.repeat({ times: 6 }));
+        expect(quits).toBe(0);
+        expect([...harness.created.keys()]).toEqual([101]);
+
+        yield* heldSettings.open;
+        const second = yield* Fiber.join(opening);
+        expect(second).toBe(102);
+        expect(yield* windows.getRendererIds("game")).toEqual([102]);
+        expect(harness.created.get(second)!.isVisible()).toBe(true);
+        expect(quits).toBe(0);
+
+        harness.created.get(second)!.emit("closed");
+        harness.appEvents.emit("window-all-closed");
+        yield* Effect.yieldNow.pipe(Effect.repeat({ times: 6 }));
+        expect(quits).toBe(1);
+      }).pipe(Effect.provide(harness.layer));
+    },
+  );
+
   it.effect(
     "adds tabs without revealing the host unless opened explicitly",
     () => {
@@ -894,6 +947,31 @@ describe("DesktopWindows lookup failures", () => {
 });
 
 describe("DesktopWindows.getVisibleParentWindowId", () => {
+  it.effect.each(["settings", "account-manager", "combat-profiles"] as const)(
+    "lets %s close synchronously after before-quit",
+    (kind) => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const lifecycle = yield* DesktopLifecycle;
+        yield* lifecycle.register;
+        const windows = yield* DesktopWindows;
+        const id = yield* windows.open(kind);
+        const window = harness.created.get(id)!;
+        expect(yield* windows.isVisibleParentWindow(id)).toBe(true);
+        let cancellations = 0;
+        harness.appEvents.emit("before-quit");
+        window.emit("close", {
+          preventDefault: () => {
+            cancellations += 1;
+          },
+        });
+        expect(cancellations).toBe(0);
+        expect(window.isVisible()).toBe(true);
+        expect(yield* windows.isVisibleParentWindow(id)).toBe(false);
+      }).pipe(Effect.provide(harness.layer));
+    },
+  );
+
   it.effect("cancels a hide-on-close event synchronously before hiding", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -1327,7 +1405,7 @@ describe("DesktopWindows document commits", () => {
           describe: windows.describe,
           observe: windows.observe,
           onWebContentsCreated: () => () => {},
-          onBeforeQuit: () => () => {},
+          isQuitting: (yield* DesktopLifecycle).isQuittingSync,
           showRecoveryPrompt: () => Deferred.await(answer),
           showRendererRecoveryPrompt: () => Effect.succeed(1),
           suppressLaunchScript: () => Effect.void,

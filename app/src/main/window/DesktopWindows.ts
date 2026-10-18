@@ -31,6 +31,7 @@ import {
 import { DEFAULT_APP_SETTINGS, type AppSettings } from "@lucent/core/settings";
 import { makeListenerRegistry } from "../app/ListenerRegistry";
 import { DesktopEnvironment } from "../app/DesktopEnvironment";
+import { DesktopLifecycle } from "../app/DesktopLifecycle";
 import { logFailure } from "../../shared/logFailure";
 import { ElectronApp } from "../electron/ElectronApp";
 import { listen as listenNative } from "../electron/NativeListener";
@@ -306,6 +307,7 @@ const makeDesktopWindows = Effect.gen(function* () {
   const gameSocketRelayUrl = socketProxy.getUrl;
   const app = yield* ElectronApp;
   const env = yield* DesktopEnvironment;
+  const lifecycle = yield* DesktopLifecycle;
   const electronWindow = yield* ElectronWindow;
   const gameSessions = yield* GameSessions;
   const electronShell = yield* ElectronShell;
@@ -459,7 +461,6 @@ const makeDesktopWindows = Effect.gen(function* () {
         : Effect.void,
     );
 
-  let appIsQuitting = false;
   let hasOpenedTopLevelWindow = false;
   let quitRequested = false;
   // An in-flight top-level open is recoverable UI during a concurrent close.
@@ -474,10 +475,6 @@ const makeDesktopWindows = Effect.gen(function* () {
     run(electronShell.openExternal(url).pipe(Effect.asVoid));
   };
 
-  yield* app.on("before-quit", () => {
-    appIsQuitting = true;
-  });
-
   const hasPresentableTopLevelWindow = (): boolean =>
     [...renderers.values()].some(
       (record) =>
@@ -489,7 +486,7 @@ const makeDesktopWindows = Effect.gen(function* () {
   const quitIfNoTopLevelWindow = (): void => {
     if (
       env.platform === "darwin" ||
-      appIsQuitting ||
+      lifecycle.isQuittingSync() ||
       quitRequested ||
       openingTopLevelWindowCount > 0 ||
       hasPresentableTopLevelWindow()
@@ -1744,7 +1741,7 @@ const makeDesktopWindows = Effect.gen(function* () {
         yield* listen(window, "close", (event: ElectronEvent) => {
           if (
             definition.closeBehavior === "hide" &&
-            !appIsQuitting &&
+            !lifecycle.isQuittingSync() &&
             !window.isDestroyed()
           ) {
             event.preventDefault();
@@ -1851,7 +1848,7 @@ const makeDesktopWindows = Effect.gen(function* () {
   const restorePrimaryWindow = Effect.fn("DesktopWindows.restorePrimaryWindow")(
     function* () {
       if (
-        appIsQuitting ||
+        lifecycle.isQuittingSync() ||
         !hasOpenedTopLevelWindow ||
         openingTopLevelWindowCount > 0 ||
         hasPresentableTopLevelWindow()

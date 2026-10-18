@@ -75,7 +75,7 @@ const makeHarness = (
     });
     let processShared = false;
     let destroyed = false;
-    let beforeQuit: (() => void) | undefined;
+    let isQuitting = false;
 
     const contents = Object.assign(events, {
       id: RENDERER_ID,
@@ -125,12 +125,7 @@ const makeHarness = (
         ),
       observe,
       onWebContentsCreated: () => () => undefined,
-      onBeforeQuit: (listener) => {
-        beforeQuit = listener;
-        return () => {
-          beforeQuit = undefined;
-        };
-      },
+      isQuitting: () => isQuitting,
       showRecoveryPrompt: prompt("unresponsive"),
       showRendererRecoveryPrompt: prompt("crash"),
       suppressLaunchScript: () =>
@@ -204,7 +199,9 @@ const makeHarness = (
           "unbounded",
         );
       }),
-      quit: Effect.sync(() => beforeQuit?.()),
+      quit: Effect.sync(() => {
+        isQuitting = true;
+      }),
       hang: Effect.sync(() => {
         events.emit("responsive");
         events.emit("unresponsive");
@@ -862,6 +859,26 @@ describe("makeDesktopGameRendererRecovery", () => {
         yield* harness.hang;
         expect(harness.timeline).toEqual([
           "unresponsive prompt for generation 1",
+        ]);
+      }),
+  );
+
+  it.effect.each(["hang", "crash"] as const)(
+    "does not recover a renderer after installation closes during %s suppression",
+    (prompt) =>
+      Effect.gen(function* () {
+        const harness = yield* makeHarness({ holdSuppression: true });
+        yield* harness.startScript;
+        yield* harness[prompt];
+        yield* harness.answer(0, RELOAD);
+        yield* harness.closeInstallation;
+        yield* harness.releaseSuppression(0);
+
+        expect(harness.timeline).toEqual([
+          prompt === "hang"
+            ? "unresponsive prompt for generation 1"
+            : "crash prompt for generation 1",
+          "suppress",
         ]);
       }),
   );

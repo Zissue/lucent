@@ -123,7 +123,9 @@ describe("DesktopLifecycle", () => {
       yield* lifecycle.register;
       yield* lifecycle.attachObservability;
       expect(yield* lifecycle.isQuitting).toBe(false);
+      expect(lifecycle.isQuittingSync()).toBe(false);
       harness.emitBeforeQuit();
+      expect(lifecycle.isQuittingSync()).toBe(true);
       expect(yield* lifecycle.isQuitting).toBe(true);
     }).pipe(Effect.provide(harness.layer), Effect.scoped);
   });
@@ -144,6 +146,7 @@ describe("DesktopLifecycle", () => {
             }),
           );
           harness.emitWillQuit();
+          expect(lifecycle.isQuittingSync()).toBe(true);
           expect(yield* lifecycle.awaitQuit).toBe("will-quit");
         }).pipe(Effect.provide(harness.layer)),
       );
@@ -207,6 +210,7 @@ describe("DesktopLifecycle", () => {
           yield* lifecycle.register;
           yield* lifecycle.attachObservability;
           findInstalledSignalListener(previousListeners)(TEST_SIGNAL);
+          expect(lifecycle.isQuittingSync()).toBe(true);
 
           yield* Effect.promise(() => vi.advanceTimersByTimeAsync(1_500));
           yield* Effect.promise(() => harness.exited);
