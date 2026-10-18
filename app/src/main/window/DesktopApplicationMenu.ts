@@ -202,35 +202,36 @@ const makeDesktopApplicationMenu = Effect.gen(function* () {
     Effect.gen(function* () {
       const copy = {
         save: {
-          title: "Chromium Recording Not Saved",
-          message:
-            "Unable to finish saving the Chromium performance recording.",
+          title: "Performance Trace Not Saved",
+          message: "Unable to finish saving the performance trace.",
         },
         snapshot: {
           title: "Heap Snapshot Not Saved",
           message: "Unable to save the heap snapshot.",
         },
         start: {
-          title: "Chromium Recording Not Started",
-          message: "Unable to start the Chromium performance recording.",
+          title: "Performance Trace Not Started",
+          message: "Unable to start the performance trace.",
         },
       } as const;
-      yield* Effect.logError(
-        "Chromium performance recording action failed",
-        Cause.fail(cause),
-      ).pipe(
-        Effect.annotateLogs({
-          component: "chromium-performance-recording",
-          data: { operation, message: copy[operation].message },
-        }),
-      );
+      if (operation !== "save") {
+        yield* Effect.logError(
+          "Performance trace action failed",
+          Cause.fail(cause),
+        ).pipe(
+          Effect.annotateLogs({
+            component: "chromium-performance-recording",
+            data: { operation, message: copy[operation].message },
+          }),
+        );
+      }
       yield* dialog.showMessageBox({
         type: "warning",
         title: copy[operation].title,
         message: copy[operation].message,
         detail:
           operation === "snapshot"
-            ? "The performance recording is still running. Check the logs and try again."
+            ? "The performance trace is still running. Check the logs and try again."
             : "Check the logs and try again.",
         buttons: ["Close"],
         defaultId: 0,
@@ -265,7 +266,7 @@ const makeDesktopApplicationMenu = Effect.gen(function* () {
               title: "Heap Snapshot Incomplete",
               message: `Saved ${savedSnapshotCount} of ${result.snapshotCount} heap snapshots.`,
               detail:
-                "The Chromium performance recording is still running. Check the logs for details.",
+                "The performance trace is still running. Check the logs for details.",
               buttons: ["Close"],
               defaultId: 0,
               cancelId: 0,
@@ -369,7 +370,7 @@ const makeDesktopApplicationMenu = Effect.gen(function* () {
       case "idle":
         return [
           {
-            label: "Start Chromium Performance Recording",
+            label: "Start Performance Trace",
             click: startChromiumPerformanceRecording,
           },
         ];
@@ -380,7 +381,7 @@ const makeDesktopApplicationMenu = Effect.gen(function* () {
             click: captureChromiumHeapSnapshot,
           },
           {
-            label: "Stop and Save Chromium Recording",
+            label: "Stop and Save Performance Trace",
             click: stopChromiumPerformanceRecording,
           },
         ];
@@ -391,14 +392,14 @@ const makeDesktopApplicationMenu = Effect.gen(function* () {
             enabled: false,
           },
           {
-            label: "Stop and Save Chromium Recording",
+            label: "Stop and Save Performance Trace",
             enabled: false,
           },
         ];
       case "saving":
         return [
           {
-            label: "Saving Chromium Recording…",
+            label: "Saving Performance Trace…",
             enabled: false,
           },
         ];
