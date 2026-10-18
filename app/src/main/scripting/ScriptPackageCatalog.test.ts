@@ -21,7 +21,10 @@ import {
   type DesktopLogRecord,
 } from "../../shared/logRecord";
 import { hashDirectory } from "./ScriptPackageFileSystem";
-import { discoverScriptCatalog } from "./ScriptCatalogDiscovery";
+import {
+  discoverScriptCatalog,
+  replaceDiscoveredPackage,
+} from "./ScriptCatalogDiscovery";
 import { inspectScriptPackageDirectory } from "./ScriptPackageInspection";
 import {
   layer as scriptPackageCatalogLayer,
@@ -63,6 +66,133 @@ afterEach(async () => {
 });
 
 describe("discoverScriptCatalog", () => {
+  it.each([
+    [undefined, undefined, "This folder does not contain a package.json."],
+    ["{", undefined, "package.json contains invalid JSON."],
+    ['{"name":""}', undefined, "package.json contains invalid fields."],
+    [
+      '{"name":"../unsafe"}',
+      "../unsafe",
+      expect.stringContaining(
+        "a safe, case-sensitive, non-reserved package name",
+      ),
+    ],
+    [
+      '{"name":"tools","main":"../escape.js"}',
+      "tools",
+      "The package.json main path is invalid.",
+    ],
+  ])(
+    "preserves diagnostics for manifest %s",
+    async (source, name, diagnostic) => {
+      const workspace = await makeWorkspace();
+      const rootPath = join(workspace.packagesDir, "tools-folder");
+      await fs.mkdir(rootPath);
+      if (source !== undefined) {
+        await write(join(rootPath, "package.json"), source);
+      }
+
+      const discovery = await discoverScriptCatalog({
+        currentVersion: "1.2.3",
+        packagesDir: workspace.packagesDir,
+        scriptsDir: workspace.scriptsDir,
+      });
+
+      expect(discovery.catalog.packages).toEqual([
+        {
+          status: "invalid",
+          diagnostic,
+          ...(name === undefined ? {} : { name }),
+          path: rootPath,
+        },
+      ]);
+    },
+  );
+
+  it.each([
+    [undefined, true, undefined],
+    [undefined, false, undefined],
+    ["^1.0.0", true, undefined],
+    ["^1.0.0", false, "The package's main file was not found: index.js."],
+    ["^9.0.0", false, "The package's main file was not found: index.js."],
+    ["invalid", false, "The Lucent version requirement is invalid: invalid."],
+  ])(
+    "keeps scanned and replaced rows equivalent for requirement %s and main present %s",
+    async (requiredVersion, hasMain, warning) => {
+      const workspace = await makeWorkspace();
+      const sourceRoot = join(workspace.root, "staged-tools");
+      const rootPath = join(workspace.packagesDir, "tools-folder");
+      const initial = await discoverScriptCatalog({
+        currentVersion: "1.2.3",
+        packagesDir: workspace.packagesDir,
+        scriptsDir: workspace.scriptsDir,
+      });
+      await Promise.all([
+        write(
+          join(sourceRoot, "package.json"),
+          JSON.stringify({
+            name: "@author/tools",
+            description: "Tools",
+            version: "2.0.0",
+            lucent: { version: requiredVersion },
+          }),
+        ),
+        ...(hasMain ? [write(join(sourceRoot, "index.js"), "")] : []),
+        write(join(sourceRoot, "lib", "helper.cjs"), ""),
+        write(join(sourceRoot, "scripts", "nested", "run.js"), ""),
+        write(join(sourceRoot, "scripts-other", "hidden.js"), ""),
+      ]);
+      const inspected = await inspectScriptPackageDirectory(sourceRoot);
+      await fs.rename(sourceRoot, rootPath);
+      const managed: ManagedScriptPackage = {
+        directory: "tools-folder",
+        files: await hashDirectory(rootPath),
+        installedAt: new Date(0).toISOString(),
+        name: "@author/tools",
+        source: {
+          kind: "repository",
+          repositoryUrl: "https://github.com/example/tools",
+          resolvedCommit: "abc123",
+        },
+        update: { status: "unchecked" },
+      };
+
+      const replaced = replaceDiscoveredPackage(
+        initial,
+        { inspected, managed, rootPath, sourceRoot },
+        "1.2.3",
+      );
+      const scanned = await discoverScriptCatalog({
+        currentVersion: "1.2.3",
+        managedPackages: [managed],
+        packagesDir: workspace.packagesDir,
+        scriptsDir: workspace.scriptsDir,
+      });
+
+      expect(replaced).toEqual(scanned);
+      expect(
+        scanned.catalog.packages.find((entry) => entry.status === "valid")
+          ?.warning,
+      ).toBe(warning);
+      expect(scanned.catalog.scripts).toEqual([
+        {
+          name: "run.js",
+          packageName: "@author/tools",
+          path: join(rootPath, "scripts", "nested", "run.js"),
+          reference: {
+            kind: "package",
+            packageName: "@author/tools",
+            path: "scripts/nested/run.js",
+          },
+          relativePath: "nested/run.js",
+        },
+      ]);
+      expect(
+        scanned.packages.get("@author/tools")?.modules.get("lib/helper.cjs"),
+      ).toBe(join(rootPath, "lib", "helper.cjs"));
+    },
+  );
+
   it("discovers every loose script without assigning package meaning to its folders", async () => {
     const workspace = await makeWorkspace();
     await Promise.all([
@@ -129,7 +259,17 @@ describe("discoverScriptCatalog", () => {
       packageName: "@a/b/c/d",
       path: "scripts/farm.js",
     });
-    expect(discovery.packages.get("@a/b/c/d")?.files).toHaveLength(4);
+    expect(discovery.packages.get("@a/b/c/d")?.modules).toEqual(
+      new Map([
+        ["index.cjs", join(packageRoot, "index.cjs")],
+        ["lib/helper.js", join(packageRoot, "lib", "helper.js")],
+        ["scripts/farm.js", join(packageRoot, "scripts", "farm.js")],
+        [
+          "scripts/nested/quest.cjs",
+          join(packageRoot, "scripts", "nested", "quest.cjs"),
+        ],
+      ]),
+    );
     expect(discovery.packages.get("@a/b/c/d")?.directory).toBe("daily-package");
   });
 

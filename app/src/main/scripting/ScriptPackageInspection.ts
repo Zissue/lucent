@@ -353,14 +353,14 @@ const resolveMainPath = async (
   return null;
 };
 
-/** Validates one package boundary and returns its loadable JavaScript inventory. */
 export const inspectScriptPackageDirectory = async (
   rootPath: string,
+  validatedManifest?: InspectedScriptPackageDirectory["manifest"],
 ): Promise<InspectedScriptPackageDirectory> => {
-  const manifest = await readScriptPackageManifest(
-    join(rootPath, "package.json"),
-  );
-  const name = parsePackageName(manifest.name);
+  const manifest =
+    validatedManifest ??
+    (await readScriptPackageManifest(join(rootPath, "package.json")));
+  const name = validatedManifest?.name ?? parsePackageName(manifest.name);
   const [mainPath, inventory] = await Promise.all([
     resolveMainPath(rootPath, manifest.main),
     listRegularFilePaths(rootPath, { maxFiles: SCRIPT_PACKAGE_MAX_FILES }),
@@ -390,11 +390,15 @@ export const inspectManagedPackageFolder = async (
   packagesDir: string,
   rootPath: string,
   managed: ManagedScriptPackage | undefined,
+  validatedManifest?: InspectedScriptPackageDirectory["manifest"],
 ): Promise<InspectedScriptPackageDirectory> => {
   if (!(await fs.lstat(rootPath)).isDirectory()) {
     throw new Error("The package folder is not a regular directory.");
   }
-  const inspected = await inspectScriptPackageDirectory(rootPath);
+  const inspected = await inspectScriptPackageDirectory(
+    rootPath,
+    validatedManifest,
+  );
   if (managed !== undefined && managed.name !== inspected.manifest.name) {
     throw new Error(
       `The installed package name is ${JSON.stringify(managed.name)}, but package.json declares ${JSON.stringify(inspected.manifest.name)}.`,
