@@ -27,6 +27,7 @@ export class GameFollowerRequestError extends Schema.TaggedError<GameFollowerReq
   "GameFollowerRequestError",
   {
     detail: Schema.String,
+    cause: Schema.optionalKey(Schema.Defect()),
   },
 ) {
   override get message(): string {
@@ -95,7 +96,12 @@ export const makeGameFollowers = Effect.gen(function* () {
       .call(gameRendererId, send, { timeout: FOLLOWER_COMMAND_TIMEOUT_MS })
       .pipe(
         Effect.catchTag("GameRendererUnavailableError", (error) =>
-          Effect.fail(new GameFollowerRequestError({ detail: error.detail })),
+          Effect.fail(
+            new GameFollowerRequestError({
+              detail: error.detail,
+              cause: error,
+            }),
+          ),
         ),
       );
 

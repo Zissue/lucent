@@ -118,12 +118,16 @@ const makeError = (
   operation: FileSystemOperation,
   reason: FileSystemErrorReason,
   path?: string,
-): FileSystemError =>
-  new FileSystemError({
+  cause?: PlatformError | FileSystemLimitError,
+): FileSystemError => {
+  const error = new FileSystemError({
     operation,
     reason,
     ...(path === undefined ? {} : { path }),
   });
+  if (cause !== undefined) error.cause = cause;
+  return error;
+};
 
 const mapFileSystemReason = (
   error: PlatformError | FileSystemLimitError,
@@ -172,7 +176,8 @@ const mapFileSystemError = (
   operation: FileSystemOperation,
   path: string | undefined,
   error: PlatformError | FileSystemLimitError,
-): FileSystemError => makeError(operation, mapFileSystemReason(error), path);
+): FileSystemError =>
+  makeError(operation, mapFileSystemReason(error), path, error);
 
 const safePathSegments = (path: string): readonly string[] | null => {
   const segments = parseScriptPathSegments(path);
@@ -541,6 +546,7 @@ export const makeScriptFileSystem = Effect.fn("ScriptFileSystem.make")(
                   ? "too-many-entries"
                   : mapFileSystemReason(error),
                 path,
+                error,
               ),
             ),
           );
