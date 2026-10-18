@@ -16,7 +16,7 @@ import {
   type ArmySessionEndedEvent,
 } from "./ArmySession";
 
-import { noEffects } from "./ArmyLoopTauntState";
+import { noEffects } from "./ArmyLoopTauntModel";
 
 let nextParticipantId = 1;
 

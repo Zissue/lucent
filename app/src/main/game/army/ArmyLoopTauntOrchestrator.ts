@@ -15,26 +15,27 @@ import type {
   ArmyLoopTauntTerminalResult,
 } from "@lucent/core/army";
 import { ArmyCoordinator } from "./ArmyCoordinator";
-import type { ArmyCoordinatorError, ArmyParticipantId } from "./ArmySession";
+import type { ArmyCoordinatorError } from "./ArmySession";
 import {
   ArmyLoopTauntError,
   type ArmyLoopTauntCommandEvent,
+  type ArmyParticipantId,
   COMMAND_CONFIRMATION_TIMEOUT_MS,
+  type MutationEffects,
+  noEffects,
+  REGISTRATION_TIMEOUT_MS,
+  type ScheduledTimer,
+} from "./ArmyLoopTauntModel";
+import {
   commandForPublication,
   isReadinessCurrent,
   leaveRun,
-  type MutationEffects,
-  noEffects,
   onTimer as advanceTimer,
   registerRun,
-  REGISTRATION_TIMEOUT_MS,
   reportRun,
   runForPayload,
-  type ScheduledTimer,
-  terminalReadinessError,
 } from "./ArmyLoopTauntState";
-
-export type { ArmyLoopTauntCommandEvent } from "./ArmyLoopTauntState";
+import { terminalReadinessError } from "./ArmyLoopTauntAssignments";
 
 export type ArmyLoopTauntOrchestratorError =
   | ArmyCoordinatorError
