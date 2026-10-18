@@ -294,9 +294,6 @@ export const makeGitHubApiClient = (
         ...(options.maxBytes === undefined
           ? {}
           : { maxBytes: options.maxBytes }),
-        ...(options.maxRedirects === undefined
-          ? {}
-          : { maxRedirects: options.maxRedirects }),
         ...(options.timeoutMs === undefined
           ? {}
           : { timeoutMs: options.timeoutMs }),
@@ -309,9 +306,6 @@ export const makeGitHubApiClient = (
       options,
       false,
       http.download({
-        ...(options.errorResponseMaxBytes === undefined
-          ? {}
-          : { errorResponseMaxBytes: options.errorResponseMaxBytes }),
         headers: requestHeaders(userAgent, options),
         maxBytes: options.maxBytes,
         ...(options.maxRedirects === undefined

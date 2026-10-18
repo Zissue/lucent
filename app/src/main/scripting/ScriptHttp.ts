@@ -36,7 +36,6 @@ const errorReasons: Record<DesktopHttpClientError["kind"], HttpErrorReason> = {
   "request-failed": "request",
   "response-too-large": "too-large",
   timeout: "timeout",
-  aborted: "aborted",
 };
 const decodeUrl = Schema.decodeUnknownEffect(Schema.URLFromString);
 
