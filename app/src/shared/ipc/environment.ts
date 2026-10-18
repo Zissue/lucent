@@ -15,19 +15,16 @@ const namespace = "desktop:environment";
 export const EnvironmentIpc = {
   getState: defineInvoke({
     channel: `${namespace}:get-state`,
-    name: "environment.getState",
     payload: Schema.Void,
     result: EnvironmentStateSchema,
   }),
   clear: defineInvoke({
     channel: `${namespace}:clear`,
-    name: "environment.clear",
     payload: Schema.Void,
     result: EnvironmentStateSchema,
   }),
   addQuest: defineInvoke({
     channel: `${namespace}:add-quest`,
-    name: "environment.addQuest",
     payload: Schema.Struct({
       questId: PositiveInt,
       rewardItemId: Schema.optionalKey(PositiveInt),
@@ -36,7 +33,6 @@ export const EnvironmentIpc = {
   }),
   addQuests: defineInvoke({
     channel: `${namespace}:add-quests`,
-    name: "environment.addQuests",
     payload: Schema.Struct({
       quests: Schema.Array(
         Schema.Struct({
@@ -49,7 +45,6 @@ export const EnvironmentIpc = {
   }),
   removeQuest: defineInvoke({
     channel: `${namespace}:remove-quest`,
-    name: "environment.removeQuest",
     payload: Schema.Struct({
       questId: PositiveInt,
     }),
@@ -57,7 +52,6 @@ export const EnvironmentIpc = {
   }),
   setQuestReward: defineInvoke({
     channel: `${namespace}:set-quest-reward`,
-    name: "environment.setQuestReward",
     payload: Schema.Struct({
       questId: PositiveInt,
       rewardItemId: PositiveInt,
@@ -66,7 +60,6 @@ export const EnvironmentIpc = {
   }),
   clearQuestReward: defineInvoke({
     channel: `${namespace}:clear-quest-reward`,
-    name: "environment.clearQuestReward",
     payload: Schema.Struct({
       questId: PositiveInt,
     }),
@@ -74,19 +67,16 @@ export const EnvironmentIpc = {
   }),
   clearQuests: defineInvoke({
     channel: `${namespace}:clear-quests`,
-    name: "environment.clearQuests",
     payload: Schema.Void,
     result: EnvironmentStateSchema,
   }),
   setQuestAutoRegister: defineInvoke({
     channel: `${namespace}:set-quest-auto-register`,
-    name: "environment.setQuestAutoRegister",
     payload: EnvironmentQuestAutoRegisterOptionsSchema,
     result: EnvironmentStateSchema,
   }),
   setAutomationEnabled: defineInvoke({
     channel: `${namespace}:set-automation-enabled`,
-    name: "environment.setAutomationEnabled",
     payload: Schema.Struct({
       capability: EnvironmentAutomationCapabilitySchema,
       enabled: Schema.Boolean,
@@ -95,7 +85,6 @@ export const EnvironmentIpc = {
   }),
   addItem: defineInvoke({
     channel: `${namespace}:add-item`,
-    name: "environment.addItem",
     payload: Schema.Struct({
       name: Schema.String,
     }),
@@ -103,7 +92,6 @@ export const EnvironmentIpc = {
   }),
   addItems: defineInvoke({
     channel: `${namespace}:add-items`,
-    name: "environment.addItems",
     payload: Schema.Struct({
       names: Schema.Array(Schema.String),
     }),
@@ -111,7 +99,6 @@ export const EnvironmentIpc = {
   }),
   removeItem: defineInvoke({
     channel: `${namespace}:remove-item`,
-    name: "environment.removeItem",
     payload: Schema.Struct({
       name: Schema.String,
     }),
@@ -119,13 +106,11 @@ export const EnvironmentIpc = {
   }),
   setItemRules: defineInvoke({
     channel: `${namespace}:set-item-rules`,
-    name: "environment.setItemRules",
     payload: EnvironmentItemRulesSchema,
     result: EnvironmentStateSchema,
   }),
   setItemNotification: defineInvoke({
     channel: `${namespace}:set-item-notification`,
-    name: "environment.setItemNotification",
     payload: Schema.Struct({
       enabled: Schema.Boolean,
       name: Schema.String,
@@ -134,13 +119,11 @@ export const EnvironmentIpc = {
   }),
   clearItems: defineInvoke({
     channel: `${namespace}:clear-items`,
-    name: "environment.clearItems",
     payload: Schema.Void,
     result: EnvironmentStateSchema,
   }),
   addBoost: defineInvoke({
     channel: `${namespace}:add-boost`,
-    name: "environment.addBoost",
     payload: Schema.Struct({
       name: Schema.String,
     }),
@@ -148,7 +131,6 @@ export const EnvironmentIpc = {
   }),
   addBoosts: defineInvoke({
     channel: `${namespace}:add-boosts`,
-    name: "environment.addBoosts",
     payload: Schema.Struct({
       names: Schema.Array(Schema.String),
     }),
@@ -156,7 +138,6 @@ export const EnvironmentIpc = {
   }),
   removeBoost: defineInvoke({
     channel: `${namespace}:remove-boost`,
-    name: "environment.removeBoost",
     payload: Schema.Struct({
       name: Schema.String,
     }),
@@ -164,19 +145,16 @@ export const EnvironmentIpc = {
   }),
   clearBoosts: defineInvoke({
     channel: `${namespace}:clear-boosts`,
-    name: "environment.clearBoosts",
     payload: Schema.Void,
     result: EnvironmentStateSchema,
   }),
   fetchBoosts: defineInvoke({
     channel: `${namespace}:fetch-boosts`,
-    name: "environment.fetchBoosts",
     payload: Schema.Void,
     result: EnvironmentBoostDiscoverySchema,
   }),
   withdrawBoosts: defineInvoke({
     channel: `${namespace}:withdraw-boosts`,
-    name: "environment.withdrawBoosts",
     payload: Schema.Struct({
       itemIds: Schema.Array(PositiveInt),
     }),
@@ -184,13 +162,11 @@ export const EnvironmentIpc = {
   }),
   syncToAll: defineInvoke({
     channel: `${namespace}:sync-to-all`,
-    name: "environment.syncToAll",
     payload: Schema.Void,
     result: EnvironmentStateSchema,
   }),
   changed: defineEvent({
     channel: `${namespace}:changed`,
-    name: "environment.changed",
     payload: EnvironmentStateSchema,
   }),
 } as const;

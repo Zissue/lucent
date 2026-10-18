@@ -22,13 +22,11 @@ const resultSchema = <Value>(value: IpcSchema<Value>) =>
 export const FileSystemIpc = {
   exists: defineInvoke({
     channel: "lucent:filesystem:exists",
-    name: "filesystem.exists",
     payload: pathPayload,
     result: resultSchema(Schema.Boolean),
   }),
   list: defineInvoke({
     channel: "lucent:filesystem:list",
-    name: "filesystem.list",
     payload: Schema.Struct({
       path: Schema.optionalKey(Schema.String),
     }),
@@ -36,25 +34,21 @@ export const FileSystemIpc = {
   }),
   readJson: defineInvoke({
     channel: "lucent:filesystem:read-json",
-    name: "filesystem.readJson",
     payload: pathPayload,
     result: resultSchema(Schema.UndefinedOr(Schema.Json)),
   }),
   readText: defineInvoke({
     channel: "lucent:filesystem:read-text",
-    name: "filesystem.readText",
     payload: pathPayload,
     result: resultSchema(Schema.UndefinedOr(Schema.String)),
   }),
   remove: defineInvoke({
     channel: "lucent:filesystem:remove",
-    name: "filesystem.remove",
     payload: pathPayload,
     result: resultSchema(Schema.Void),
   }),
   writeJson: defineInvoke({
     channel: "lucent:filesystem:write-json",
-    name: "filesystem.writeJson",
     payload: Schema.Struct({
       path: Schema.String,
       value: Schema.Unknown,
@@ -63,7 +57,6 @@ export const FileSystemIpc = {
   }),
   writeText: defineInvoke({
     channel: "lucent:filesystem:write-text",
-    name: "filesystem.writeText",
     payload: Schema.Struct({
       contents: Schema.String,
       path: Schema.String,

@@ -1,11 +1,14 @@
 import { runInThisContext } from "node:vm";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { DEFAULT_APP_SETTINGS } from "@lucent/core/settings";
 import type { DesktopBridge } from "../shared/desktopBridge";
 
 const electron = vi.hoisted(() => ({
   bridge: undefined as DesktopBridge | undefined,
   invoke: vi.fn(),
+  on: vi.fn(),
+  removeListener: vi.fn(),
   page: new EventTarget(),
   pageFunctions: new WeakSet<object>(),
   send: vi.fn(),
@@ -78,7 +81,12 @@ vi.mock("electron", () => {
         electron.bridge = exposeValue(bridge) as DesktopBridge;
       },
     },
-    ipcRenderer: { send: electron.send, on: vi.fn(), invoke: electron.invoke },
+    ipcRenderer: {
+      send: electron.send,
+      on: electron.on,
+      removeListener: electron.removeListener,
+      invoke: electron.invoke,
+    },
   };
 });
 
@@ -89,6 +97,8 @@ beforeEach(() => {
   vi.resetModules();
   electron.send.mockReset();
   electron.invoke.mockReset();
+  electron.on.mockReset();
+  electron.removeListener.mockReset();
   electron.bridge = undefined;
   electron.page = new EventTarget();
   electron.pageFunctions = new WeakSet();
@@ -111,6 +121,24 @@ const loadBridge = async () => {
     throw new Error("Preload did not expose desktop");
   return electron.bridge;
 };
+
+describe("preload event bridge", () => {
+  it("delivers event payloads and removes the registered subscription", async () => {
+    const bridge = await loadBridge();
+    const listener = vi.fn();
+    const unsubscribe = bridge.settings.onChanged(listener);
+    const subscription = electron.on.mock.calls.find(
+      ([channel]) => channel === "desktop:settings:changed",
+    )?.[1];
+    expect(subscription).toBeTypeOf("function");
+    subscription({ sender: "electron" }, DEFAULT_APP_SETTINGS);
+    expect(listener.mock.calls).toEqual([[DEFAULT_APP_SETTINGS]]);
+    unsubscribe();
+    expect(electron.removeListener.mock.calls).toEqual([
+      ["desktop:settings:changed", subscription],
+    ]);
+  });
+});
 
 describe("preload filesystem bridge", () => {
   it("passes paths and values through the filesystem IPC", async () => {

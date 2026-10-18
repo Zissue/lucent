@@ -8,12 +8,8 @@ export interface IpcInvokeDescriptor<Payload, Result> {
   decodePayloadEffect(
     input: unknown,
   ): Effect.Effect<Payload, Schema.SchemaError>;
-  decodeResult(input: unknown): Result;
   encodePayload(input: Payload): unknown;
   encodeResultEffect(input: Result): Effect.Effect<unknown, Schema.SchemaError>;
-  readonly name: string;
-  readonly payload: IpcSchema<Payload>;
-  readonly result: IpcSchema<Result>;
 }
 
 export interface IpcEventDescriptor<Payload> {
@@ -22,8 +18,6 @@ export interface IpcEventDescriptor<Payload> {
   encodePayloadEffect(
     input: Payload,
   ): Effect.Effect<unknown, Schema.SchemaError>;
-  readonly name: string;
-  readonly payload: IpcSchema<Payload>;
 }
 
 export type IpcInvokePayload<
@@ -43,19 +37,13 @@ export type IpcInvokeResult<
 export type IpcEventPayload<Descriptor extends IpcEventDescriptor<unknown>> =
   Descriptor extends IpcEventDescriptor<infer Payload> ? Payload : never;
 
-export interface IpcBridgeError {
-  readonly channel?: string;
-  readonly code: string;
-  readonly message: string;
-}
-
 export type IpcInvokeEnvelope<Result> =
   | {
       readonly ok: true;
       readonly value: Result;
     }
   | {
-      readonly error: IpcBridgeError;
+      readonly message: string;
       readonly ok: false;
     };
 
@@ -63,7 +51,6 @@ const ipcDecodeOptions = { onExcessProperty: "error" } as const;
 
 export const defineInvoke = <Payload, Result>(descriptor: {
   readonly channel: string;
-  readonly name: string;
   readonly payload: IpcSchema<Payload>;
   readonly result: IpcSchema<Result>;
 }): IpcInvokeDescriptor<Payload, Result> => ({
@@ -72,22 +59,15 @@ export const defineInvoke = <Payload, Result>(descriptor: {
     descriptor.payload,
     ipcDecodeOptions,
   ),
-  decodeResult: Schema.decodeUnknownSync(descriptor.result, ipcDecodeOptions),
   encodePayload: Schema.encodeSync(descriptor.payload),
   encodeResultEffect: Schema.encodeEffect(descriptor.result),
-  name: descriptor.name,
-  payload: descriptor.payload,
-  result: descriptor.result,
 });
 
 export const defineEvent = <Payload>(descriptor: {
   readonly channel: string;
-  readonly name: string;
   readonly payload: IpcSchema<Payload>;
 }): IpcEventDescriptor<Payload> => ({
   channel: descriptor.channel,
   decodePayload: Schema.decodeUnknownSync(descriptor.payload, ipcDecodeOptions),
   encodePayloadEffect: Schema.encodeEffect(descriptor.payload),
-  name: descriptor.name,
-  payload: descriptor.payload,
 });

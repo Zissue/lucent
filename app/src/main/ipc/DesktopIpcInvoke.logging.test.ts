@@ -53,7 +53,6 @@ const invokeWithLogs = (
   invokeDescriptorWithLogs(
     defineInvoke({
       channel,
-      name: channel,
       payload: Schema.Int,
       result: Schema.Int,
     }),
@@ -78,11 +77,7 @@ describe("IPC failure logging", () => {
 
       expect(envelope).toEqual({
         ok: false,
-        error: {
-          channel: "test:save",
-          code: "IPC_HANDLER_FAILED",
-          message: "Save failed",
-        },
+        message: "Save failed",
       });
       expect(logLines(records)).toEqual([
         {
@@ -131,11 +126,7 @@ describe("IPC failure logging", () => {
 
       expect(envelope).toEqual({
         ok: false,
-        error: {
-          channel: "test:launch",
-          code: "IPC_HANDLER_FAILED",
-          message: "Launch defect",
-        },
+        message: "Launch defect",
       });
       expect(logLines(records)).toEqual([
         {
@@ -247,11 +238,7 @@ describe("IPC failure logging", () => {
 
       expect(envelope).toEqual({
         ok: false,
-        error: {
-          channel: "test:save",
-          code: "IPC_HANDLER_FAILED",
-          message: "Password secret for account PrivateName",
-        },
+        message: "Password secret for account PrivateName",
       });
       expect(records.map(({ cause }) => Cause.squash(cause))).toEqual([
         "UnknownError",

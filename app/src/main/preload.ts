@@ -1,6 +1,6 @@
 import "../shared/immediate";
 
-import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
+import { contextBridge, ipcRenderer } from "electron";
 
 import {
   applyAppearanceSnapshotToDocument,
@@ -43,7 +43,6 @@ import {
   AccountsIpc,
   ArmyIpc,
   CombatProfilesIpc,
-  RendererLogIpc,
   EnvironmentIpc,
   FollowerIpc,
   FileSystemIpc,
@@ -60,8 +59,12 @@ import {
   PacketsIpc,
   type RendererLogRecord,
 } from "../shared/ipc";
-import { desktopLogJsonSafe, type DesktopLogError } from "../shared/logRecord";
-import { createInvoke, createSubscribe } from "./preloadIpcClient";
+import type { DesktopLogError } from "../shared/logRecord";
+import {
+  createInvoke,
+  createSubscribe,
+  writeRendererLog,
+} from "./preloadIpcClient";
 
 // Cancel cross-document navigations before Chromium emits the loading events
 // that reset renderer state; reopening routes the URL through the main
@@ -120,12 +123,6 @@ const platform: AppPlatform =
     : process.platform === "win32"
       ? "windows"
       : "linux";
-
-const writeRendererLog = (record: RendererLogRecord): void => {
-  try {
-    ipcRenderer.send(RendererLogIpc.record.channel, desktopLogJsonSafe(record));
-  } catch {}
-};
 
 const rendererErrorRepeatKey = (error: DesktopLogError): string => {
   const firstFrame = error.stack
@@ -257,25 +254,7 @@ const logBridge: DesktopLogBridge = contextBridge.executeInMainWorld({
   args: [reportRendererFailure, writeRendererLog],
 });
 
-const eventWrappers = new WeakMap<
-  (rawPayload: unknown) => void,
-  (event: IpcRendererEvent, rawPayload: unknown) => void
->();
-const subscribe = createSubscribe({
-  on: (channel, listener) => {
-    const wrapper = (_event: IpcRendererEvent, rawPayload: unknown) =>
-      listener(rawPayload);
-    eventWrappers.set(listener, wrapper);
-    ipcRenderer.on(channel, wrapper);
-  },
-  removeListener: (channel, listener) => {
-    const wrapper = eventWrappers.get(listener);
-    if (wrapper !== undefined) {
-      ipcRenderer.removeListener(channel, wrapper);
-      eventWrappers.delete(listener);
-    }
-  },
-});
+const subscribe = createSubscribe(ipcRenderer);
 
 const settingsBridge: DesktopSettingsBridge = {
   initial: initialSettings,

@@ -190,11 +190,7 @@ describe("army start IPC", () => {
               ).toEqual([]);
               expect(envelope).toEqual({
                 ok: false,
-                error: {
-                  channel: "desktop:army:start",
-                  code: "IPC_HANDLER_FAILED",
-                  message: "Army window is no longer available",
-                },
+                message: "Army window is no longer available",
               });
             }),
           );
@@ -233,11 +229,7 @@ describe("army start IPC", () => {
 
           expect(yield* Fiber.join(reply)).toEqual({
             ok: false,
-            error: {
-              channel: "desktop:army:start",
-              code: "IPC_HANDLER_FAILED",
-              message: "Army window closed",
-            },
+            message: "Army window closed",
           });
           expect(yield* coordinator.getSessions()).toEqual([]);
         }),

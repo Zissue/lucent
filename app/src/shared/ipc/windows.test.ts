@@ -1,10 +1,11 @@
 import { describe, expect, it } from "@effect/vitest";
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import { DesktopRendererKindSchema, WindowsIpc } from "./windows";
 
 describe("WindowsIpc.open", () => {
-  it.each([
+  it.effect.each([
     "about",
     "account-manager",
     "combat-profiles",
@@ -14,22 +15,28 @@ describe("WindowsIpc.open", () => {
     "loader-grabber",
     "packets",
     "settings",
-  ])("accepts the %s window kind", (kind) => {
-    const payload: unknown = { kind };
+  ])("accepts the %s window kind", (kind) =>
+    Effect.gen(function* () {
+      const payload: unknown = { kind };
+      expect(yield* WindowsIpc.open.decodePayloadEffect(payload)).toEqual({
+        kind,
+      });
+    }),
+  );
 
-    expect(Schema.decodeUnknownSync(WindowsIpc.open.payload)(payload)).toEqual({
-      kind,
-    });
-  });
-
-  it("rejects renderer-only kinds and unknown window kinds", () => {
-    const decode = Schema.decodeUnknownSync(WindowsIpc.open.payload);
-
-    expect(decode({ kind: "game" })).toEqual({ kind: "game" });
-    expect(() => decode({ kind: "game-group-controls" })).toThrow();
-    expect(() => decode({ kind: "game-host" })).toThrow();
-    expect(() => decode({ kind: "unknown" })).toThrow();
-  });
+  it.effect("rejects renderer-only kinds and unknown window kinds", () =>
+    Effect.gen(function* () {
+      expect(
+        yield* WindowsIpc.open.decodePayloadEffect({ kind: "game" }),
+      ).toEqual({ kind: "game" });
+      for (const kind of ["game-group-controls", "game-host", "unknown"]) {
+        const error = yield* Effect.flip(
+          WindowsIpc.open.decodePayloadEffect({ kind }),
+        );
+        expect(error._tag).toBe("SchemaError");
+      }
+    }),
+  );
 });
 
 describe("DesktopRendererKindSchema", () => {

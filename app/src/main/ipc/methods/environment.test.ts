@@ -70,11 +70,7 @@ it.effect.each(["fetch", "withdraw"] as const)(
 
       expect(envelope).toEqual({
         ok: false,
-        error: {
-          channel,
-          code: "IPC_HANDLER_FAILED",
-          message: "The game is still loading. Try again in a moment.",
-        },
+        message: "The game is still loading. Try again in a moment.",
       });
       expect(
         records.map(({ level, message, component, data, repeatKey }) => ({

@@ -3,7 +3,6 @@ import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
 
 import {
-  type IpcBridgeError,
   type IpcInvokeDescriptor,
   type IpcInvokeEnvelope,
 } from "../../shared/ipc";
@@ -21,19 +20,11 @@ const errorMessage = (cause: unknown, fallback: string): string => {
   return typeof cause === "string" && cause.length > 0 ? cause : fallback;
 };
 
-const bridgeError = (
-  channel: string,
-  code: string,
-  cause: unknown,
-): IpcBridgeError => {
+const bridgeErrorMessage = (channel: string, cause: unknown): string => {
   const fallback = `IPC request failed on channel "${channel}".`;
-  return {
-    channel,
-    code,
-    message: Cause.isCause(cause)
-      ? errorMessage(Cause.squash(cause), fallback)
-      : errorMessage(cause, fallback),
-  };
+  return Cause.isCause(cause)
+    ? errorMessage(Cause.squash(cause), fallback)
+    : errorMessage(cause, fallback);
 };
 
 export const createDesktopIpcInvokeHandler =
@@ -77,11 +68,7 @@ export const createDesktopIpcInvokeHandler =
             }
             return {
               ok: false,
-              error: bridgeError(
-                descriptor.channel,
-                "IPC_HANDLER_FAILED",
-                cause,
-              ),
+              message: bridgeErrorMessage(descriptor.channel, cause),
             } satisfies IpcInvokeEnvelope<unknown>;
           }),
         ),
