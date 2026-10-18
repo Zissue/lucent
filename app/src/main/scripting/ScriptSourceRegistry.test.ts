@@ -108,6 +108,133 @@ afterEach(async () => {
 });
 
 describe("script source dependency discovery", () => {
+  for (const kind of ["loose", "package"] as const) {
+    it.effect(`keeps the ${kind} sources read while preparing a snapshot`, () =>
+      Effect.gen(function* () {
+        const workspace = yield* Effect.promise(makeWorkspace);
+        const root =
+          kind === "loose"
+            ? workspace.scriptsDir
+            : join(workspace.packagesDir, "tools");
+        const entryPath = join(root, "scripts", "run.js");
+        const helperPath = join(root, "helper.js");
+        const initialSource =
+          'require("../helper"); module.exports = function* initial() {};';
+        const updatedSource =
+          'require("../helper"); module.exports = function* updatedScript() {};';
+        yield* Effect.promise(() =>
+          Promise.all([
+            ...(kind === "package"
+              ? [write(join(root, "package.json"), '{"name":"tools"}')]
+              : []),
+            write(entryPath, initialSource),
+            write(helperPath, "exports.value = 1;"),
+          ]),
+        );
+        const discovery = yield* Effect.promise(() =>
+          discoverScriptCatalog({
+            currentVersion: "1.0.0",
+            packagesDir: workspace.packagesDir,
+            scriptsDir: workspace.scriptsDir,
+          }),
+        );
+        const scriptFiles = makeScriptFiles();
+        const registry = yield* ScriptSourceRegistry.pipe(
+          Effect.provide(
+            makeLayer(discovery, {
+              ...scriptFiles,
+              analyze: Effect.fnUntraced(function* (path: string) {
+                const analysis = yield* scriptFiles.analyze(path);
+                if (path === helperPath) {
+                  yield* Effect.promise(() =>
+                    Promise.all([
+                      write(entryPath, updatedSource),
+                      write(helperPath, "exports.value = 20;"),
+                    ]),
+                  );
+                }
+                return analysis;
+              }),
+            }),
+          ),
+        );
+        const reference =
+          kind === "loose"
+            ? ({ kind, path: "scripts/run.js" } as const)
+            : ({ kind, packageName: "tools", path: "scripts/run.js" } as const);
+
+        const initial = yield* registry.readReference(reference);
+        const updated = yield* registry.readReference(reference);
+
+        expect(initial.source).toBe(initialSource);
+        expect(
+          initial.snapshot?.modules.map((module) => module.source),
+        ).toEqual(["exports.value = 1;", initialSource]);
+        expect(updated.source).toBe(updatedSource);
+        expect(
+          updated.snapshot?.modules.map((module) => module.source),
+        ).toEqual(["exports.value = 20;", updatedSource]);
+      }),
+    );
+  }
+
+  it.effect("rejects unavailable package entries and module targets", () =>
+    Effect.gen(function* () {
+      const workspace = yield* Effect.promise(makeWorkspace);
+      const root = join(workspace.packagesDir, "tools");
+      yield* Effect.promise(() =>
+        Promise.all([
+          write(join(root, "package.json"), '{"name":"tools"}'),
+          write(
+            join(root, "scripts", "run.js"),
+            "module.exports = function* run() {};",
+          ),
+        ]),
+      );
+      const discovery = yield* Effect.promise(() =>
+        discoverScriptCatalog({
+          currentVersion: "1.0.0",
+          packagesDir: workspace.packagesDir,
+          scriptsDir: workspace.scriptsDir,
+        }),
+      );
+      for (const missing of ["entry", "module"] as const) {
+        const registry = yield* ScriptSourceRegistry.pipe(
+          Effect.provide(
+            makeLayer(
+              discovery,
+              undefined,
+              undefined,
+              missing === "entry"
+                ? { resolveReference: () => Effect.succeed(undefined) }
+                : {
+                    getDiscovery: Effect.succeed({
+                      ...discovery,
+                      packages: new Map(),
+                    }),
+                  },
+            ),
+          ),
+        );
+
+        const error = yield* registry
+          .readReference({
+            kind: "package",
+            packageName: "tools",
+            path: "scripts/run.js",
+          })
+          .pipe(Effect.flip);
+
+        expect(error.message).toBe(
+          "The selected script is no longer available.",
+        );
+        expect(error.path).toBe(
+          missing === "entry" ? undefined : join(root, "scripts", "run.js"),
+        );
+      }
+    }),
+  );
+
   it.effect("counts concurrent cache misses for one file once", () =>
     Effect.gen(function* () {
       const workspace = yield* Effect.promise(makeWorkspace);

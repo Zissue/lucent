@@ -47,7 +47,6 @@ import {
   SCRIPT_SOURCE_CACHE_MAX_ENTRIES,
 } from "./ScriptLimits";
 
-const SNAPSHOT_MAX_ATTEMPTS = 3;
 const SOURCE_READ_CONCURRENCY = 8;
 
 export class ScriptSourceRegistryError extends Schema.TaggedError<ScriptSourceRegistryError>()(
@@ -334,7 +333,6 @@ export const makeScriptSourceRegistry = Effect.fn("makeScriptSourceRegistry")(
         path: importer.absolutePath,
       });
 
-    /** Reads only modules reachable through Lucent's literal CommonJS contract. */
     const collectExecutionClosure = Effect.fn(
       "ScriptSourceRegistry.collectExecutionClosure",
     )(function* (
@@ -344,7 +342,6 @@ export const makeScriptSourceRegistry = Effect.fn("makeScriptSourceRegistry")(
     ) {
       const modules = new Map<string, ScriptModuleSource>();
       const packages = new Map<string, ScriptExecutionPackage>();
-      const fingerprints = new Map<string, string>();
       const scheduled = new Set([selectedTarget.id]);
       const queue: ModuleTarget[] = [selectedTarget];
       let totalBytes = 0;
@@ -383,9 +380,6 @@ export const makeScriptSourceRegistry = Effect.fn("makeScriptSourceRegistry")(
         );
 
         for (const { loaded, target } of loadedBatch) {
-          if (target.id !== selectedTarget.id) {
-            fingerprints.set(target.absolutePath, loaded.fingerprint);
-          }
           totalBytes += loaded.bytes;
           if (totalBytes > SCRIPT_SNAPSHOT_MAX_BYTES) {
             return yield* new ScriptSourceRegistryError({
@@ -490,42 +484,6 @@ export const makeScriptSourceRegistry = Effect.fn("makeScriptSourceRegistry")(
         }
       }
 
-      const fingerprintEntries = [...fingerprints];
-      for (
-        let index = 0;
-        index < fingerprintEntries.length;
-        index += SOURCE_READ_CONCURRENCY
-      ) {
-        const batch = fingerprintEntries.slice(
-          index,
-          index + SOURCE_READ_CONCURRENCY,
-        );
-        const current = yield* Effect.all(
-          batch.map(([path]) =>
-            Effect.tryPromise({
-              try: () => regularFileFingerprint(path),
-              catch: (cause) =>
-                new ScriptSourceRegistryError({
-                  detail: errorMessage(
-                    cause,
-                    "Failed to verify script source.",
-                  ),
-                  path,
-                  cause,
-                }),
-            }),
-          ),
-          { concurrency: SOURCE_READ_CONCURRENCY },
-        );
-        if (
-          current.some(
-            (fingerprint, batchIndex) => fingerprint !== batch[batchIndex]?.[1],
-          )
-        ) {
-          return null;
-        }
-      }
-
       return {
         modules: [...modules.values()].toSorted((left, right) =>
           left.id.localeCompare(right.id),
@@ -538,112 +496,85 @@ export const makeScriptSourceRegistry = Effect.fn("makeScriptSourceRegistry")(
 
     const readReference = Effect.fn("ScriptSourceRegistry.readReference")(
       function* (reference: ScriptReference) {
-        for (let attempt = 0; attempt < SNAPSHOT_MAX_ATTEMPTS; attempt += 1) {
-          // Keep package metadata consistent within an attempt, but only discover
-          // packages when the selected script or a reachable import needs them.
-          const getSnapshotDiscovery = yield* Effect.cached(getDiscovery);
-          const discovery =
-            reference.kind === "package"
-              ? yield* getSnapshotDiscovery
-              : undefined;
-          const entry =
-            reference.kind === "loose"
-              ? yield* resolveEntry(reference)
-              : discovery?.scripts.get(
-                  `package:${reference.packageName}:${reference.path}`,
-                );
-          if (entry === undefined) {
-            return yield* new ScriptSourceRegistryError({
-              detail: "The selected script is no longer available.",
-            });
-          }
-
-          let target: ModuleTarget | undefined;
-          if (reference.kind === "package") {
-            const owner = discovery?.packages.get(reference.packageName);
-            if (owner?.compatibility.status === "incompatible") {
-              return yield* new ScriptSourceRegistryError({
-                detail: `${owner.name} requires Lucent ${owner.compatibility.requiredVersion}; this app is ${owner.compatibility.currentVersion}.`,
-                path: entry.path,
-              });
-            }
-            if (owner?.dependencyStatus.status === "blocked") {
-              return yield* new ScriptSourceRegistryError({
-                detail: `${owner.name} can't run because one or more required packages are unavailable.`,
-                path: entry.path,
-              });
-            }
-            target =
-              owner === undefined
-                ? undefined
-                : packageTarget(owner, reference.path);
-          } else {
-            target = looseTarget(entry);
-          }
-          if (target === undefined) continue;
-          const parsedEntry = yield* scriptFiles.analyze(entry.path).pipe(
-            Effect.mapError(
-              (cause) =>
-                new ScriptSourceRegistryError({
-                  detail: cause.message,
-                  path: entry.path,
-                  cause,
-                }),
-            ),
-          );
-          const closure = yield* collectExecutionClosure(
-            getSnapshotDiscovery,
-            target,
-            parsedEntry,
-          );
-          if (closure === null) continue;
-          const verifiedEntry = yield* scriptFiles.analyze(entry.path).pipe(
-            Effect.mapError(
-              (cause) =>
-                new ScriptSourceRegistryError({
-                  detail: cause.message,
-                  path: entry.path,
-                  cause,
-                }),
-            ),
-          );
-          if (
-            verifiedEntry.file.revision !== parsedEntry.file.revision ||
-            verifiedEntry.fingerprint !== parsedEntry.fingerprint
-          ) {
-            continue;
-          }
-
-          const snapshotRevision = sha256Revision(
-            JSON.stringify({
-              entryId: target.id,
-              modules: closure.modules.map(({ id, imports, revision }) => ({
-                id,
-                imports,
-                revision,
-              })),
-              packages: closure.packages,
-            }),
-          );
-          const snapshot: ScriptExecutionSnapshot = {
-            entryModuleId: target.id,
-            modules: closure.modules,
-            packages: closure.packages,
-            revision: snapshotRevision,
-          };
-          return {
-            ...verifiedEntry.file,
-            name: entry.name,
-            path: entry.path,
-            reference,
-            snapshot,
-          } satisfies ScriptFile;
+        const getSnapshotDiscovery = yield* Effect.cached(getDiscovery);
+        const discovery =
+          reference.kind === "package"
+            ? yield* getSnapshotDiscovery
+            : undefined;
+        const entry = yield* resolveEntry(reference);
+        if (entry === undefined) {
+          return yield* new ScriptSourceRegistryError({
+            detail: "The selected script is no longer available.",
+          });
         }
 
-        return yield* new ScriptSourceRegistryError({
-          detail:
-            "Script files kept changing while Lucent prepared an execution snapshot. Try starting again.",
-        });
+        let target: ModuleTarget | undefined;
+        if (reference.kind === "package") {
+          const owner = discovery?.packages.get(reference.packageName);
+          if (owner?.compatibility.status === "incompatible") {
+            return yield* new ScriptSourceRegistryError({
+              detail: `${owner.name} requires Lucent ${owner.compatibility.requiredVersion}; this app is ${owner.compatibility.currentVersion}.`,
+              path: entry.path,
+            });
+          }
+          if (owner?.dependencyStatus.status === "blocked") {
+            return yield* new ScriptSourceRegistryError({
+              detail: `${owner.name} can't run because one or more required packages are unavailable.`,
+              path: entry.path,
+            });
+          }
+          target =
+            owner === undefined
+              ? undefined
+              : packageTarget(owner, reference.path);
+        } else {
+          target = looseTarget(entry);
+        }
+        if (target === undefined) {
+          return yield* new ScriptSourceRegistryError({
+            detail: "The selected script is no longer available.",
+            path: entry.path,
+          });
+        }
+        const parsedEntry = yield* scriptFiles.analyze(entry.path).pipe(
+          Effect.mapError(
+            (cause) =>
+              new ScriptSourceRegistryError({
+                detail: cause.message,
+                path: entry.path,
+                cause,
+              }),
+          ),
+        );
+        const closure = yield* collectExecutionClosure(
+          getSnapshotDiscovery,
+          target,
+          parsedEntry,
+        );
+        const snapshotRevision = sha256Revision(
+          JSON.stringify({
+            entryId: target.id,
+            modules: closure.modules.map(({ id, imports, revision }) => ({
+              id,
+              imports,
+              revision,
+            })),
+            packages: closure.packages,
+          }),
+        );
+        const snapshot: ScriptExecutionSnapshot = {
+          entryModuleId: target.id,
+          modules: closure.modules,
+          packages: closure.packages,
+          revision: snapshotRevision,
+        };
+        return {
+          ...parsedEntry.file,
+          name: entry.name,
+          path: entry.path,
+          reference,
+          snapshot,
+        } satisfies ScriptFile;
       },
     );
 
