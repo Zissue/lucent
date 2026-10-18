@@ -52,6 +52,7 @@ describe("GameRendererRpc", () => {
       const error = yield* ready.pipe(Effect.flip);
       expect(error).toBeInstanceOf(GameRendererUnavailableError);
       if (!(error instanceof GameRendererUnavailableError)) return;
+      expect(error.reason).toBe("disconnected");
       expect(error.message).toBe("The connection was unavailable.");
       expect(error.cause).toBe(original);
       expect(desktopLogErrorDetails(error).cause?.message).toBe(
@@ -75,6 +76,7 @@ describe("GameRendererRpc", () => {
         .call(TEST_GAME_RENDERER_ID, () => Effect.fail(original), options)
         .pipe(Effect.flip);
 
+      expect(error.reason).toBe("disconnected");
       expect(error.message).toBe("The connection was unavailable.");
       expect(error.cause).toBe(original);
       expect(desktopLogErrorDetails(error).cause?.message).toBe(
@@ -105,6 +107,7 @@ describe("GameRendererRpc", () => {
           .call(TEST_GAME_RENDERER_ID, (client) => client.FollowerMe(), options)
           .pipe(Effect.flip);
 
+        expect(error.reason).toBe("disconnected");
         expect(error.message).toBe("The connection was unavailable.");
         expect(error.cause).toBeInstanceOf(RpcClientError);
         if (!(error.cause instanceof RpcClientError)) return;
@@ -161,6 +164,7 @@ describe("GameRendererRpc", () => {
         .pipe(Effect.flip);
       expect(error).toEqual(
         new GameRendererUnavailableError({
+          reason: "loading",
           detail: "The game is still loading. Try again in a moment.",
         }),
       );
@@ -213,6 +217,7 @@ describe("GameRendererRpc", () => {
 
       expect(yield* Fiber.join(call)).toEqual(
         new GameRendererUnavailableError({
+          reason: "disconnected",
           detail: "The connection was unavailable.",
         }),
       );
@@ -242,6 +247,25 @@ describe("GameRendererRpc", () => {
 
       expect(yield* Fiber.join(call)).toEqual(
         new GameRendererUnavailableError({
+          reason: "disconnected",
+          detail: "The connection was unavailable.",
+        }),
+      );
+    }),
+  );
+
+  it.effect("reports interrupted requests as disconnected", () =>
+    Effect.gen(function* () {
+      const game = yield* makeTestGameRenderer();
+      yield* game.ready;
+
+      const error = yield* game.rpc
+        .call(TEST_GAME_RENDERER_ID, () => Effect.interrupt, options)
+        .pipe(Effect.flip);
+
+      expect(error).toEqual(
+        new GameRendererUnavailableError({
+          reason: "disconnected",
           detail: "The connection was unavailable.",
         }),
       );
@@ -313,6 +337,7 @@ describe("GameRendererRpc", () => {
 
         expect(yield* Fiber.join(call)).toEqual(
           new GameRendererUnavailableError({
+            reason: "timeout",
             detail: "The game did not respond in time. Try again.",
           }),
         );

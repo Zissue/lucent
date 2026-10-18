@@ -9,7 +9,6 @@ import { logGameRendererRequestFailure } from "../rpc/GameRendererRequestFailure
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Schema from "effect/Schema";
 import type { RpcClientError } from "effect/rpc/RpcClientError";
 
 import {
@@ -21,28 +20,17 @@ import { DesktopWindows } from "../../window/DesktopWindows";
 import {
   GameRendererRpc,
   type GameRendererRpcClient,
+  type GameRendererUnavailableError,
 } from "../rpc/GameRendererRpc";
 
 export const FOLLOWER_COMMAND_TIMEOUT_MS = 5_000;
-
-export class GameFollowerRequestError extends Schema.TaggedError<GameFollowerRequestError>()(
-  "GameFollowerRequestError",
-  {
-    detail: Schema.String,
-    cause: Schema.optionalKey(Schema.Defect()),
-  },
-) {
-  override get message(): string {
-    return this.detail;
-  }
-}
 
 interface FollowerPlayersUpdate {
   readonly changed: boolean;
   readonly players: FollowerPlayers;
 }
 
-type FollowerRequest<A> = Effect.Effect<A, GameFollowerRequestError>;
+type FollowerRequest<A> = Effect.Effect<A, GameRendererUnavailableError>;
 
 export interface GameFollowersShape {
   readonly configure: (
@@ -94,18 +82,7 @@ export const makeGameFollowers = Effect.gen(function* () {
     gameRendererId: number,
     send: (client: GameRendererRpcClient) => Effect.Effect<A, RpcClientError>,
   ): FollowerRequest<A> =>
-    rpc
-      .call(gameRendererId, send, { timeout: FOLLOWER_COMMAND_TIMEOUT_MS })
-      .pipe(
-        Effect.catchTag("GameRendererUnavailableError", (error) =>
-          Effect.fail(
-            new GameFollowerRequestError({
-              detail: error.detail,
-              cause: error,
-            }),
-          ),
-        ),
-      );
+    rpc.call(gameRendererId, send, { timeout: FOLLOWER_COMMAND_TIMEOUT_MS });
 
   const requestState = (
     gameRendererId: number,
@@ -114,7 +91,9 @@ export const makeGameFollowers = Effect.gen(function* () {
     ) => Effect.Effect<FollowerState, RpcClientError>,
   ) =>
     request(gameRendererId, send).pipe(
-      Effect.flatMap((state) => set(gameRendererId, state)),
+      Effect.flatMap((state) =>
+        set(gameRendererId, normalizeFollowerState(state)),
+      ),
     );
 
   const requestConfigured = (
@@ -154,9 +133,7 @@ export const makeGameFollowers = Effect.gen(function* () {
       .pipe(
         Effect.map((info) =>
           info?.ready
-            ? normalizeFollowerState(
-                states.get(gameRendererId) ?? createIdleFollowerState(),
-              )
+            ? (states.get(gameRendererId) ?? createIdleFollowerState())
             : createIdleFollowerState(),
         ),
       );
@@ -166,9 +143,8 @@ export const makeGameFollowers = Effect.gen(function* () {
 
   const set: GameFollowersShape["set"] = (gameRendererId, state) =>
     Effect.sync(() => {
-      const normalized = normalizeFollowerState(state);
-      states.set(gameRendererId, normalized);
-      return normalized;
+      states.set(gameRendererId, state);
+      return state;
     });
 
   const getPlayers: GameFollowersShape["getPlayers"] = (gameRendererId) =>

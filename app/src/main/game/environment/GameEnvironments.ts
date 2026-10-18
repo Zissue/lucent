@@ -8,24 +8,20 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import type { EnvironmentBoostDiscovery } from "../../../shared/environmentBoosts";
-import { logGameRendererRequestFailure } from "../rpc/GameRendererRequestFailure";
-import { GameRendererRpc } from "../rpc/GameRendererRpc";
+import {
+  GameRendererRpc,
+  type GameRendererUnavailableError,
+} from "../rpc/GameRendererRpc";
 import { DesktopWindows } from "../../window/DesktopWindows";
 
 export const ENVIRONMENT_BOOST_FETCH_TIMEOUT_MS = 12_000;
 export const ENVIRONMENT_BOOST_WITHDRAW_BASE_TIMEOUT_MS = 15_000;
 export const ENVIRONMENT_BOOST_WITHDRAW_ITEM_TIMEOUT_MS = 6_000;
 
-const emptyBoostDiscovery = (): EnvironmentBoostDiscovery => ({
-  bank: [],
-  bankLoaded: false,
-  inventory: [],
-});
-
 export interface GameEnvironmentsShape {
   readonly fetchBoosts: (
     gameRendererId: number,
-  ) => Effect.Effect<EnvironmentBoostDiscovery>;
+  ) => Effect.Effect<EnvironmentBoostDiscovery, GameRendererUnavailableError>;
   readonly get: (gameRendererId: number) => Effect.Effect<EnvironmentState>;
   readonly remove: (gameRendererId: number) => Effect.Effect<void>;
   readonly set: (
@@ -39,7 +35,7 @@ export interface GameEnvironmentsShape {
   readonly withdrawBoosts: (
     gameRendererId: number,
     itemIds: readonly number[],
-  ) => Effect.Effect<readonly number[]>;
+  ) => Effect.Effect<readonly number[], GameRendererUnavailableError>;
 }
 
 export class GameEnvironments extends Context.Service<
@@ -53,12 +49,9 @@ export const makeGameEnvironments = Effect.gen(function* () {
   const states = new Map<number, EnvironmentState>();
 
   const get: GameEnvironmentsShape["get"] = (gameRendererId) =>
-    Effect.sync(() => {
-      const state = states.get(gameRendererId) ?? createEmptyEnvironmentState();
-      const normalized = normalizeEnvironmentState(state);
-      states.set(gameRendererId, normalized);
-      return normalized;
-    });
+    Effect.sync(
+      () => states.get(gameRendererId) ?? createEmptyEnvironmentState(),
+    );
 
   const set: GameEnvironmentsShape["set"] = (gameRendererId, state) =>
     Effect.sync(() => {
@@ -82,20 +75,9 @@ export const makeGameEnvironments = Effect.gen(function* () {
     });
 
   const fetchBoosts: GameEnvironmentsShape["fetchBoosts"] = (gameRendererId) =>
-    rpc
-      .call(gameRendererId, (client) => client.EnvironmentFetchBoosts(), {
-        timeout: ENVIRONMENT_BOOST_FETCH_TIMEOUT_MS,
-      })
-      .pipe(
-        Effect.catchCause((cause) =>
-          logGameRendererRequestFailure(
-            windows,
-            gameRendererId,
-            "EnvironmentFetchBoosts",
-            cause,
-          ).pipe(Effect.as(emptyBoostDiscovery())),
-        ),
-      );
+    rpc.call(gameRendererId, (client) => client.EnvironmentFetchBoosts(), {
+      timeout: ENVIRONMENT_BOOST_FETCH_TIMEOUT_MS,
+    });
 
   const withdrawBoosts: GameEnvironmentsShape["withdrawBoosts"] = (
     gameRendererId,
@@ -105,27 +87,15 @@ export const makeGameEnvironments = Effect.gen(function* () {
     if (uniqueItemIds.length === 0) {
       return Effect.succeed([]);
     }
-    return rpc
-      .call(
-        gameRendererId,
-        (client) =>
-          client.EnvironmentWithdrawBoosts({ itemIds: uniqueItemIds }),
-        {
-          timeout:
-            ENVIRONMENT_BOOST_WITHDRAW_BASE_TIMEOUT_MS +
-            ENVIRONMENT_BOOST_WITHDRAW_ITEM_TIMEOUT_MS * uniqueItemIds.length,
-        },
-      )
-      .pipe(
-        Effect.catchCause((cause) =>
-          logGameRendererRequestFailure(
-            windows,
-            gameRendererId,
-            "EnvironmentWithdrawBoosts",
-            cause,
-          ).pipe(Effect.as([])),
-        ),
-      );
+    return rpc.call(
+      gameRendererId,
+      (client) => client.EnvironmentWithdrawBoosts({ itemIds: uniqueItemIds }),
+      {
+        timeout:
+          ENVIRONMENT_BOOST_WITHDRAW_BASE_TIMEOUT_MS +
+          ENVIRONMENT_BOOST_WITHDRAW_ITEM_TIMEOUT_MS * uniqueItemIds.length,
+      },
+    );
   };
 
   yield* windows.observe({ kind: "game" }, (event) =>

@@ -15,16 +15,11 @@ export const logGameRendererRequestFailure = Effect.fnUntraced(function* (
   if (
     cause.reasons.every((reason) => {
       if (!Cause.isFailReason(reason)) return false;
-      const error =
-        reason.error instanceof Error &&
-        reason.error.cause instanceof GameRendererUnavailableError
-          ? reason.error.cause
-          : reason.error;
+      const error = reason.error;
       return (
         error instanceof GameRendererUnavailableError &&
         error.cause === undefined &&
-        (error.detail === "The connection was unavailable." ||
-          error.detail === "The game is still loading. Try again in a moment.")
+        (error.reason === "disconnected" || error.reason === "loading")
       );
     })
   )
