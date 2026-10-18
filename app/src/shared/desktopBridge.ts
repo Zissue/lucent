@@ -184,7 +184,6 @@ export interface DesktopScriptingBridge {
   readonly resolveReference: (
     reference: ScriptReference,
   ) => Promise<ScriptFileResolution>;
-  readonly selectFile: () => Promise<ScriptSelectFileResult>;
   readonly saveInputValues: (
     definition: ScriptInputsDefinition,
     values: ScriptInputValues,
@@ -493,7 +492,6 @@ interface DesktopBridgeCapabilities {
   readonly accounts: DesktopAccountsBridge;
   readonly army: DesktopArmyBridge;
   readonly combatProfiles: DesktopCombatProfilesBridge;
-  readonly environment: DesktopEnvironmentBridge;
   readonly follower: DesktopFollowerBridge;
   readonly fileSystem: DesktopFileSystemBridge;
   readonly gameAccounts: DesktopGameAccountsBridge;
@@ -501,7 +499,6 @@ interface DesktopBridgeCapabilities {
   readonly gameFollower: DesktopGameFollowerBridge;
   readonly gameRenderer: DesktopGameRendererBridge;
   readonly gameView: DesktopGameViewBridge;
-  readonly gameViewHost: DesktopGameViewHostBridge;
   readonly scripting: DesktopScriptingBridge;
   readonly updates: DesktopUpdatesBridge;
   readonly windows: DesktopWindowsBridge;
@@ -511,22 +508,28 @@ interface DesktopBridgeViewCapabilities {
   readonly about: Pick<DesktopBridgeCapabilities, "updates"> & {
     readonly about: DesktopAboutBridge;
   };
-  readonly "account-manager": Pick<
-    DesktopBridgeCapabilities,
-    "accounts" | "scripting"
-  >;
+  readonly "account-manager": Pick<DesktopBridgeCapabilities, "accounts"> & {
+    readonly scripting: {
+      readonly selectFile: () => Promise<ScriptSelectFileResult>;
+    };
+  };
   readonly "combat-profiles": Pick<DesktopBridgeCapabilities, "combatProfiles">;
-  readonly environment: Pick<DesktopBridgeCapabilities, "environment">;
-  readonly follower: Pick<
-    DesktopBridgeCapabilities,
-    "combatProfiles" | "follower" | "windows"
-  >;
+  readonly environment: {
+    readonly environment: Omit<
+      DesktopEnvironmentBridge,
+      "addBoost" | "addItem" | "addQuest"
+    >;
+  };
+  readonly follower: Pick<DesktopBridgeCapabilities, "follower" | "windows"> & {
+    readonly combatProfiles: Pick<
+      DesktopCombatProfilesBridge,
+      "getState" | "onChanged"
+    >;
+  };
   readonly game: Pick<
     DesktopBridgeCapabilities,
     | "accountSettings"
     | "army"
-    | "combatProfiles"
-    | "environment"
     | "fileSystem"
     | "http"
     | "gameAccounts"
@@ -536,16 +539,31 @@ interface DesktopBridgeViewCapabilities {
     | "scripting"
     | "windows"
   > & {
+    readonly combatProfiles: Pick<
+      DesktopCombatProfilesBridge,
+      "getState" | "onChanged"
+    >;
+    readonly environment: Omit<
+      DesktopEnvironmentBridge,
+      "addBoosts" | "addItems" | "addQuests" | "fetchBoosts" | "withdrawBoosts"
+    >;
     readonly packets: DesktopGamePacketsBridge;
   } & Partial<Pick<DesktopBridgeCapabilities, "gameConsoleObservability">>;
-  readonly "game-group-controls": Pick<
-    DesktopBridgeCapabilities,
-    "gameViewHost"
-  >;
+  readonly "game-group-controls": {
+    readonly gameViewHost: Pick<
+      DesktopGameViewHostBridge,
+      "getState" | "onChanged" | "dispatchGroupCommand" | "setGroupControlsOpen"
+    >;
+  };
   readonly "loader-grabber": {
     readonly loaderGrabber: DesktopLoaderGrabberWindowBridge;
   };
-  readonly "game-host": Pick<DesktopBridgeCapabilities, "gameViewHost">;
+  readonly "game-host": {
+    readonly gameViewHost: Omit<
+      DesktopGameViewHostBridge,
+      "dispatchGroupCommand"
+    >;
+  };
   readonly packets: {
     readonly packets: DesktopPacketsWindowBridge;
   };

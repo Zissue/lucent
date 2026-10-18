@@ -269,11 +269,16 @@ const settingsManagementBridge: DesktopSettingsManagementBridge = {
   updatePreferences: (patch) => invoke(SettingsIpc.updatePreferences, patch),
 };
 
+const combatProfilesReaderBridge: DesktopBridgeByView["game"]["combatProfiles"] =
+  {
+    getState: () => invoke(CombatProfilesIpc.getState, undefined),
+    onChanged: (listener) => subscribe(CombatProfilesIpc.changed, listener),
+  };
+
 const combatProfilesBridge: DesktopCombatProfilesBridge = {
+  ...combatProfilesReaderBridge,
   deleteProfile: (profileId) =>
     invoke(CombatProfilesIpc.deleteProfile, { profileId }),
-  getState: () => invoke(CombatProfilesIpc.getState, undefined),
-  onChanged: (listener) => subscribe(CombatProfilesIpc.changed, listener),
   saveProfile: (profile) => invoke(CombatProfilesIpc.saveProfile, profile),
 };
 
@@ -339,7 +344,6 @@ const scriptingBridge: DesktopScriptingBridge = {
   saveInputValues: (definition, values) =>
     invoke(ScriptingIpc.saveInputValues, { definition, values }),
   saveCredential: (input) => invoke(ScriptingIpc.saveCredential, input),
-  selectFile: () => invoke(ScriptingIpc.selectFile, undefined),
   updatePackage: (input) => invoke(ScriptingIpc.updatePackage, input),
 };
 
@@ -375,28 +379,40 @@ const loaderGrabberWindowBridge: DesktopLoaderGrabberWindowBridge = {
   load: (payload) => invoke(LoaderGrabberIpc.load, payload),
 };
 
-const gameViewHostBridge: DesktopGameViewHostBridge = {
+const gameViewHostStateBridge: Pick<
+  DesktopGameViewHostBridge,
+  "getState" | "onChanged" | "setGroupControlsOpen"
+> = {
+  getState: () => invoke(GameViewsIpc.getState, undefined),
+  onChanged: (listener) => subscribe(GameViewsIpc.changed, listener),
+  setGroupControlsOpen: (open) =>
+    invoke(GameViewsIpc.setGroupControlsOpen, { open }),
+};
+
+const gameViewHostBridge: DesktopBridgeByView["game-host"]["gameViewHost"] = {
+  ...gameViewHostStateBridge,
   getRecentlyClosed: () => invoke(GameViewsIpc.getRecentlyClosed, undefined),
   reopen: (id) => invoke(GameViewsIpc.reopen, { id }),
   add: () => invoke(GameViewsIpc.add, undefined),
   close: (id) => invoke(GameViewsIpc.close, { id }),
-  dispatchGroupCommand: (request) =>
-    invoke(GameViewsIpc.dispatchGroupCommand, request),
-  getState: () => invoke(GameViewsIpc.getState, undefined),
-  onChanged: (listener) => subscribe(GameViewsIpc.changed, listener),
   onShortcutModifierChanged: (listener) =>
     subscribe(GameViewsIpc.shortcutModifierChanged, listener),
   onTabMenuOpenChanged: (listener) =>
     subscribe(GameViewsIpc.tabMenuOpenChanged, listener),
   reorder: (ids) => invoke(GameViewsIpc.reorder, { ids }),
   select: (id, focus) => invoke(GameViewsIpc.select, { focus, id }),
-  setGroupControlsOpen: (open) =>
-    invoke(GameViewsIpc.setGroupControlsOpen, { open }),
   setGroupTargets: (ids) => invoke(GameViewsIpc.setGroupTargets, { ids }),
   setLayout: (layout) => invoke(GameViewsIpc.setLayout, { layout }),
   setTabMenuOpen: (open) => invoke(GameViewsIpc.setTabMenuOpen, { open }),
   syncTabBarLayout: () => invoke(GameViewsIpc.syncTabBarLayout, undefined),
 };
+
+const gameGroupControlsBridge: DesktopBridgeByView["game-group-controls"]["gameViewHost"] =
+  {
+    ...gameViewHostStateBridge,
+    dispatchGroupCommand: (request) =>
+      invoke(GameViewsIpc.dispatchGroupCommand, request),
+  };
 
 const gameViewBridge: DesktopGameViewBridge = {
   close: () => {
@@ -445,24 +461,23 @@ const gameFollowerBridge: DesktopGameFollowerBridge = {
   publishState: (state) => invoke(FollowerIpc.publishState, state),
 };
 
-const environmentBridge: DesktopEnvironmentBridge = {
-  addBoost: (name) => invoke(EnvironmentIpc.addBoost, { name }),
-  addBoosts: (names) => invoke(EnvironmentIpc.addBoosts, { names }),
-  addItem: (name) => invoke(EnvironmentIpc.addItem, { name }),
-  addItems: (names) => invoke(EnvironmentIpc.addItems, { names }),
-  addQuest: (questId, rewardItemId) =>
-    invoke(EnvironmentIpc.addQuest, {
-      questId,
-      ...(rewardItemId === undefined ? {} : { rewardItemId }),
-    }),
-  addQuests: (quests) => invoke(EnvironmentIpc.addQuests, { quests }),
+const environmentBridge: Omit<
+  DesktopEnvironmentBridge,
+  | "addBoost"
+  | "addBoosts"
+  | "addItem"
+  | "addItems"
+  | "addQuest"
+  | "addQuests"
+  | "fetchBoosts"
+  | "withdrawBoosts"
+> = {
   clear: () => invoke(EnvironmentIpc.clear, undefined),
   clearBoosts: () => invoke(EnvironmentIpc.clearBoosts, undefined),
   clearItems: () => invoke(EnvironmentIpc.clearItems, undefined),
   clearQuestReward: (questId) =>
     invoke(EnvironmentIpc.clearQuestReward, { questId }),
   clearQuests: () => invoke(EnvironmentIpc.clearQuests, undefined),
-  fetchBoosts: () => invoke(EnvironmentIpc.fetchBoosts, undefined),
   getState: () => invoke(EnvironmentIpc.getState, undefined),
   onChanged: (listener) => subscribe(EnvironmentIpc.changed, listener),
   removeBoost: (name) => invoke(EnvironmentIpc.removeBoost, { name }),
@@ -478,9 +493,29 @@ const environmentBridge: DesktopEnvironmentBridge = {
   setQuestReward: (questId, rewardItemId) =>
     invoke(EnvironmentIpc.setQuestReward, { questId, rewardItemId }),
   syncToAll: () => invoke(EnvironmentIpc.syncToAll, undefined),
-  withdrawBoosts: (itemIds) =>
-    invoke(EnvironmentIpc.withdrawBoosts, { itemIds }),
 };
+
+const gameEnvironmentBridge: DesktopBridgeByView["game"]["environment"] = {
+  ...environmentBridge,
+  addBoost: (name) => invoke(EnvironmentIpc.addBoost, { name }),
+  addItem: (name) => invoke(EnvironmentIpc.addItem, { name }),
+  addQuest: (questId, rewardItemId) =>
+    invoke(EnvironmentIpc.addQuest, {
+      questId,
+      ...(rewardItemId === undefined ? {} : { rewardItemId }),
+    }),
+};
+
+const environmentWindowBridge: DesktopBridgeByView["environment"]["environment"] =
+  {
+    ...environmentBridge,
+    addBoosts: (names) => invoke(EnvironmentIpc.addBoosts, { names }),
+    addItems: (names) => invoke(EnvironmentIpc.addItems, { names }),
+    addQuests: (quests) => invoke(EnvironmentIpc.addQuests, { quests }),
+    fetchBoosts: () => invoke(EnvironmentIpc.fetchBoosts, undefined),
+    withdrawBoosts: (itemIds) =>
+      invoke(EnvironmentIpc.withdrawBoosts, { itemIds }),
+  };
 
 const updatesBridge: DesktopUpdatesBridge = {
   checkNow: () => invoke(UpdatesIpc.checkNow, undefined),
@@ -512,7 +547,9 @@ const bridges = {
   "account-manager": {
     ...commonBridge,
     accounts: accountsBridge,
-    scripting: scriptingBridge,
+    scripting: {
+      selectFile: () => invoke(ScriptingIpc.selectFile, undefined),
+    },
     view: "account-manager",
   },
   "combat-profiles": {
@@ -522,12 +559,12 @@ const bridges = {
   },
   environment: {
     ...commonBridge,
-    environment: environmentBridge,
+    environment: environmentWindowBridge,
     view: "environment",
   },
   follower: {
     ...commonBridge,
-    combatProfiles: combatProfilesBridge,
+    combatProfiles: combatProfilesReaderBridge,
     follower: followerBridge,
     view: "follower",
     windows: windowsBridge,
@@ -551,8 +588,8 @@ const bridges = {
       start: (payload) => invoke(ArmyIpc.start, payload),
       sync: (payload) => invoke(ArmyIpc.sync, payload),
     },
-    combatProfiles: combatProfilesBridge,
-    environment: environmentBridge,
+    combatProfiles: combatProfilesReaderBridge,
+    environment: gameEnvironmentBridge,
     fileSystem: fileSystemBridge,
     http: {
       openSession: () => invoke(HttpIpc.openSession, undefined),
@@ -582,7 +619,7 @@ const bridges = {
   },
   "game-group-controls": {
     ...commonBridge,
-    gameViewHost: gameViewHostBridge,
+    gameViewHost: gameGroupControlsBridge,
     view: "game-group-controls",
   },
   "game-host": {

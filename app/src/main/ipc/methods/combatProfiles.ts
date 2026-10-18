@@ -5,7 +5,7 @@ import { CombatProfiles } from "../../game/combat-profiles/CombatProfiles";
 import { DesktopIpc, makeDesktopIpcMethod } from "../DesktopIpc";
 
 const combatProfileReaders = ["combat-profiles", "follower", "game"] as const;
-const combatProfileWriters = ["combat-profiles", "game"] as const;
+const combatProfileWriters = ["combat-profiles"] as const;
 
 export const getState = makeDesktopIpcMethod({
   descriptor: CombatProfilesIpc.getState,
