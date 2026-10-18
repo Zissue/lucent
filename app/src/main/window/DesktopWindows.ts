@@ -508,22 +508,7 @@ const makeDesktopWindows = Effect.gen(function* () {
       return;
     }
 
-    run(
-      electronShell.openExternal(url).pipe(
-        Effect.flatMap((opened) =>
-          opened
-            ? Effect.void
-            : Effect.logWarning("Failed to open game URL").pipe(
-                Effect.annotateLogs({
-                  component: "window",
-                  data: {
-                    host: url.host,
-                  },
-                }),
-              ),
-        ),
-      ),
-    );
+    run(electronShell.openExternal(url).pipe(Effect.asVoid));
   };
 
   const unsubscribeBeforeQuit = yield* app.on("before-quit", () => {
@@ -553,10 +538,18 @@ const makeDesktopWindows = Effect.gen(function* () {
     quitRequested = true;
     run(
       app.quit.pipe(
-        Effect.catchCause(() =>
-          Effect.sync(() => {
-            quitRequested = false;
-          }),
+        Effect.catchCause((cause) =>
+          logFailure("Failed to quit Lucent", cause, { failure: "error" }).pipe(
+            Effect.annotateLogs({
+              component: "window",
+              data: { source: "last-window-closed" },
+            }),
+            Effect.andThen(
+              Effect.sync(() => {
+                quitRequested = false;
+              }),
+            ),
+          ),
         ),
       ),
     );

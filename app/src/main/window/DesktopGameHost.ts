@@ -1,4 +1,9 @@
 import type { Event as ElectronEvent, Input } from "electron";
+import * as Cause from "effect/Cause";
+import * as Context from "effect/Context";
+import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import { logFailure } from "../../shared/logFailure";
 import type * as Scope from "effect/Scope";
 import type { CloseableRendererLifetime } from "./DesktopWindows";
 
@@ -190,6 +195,10 @@ const send = (
 };
 
 export const makeDesktopGameHosts = (options: DesktopGameHostsOptions) => {
+  const runSync = Effect.runSyncWith(
+    Fiber.getCurrent()?.context ?? Context.empty(),
+  );
+  const failedLayouts = new WeakSet<DesktopGameHostRecord>();
   const state = (host: DesktopGameHostRecord): GameViewHostState => ({
     capacity: MAX_GAME_VIEWS_PER_WINDOW,
     groupControlsOpen: host.groupControlsOpen,
@@ -269,15 +278,33 @@ export const makeDesktopGameHosts = (options: DesktopGameHostsOptions) => {
     applyGroupControlsLayout(host, width, height, topInset);
     applyHostViewLayout(host, width, height, topInset);
     publishPresentations(host);
+    failedLayouts.delete(host);
   };
+
+  const isClosing = (host: DesktopGameHostRecord): boolean =>
+    host.scope.state._tag === "Closed" ||
+    host.nativeCloseRequested === true ||
+    host.window.isDestroyed();
 
   const finishResize = (host: DesktopGameHostRecord): void => {
     cancelResize(host);
-    if (host.scope.state._tag === "Closed" || host.nativeCloseRequested) return;
+    if (isClosing(host)) return;
 
     try {
       applyLayout(host);
-    } catch {}
+    } catch (cause) {
+      if (isClosing(host) || failedLayouts.has(host)) return;
+      failedLayouts.add(host);
+      runSync(
+        logFailure("Failed to lay out game views", Cause.die(cause)).pipe(
+          Effect.annotateLogs({
+            component: "window",
+            data: { hostRendererId: host.rendererId },
+            repeatKey: String(host.rendererId),
+          }),
+        ),
+      );
+    }
   };
 
   const scheduleResize = (host: DesktopGameHostRecord): void => {

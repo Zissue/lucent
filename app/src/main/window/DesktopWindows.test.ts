@@ -92,6 +92,8 @@ const makeHarness = (
   useGameTabs = false,
   options: {
     readonly debug?: boolean;
+    readonly platform?: NodeJS.Platform;
+    readonly quit?: Effect.Effect<void>;
     readonly devToolsFailure?: Error;
     readonly openExternal?: Effect.Effect<boolean>;
   } = {},
@@ -151,7 +153,7 @@ const makeHarness = (
       assetsDir: "/tmp/lucent-assets",
       debug: options.debug ?? false,
       isDev: true,
-      platform: "darwin",
+      platform: options.platform ?? "darwin",
       workspaceDir: "/tmp/lucent-workspace",
     }),
     Layer.succeed(
@@ -176,7 +178,7 @@ const makeHarness = (
         getAppMetrics: Effect.succeed([]),
         getVersion: Effect.succeed("0.0.0"),
         on: () => Effect.succeed(() => undefined),
-        quit: Effect.void,
+        quit: options.quit ?? Effect.void,
         relaunch: Effect.void,
         whenReady: Effect.void,
       }),
@@ -355,7 +357,7 @@ describe("DesktopWindows.open", () => {
   );
 
   it.effect.each([false, true])(
-    "logs only the host after an external game URL fails with tabs %s",
+    "does not duplicate shell failure logs with tabs %s",
     (useGameTabs) => {
       const harness = makeHarness(useGameTabs, {
         openExternal: Effect.succeed(false),
@@ -367,13 +369,49 @@ describe("DesktopWindows.open", () => {
           "https://account.aq.com/private?token=secret#account",
         );
         yield* Effect.yieldNow.pipe(Effect.repeat({ times: 4 }));
-        expect(harness.records).toContainEqual({
-          at: "1970-01-01T00:00:00.000Z",
-          level: "warn",
-          component: "window",
-          message: "Failed to open game URL",
-          data: { host: "account.aq.com" },
+        expect(harness.records).not.toContainEqual(
+          expect.objectContaining({ message: "Failed to open game URL" }),
+        );
+        expect(yield* windows.describe(rendererId)).toMatchObject({
+          rendererId,
+          ready: false,
         });
+      }).pipe(Effect.provide(harness.layer));
+    },
+  );
+
+  it.effect.each([false, true])(
+    "logs last-window quit failures with interruption=%s",
+    (interrupted) => {
+      const harness = makeHarness(false, {
+        platform: "linux",
+        quit: interrupted
+          ? Effect.interrupt
+          : Effect.die(new Error("native quit failure")),
+      });
+      return Effect.gen(function* () {
+        const windows = yield* DesktopWindows;
+        const id = yield* windows.open("game");
+        harness.created.get(id)!.emit("closed");
+        yield* Effect.yieldNow.pipe(Effect.repeat({ times: 6 }));
+        const failures = harness.records.filter(
+          (record) =>
+            (record as { message: string }).message === "Failed to quit Lucent",
+        );
+        expect(failures).toMatchObject(
+          interrupted
+            ? []
+            : [
+                {
+                  level: "error",
+                  component: "window",
+                  message: "Failed to quit Lucent",
+                  data: { source: "last-window-closed" },
+                  error: [{ message: "native quit failure" }],
+                },
+              ],
+        );
+        expect(yield* windows.describe(id)).toBeUndefined();
       }).pipe(Effect.provide(harness.layer));
     },
   );

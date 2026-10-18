@@ -1,4 +1,11 @@
 import { describe, expect, it } from "@effect/vitest";
+import { vi } from "vitest";
+import * as Effect from "effect/Effect";
+import * as Logger from "effect/Logger";
+import {
+  desktopLogRecord,
+  type DesktopLogRecord,
+} from "../../shared/logRecord";
 import * as Scope from "effect/Scope";
 
 import { makeLifetime } from "./RendererLifetimeTesting";
@@ -198,4 +205,60 @@ describe("game view tab ids", () => {
     );
     expect(hosts.state(host).selectedId).toBe("3");
   });
+});
+
+describe("layout failure logging", () => {
+  it.effect(
+    "logs once per failed layout episode and keeps closing hosts silent",
+    () => {
+      const records: DesktopLogRecord[] = [];
+      return Effect.gen(function* () {
+        const { host, hosts, size, resizeWindow } = makeHost([2, 3]);
+        const boundsFailure = vi
+          .spyOn(host.selected.gameView, "setBounds")
+          .mockImplementation(() => {
+            throw new Error("native bounds failure");
+          });
+        yield* Effect.promise(
+          () =>
+            new Promise<void>((resolve) => {
+              setImmediate(() => {
+                resizeWindow(1000, 630);
+                resolve();
+              });
+            }),
+        );
+        hosts.finishResize(host);
+        expect(records).toMatchObject([
+          {
+            level: "error",
+            message: "Failed to lay out game views",
+            component: "window",
+            data: { hostRendererId: 1 },
+            repeatKey: "1",
+            error: [{ message: "native bounds failure" }],
+          },
+        ]);
+        expect(records[0]?.data).toEqual({ hostRendererId: 1 });
+        boundsFailure.mockRestore();
+        hosts.finishResize(host);
+        expect(size(2)).toBe("1000x600");
+        vi.spyOn(host.selected.gameView, "setBounds").mockImplementation(() => {
+          throw new Error("native bounds failure");
+        });
+        resizeWindow(900, 530);
+        expect(records).toHaveLength(2);
+        host.nativeCloseRequested = true;
+        hosts.finishResize(host);
+        expect(records).toHaveLength(2);
+      }).pipe(
+        Effect.provide(
+          Logger.layer(
+            [Logger.make((options) => records.push(desktopLogRecord(options)))],
+            { mergeWithExisting: false },
+          ),
+        ),
+      );
+    },
+  );
 });

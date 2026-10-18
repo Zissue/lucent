@@ -4,6 +4,8 @@ import {
   type FollowerConfig,
   type FollowerState,
 } from "@lucent/core/follower";
+import * as Cause from "effect/Cause";
+import { logGameRendererRequestFailure } from "../rpc/GameRendererRequestFailure";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -249,7 +251,16 @@ export const makeGameFollowers = Effect.gen(function* () {
   });
   yield* Effect.acquireRelease(
     rpc.onConnected((gameRendererId) =>
-      reconcile(gameRendererId).pipe(Effect.ignore),
+      reconcile(gameRendererId).pipe(
+        Effect.catch((error) =>
+          logGameRendererRequestFailure(
+            windows,
+            gameRendererId,
+            "FollowerConfigure",
+            Cause.fail(error),
+          ).pipe(Effect.asVoid),
+        ),
+      ),
     ),
     (unsubscribe) => Effect.sync(unsubscribe),
   );
