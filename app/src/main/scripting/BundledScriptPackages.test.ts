@@ -13,7 +13,6 @@ import * as TestClock from "effect/testing/TestClock";
 import { DesktopEnvironment } from "../app/DesktopEnvironment";
 import { ElectronApp } from "../electron/ElectronApp";
 import { layer as desktopFileSystemLayer } from "@effect/platform-node/NodeFileSystem";
-import { acquireBundledScriptPackageLock } from "./BundledScriptPackageLock";
 import { copyBundledScriptPackage } from "./BundledScriptPackageSnapshot";
 import {
   BundledScriptPackageSetupSchema,
@@ -138,10 +137,8 @@ const makeFixture = async () => {
       };
     }).pipe(Effect.provide(makeLayer(failSaves)));
 
-  const readHistory = async () =>
-    decodeSetupState(
-      JSON.parse(await fs.readFile(historyPath, "utf8")) as unknown,
-    );
+  const readHistory = async (): Promise<unknown> =>
+    JSON.parse(await fs.readFile(historyPath, "utf8")) as unknown;
 
   return {
     root,
@@ -196,9 +193,9 @@ describe("bundled script packages", () => {
             hashDirectory(join(fixture.sourceRoot, "farming")),
           ),
         );
-        expect(yield* Effect.promise(fixture.readHistory)).toMatchObject({
+        expect(yield* Effect.promise(fixture.readHistory)).toEqual({
+          version: 1,
           completed: ["@lucent/farming"],
-          pending: [],
         });
       }),
   );
@@ -236,11 +233,10 @@ describe("bundled script packages", () => {
         expect(
           yield* Effect.promise(() => pathExists(join(packages, "a"))),
         ).toBe(false);
-        expect((yield* Effect.promise(fixture.readHistory)).completed).toEqual([
-          "a",
-          "b",
-          "c",
-        ]);
+        expect(yield* Effect.promise(fixture.readHistory)).toEqual({
+          version: 1,
+          completed: ["a", "b", "c"],
+        });
       }),
   );
 
@@ -303,6 +299,60 @@ describe("bundled script packages", () => {
       }),
   );
 
+  it.effect("adopts an identical local package in its existing folder", () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(makeFixture);
+      yield* Effect.promise(() => fixture.addPackage("one", "same-name"));
+      const destination = join(fixture.workspace, "packages", "custom-folder");
+      yield* Effect.promise(() => writePackage(destination, "same-name"));
+      const result = yield* fixture.start();
+      expect(result.managed).toMatchObject([
+        {
+          name: "same-name",
+          directory: "custom-folder",
+          source: { subdirectory: "script-packages/one" },
+        },
+      ]);
+      expect(result.catalog.packages).toMatchObject([
+        { name: "same-name", version: "1.0.0", integrity: "verified" },
+      ]);
+      expect(
+        yield* Effect.promise(() =>
+          fs.readdir(join(fixture.workspace, "packages")),
+        ),
+      ).toEqual(["custom-folder"]);
+      expect(yield* Effect.promise(fixture.readHistory)).toEqual({
+        version: 1,
+        completed: ["same-name"],
+      });
+    }),
+  );
+
+  it.effect("preserves completed packages from the old journal format", () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(makeFixture);
+      yield* Effect.promise(() =>
+        Promise.all([
+          fixture.addPackage("a"),
+          fixture.addPackage("b"),
+          write(
+            fixture.historyPath,
+            JSON.stringify({ version: 1, completed: ["a"], pending: [] }),
+          ),
+        ]),
+      );
+      const result = yield* fixture.start();
+      expect(result.catalog.packages).toMatchObject([
+        { name: "b", integrity: "verified" },
+      ]);
+      expect(result.managed.map((entry) => entry.name)).toEqual(["b"]);
+      expect(yield* Effect.promise(fixture.readHistory)).toEqual({
+        version: 1,
+        completed: ["a", "b"],
+      });
+    }),
+  );
+
   it.effect("does not treat corrupt setup history as a first install", () =>
     Effect.gen(function* () {
       const fixture = yield* Effect.promise(makeFixture);
@@ -339,38 +389,124 @@ describe("bundled script packages", () => {
       }),
   );
 
+  it.effect("leaves edits after interrupted publication unmanaged", () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(makeFixture);
+      yield* Effect.promise(() => fixture.addPackage("a"));
+      yield* fixture.start(true);
+      expect(yield* Effect.promise(fixture.readHistory)).toEqual({
+        version: 1,
+        completed: [],
+      });
+      const file = join(fixture.workspace, "packages", "a", "index.js");
+      yield* Effect.promise(async () => {
+        await write(`${file}.tmp`, "user edits\n");
+        await fs.rename(`${file}.tmp`, file);
+      });
+      const result = yield* fixture.start();
+      expect(result.catalog.packages).toMatchObject([
+        { name: "a", integrity: "unmanaged" },
+      ]);
+      expect(result.managed).toEqual([]);
+      expect(yield* Effect.promise(() => fs.readFile(file, "utf8"))).toBe(
+        "user edits\n",
+      );
+      expect(yield* Effect.promise(fixture.readHistory)).toMatchObject({
+        completed: ["a"],
+      });
+    }),
+  );
+
+  it.effect("adopts matching files after interrupted publication", () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(makeFixture);
+      yield* Effect.promise(() => fixture.addPackage("a"));
+      yield* fixture.start(true);
+      expect(yield* Effect.promise(fixture.readHistory)).toEqual({
+        version: 1,
+        completed: [],
+      });
+      yield* TestClock.setTime(1234567890000);
+      const result = yield* fixture.start();
+      expect(result.catalog.packages).toMatchObject([
+        { name: "a", version: "1.0.0", integrity: "verified" },
+      ]);
+      expect(result.managed).toMatchObject([
+        {
+          name: "a",
+          directory: "a",
+          installedAt: "2009-02-13T23:31:30.000Z",
+          source: {
+            repositoryUrl: "https://github.com/toommyliu/lucent",
+            subdirectory: "script-packages/a",
+          },
+        },
+      ]);
+      expect(
+        yield* Effect.promise(() =>
+          fs.readdir(join(fixture.workspace, "packages")),
+        ),
+      ).toEqual(["a"]);
+      expect(yield* Effect.promise(fixture.readHistory)).toEqual({
+        version: 1,
+        completed: ["a"],
+      });
+      expect((yield* fixture.start()).managed).toMatchObject([
+        {
+          name: "a",
+          directory: "a",
+          installedAt: "2009-02-13T23:31:30.000Z",
+        },
+      ]);
+    }),
+  );
+
   it.effect(
-    "recovers package registration after publication without copying again",
+    "adopts a republished package after a workspace reset with stale state",
     () =>
       Effect.gen(function* () {
         const fixture = yield* Effect.promise(makeFixture);
         yield* Effect.promise(() => fixture.addPackage("a"));
-        yield* fixture.start(true);
-        expect(
-          (yield* Effect.promise(fixture.readHistory)).pending,
-        ).toHaveLength(1);
-        const file = join(fixture.workspace, "packages", "a", "index.js");
-        yield* Effect.promise(async () => {
-          await write(`${file}.tmp`, "user edits\n");
-          await fs.rename(`${file}.tmp`, file);
-        });
-        const result = yield* fixture.start();
-        expect(result.catalog.packages).toMatchObject([
-          { name: "a", integrity: "modified" },
-        ]);
-        expect(yield* Effect.promise(() => fs.readFile(file, "utf8"))).toBe(
-          "user edits\n",
+        yield* fixture.start();
+        yield* Effect.promise(() =>
+          fs.rm(fixture.workspace, { recursive: true }),
         );
-        expect(yield* Effect.promise(fixture.readHistory)).toMatchObject({
-          completed: ["a"],
-          pending: [],
+
+        const interrupted = yield* fixture.start(true);
+        expect(interrupted.managed).toMatchObject([
+          { name: "a", directory: "a" },
+        ]);
+        expect(interrupted.catalog.packages).toMatchObject([
+          { name: "a", integrity: "unmanaged" },
+        ]);
+        expect(
+          yield* Effect.promise(() =>
+            fs.readdir(join(fixture.workspace, "packages")),
+          ),
+        ).toEqual(["a-2"]);
+        expect(yield* Effect.promise(fixture.readHistory)).toEqual({
+          version: 1,
+          completed: [],
         });
+
+        const recovered = yield* fixture.start();
+        expect(recovered.managed).toMatchObject([
+          { name: "a", directory: "a-2" },
+        ]);
+        expect(recovered.catalog.packages).toMatchObject([
+          { name: "a", version: "1.0.0", integrity: "verified" },
+        ]);
+        expect(yield* Effect.promise(fixture.readHistory)).toEqual({
+          version: 1,
+          completed: ["a"],
+        });
+        expect((yield* fixture.start()).managed).toEqual(recovered.managed);
       }),
   );
 
   for (const version of ["1.0.0", "2.0.0"]) {
     it.effect(
-      `leaves a replacement at version ${version} unmanaged after interrupted publication`,
+      `compares replacement files at version ${version} after interrupted publication`,
       () =>
         Effect.gen(function* () {
           const fixture = yield* Effect.promise(makeFixture);
@@ -383,20 +519,54 @@ describe("bundled script packages", () => {
           yield* Effect.promise(() => writePackage(destination, "a", version));
 
           const result = yield* fixture.start();
-          expect(result.managed).toEqual([]);
-          expect(result.catalog.packages).toMatchObject([
-            { name: "a", version, integrity: "unmanaged" },
-          ]);
-          expect(yield* Effect.promise(fixture.readHistory)).toMatchObject({
+          if (version === "1.0.0") {
+            expect(result.managed).toMatchObject([
+              { name: "a", directory: "a" },
+            ]);
+            expect(result.catalog.packages).toMatchObject([
+              { name: "a", version: "1.0.0", integrity: "verified" },
+            ]);
+          } else {
+            expect(result.managed).toEqual([]);
+            expect(result.catalog.packages).toMatchObject([
+              { name: "a", version: "2.0.0", integrity: "unmanaged" },
+            ]);
+          }
+          expect(yield* Effect.promise(fixture.readHistory)).toEqual({
+            version: 1,
             completed: ["a"],
-            pending: [],
           });
         }),
     );
   }
 
+  for (const change of ["added", "removed"]) {
+    it.effect(`leaves a package with ${change} files unmanaged`, () =>
+      Effect.gen(function* () {
+        const fixture = yield* Effect.promise(makeFixture);
+        yield* Effect.promise(() => fixture.addPackage("a"));
+        yield* fixture.start(true);
+        const destination = join(fixture.workspace, "packages", "a");
+        yield* Effect.promise(() =>
+          change === "added"
+            ? write(join(destination, "extra.txt"), "user file")
+            : fs.rm(join(destination, "index.js")),
+        );
+        const result = yield* fixture.start();
+        expect(result.managed).toEqual([]);
+        expect(result.catalog.packages).toMatchObject([
+          { name: "a", integrity: "unmanaged" },
+        ]);
+        expect(yield* Effect.promise(fixture.readHistory)).toEqual({
+          version: 1,
+          completed: ["a"],
+        });
+      }),
+    );
+  }
+
   it.effect(
-    "does not adopt a symlink to the original published directory",
+    "seeds a regular folder around a symlink after interrupted publication",
     () =>
       Effect.gen(function* () {
         const fixture = yield* Effect.promise(makeFixture);
@@ -409,30 +579,34 @@ describe("bundled script packages", () => {
           fs.symlink(original, destination, "junction"),
         );
 
-        expect((yield* fixture.start()).managed).toEqual([]);
-        expect(yield* Effect.promise(fixture.readHistory)).toMatchObject({
+        expect((yield* fixture.start()).managed).toMatchObject([
+          { name: "a", directory: "a-2" },
+        ]);
+        expect(
+          (yield* Effect.promise(() => fs.lstat(destination))).isSymbolicLink(),
+        ).toBe(true);
+        expect(yield* Effect.promise(fixture.readHistory)).toEqual({
+          version: 1,
           completed: ["a"],
-          pending: [],
         });
       }),
   );
 
-  it.effect(
-    "does not restore a package deleted after publication but before registration",
-    () =>
-      Effect.gen(function* () {
-        const fixture = yield* Effect.promise(makeFixture);
-        yield* Effect.promise(() => fixture.addPackage("a"));
-        yield* fixture.start(true);
-        yield* Effect.promise(() =>
-          fs.rm(join(fixture.workspace, "packages", "a"), { recursive: true }),
-        );
-        expect((yield* fixture.start()).catalog.packages).toEqual([]);
-        expect(yield* Effect.promise(fixture.readHistory)).toMatchObject({
-          completed: ["a"],
-          pending: [],
-        });
-      }),
+  it.effect("reseeds a package removed before completion is recorded", () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(makeFixture);
+      yield* Effect.promise(() => fixture.addPackage("a"));
+      yield* fixture.start(true);
+      yield* Effect.promise(() =>
+        fs.rm(join(fixture.workspace, "packages", "a"), { recursive: true }),
+      );
+      expect((yield* fixture.start()).catalog.packages).toMatchObject([
+        { name: "a", integrity: "verified" },
+      ]);
+      expect(yield* Effect.promise(fixture.readHistory)).toMatchObject({
+        completed: ["a"],
+      });
+    }),
   );
 
   it.effect(
@@ -478,12 +652,11 @@ describe("bundled script packages", () => {
         expect((yield* fixture.start()).managed).toEqual([replacement]);
         expect(yield* Effect.promise(fixture.readHistory)).toMatchObject({
           completed: ["a"],
-          pending: [],
         });
       }),
   );
 
-  it.effect("resumes a staged package when publication was interrupted", () =>
+  it.effect("cleans failed staging and retries with the current bundle", () =>
     Effect.gen(function* () {
       const fixture = yield* Effect.promise(makeFixture);
       yield* Effect.promise(() => fixture.addPackage("a"));
@@ -501,18 +674,28 @@ describe("bundled script packages", () => {
         });
       yield* fixture.start();
       failure.mockRestore();
-      expect((yield* Effect.promise(fixture.readHistory)).pending).toHaveLength(
-        1,
-      );
+      expect(yield* Effect.promise(fixture.readHistory)).toEqual({
+        version: 1,
+        completed: [],
+      });
+      expect(
+        (yield* Effect.promise(() => fs.readdir(fixture.workspace))).filter(
+          (name) => name.startsWith(".lucent-package-seed-"),
+        ),
+      ).toEqual([]);
       expect(
         yield* Effect.promise(() =>
           pathExists(join(fixture.workspace, "packages", "a")),
         ),
       ).toBe(false);
+      yield* Effect.promise(() => fixture.addPackage("a", "a", "2.0.0"));
       expect((yield* fixture.start()).catalog.packages).toMatchObject([
-        { name: "a", integrity: "verified" },
+        { name: "a", version: "2.0.0", integrity: "verified" },
       ]);
-      expect((yield* Effect.promise(fixture.readHistory)).pending).toEqual([]);
+      expect(yield* Effect.promise(fixture.readHistory)).toEqual({
+        version: 1,
+        completed: ["a"],
+      });
     }),
   );
 
@@ -565,46 +748,5 @@ describe("bundled package snapshots", () => {
     await expect(
       copyBundledScriptPackage(source, join(fixture.root, "copy")),
     ).rejects.toThrow("Symbolic links");
-  });
-});
-
-describe("bundled package setup ownership", () => {
-  it("allows one owner and releases the claim for later setup", async () => {
-    const fixture = await makeFixture();
-    const lock = join(fixture.root, "setup.lock");
-    const release = await acquireBundledScriptPackageLock(lock);
-    expect(release).toBeDefined();
-    expect(await acquireBundledScriptPackageLock(lock)).toBeUndefined();
-    await release?.();
-    const next = await acquireBundledScriptPackageLock(lock);
-    expect(next).toBeDefined();
-    await next?.();
-  });
-
-  it("allows only one startup to recover a crashed owner's claim despite PID reuse", async () => {
-    const fixture = await makeFixture();
-    const lock = join(fixture.root, "setup.lock");
-    await write(
-      join(lock, "owner.json"),
-      JSON.stringify({ pid: process.pid, token: "a".repeat(32) }),
-    );
-
-    const releases = await Promise.all(
-      Array.from({ length: 3 }, () => acquireBundledScriptPackageLock(lock)),
-    );
-    expect(releases.filter((release) => release !== undefined)).toHaveLength(1);
-    await Promise.all(releases.map((release) => release?.()));
-    const next = await acquireBundledScriptPackageLock(lock);
-    expect(next).toBeDefined();
-    await next?.();
-  });
-
-  it("leaves an unreadable owner record untouched", async () => {
-    const fixture = await makeFixture();
-    const lock = join(fixture.root, "setup.lock");
-    const ownerPath = join(lock, "owner.json");
-    await write(ownerPath, "{broken");
-    await expect(acquireBundledScriptPackageLock(lock)).rejects.toThrow();
-    expect(await fs.readFile(ownerPath, "utf8")).toBe("{broken");
   });
 });
