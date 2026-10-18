@@ -77,6 +77,7 @@ describe("DesktopApplicationMenu logging", () => {
           awaitQuit: Effect.succeed("will-quit" as const),
           isForcedExit: Effect.succeed(false),
           isQuitting: Effect.succeed(false),
+          isQuittingSync: () => false,
           attachObservability: Effect.void,
           register: Effect.void,
         }),

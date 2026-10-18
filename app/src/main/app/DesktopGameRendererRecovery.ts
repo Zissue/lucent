@@ -21,6 +21,7 @@ import {
   type RendererLifetime,
 } from "../window/DesktopWindows";
 import { logFailure } from "../../shared/logFailure";
+import { DesktopLifecycle } from "./DesktopLifecycle";
 
 const RECOVERY_MESSAGE =
   "The client was reloaded because the script stopped responding.";
@@ -60,7 +61,7 @@ export interface DesktopGameRendererRecoveryDependencies {
   readonly onWebContentsCreated: (
     listener: (contents: RecoverableGameWebContents) => void,
   ) => () => void;
-  readonly onBeforeQuit: (listener: () => void) => () => void;
+  readonly isQuitting: DesktopLifecycle["Service"]["isQuittingSync"];
   readonly showRecoveryPrompt: (
     parentWindowId: number | undefined,
   ) => Effect.Effect<number, unknown>;
@@ -119,7 +120,6 @@ export const makeDesktopGameRendererRecovery = (
   const executions = new WeakMap<RendererLifetime, number>();
   const intentionalRendererCrashes = new WeakSet<RendererLifetime>();
   const observedContents = new Map<number, () => void>();
-  let appIsQuitting = false;
 
   const hasActiveExecution = (lifetime: RendererLifetime): boolean =>
     (executions.get(lifetime) ?? 0) > 0;
@@ -138,7 +138,9 @@ export const makeDesktopGameRendererRecovery = (
     Effect.map(
       dependencies.describe(target.id),
       (info) =>
-        info?.lifetime === lifetime && !target.isDestroyed() && !appIsQuitting,
+        info?.lifetime === lifetime &&
+        !target.isDestroyed() &&
+        !dependencies.isQuitting(),
     );
 
   const beginScriptExecution: DesktopGameRendererRecoveryShape["beginScriptExecution"] =
@@ -221,7 +223,7 @@ export const makeDesktopGameRendererRecovery = (
       const info = yield* dependencies.describe(target.id);
       const pending = pendingPrompts.get(target.id);
       if (
-        appIsQuitting ||
+        dependencies.isQuitting() ||
         target.isDestroyed() ||
         info?.kind !== "game" ||
         (pending !== undefined &&
@@ -294,7 +296,7 @@ export const makeDesktopGameRendererRecovery = (
             return;
           if (
             intentionalRendererCrashes.delete(lifetime) ||
-            appIsQuitting ||
+            dependencies.isQuitting() ||
             !isRecoverableRendererCrash(event.reason)
           )
             return;
@@ -312,9 +314,6 @@ export const makeDesktopGameRendererRecovery = (
       }),
     );
 
-    const unsubscribeBeforeQuit = dependencies.onBeforeQuit(() => {
-      appIsQuitting = true;
-    });
     const observe = (contents: RecoverableGameWebContents): void => {
       if (observedContents.has(contents.id)) return;
       const handleUnresponsive = (): void =>
@@ -343,8 +342,6 @@ export const makeDesktopGameRendererRecovery = (
     const unsubscribeCreated = dependencies.onWebContentsCreated(observe);
     yield* Effect.addFinalizer(() =>
       Effect.sync(() => {
-        appIsQuitting = true;
-        unsubscribeBeforeQuit();
         unsubscribeCreated();
         for (const cleanup of observedContents.values()) cleanup();
         pendingPrompts.clear();
@@ -362,12 +359,14 @@ export const makeDesktopGameRendererRecovery = (
 const makeLiveDesktopGameRendererRecovery = Effect.gen(function* () {
   const accounts = yield* Accounts;
   const dialog = yield* ElectronDialog;
+  const lifecycle = yield* DesktopLifecycle;
   const windows = yield* DesktopWindows;
 
   return makeDesktopGameRendererRecovery({
     allWebContents: () => webContents.getAllWebContents(),
     describe: windows.describe,
     observe: windows.observe,
+    isQuitting: lifecycle.isQuittingSync,
     onWebContentsCreated: (listener) => {
       const handleCreated = (
         _event: ElectronEvent,
@@ -375,11 +374,6 @@ const makeLiveDesktopGameRendererRecovery = Effect.gen(function* () {
       ): void => listener(contents);
       app.on("web-contents-created", handleCreated);
       return () => app.removeListener("web-contents-created", handleCreated);
-    },
-    onBeforeQuit: (listener) => {
-      const handleBeforeQuit = (): void => listener();
-      app.on("before-quit", handleBeforeQuit);
-      return () => app.removeListener("before-quit", handleBeforeQuit);
     },
     showRecoveryPrompt: (parentWindowId) =>
       dialog
