@@ -214,15 +214,17 @@ const makeDesktopApplicationMenu = Effect.gen(function* () {
           message: "Unable to start the performance trace.",
         },
       } as const;
-      yield* Effect.logError(
-        "Performance trace action failed",
-        Cause.fail(cause),
-      ).pipe(
-        Effect.annotateLogs({
-          component: "chromium-performance-recording",
-          data: { operation, message: copy[operation].message },
-        }),
-      );
+      if (operation !== "save") {
+        yield* Effect.logError(
+          "Performance trace action failed",
+          Cause.fail(cause),
+        ).pipe(
+          Effect.annotateLogs({
+            component: "chromium-performance-recording",
+            data: { operation, message: copy[operation].message },
+          }),
+        );
+      }
       yield* dialog.showMessageBox({
         type: "warning",
         title: copy[operation].title,

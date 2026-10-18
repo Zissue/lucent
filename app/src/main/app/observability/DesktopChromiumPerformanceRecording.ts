@@ -149,7 +149,7 @@ interface ChromiumHeapCheckpoint {
 
 interface ActiveChromiumPerformanceRecording {
   readonly availableCategoriesAtStart: readonly string[];
-  failedMetricsAppendCount: number;
+  failedResourceSampleCount: number;
   readonly heapCheckpoints: ChromiumHeapCheckpoint[];
   readonly metadata: {
     readonly appVersion: string;
@@ -232,7 +232,7 @@ const makeDesktopChromiumPerformanceRecording = Effect.gen(function* () {
                 durationMs: Math.max(0, endedAtMs - current.startedAtMs),
                 endedAt: DateTime.formatIso(DateTime.makeUnsafe(endedAtMs)),
               }),
-          failedMetricsAppendCount: current.failedMetricsAppendCount,
+          failedResourceSampleCount: current.failedResourceSampleCount,
           heapCheckpoints: current.heapCheckpoints,
           mainResourceSampleIntervalMs: CHROMIUM_RESOURCE_SAMPLE_INTERVAL_MS,
           metadata: current.metadata,
@@ -291,7 +291,7 @@ const makeDesktopChromiumPerformanceRecording = Effect.gen(function* () {
       };
       const current: Omit<ActiveChromiumPerformanceRecording, "sampler"> = {
         availableCategoriesAtStart,
-        failedMetricsAppendCount: 0,
+        failedResourceSampleCount: 0,
         heapCheckpoints: [],
         metadata,
         resourceSampleCount: 0,
@@ -317,6 +317,24 @@ const makeDesktopChromiumPerformanceRecording = Effect.gen(function* () {
             .pipe(Effect.ignore),
         ),
       );
+      const recordSampleFailure = Effect.fnUntraced(function* (
+        cause: Cause.Cause<unknown>,
+      ) {
+        if (Cause.hasInterrupts(cause)) {
+          return yield* Effect.interrupt;
+        }
+        if (++current.failedResourceSampleCount === 1) {
+          yield* Effect.logWarning(
+            "Failed to record performance trace metrics",
+            cause,
+          ).pipe(
+            Effect.annotateLogs({
+              component: "chromium-performance-recording",
+              data: { sessionName: basename(sessionPath) },
+            }),
+          );
+        }
+      });
       const sampler = yield* Effect.gen(function* () {
         const metrics = yield* electronApp.getAppMetrics;
         const capturedAtMs = yield* Clock.currentTimeMillis;
@@ -332,28 +350,11 @@ const makeDesktopChromiumPerformanceRecording = Effect.gen(function* () {
           )
           .pipe(
             Effect.andThen(Effect.sync(() => current.resourceSampleCount++)),
-            Effect.catchCause((cause) =>
-              Cause.hasInterrupts(cause)
-                ? Effect.interrupt
-                : Effect.gen(function* () {
-                    if (++current.failedMetricsAppendCount === 1) {
-                      yield* Effect.logWarning(
-                        "Failed to append performance trace metrics",
-                      ).pipe(
-                        Effect.annotateLogs({
-                          component: "chromium-performance-recording",
-                          data: { sessionName: basename(sessionPath) },
-                        }),
-                      );
-                    }
-                  }),
-            ),
+            Effect.catchCause(recordSampleFailure),
             Effect.uninterruptible,
           );
       }).pipe(
-        Effect.catchCause((cause) =>
-          Cause.hasInterrupts(cause) ? Effect.interrupt : Effect.void,
-        ),
+        Effect.catchCause(recordSampleFailure),
         Effect.repeat(Schedule.spaced(CHROMIUM_RESOURCE_SAMPLE_INTERVAL_MS)),
         Effect.interruptible,
         Effect.forkIn(scope),
@@ -478,29 +479,28 @@ const makeDesktopChromiumPerformanceRecording = Effect.gen(function* () {
       yield* publishState;
       return yield* Effect.gen(function* () {
         yield* Fiber.interrupt(current.sampler);
-        const trace = yield* chromium
+        const traceError = yield* chromium
           .stopRecording(join(current.sessionPath, TRACE_FILE_NAME))
-          .pipe(
-            Effect.as({
-              status: "saved" as const,
-            }),
-            Effect.catch((cause) =>
-              Effect.succeed({
-                status: "failed" as const,
-                error: cause.message,
-              }),
-            ),
-          );
+          .pipe(Effect.as(undefined), Effect.catch(Effect.succeed));
         const endedAtMs = yield* Clock.currentTimeMillis;
         const manifestPath = join(current.sessionPath, MANIFEST_FILE_NAME);
-        yield* writeManifest(current, endedAtMs, trace);
+        yield* writeManifest(
+          current,
+          endedAtMs,
+          traceError === undefined
+            ? { status: "saved" }
+            : { status: "failed", error: traceError.message },
+        );
+        if (traceError !== undefined) {
+          return yield* traceError;
+        }
         yield* Effect.logInfo("Performance trace saved").pipe(
           Effect.annotateLogs({
             component: "chromium-performance-recording",
             data: { sessionName: basename(current.sessionPath) },
           }),
         );
-        return { manifestPath, trace };
+        return { manifestPath };
       }).pipe(
         Effect.mapError(
           (cause) =>
@@ -521,11 +521,6 @@ const makeDesktopChromiumPerformanceRecording = Effect.gen(function* () {
 
   yield* Effect.addFinalizer(() =>
     stop.pipe(
-      Effect.flatMap((saved) =>
-        saved?.trace.status === "failed"
-          ? Effect.fail(saved.trace.error)
-          : Effect.void,
-      ),
       Effect.catchCause((cause) =>
         Effect.logWarning(
           "Failed to save performance trace during shutdown",
@@ -543,7 +538,11 @@ const makeDesktopChromiumPerformanceRecording = Effect.gen(function* () {
     onChanged: changes.subscribe,
     start,
     stop: stop.pipe(
-      Effect.map((saved) => saved && { manifestPath: saved.manifestPath }),
+      Effect.onError((cause) =>
+        Effect.logWarning("Failed to save performance trace", cause).pipe(
+          Effect.annotateLogs({ component: "chromium-performance-recording" }),
+        ),
+      ),
     ),
   });
 });

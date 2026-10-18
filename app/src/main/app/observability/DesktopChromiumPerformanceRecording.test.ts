@@ -287,7 +287,7 @@ describe("Chromium performance recordings", () => {
           expect(manifest).toMatchObject({
             availableCategoriesAtStart: ["v8", "electron"],
             durationMs: 2500,
-            failedMetricsAppendCount: 0,
+            failedResourceSampleCount: 0,
             mainResourceSampleIntervalMs: 1000,
             metadata: { appVersion: "1.0.0", isDev: false },
             resourceSampleCount: 3,
@@ -394,12 +394,12 @@ describe("Chromium performance recordings", () => {
             '{"capturedAt":"2009-02-13T23:31:30.000Z","elapsedMs":0,"processes":[]}\n',
           );
           expect({
-            failedMetricsAppendCount: manifest.failedMetricsAppendCount,
+            failedResourceSampleCount: manifest.failedResourceSampleCount,
             resourceSampleCount: manifest.resourceSampleCount,
             warningsAfterFirstFailure,
             warnings: records.filter(({ level }) => level === "Warn"),
           }).toEqual({
-            failedMetricsAppendCount: 2,
+            failedResourceSampleCount: 2,
             resourceSampleCount: 1,
             warningsAfterFirstFailure: 1,
             warnings: [
@@ -411,7 +411,7 @@ describe("Chromium performance recordings", () => {
                   },
                 },
                 level: "Warn",
-                message: ["Failed to append performance trace metrics"],
+                message: ["Failed to record performance trace metrics"],
               },
             ],
           });
@@ -714,15 +714,31 @@ describe("Chromium performance recordings", () => {
     }),
   );
 
-  it.effect("preserves metrics when saving the trace fails", () =>
+  it.effect("reports a failed trace save while preserving metrics", () =>
     Effect.gen(function* () {
+      yield* TestClock.setTime(1234567890000);
       const root = yield* fixture;
+      const sessionPath = join(
+        root,
+        "chromium-performance-recordings",
+        `lucent-chromium-recording-2009-02-13T23-31-30-000Z-${process.pid}`,
+      );
+      const records: { level: string; message: unknown; cause: unknown }[] = [];
+      const logger = Logger.make((options) => {
+        records.push({
+          level: options.logLevel,
+          message: options.message,
+          cause: options.cause,
+        });
+      });
       yield* Effect.gen(function* () {
         const recording = yield* DesktopChromiumPerformanceRecording;
         yield* recording.start;
         yield* TestClock.adjust(1000);
-        const saved = yield* recording.stop;
-        expect(yield* readJson(saved!.manifestPath)).toMatchObject({
+        const result = yield* recording.stop.pipe(Effect.result);
+        expect(
+          yield* readJson(join(sessionPath, "manifest.json")),
+        ).toMatchObject({
           status: "complete",
           trace: {
             status: "failed",
@@ -734,18 +750,49 @@ describe("Chromium performance recordings", () => {
           resourceSamplesFileName: "metrics.jsonl",
         });
         expect(
-          (yield* readSamples(dirname(saved!.manifestPath))).map(
-            (sample) => sample.elapsedMs,
-          ),
+          (yield* readSamples(sessionPath)).map((sample) => sample.elapsedMs),
         ).toEqual([0, 1000]);
+        expect(result).toMatchObject({
+          _tag: "Failure",
+          failure: {
+            _tag: "DesktopChromiumPerformanceRecordingError",
+            message: `Failed to save the performance trace to ${sessionPath}.`,
+            cause: {
+              _tag: "ElectronChromiumPerformanceError",
+              operation: "stop-recording",
+            },
+          },
+        });
         expect(yield* recording.getState).toEqual({ status: "idle" });
+        expect(yield* recording.stop).toBeUndefined();
       }).pipe(
         Effect.provide(
           services(root, {
             stopRecording: () => Effect.fail(nativeFailure("stop-recording")),
           }),
         ),
+        Effect.provideService(Logger.CurrentLoggers, new Set([logger])),
       );
+      expect(records.map(({ level, message }) => ({ level, message }))).toEqual(
+        [
+          { level: "Info", message: ["Performance trace started"] },
+          { level: "Warn", message: ["Failed to save performance trace"] },
+        ],
+      );
+      expect(records[1]?.cause).toMatchObject({
+        reasons: [
+          {
+            _tag: "Fail",
+            error: {
+              _tag: "DesktopChromiumPerformanceRecordingError",
+              cause: {
+                _tag: "ElectronChromiumPerformanceError",
+                operation: "stop-recording",
+              },
+            },
+          },
+        ],
+      });
     }),
   );
 
@@ -791,38 +838,59 @@ describe("Chromium performance recordings", () => {
       }),
   );
 
-  it.effect("continues sampling after an unavailable metrics sample", () =>
-    Effect.gen(function* () {
-      const root = yield* fixture;
-      let calls = 0;
-      yield* Effect.gen(function* () {
-        const recording = yield* DesktopChromiumPerformanceRecording;
-        yield* recording.start;
-        yield* TestClock.adjust(2500);
-        const saved = yield* recording.stop;
-        expect(yield* readJson(saved!.manifestPath)).toMatchObject({
-          resourceSampleCount: 2,
-          resourceSamplesFileName: "metrics.jsonl",
+  it.effect(
+    "counts unavailable metrics samples and warns once while continuing",
+    () =>
+      Effect.gen(function* () {
+        const root = yield* fixture;
+        let calls = 0;
+        const records: { level: string; message: unknown }[] = [];
+        const logger = Logger.make((options) => {
+          records.push({ level: options.logLevel, message: options.message });
         });
-        expect(
-          (yield* readSamples(dirname(saved!.manifestPath))).map(
-            (sample) => sample.elapsedMs,
-          ),
-        ).toEqual([1000, 2000]);
-      }).pipe(
-        Effect.provide(
-          services(
-            root,
-            {},
-            Effect.suspend(() =>
-              ++calls === 2
-                ? Effect.die(new Error("Metrics unavailable"))
-                : Effect.succeed([]),
+        yield* Effect.gen(function* () {
+          const recording = yield* DesktopChromiumPerformanceRecording;
+          yield* recording.start;
+          yield* TestClock.adjust(1000);
+          expect(records.filter(({ level }) => level === "Warn")).toEqual([
+            {
+              level: "Warn",
+              message: ["Failed to record performance trace metrics"],
+            },
+          ]);
+          yield* TestClock.adjust(2500);
+          const saved = yield* recording.stop;
+          expect(yield* readJson(saved!.manifestPath)).toMatchObject({
+            failedResourceSampleCount: 2,
+            resourceSampleCount: 2,
+            resourceSamplesFileName: "metrics.jsonl",
+          });
+          expect(
+            (yield* readSamples(dirname(saved!.manifestPath))).map(
+              (sample) => sample.elapsedMs,
+            ),
+          ).toEqual([2000, 3000]);
+          expect(records.filter(({ level }) => level === "Warn")).toEqual([
+            {
+              level: "Warn",
+              message: ["Failed to record performance trace metrics"],
+            },
+          ]);
+        }).pipe(
+          Effect.provide(
+            services(
+              root,
+              {},
+              Effect.suspend(() =>
+                ++calls === 2 || calls === 3
+                  ? Effect.die(new Error("Metrics unavailable"))
+                  : Effect.succeed([]),
+              ),
             ),
           ),
-        ),
-      );
-    }),
+          Effect.provideService(Logger.CurrentLoggers, new Set([logger])),
+        );
+      }),
   );
 
   for (const failure of ["trace", "manifest", "trace-and-manifest"] as const) {
@@ -905,6 +973,7 @@ describe("Chromium performance recordings", () => {
         status: "complete",
         durationMs: 2500,
         resourceSampleCount: 0,
+        failedResourceSampleCount: 0,
         resourceSamplesFileName: "metrics.jsonl",
       });
       expect(yield* readSamples(dirname(tracePath))).toEqual([]);
