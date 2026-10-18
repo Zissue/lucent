@@ -161,11 +161,11 @@ describe("Chromium performance recordings", () => {
           yield* recording.captureHeapSnapshot.pipe(Effect.flip),
         ).toMatchObject({
           _tag: "DesktopChromiumPerformanceRecordingError",
-          message: "No Chromium performance recording is active.",
+          message: "No performance trace is active.",
         });
         yield* recording.start;
         expect(yield* recording.start.pipe(Effect.flip)).toMatchObject({
-          message: "A Chromium performance recording is already recording.",
+          message: "A performance trace is already recording.",
         });
         yield* TestClock.adjust(100);
         const checkpoint = yield* recording.captureHeapSnapshot;
@@ -220,7 +220,7 @@ describe("Chromium performance recordings", () => {
             },
           },
           level: "Info",
-          message: ["Chromium performance recording started"],
+          message: ["Performance trace started"],
         },
         {
           annotations: {
@@ -230,7 +230,7 @@ describe("Chromium performance recordings", () => {
             },
           },
           level: "Info",
-          message: ["Chromium performance recording saved"],
+          message: ["Performance trace saved"],
         },
       ]);
     }),
@@ -683,7 +683,7 @@ describe("Chromium performance recordings", () => {
         const recording = yield* DesktopChromiumPerformanceRecording;
         expect(yield* recording.start.pipe(Effect.flip)).toMatchObject({
           _tag: "DesktopChromiumPerformanceRecordingError",
-          message: "Failed to start the Chromium performance recording.",
+          message: "Failed to start the performance trace.",
         });
         expect(yield* recording.getState).toEqual({ status: "idle" });
         expect(
@@ -855,9 +855,7 @@ describe("Chromium performance recordings", () => {
         expect(records.filter(({ level }) => level === "Warn")).toEqual([
           {
             level: "Warn",
-            message: [
-              "Failed to save Chromium performance recording during shutdown",
-            ],
+            message: ["Failed to save performance trace during shutdown"],
           },
         ]);
       }),

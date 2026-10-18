@@ -259,7 +259,7 @@ const makeDesktopChromiumPerformanceRecording = Effect.gen(function* () {
     Effect.gen(function* () {
       if (active !== undefined) {
         return yield* new DesktopChromiumPerformanceRecordingError({
-          message: "A Chromium performance recording is already recording.",
+          message: "A performance trace is already recording.",
         });
       }
 
@@ -360,7 +360,7 @@ const makeDesktopChromiumPerformanceRecording = Effect.gen(function* () {
       );
       active = Object.assign(current, { sampler });
       yield* publishState;
-      yield* Effect.logInfo("Chromium performance recording started").pipe(
+      yield* Effect.logInfo("Performance trace started").pipe(
         Effect.annotateLogs({
           component: "chromium-performance-recording",
           data: { sessionName: basename(sessionPath) },
@@ -372,7 +372,7 @@ const makeDesktopChromiumPerformanceRecording = Effect.gen(function* () {
           ? cause
           : new DesktopChromiumPerformanceRecordingError({
               cause,
-              message: "Failed to start the Chromium performance recording.",
+              message: "Failed to start the performance trace.",
             }),
       ),
       Effect.uninterruptible,
@@ -384,7 +384,7 @@ const makeDesktopChromiumPerformanceRecording = Effect.gen(function* () {
       const current = active;
       if (current === undefined) {
         return yield* new DesktopChromiumPerformanceRecordingError({
-          message: "No Chromium performance recording is active.",
+          message: "No performance trace is active.",
         });
       }
       current.status = "snapshotting";
@@ -494,7 +494,7 @@ const makeDesktopChromiumPerformanceRecording = Effect.gen(function* () {
         const endedAtMs = yield* Clock.currentTimeMillis;
         const manifestPath = join(current.sessionPath, MANIFEST_FILE_NAME);
         yield* writeManifest(current, endedAtMs, trace);
-        yield* Effect.logInfo("Chromium performance recording saved").pipe(
+        yield* Effect.logInfo("Performance trace saved").pipe(
           Effect.annotateLogs({
             component: "chromium-performance-recording",
             data: { sessionName: basename(current.sessionPath) },
@@ -506,7 +506,7 @@ const makeDesktopChromiumPerformanceRecording = Effect.gen(function* () {
           (cause) =>
             new DesktopChromiumPerformanceRecordingError({
               cause,
-              message: `Failed to save the Chromium performance recording to ${current.sessionPath}.`,
+              message: `Failed to save the performance trace to ${current.sessionPath}.`,
             }),
         ),
         Effect.ensuring(
@@ -528,7 +528,7 @@ const makeDesktopChromiumPerformanceRecording = Effect.gen(function* () {
       ),
       Effect.catchCause((cause) =>
         Effect.logWarning(
-          "Failed to save Chromium performance recording during shutdown",
+          "Failed to save performance trace during shutdown",
           cause,
         ).pipe(
           Effect.annotateLogs({ component: "chromium-performance-recording" }),
