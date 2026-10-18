@@ -80,17 +80,6 @@ export class GitHubScriptPackageClientError extends Schema.TaggedError<GitHubScr
   }
 }
 
-export type GitHubCommitResolution =
-  | {
-      readonly status: "modified";
-      readonly commit: string;
-      readonly etag?: string;
-    }
-  | {
-      readonly status: "not-modified";
-      readonly etag?: string;
-    };
-
 export interface GitHubDirectoryResolution {
   readonly tree: string;
 }
@@ -104,10 +93,13 @@ export interface GitHubScriptPackageClientShape {
   }) => Effect.Effect<void, GitHubScriptPackageClientError>;
   readonly resolveCommit: (input: {
     readonly credentialId?: string;
-    readonly etag?: string;
+    readonly known?: { readonly etag: string; readonly commit: string };
     readonly repositoryUrl: string;
     readonly ref?: string;
-  }) => Effect.Effect<GitHubCommitResolution, GitHubScriptPackageClientError>;
+  }) => Effect.Effect<
+    { readonly commit: string; readonly etag?: string },
+    GitHubScriptPackageClientError
+  >;
   readonly resolveDirectory: (input: {
     readonly credentialId?: string;
     readonly repositoryUrl: string;
@@ -213,7 +205,7 @@ export const layer = Layer.effect(
             ...(input.credentialId === undefined
               ? {}
               : { credentialId: input.credentialId }),
-            ...(input.etag === undefined ? {} : { etag: input.etag }),
+            ...(input.known === undefined ? {} : { etag: input.known.etag }),
             maxBytes: SCRIPT_PACKAGE_METADATA_MAX_BYTES,
             timeoutMs: REQUEST_TIMEOUT_MS,
             ...(token === undefined ? {} : { token }),
@@ -221,10 +213,17 @@ export const layer = Layer.effect(
           });
           const etag = firstHttpHeader(response.headers, "etag");
           if (response.statusCode === 304) {
+            if (input.known === undefined) {
+              return yield* new GitHubScriptPackageClientError({
+                kind: "unexpected-response",
+                detail: "GitHub returned an unexpected not-modified response.",
+                statusCode: 304,
+              });
+            }
             return {
-              status: "not-modified",
-              ...(etag === undefined ? {} : { etag }),
-            } satisfies GitHubCommitResolution;
+              commit: input.known.commit,
+              etag: etag ?? input.known.etag,
+            };
           }
 
           return yield* Effect.try({
@@ -233,10 +232,9 @@ export const layer = Layer.effect(
                 JSON.parse(response.body.toString("utf8")),
               );
               return {
-                status: "modified",
                 commit: payload.sha,
                 ...(etag === undefined ? {} : { etag }),
-              } satisfies GitHubCommitResolution;
+              };
             },
             catch: clientError,
           });
