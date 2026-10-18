@@ -1,3 +1,6 @@
+import * as FileSystem from "effect/FileSystem";
+import * as PlatformError from "effect/PlatformError";
+import { layer as nodeFileSystemLayer } from "@effect/platform-node/NodeFileSystem";
 import { promises as fs } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
@@ -439,6 +442,7 @@ describe("discoverScriptCatalog", () => {
 const makeCatalogHarness = (
   onScan: Effect.Effect<void> = Effect.void,
   managedPackages: readonly ManagedScriptPackage[] = [],
+  fileSystemLayer: Layer.Layer<FileSystem.FileSystem> = nodeFileSystemLayer,
 ) =>
   Effect.gen(function* () {
     const workspace = yield* Effect.promise(makeWorkspace);
@@ -472,6 +476,7 @@ const makeCatalogHarness = (
       save: () => Effect.void,
     });
     const testLayer = scriptPackageCatalogLayer.pipe(
+      Layer.provide(fileSystemLayer),
       Layer.provide(
         Layer.mergeAll(
           Layer.succeed(DesktopEnvironment, environment),
@@ -486,6 +491,59 @@ const makeCatalogHarness = (
   });
 
 describe("ScriptPackageCatalog", () => {
+  it.effect("recreates missing catalog folders recursively", () =>
+    Effect.gen(function* () {
+      const { catalog, workspace } = yield* makeCatalogHarness();
+      yield* Effect.promise(() => fs.rm(workspace.root, { recursive: true }));
+      expect(yield* catalog.refresh).toMatchObject({
+        packages: [],
+        scriptCount: 0,
+      });
+      expect(
+        (yield* Effect.promise(() => fs.readdir(workspace.root))).sort(),
+      ).toEqual(["packages", "scripts"]);
+      expect(
+        (yield* Effect.promise(() =>
+          fs.stat(workspace.scriptsDir),
+        )).isDirectory(),
+      ).toBe(true);
+      expect(
+        (yield* Effect.promise(() =>
+          fs.stat(workspace.packagesDir),
+        )).isDirectory(),
+      ).toBe(true);
+    }),
+  );
+
+  it.effect("preserves scan errors and their native mkdir cause", () =>
+    Effect.gen(function* () {
+      const native = Object.assign(new Error("EACCES: permission denied"), {
+        code: "EACCES",
+      });
+      const failingFileSystem = FileSystem.layerNoop({
+        makeDirectory: () =>
+          Effect.fail(
+            PlatformError.systemError({
+              _tag: "PermissionDenied",
+              module: "FileSystem",
+              method: "makeDirectory",
+              cause: native,
+            }),
+          ),
+      });
+      const { catalog } = yield* makeCatalogHarness(
+        Effect.void,
+        [],
+        failingFileSystem,
+      );
+      const error = yield* catalog.refresh.pipe(Effect.flip);
+      expect(error._tag).toBe("ScriptPackageCatalogError");
+      expect(error.operation).toBe("scan");
+      expect(error.message).toBe("Failed to scan the script package catalog.");
+      expect(error.cause).toBe(native);
+    }),
+  );
+
   it.effect("logs unexpected package inspection failures once per scan", () =>
     Effect.gen(function* () {
       const { catalog, workspace } = yield* makeCatalogHarness();

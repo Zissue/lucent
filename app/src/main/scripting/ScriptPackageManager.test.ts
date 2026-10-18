@@ -233,6 +233,7 @@ const makeManagerHarness = (options: {
     Layer.provide(
       Layer.mergeAll(
         environmentLayer,
+        desktopFileSystemLayer,
         stateLayer,
         Layer.succeed(
           ElectronApp,
