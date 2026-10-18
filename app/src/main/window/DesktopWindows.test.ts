@@ -49,6 +49,7 @@ import {
 } from "./DesktopWindowCatalog";
 import {
   DesktopWindows,
+  DesktopWindowError,
   layer as desktopWindowsLayer,
   type DesktopRendererEvent,
   type DesktopRendererInfo,
@@ -286,6 +287,40 @@ const startOpen = (
   );
 
 describe("DesktopWindows.open", () => {
+  it.effect(
+    "adds tabs without revealing the host unless opened explicitly",
+    () => {
+      const harness = makeHarness(true);
+      return Effect.gen(function* () {
+        const windows = yield* DesktopWindows;
+        expect(yield* windows.open("game")).toBe(104);
+        const window = harness.created.get(101)!;
+        window.hide();
+
+        const added = yield* windows.addGameView(103);
+        expect(added.sessions.map((session) => session.id)).toEqual([
+          "104",
+          "105",
+        ]);
+        expect(added.selectedId).toBe("105");
+        expect(window.isVisible()).toBe(false);
+
+        expect(
+          yield* windows.open("game", {
+            gameHostTarget: { kind: "game-view", rendererId: 104 },
+          }),
+        ).toBe(106);
+        expect(window.isVisible()).toBe(true);
+        expect((yield* windows.getGameViewHostState(103)).selectedId).toBe(
+          "106",
+        );
+        expect([...harness.created.keys()]).toEqual([
+          101, 102, 103, 104, 105, 106,
+        ]);
+      }).pipe(Effect.provide(harness.layer));
+    },
+  );
+
   it.effect.each([-2, -3])(
     "leaves native game load failure logging to the observer for code %s",
     (code) => {
@@ -672,6 +707,193 @@ describe("DesktopWindows.open", () => {
   });
 });
 
+describe("DesktopWindows lookup failures", () => {
+  it.effect(
+    "reports missing renderers and hosts as specific typed errors",
+    () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const windows = yield* DesktopWindows;
+        const failures: readonly [
+          Effect.Effect<unknown, DesktopWindowError>,
+          string,
+        ][] = [
+          [
+            windows.getOwnedRendererIds(99),
+            "Desktop window owner is not open: 99",
+          ],
+          [windows.getGameViewHostState(99), "Game view host is not open: 99"],
+          [
+            windows.getGameViewPresentation(99),
+            "Game renderer is not open: 99",
+          ],
+          [
+            windows.setGameViewName(99, "Alice"),
+            "Game renderer is not open: 99",
+          ],
+        ];
+        for (const [effect, detail] of failures) {
+          const error = yield* Effect.flip(effect);
+          expect(error).toBeInstanceOf(DesktopWindowError);
+          expect(error.message).toBe(detail);
+          expect(error.cause).toBeUndefined();
+        }
+      }).pipe(Effect.provide(harness.layer));
+    },
+  );
+
+  it.effect("reports logical owner violations directly", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const windows = yield* DesktopWindows;
+      for (const [kind, options, detail] of [
+        [
+          "settings",
+          { ownerRendererId: 99 },
+          "settings does not accept a logical owner window.",
+        ],
+        ["packets", undefined, "packets requires an owning game window."],
+        [
+          "packets",
+          { ownerRendererId: 99 },
+          "The owning window must be an open root game: 99",
+        ],
+      ] as const) {
+        const error = yield* Effect.flip(windows.open(kind, options));
+        expect(error.message).toBe(detail);
+        expect(error.cause).toBeUndefined();
+      }
+    }).pipe(Effect.provide(harness.layer));
+  });
+
+  it.effect.each([false, true])(
+    "keeps native presentation failures typed with tabs %s",
+    (useGameTabs) => {
+      const harness = makeHarness(useGameTabs);
+      return Effect.gen(function* () {
+        const windows = yield* DesktopWindows;
+        const id = yield* windows.open("game");
+        expect(yield* windows.getGameViewPresentation(id)).toEqual({
+          active: true,
+          layout: "focused",
+          tiled: false,
+          windowActive: false,
+        });
+        const cause = new Error("Object has been destroyed");
+        const focus = vi
+          .spyOn(harness.created.get(101)!, "isFocused")
+          .mockImplementation(() => {
+            throw cause;
+          });
+        try {
+          const error = yield* Effect.flip(windows.getGameViewPresentation(id));
+          expect(error.message).toBe(
+            `Failed to resolve game view presentation: ${id}`,
+          );
+          expect(error.cause).toBe(cause);
+          if (useGameTabs) {
+            const lifetime = (yield* windows.lifetime(id))!;
+            expect(
+              (yield* Effect.flip(windows.markRendererReady(lifetime))).cause,
+            ).toBe(cause);
+            expect(
+              (yield* Effect.flip(windows.setGameViewName(id, "Alice"))).cause,
+            ).toBe(cause);
+            const updateError = yield* Effect.flip(
+              windows.updateGameViewHost(103, {
+                type: "group-targets",
+                ids: [],
+              }),
+            );
+            expect(updateError.message).toBe(
+              "Failed to update game view host.",
+            );
+            expect(updateError.cause).toBe(cause);
+          }
+        } finally {
+          focus.mockRestore();
+        }
+      }).pipe(Effect.provide(harness.layer));
+    },
+  );
+
+  it.effect("leaves unexpected readiness failures as defects", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const windows = yield* DesktopWindows;
+      const id = yield* windows.open("game");
+      const lifetime = (yield* windows.lifetime(id))!;
+      const current = vi.spyOn(lifetime, "isCurrent").mockImplementation(() => {
+        throw new TypeError("invalid lifetime");
+      });
+      try {
+        expect(
+          Exit.hasDies(yield* Effect.exit(windows.markRendererReady(lifetime))),
+        ).toBe(true);
+      } finally {
+        current.mockRestore();
+      }
+    }).pipe(Effect.provide(harness.layer));
+  });
+
+  it.effect(
+    "validates target membership, uniqueness, and complete tab ordering",
+    () => {
+      const harness = makeHarness(true);
+      return Effect.gen(function* () {
+        const windows = yield* DesktopWindows;
+        yield* windows.open("game");
+        yield* windows.addGameView(103);
+        for (const type of ["group-targets", "reorder"] as const) {
+          for (const ids of [[104, 104], [999]]) {
+            const error = yield* Effect.flip(
+              windows.updateGameViewHost(103, { type, ids }),
+            );
+            expect(error.message).toBe(
+              type === "reorder"
+                ? "Game view order must contain every open view exactly once."
+                : "Group targets must be unique tabs in this game window.",
+            );
+          }
+        }
+        expect(
+          (yield* Effect.flip(
+            windows.updateGameViewHost(103, { type: "reorder", ids: [104] }),
+          )).message,
+        ).toBe("Game view order must contain every open view exactly once.");
+        expect(
+          (yield* windows.updateGameViewHost(103, {
+            type: "group-targets",
+            ids: [104],
+          })).groupTargetIds,
+        ).toEqual(["104"]);
+        expect(
+          (yield* windows.updateGameViewHost(103, {
+            type: "reorder",
+            ids: [105, 104],
+          })).sessions.map((session) => session.id),
+        ).toEqual(["105", "104"]);
+      }).pipe(Effect.provide(harness.layer));
+    },
+  );
+
+  it.effect("keeps the seven-tab limit at tab creation", () => {
+    const harness = makeHarness(true);
+    return Effect.gen(function* () {
+      const windows = yield* DesktopWindows;
+      yield* windows.open("game");
+      for (let index = 0; index < 6; index++) yield* windows.addGameView(103);
+      const error = yield* Effect.flip(windows.addGameView(103));
+      expect(error.message).toBe("This game window already has 7 views.");
+      expect(
+        (yield* windows.getGameViewHostState(103)).sessions.map(
+          (session) => session.id,
+        ),
+      ).toEqual(["104", "105", "106", "107", "108", "109", "110"]);
+    }).pipe(Effect.provide(harness.layer));
+  });
+});
+
 describe("DesktopWindows.getVisibleParentWindowId", () => {
   it.effect("cancels a hide-on-close event synchronously before hiding", () => {
     const harness = makeHarness();
@@ -842,7 +1064,7 @@ describe("DesktopWindows renderer generations", () => {
           const error = yield* Effect.flip(
             windows.markRendererReady(firstLifetime),
           );
-          expect(error.detail).toBe("Failed to mark renderer ready: 101");
+          expect(error.detail).toBe("Renderer generation 1 is unavailable.");
         }).pipe(Effect.provide(harness.layer));
       },
     );

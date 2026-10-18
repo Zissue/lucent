@@ -417,7 +417,7 @@ export const makeDesktopGameHosts = (options: DesktopGameHostsOptions) => {
     focus: GameViewSelectionFocus,
   ): void => {
     const record = host.tabs.find((record) => record.rendererId === id);
-    if (record === undefined || record.gameHostRendererId !== host.rendererId) {
+    if (record === undefined) {
       throw new Error(`Game view does not belong to this host: ${id}`);
     }
 
