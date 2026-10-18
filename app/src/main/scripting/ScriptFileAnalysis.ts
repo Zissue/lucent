@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
-import { basename } from "node:path";
+import { basename, resolve as resolvePath } from "node:path";
 
 import * as Effect from "effect/Effect";
 import * as Cause from "effect/Cause";
-import * as Exit from "effect/Exit";
+import * as Schema from "effect/Schema";
 import * as Schedule from "effect/Schedule";
 import { FileSystem } from "effect/FileSystem";
 import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
@@ -14,24 +14,31 @@ import {
   readFileBounded,
 } from "../filesystem/BoundedFileSystem";
 
-import {
-  formatBytes,
-  SCRIPT_ANALYSIS_CACHE_MAX_BYTES,
-  SCRIPT_ANALYSIS_CACHE_MAX_ENTRIES,
-  SCRIPT_FILE_MAX_BYTES,
-} from "./ScriptLimits";
-import {
-  analyzeScriptSource,
-  type ScriptSourceAnalysis,
-} from "./ScriptSourceParser";
-import type { ScriptFileAnalysisResolution } from "./ScriptFileWorkerProtocol";
+import type { ScriptFile } from "@lucent/core/scriptInputs";
+import { formatBytes, SCRIPT_FILE_MAX_BYTES } from "./ScriptLimits";
+import { analyzeScriptSource } from "./ScriptSourceParser";
 
-interface ExtractionCacheEntry {
-  readonly analysis: ScriptSourceAnalysis;
-  readonly weight: number;
+export interface ScriptFileAnalysis {
+  readonly file: ScriptFile;
+  readonly fingerprint: string;
+  readonly requirements: readonly string[];
 }
-const extractionCache = new Map<string, ExtractionCacheEntry>();
-let extractionCacheBytes = 0;
+
+export class ScriptFilesError extends Schema.TaggedError<ScriptFilesError>()(
+  "ScriptFilesError",
+  {
+    path: Schema.String,
+    detail: Schema.String,
+    cause: Schema.optionalKey(Schema.Defect()),
+    failureCause: Schema.optionalKey(
+      Schema.Cause(Schema.Defect(), Schema.Defect()),
+    ),
+  },
+) {
+  override get message(): string {
+    return this.detail;
+  }
+}
 
 const errorCode = (error: unknown): string | undefined => {
   if (typeof error !== "object" || error === null) return undefined;
@@ -48,27 +55,7 @@ const errorMessage = (error: unknown): string => {
     : "Script file processing failed.";
 };
 
-const errorDetailsText = (error: unknown): string | undefined =>
-  error instanceof Error && error.stack?.trim() !== ""
-    ? error.stack
-    : undefined;
-
-const failed = (
-  path: string,
-  error: unknown,
-  failureCause?: Cause.Cause<unknown>,
-): ScriptFileAnalysisResolution => {
-  const detailsText = errorDetailsText(error);
-  return {
-    status: "failed",
-    path,
-    message: errorMessage(error),
-    ...(detailsText === undefined ? {} : { detailsText }),
-    ...(failureCause === undefined ? {} : { failureCause }),
-  };
-};
-
-const isMissingError = (error: unknown): boolean => {
+export const isMissingError = (error: unknown): boolean => {
   const code = errorCode(error);
   return code === "ENOENT" || code === "ENOTDIR";
 };
@@ -85,12 +72,7 @@ const readStableFile = Effect.fnUntraced(
       try: () => fs.stat(path),
       catch: (cause) => cause,
     });
-    const before = yield* stat.pipe(
-      Effect.catch((cause) =>
-        isMissingError(cause) ? Effect.succeed(undefined) : Effect.fail(cause),
-      ),
-    );
-    if (before === undefined) return { missing: true } as const;
+    const before = yield* stat;
     const sizeError = () =>
       new ScriptFileValidationError(
         `Script file exceeds the ${formatBytes(SCRIPT_FILE_MAX_BYTES)} limit: ${path}.`,
@@ -137,95 +119,47 @@ const readStableFile = Effect.fnUntraced(
   ),
 );
 
-const cachedAnalysis = Effect.fnUntraced(function* (
-  source: string,
-  path: string,
-  revision: string,
-) {
-  const key = `${revision}:${path}`;
-  const cached = extractionCache.get(key);
-  if (cached !== undefined) {
-    extractionCache.delete(key);
-    extractionCache.set(key, cached);
-    return cached.analysis;
-  }
-
-  const analysis = yield* analyzeScriptSource(source, path);
-  const entry: ExtractionCacheEntry = {
-    analysis,
-    weight: Buffer.byteLength(source, "utf8"),
-  };
-  extractionCache.set(key, entry);
-  extractionCacheBytes += entry.weight;
-  while (
-    extractionCache.size > SCRIPT_ANALYSIS_CACHE_MAX_ENTRIES ||
-    extractionCacheBytes > SCRIPT_ANALYSIS_CACHE_MAX_BYTES
-  ) {
-    const oldestKey = extractionCache.keys().next().value;
-    if (oldestKey === undefined) break;
-    const oldest = extractionCache.get(oldestKey);
-    extractionCache.delete(oldestKey);
-    extractionCacheBytes -= oldest?.weight ?? 0;
-  }
-  return analysis;
-});
-
-export const analyzeScriptFile = Effect.fnUntraced(function* (
-  path: string,
-): Effect.fn.Return<ScriptFileAnalysisResolution> {
-  const read = yield* Effect.exit(
-    readStableFile(path).pipe(Effect.provide(NodeFileSystem.layer)),
-  );
-  if (Exit.isFailure(read)) {
-    const error = Cause.squash(read.cause);
-    return isMissingError(error)
-      ? { status: "missing", path }
-      : failed(
-          path,
-          error,
-          error instanceof ScriptFileValidationError
-            ? undefined
-            : Cause.fail(error),
-        );
-  }
-  const stable = read.value;
-  if ("missing" in stable) return { status: "missing", path };
-
+export const analyzeScriptFile = Effect.fnUntraced(function* (path: string) {
+  path = resolvePath(path);
   return yield* Effect.gen(function* () {
-    const { contents } = stable;
-    const source = contents.toString("utf8");
-    const revision = createHash("sha256").update(contents).digest("hex");
-    const analysis = yield* cachedAnalysis(source, path, revision);
-    return {
-      status: "found" as const,
-      analysis: {
-        file: {
-          inputs: analysis.inputs,
-          name: basename(path),
-          path,
-          revision,
-          source,
-        },
-        fingerprint: stable.fingerprint,
-        requirements: analysis.requirements,
-      },
-    };
-  }).pipe(
-    Effect.catchCause((cause) =>
-      Effect.succeed(
-        failed(
-          path,
-          Cause.squash(cause),
-          Cause.hasDies(cause) || Cause.hasInterruptsOnly(cause)
-            ? cause
-            : undefined,
-        ),
+    const stable = yield* readStableFile(path).pipe(
+      Effect.provide(NodeFileSystem.layer),
+    );
+    const source = stable.contents.toString("utf8");
+    const revision = createHash("sha256").update(stable.contents).digest("hex");
+    const analysis = yield* analyzeScriptSource(source, path).pipe(
+      Effect.mapError(
+        (cause) => new ScriptFilesError({ path, detail: cause.message, cause }),
       ),
-    ),
+    );
+    return {
+      file: {
+        inputs: analysis.inputs,
+        name: basename(path),
+        path,
+        revision,
+        source,
+      },
+      fingerprint: stable.fingerprint,
+      requirements: analysis.requirements,
+    } satisfies ScriptFileAnalysis;
+  }).pipe(
+    Effect.catchCause((failureCause) => {
+      const cause = Cause.squash(failureCause);
+      if (cause instanceof ScriptFilesError) return Effect.fail(cause);
+      const missing = isMissingError(cause);
+      return Effect.fail(
+        new ScriptFilesError({
+          path,
+          detail: missing
+            ? `Script file was not found at ${path}.`
+            : errorMessage(cause),
+          cause,
+          ...(missing || cause instanceof ScriptFileValidationError
+            ? {}
+            : { failureCause }),
+        }),
+      );
+    }),
   );
 });
-
-export const processScriptFile = (
-  path: string,
-): Promise<ScriptFileAnalysisResolution> =>
-  Effect.runPromise(analyzeScriptFile(path));

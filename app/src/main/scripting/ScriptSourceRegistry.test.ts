@@ -11,7 +11,7 @@ import { vi } from "vitest";
 import { desktopLogRecord } from "../../shared/logRecord";
 
 import { makeScriptFiles, ScriptFiles } from "./ScriptFiles";
-import { processScriptFile } from "./ScriptFileAnalysis";
+import * as ScriptSourceParser from "./ScriptSourceParser";
 import {
   discoverScriptCatalog,
   type DiscoveredScriptCatalog,
@@ -47,7 +47,7 @@ const makeWorkspace = async () => {
 
 const makeLayer = (
   discovery: DiscoveredScriptCatalog,
-  scriptFiles = makeScriptFiles((path) => processScriptFile(path)),
+  scriptFiles = makeScriptFiles(),
   limits?: Parameters<typeof makeScriptSourceRegistry>[0],
   catalogOverrides: Partial<ScriptPackageCatalogShape> = {},
 ) => {
@@ -99,6 +99,7 @@ const makeLayer = (
 };
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(
     directories
       .splice(0)
@@ -128,7 +129,7 @@ describe("script source dependency discovery", () => {
         }),
       );
       const bothReading = yield* Deferred.make<void>();
-      const scriptFiles = makeScriptFiles((path) => processScriptFile(path));
+      const scriptFiles = makeScriptFiles();
       let sharedReads = 0;
       let otherReads = 0;
       const registry = yield* ScriptSourceRegistry.pipe(
@@ -215,7 +216,7 @@ describe("script source dependency discovery", () => {
           }),
         );
         const bothReading = yield* Deferred.make<void>();
-        const scriptFiles = makeScriptFiles((path) => processScriptFile(path));
+        const scriptFiles = makeScriptFiles();
         let sharedReads = 0;
         const registry = yield* ScriptSourceRegistry.pipe(
           Effect.provide(
@@ -362,6 +363,53 @@ describe("script source dependency discovery", () => {
           "tools",
         ]);
       }),
+  );
+
+  it.effect("snapshots a package script with a 3 MiB vendor module", () =>
+    Effect.gen(function* () {
+      const workspace = yield* Effect.promise(makeWorkspace);
+      const packageRoot = join(workspace.packagesDir, "tools");
+      const vendorSource = "exports.value = 7;\n".padEnd(3 * 1024 * 1024, " ");
+      yield* Effect.promise(() =>
+        Promise.all([
+          write(
+            join(packageRoot, "package.json"),
+            JSON.stringify({ name: "tools", version: "1.0.0" }),
+          ),
+          write(
+            join(packageRoot, "scripts", "run.js"),
+            'require("../vendor"); module.exports = function* run() {};',
+          ),
+          write(join(packageRoot, "vendor.js"), vendorSource),
+        ]),
+      );
+      const discovery = yield* Effect.promise(() =>
+        discoverScriptCatalog({
+          currentVersion: "1.0.0",
+          packagesDir: workspace.packagesDir,
+          scriptsDir: workspace.scriptsDir,
+        }),
+      );
+      const registry = yield* ScriptSourceRegistry.pipe(
+        Effect.provide(makeLayer(discovery)),
+      );
+
+      const file = yield* registry.readReference({
+        kind: "package",
+        packageName: "tools",
+        path: "scripts/run.js",
+      });
+
+      expect(file.snapshot?.modules.map((module) => module.id)).toEqual([
+        "package:tools:scripts/run.js",
+        "package:tools:vendor.js",
+      ]);
+      expect(
+        file.snapshot?.modules.find(
+          (module) => module.id === "package:tools:vendor.js",
+        )?.source,
+      ).toBe(vendorSource);
+    }),
   );
 
   it.effect("resolves package scripts and imports on prerelease builds", () =>
@@ -563,7 +611,7 @@ describe("script source dependency discovery", () => {
 
 describe("terminal script resolution logging", () => {
   for (const method of ["resolvePath", "resolveReference"] as const) {
-    it.effect(`logs one worker failure through ${method}`, () =>
+    it.effect(`logs one analyzer failure through ${method}`, () =>
       Effect.gen(function* () {
         const workspace = yield* Effect.promise(makeWorkspace);
         const path = join(workspace.scriptsDir, "entry.js");
@@ -577,15 +625,11 @@ describe("terminal script resolution logging", () => {
             scriptsDir: workspace.scriptsDir,
           }),
         );
+        vi.spyOn(ScriptSourceParser, "analyzeScriptSource").mockReturnValue(
+          Effect.die(new Error("Analyzer defect")),
+        );
         const registry = yield* ScriptSourceRegistry.pipe(
-          Effect.provide(
-            makeLayer(
-              discovery,
-              makeScriptFiles(() =>
-                Promise.reject(new Error("worker crashed")),
-              ),
-            ),
-          ),
+          Effect.provide(makeLayer(discovery)),
         );
         const logs: unknown[] = [];
         const operation =
@@ -604,7 +648,7 @@ describe("terminal script resolution logging", () => {
         expect(result).toMatchObject({
           status: "failed",
           path: "entry.js",
-          message: "worker crashed",
+          message: "Analyzer defect",
         });
         expect(logs).toEqual([
           {

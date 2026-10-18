@@ -16,7 +16,6 @@ import {
 
 import {
   formatBytes,
-  SCRIPT_FILE_MAX_BYTES,
   SCRIPT_PACKAGE_FILE_MAX_BYTES,
   SCRIPT_PACKAGE_MAX_FILES,
 } from "./ScriptLimits";
@@ -95,7 +94,7 @@ const readStableFileEffect = Effect.fnUntraced(function* (
 
 export const readStableFile = async (
   path: string,
-  maxBytes = SCRIPT_FILE_MAX_BYTES,
+  maxBytes: number,
 ): Promise<Buffer> => {
   const exit = await Effect.runPromiseExit(
     readStableFileEffect(path, maxBytes).pipe(
