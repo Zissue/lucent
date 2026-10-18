@@ -26,7 +26,6 @@ import { ElectronApp } from "../electron/ElectronApp";
 import {
   GitHubScriptPackageClient,
   GitHubScriptPackageClientError,
-  type GitHubCommitResolution,
   type GitHubScriptPackageClientShape,
 } from "./GitHubScriptPackageClient";
 import {
@@ -131,6 +130,10 @@ const refuseRenamesInto = (
   );
 };
 
+type CommitResolution = Effect.Success<
+  ReturnType<GitHubScriptPackageClientShape["resolveCommit"]>
+>;
+
 const makeManagerHarness = (options: {
   readonly assetsDir?: string;
   readonly archivePath?: string | ((ref: string | undefined) => string);
@@ -145,8 +148,8 @@ const makeManagerHarness = (options: {
   readonly managed?: ManagedScriptPackage;
   readonly onDownload?: () => Promise<void>;
   readonly resolution:
-    | GitHubCommitResolution
-    | Effect.Effect<GitHubCommitResolution, GitHubScriptPackageClientError>;
+    | CommitResolution
+    | Effect.Effect<CommitResolution, GitHubScriptPackageClientError>;
   readonly workspaceDir: string;
 }) => {
   let downloadCount = 0;
@@ -288,7 +291,7 @@ const seededBundledPackage = Effect.gen(function* () {
   const harness = makeManagerHarness({
     assetsDir,
     workspaceDir,
-    resolution: { status: "modified", commit: REMOTE_COMMIT },
+    resolution: { commit: REMOTE_COMMIT },
   });
   yield* initializeBundledScriptPackages.pipe(
     Effect.provide(harness.layer),
@@ -409,7 +412,7 @@ describe("script package folders", () => {
         const workspaceDir = join(root, "workspace");
         const harness = makeManagerHarness({
           workspaceDir,
-          resolution: { status: "modified", commit: REMOTE_COMMIT },
+          resolution: { commit: REMOTE_COMMIT },
         });
         const { manager } = yield* harness.services;
         const created = yield* Deferred.make<string>();
@@ -495,7 +498,6 @@ describe("script package folders", () => {
           },
         },
         resolution: {
-          status: "modified",
           commit: REMOTE_COMMIT,
         },
         workspaceDir,
@@ -551,7 +553,7 @@ describe("script package folders", () => {
             resolvedCommit: INSTALLED_COMMIT,
           },
         },
-        resolution: { status: "modified", commit: REMOTE_COMMIT },
+        resolution: { commit: REMOTE_COMMIT },
         workspaceDir,
       });
       const manager = yield* ScriptPackageManager.pipe(
@@ -588,7 +590,6 @@ describe("script package updates", () => {
             etag: "stale-etag-without-a-commit",
           },
           resolution: {
-            status: "modified",
             commit: INSTALLED_COMMIT,
             etag: "current-etag",
           },
@@ -600,7 +601,39 @@ describe("script package updates", () => {
 
         expect(result.status).toBe("unchanged");
         expect(harness.downloadCount()).toBe(0);
-        expect(harness.requests[0]?.etag).toBeUndefined();
+        expect(harness.requests[0]?.known).toBeUndefined();
+        expect(yield* state.get(PACKAGE_NAME)).toMatchObject({
+          etag: "current-etag",
+          remoteRevision: { kind: "commit", sha: INSTALLED_COMMIT },
+          update: { status: "current" },
+        });
+      }),
+  );
+
+  it.effect(
+    "does not download when the cached remote commit is installed",
+    () =>
+      Effect.gen(function* () {
+        const { managed, workspaceDir } = yield* installedPackage;
+        const harness = makeManagerHarness({
+          managed: {
+            ...managed,
+            etag: "current-etag",
+            remoteRevision: { kind: "commit", sha: INSTALLED_COMMIT },
+          },
+          resolution: { commit: INSTALLED_COMMIT, etag: "current-etag" },
+          workspaceDir,
+        });
+        const { manager, state } = yield* harness.services;
+
+        const result = yield* manager.update({ packageName: PACKAGE_NAME });
+
+        expect(result.status).toBe("unchanged");
+        expect(harness.downloadCount()).toBe(0);
+        expect(harness.requests[0]?.known).toEqual({
+          etag: "current-etag",
+          commit: INSTALLED_COMMIT,
+        });
         expect(yield* state.get(PACKAGE_NAME)).toMatchObject({
           etag: "current-etag",
           remoteRevision: { kind: "commit", sha: INSTALLED_COMMIT },
@@ -619,7 +652,7 @@ describe("script package updates", () => {
         );
         const harness = makeManagerHarness({
           managed,
-          resolution: { status: "modified", commit: INSTALLED_COMMIT },
+          resolution: { commit: INSTALLED_COMMIT },
           workspaceDir,
         });
         const { manager, catalog } = yield* harness.services;
@@ -692,7 +725,6 @@ describe("script package updates", () => {
             },
           },
           resolution: {
-            status: "modified",
             commit: INSTALLED_COMMIT,
             etag: "current-etag",
           },
@@ -725,51 +757,59 @@ describe("script package updates", () => {
       }),
   );
 
-  it.effect("keeps an observed update available after a 304 response", () =>
-    Effect.gen(function* () {
-      const { workspaceDir } = yield* installedPackage;
-      const harness = makeManagerHarness({
-        workspaceDir,
-        managed: {
-          directory: PACKAGE_NAME,
-          etag: "remote-etag",
-          files: {},
-          installedAt: "2026-07-27T00:00:00.000Z",
-          name: PACKAGE_NAME,
-          remoteRevision: { kind: "commit", sha: REMOTE_COMMIT },
-          source: {
-            kind: "repository",
-            repositoryUrl: "https://github.com/example/package",
-            resolvedCommit: INSTALLED_COMMIT,
+  it.effect(
+    "keeps an observed update available for an unchanged remote commit",
+    () =>
+      Effect.gen(function* () {
+        const { workspaceDir } = yield* installedPackage;
+        const harness = makeManagerHarness({
+          workspaceDir,
+          managed: {
+            directory: PACKAGE_NAME,
+            etag: "remote-etag",
+            files: {},
+            installedAt: "2026-07-27T00:00:00.000Z",
+            name: PACKAGE_NAME,
+            remoteRevision: { kind: "commit", sha: REMOTE_COMMIT },
+            source: {
+              kind: "repository",
+              repositoryUrl: "https://github.com/example/package",
+              resolvedCommit: INSTALLED_COMMIT,
+            },
+            update: {
+              status: "available",
+              checkedAt: "2026-08-01T00:00:00.000Z",
+              revision: { kind: "commit", sha: REMOTE_COMMIT },
+            },
           },
+          resolution: { commit: REMOTE_COMMIT, etag: "remote-etag" },
+        });
+        const { manager, state } = yield* harness.services;
+
+        const catalog = yield* manager.checkUpdate({
+          packageName: PACKAGE_NAME,
+        });
+
+        expect(harness.requests[0]?.known).toEqual({
+          etag: "remote-etag",
+          commit: REMOTE_COMMIT,
+        });
+        expect(harness.downloadCount()).toBe(0);
+        expect(yield* state.get(PACKAGE_NAME)).toMatchObject({
+          etag: "remote-etag",
+          remoteRevision: { kind: "commit", sha: REMOTE_COMMIT },
           update: {
             status: "available",
-            checkedAt: "2026-08-01T00:00:00.000Z",
             revision: { kind: "commit", sha: REMOTE_COMMIT },
           },
-        },
-        resolution: { status: "not-modified" },
-      });
-      const { manager, state } = yield* harness.services;
-
-      const catalog = yield* manager.checkUpdate({ packageName: PACKAGE_NAME });
-
-      expect(harness.requests[0]?.etag).toBe("remote-etag");
-      expect(yield* state.get(PACKAGE_NAME)).toMatchObject({
-        etag: "remote-etag",
-        remoteRevision: { kind: "commit", sha: REMOTE_COMMIT },
-        update: {
-          status: "available",
-          revision: { kind: "commit", sha: REMOTE_COMMIT },
-        },
-      });
-      expect(catalog.packages[0]).toMatchObject({
-        update: {
-          status: "available",
-          revision: { kind: "commit", sha: REMOTE_COMMIT },
-        },
-      });
-    }),
+        });
+        expect(catalog.packages[0]).toMatchObject({
+          update: {
+            status: "available",
+            revision: { kind: "commit", sha: REMOTE_COMMIT },
+          },
+        });
+      }),
   );
 
   it.effect(
@@ -793,7 +833,7 @@ describe("script package updates", () => {
               subdirectory: PACKAGE_SUBDIRECTORY,
             },
           },
-          resolution: { status: "modified", commit: REMOTE_COMMIT },
+          resolution: { commit: REMOTE_COMMIT },
         });
         const { manager, state } = yield* harness.services;
 
@@ -871,7 +911,7 @@ describe("script package updates", () => {
             subdirectory: PACKAGE_SUBDIRECTORY,
           },
         },
-        resolution: { status: "modified", commit: REMOTE_COMMIT },
+        resolution: { commit: REMOTE_COMMIT },
         workspaceDir,
       });
       const { manager, state } = yield* harness.services;
@@ -924,7 +964,7 @@ describe("script package replacement failures", () => {
       const harness = makeManagerHarness({
         archivePath,
         managed,
-        resolution: { status: "modified", commit: REMOTE_COMMIT },
+        resolution: { commit: REMOTE_COMMIT },
         workspaceDir,
       });
       const { manager, state } = yield* harness.services;
@@ -969,7 +1009,7 @@ describe("script package replacement failures", () => {
               cause: new Error("Disk full."),
             }),
           ),
-        resolution: { status: "modified", commit: REMOTE_COMMIT },
+        resolution: { commit: REMOTE_COMMIT },
         workspaceDir,
       });
       const { manager, state, catalog } = yield* harness.services;
@@ -1000,7 +1040,7 @@ describe("script package replacement failures", () => {
         const harness = makeManagerHarness({
           archivePath,
           managed,
-          resolution: { status: "modified", commit: REMOTE_COMMIT },
+          resolution: { commit: REMOTE_COMMIT },
           workspaceDir,
         });
         const manager = yield* ScriptPackageManager.pipe(
@@ -1041,7 +1081,7 @@ describe("script package replacement failures", () => {
               )
             : Effect.void,
         managed,
-        resolution: { status: "modified", commit: REMOTE_COMMIT },
+        resolution: { commit: REMOTE_COMMIT },
         workspaceDir,
       });
       const { manager, state } = yield* harness.services;
@@ -1075,7 +1115,7 @@ describe("script package replacement failures", () => {
         const harness = makeManagerHarness({
           archivePath,
           managed,
-          resolution: { status: "modified", commit: REMOTE_COMMIT },
+          resolution: { commit: REMOTE_COMMIT },
           workspaceDir,
         });
         const manager = yield* ScriptPackageManager.pipe(
@@ -1110,7 +1150,7 @@ describe("script package replacement failures", () => {
       const harness = makeManagerHarness({
         archivePath,
         managed,
-        resolution: { status: "modified", commit: REMOTE_COMMIT },
+        resolution: { commit: REMOTE_COMMIT },
         workspaceDir,
       });
       const { manager, state } = yield* harness.services;
@@ -1157,7 +1197,7 @@ describe("script package replacement failures", () => {
       const harness = makeManagerHarness({
         archivePath,
         managed,
-        resolution: { status: "modified", commit: REMOTE_COMMIT },
+        resolution: { commit: REMOTE_COMMIT },
         workspaceDir,
       });
       const { manager, state } = yield* harness.services;
@@ -1217,7 +1257,7 @@ describe("script package replacement failures", () => {
       const harness = makeManagerHarness({
         archivePath,
         managed,
-        resolution: { status: "modified", commit: REMOTE_COMMIT },
+        resolution: { commit: REMOTE_COMMIT },
         workspaceDir,
       });
       const { manager, state } = yield* harness.services;
@@ -1248,7 +1288,7 @@ describe("script package replacement failures", () => {
       const harness = makeManagerHarness({
         archivePath,
         managed,
-        resolution: { status: "modified", commit: REMOTE_COMMIT },
+        resolution: { commit: REMOTE_COMMIT },
         workspaceDir,
       });
       const { manager, catalog, state } = yield* harness.services;
@@ -1285,7 +1325,7 @@ describe("script package replacement failures", () => {
       );
       const harness = makeManagerHarness({
         archivePath,
-        resolution: { status: "modified", commit: REMOTE_COMMIT },
+        resolution: { commit: REMOTE_COMMIT },
         workspaceDir,
       });
       const { manager, catalog } = yield* harness.services;
@@ -1327,7 +1367,7 @@ describe("script package replacement failures", () => {
                 ),
               )
             : Effect.void,
-        resolution: { status: "modified", commit: REMOTE_COMMIT },
+        resolution: { commit: REMOTE_COMMIT },
         workspaceDir,
       });
       const { manager, state } = yield* harness.services;
@@ -1377,7 +1417,7 @@ describe("script package local modifications", () => {
       const harness = makeManagerHarness({
         archivePath,
         managed,
-        resolution: { status: "modified", commit: REMOTE_COMMIT },
+        resolution: { commit: REMOTE_COMMIT },
         workspaceDir,
       });
       const manager = yield* ScriptPackageManager.pipe(
@@ -1404,7 +1444,7 @@ describe("script package local modifications", () => {
         archivePath,
         managed,
         onDownload: () => write(join(destination, "index.js"), EDITED_SOURCE),
-        resolution: { status: "modified", commit: REMOTE_COMMIT },
+        resolution: { commit: REMOTE_COMMIT },
         workspaceDir,
       });
       const { manager, catalog } = yield* harness.services;
@@ -1431,7 +1471,7 @@ describe("script package local modifications", () => {
       const { destination, managed, workspaceDir } = yield* installedPackage;
       const harness = makeManagerHarness({
         managed,
-        resolution: { status: "modified", commit: REMOTE_COMMIT },
+        resolution: { commit: REMOTE_COMMIT },
         workspaceDir,
       });
       const { manager, catalog } = yield* harness.services;
@@ -1465,7 +1505,7 @@ describe("script package update check races", () => {
         const { destination, managed, workspaceDir } = yield* installedPackage;
         const harness = makeManagerHarness({
           managed,
-          resolution: { status: "modified", commit: INSTALLED_COMMIT },
+          resolution: { commit: INSTALLED_COMMIT },
           workspaceDir,
         });
         const { manager, catalog } = yield* harness.services;
@@ -1535,7 +1575,7 @@ describe("script package update check races", () => {
         const { managed, workspaceDir } = yield* installedPackage;
         const harness = makeManagerHarness({
           managed,
-          resolution: { status: "modified", commit: INSTALLED_COMMIT },
+          resolution: { commit: INSTALLED_COMMIT },
           workspaceDir,
         });
         const { manager, catalog } = yield* harness.services;
@@ -1602,7 +1642,7 @@ describe("script package update check races", () => {
         const { destination, managed, workspaceDir } = yield* installedPackage;
         const harness = makeManagerHarness({
           managed,
-          resolution: { status: "modified", commit: INSTALLED_COMMIT },
+          resolution: { commit: INSTALLED_COMMIT },
           workspaceDir,
         });
         const { manager, catalog } = yield* harness.services;
@@ -1703,7 +1743,7 @@ describe("script package update check races", () => {
       const { managed, workspaceDir } = yield* installedPackage;
       const harness = makeManagerHarness({
         managed,
-        resolution: { status: "modified", commit: INSTALLED_COMMIT },
+        resolution: { commit: INSTALLED_COMMIT },
         workspaceDir,
       });
       const { manager } = yield* harness.services;
@@ -1749,8 +1789,7 @@ describe("script package update check races", () => {
           ),
         resolution: Deferred.succeed(checkStarted, undefined).pipe(
           Effect.andThen(Deferred.await(finishCheck)),
-          Effect.as<GitHubCommitResolution>({
-            status: "modified",
+          Effect.as<CommitResolution>({
             commit: REMOTE_COMMIT,
           }),
         ),
@@ -1787,8 +1826,7 @@ describe("script package update check races", () => {
         managed,
         resolution: Deferred.succeed(checkStarted, undefined).pipe(
           Effect.andThen(Deferred.await(finishCheck)),
-          Effect.as<GitHubCommitResolution>({
-            status: "modified",
+          Effect.as<CommitResolution>({
             commit: REMOTE_COMMIT,
           }),
         ),
@@ -1832,8 +1870,7 @@ describe("script package update check races", () => {
               )
             : Effect.void,
         ).pipe(
-          Effect.as<GitHubCommitResolution>({
-            status: "modified",
+          Effect.as<CommitResolution>({
             commit: REMOTE_COMMIT,
           }),
         ),
@@ -1985,7 +2022,7 @@ describe("script package update check races", () => {
       const harness = makeManagerHarness({
         managed: initial,
         workspaceDir,
-        resolution: { status: "modified", commit: REMOTE_COMMIT },
+        resolution: { commit: REMOTE_COMMIT },
         directoryTree: Deferred.succeed(checkStarted, undefined).pipe(
           Effect.andThen(Deferred.await(finishCheck)),
           Effect.as(REMOTE_TREE),
@@ -2025,13 +2062,11 @@ describe("script package update check races", () => {
           resolveCommitCalls++ === 0
             ? Deferred.succeed(firstStarted, undefined).pipe(
                 Effect.andThen(Deferred.await(finishFirst)),
-                Effect.as<GitHubCommitResolution>({
-                  status: "modified",
+                Effect.as<CommitResolution>({
                   commit: INSTALLED_COMMIT,
                 }),
               )
-            : Effect.succeed<GitHubCommitResolution>({
-                status: "modified",
+            : Effect.succeed<CommitResolution>({
                 commit: REMOTE_COMMIT,
               }),
         ),
@@ -2090,7 +2125,7 @@ describe("script package update check races", () => {
               subdirectory: PACKAGE_SUBDIRECTORY,
             },
           },
-          resolution: { status: "modified", commit: REMOTE_COMMIT },
+          resolution: { commit: REMOTE_COMMIT },
           workspaceDir,
         });
         const { manager, catalog, state } = yield* harness.services;
@@ -2130,7 +2165,7 @@ describe("script package removal failures", () => {
       const harness = makeManagerHarness({
         managed,
         workspaceDir,
-        resolution: { status: "modified", commit: REMOTE_COMMIT },
+        resolution: { commit: REMOTE_COMMIT },
       });
       const { manager, state, catalog } = yield* harness.services;
       yield* catalog.getOverview;
@@ -2181,7 +2216,7 @@ describe("script package removal failures", () => {
       const harness = makeManagerHarness({
         managed,
         workspaceDir,
-        resolution: { status: "modified", commit: REMOTE_COMMIT },
+        resolution: { commit: REMOTE_COMMIT },
       });
       const { manager, state, catalog } = yield* harness.services;
       vi.spyOn(catalog, "removePackage").mockReturnValue(
@@ -2215,7 +2250,7 @@ describe("script package removal failures", () => {
         managed,
         workspaceDir,
         onRemove: failStateRemoval,
-        resolution: { status: "modified", commit: REMOTE_COMMIT },
+        resolution: { commit: REMOTE_COMMIT },
       });
       const { manager, state } = yield* harness.services;
       const error = yield* manager
@@ -2245,7 +2280,7 @@ describe("script package integrity rows", () => {
         const harness = makeManagerHarness({
           managed,
           workspaceDir,
-          resolution: { status: "modified", commit: INSTALLED_COMMIT },
+          resolution: { commit: INSTALLED_COMMIT },
         });
         const { manager, catalog } = yield* harness.services;
         yield* catalog.getOverview;
@@ -2288,7 +2323,7 @@ describe("script package integrity rows", () => {
             archivePath,
             managed,
             workspaceDir,
-            resolution: { status: "modified", commit: REMOTE_COMMIT },
+            resolution: { commit: REMOTE_COMMIT },
           });
           const { manager, catalog } = yield* harness.services;
           expect((yield* catalog.getOverview).packages[0]).toMatchObject({
@@ -2333,7 +2368,7 @@ describe("script package integrity rows", () => {
       const harness = makeManagerHarness({
         managed,
         workspaceDir,
-        resolution: { status: "modified", commit: REMOTE_COMMIT },
+        resolution: { commit: REMOTE_COMMIT },
       });
       const { manager, catalog } = yield* harness.services;
       yield* catalog.getOverview;
@@ -2394,7 +2429,6 @@ describe("script package restore", () => {
           archivePath: (ref) =>
             ref === INSTALLED_COMMIT ? initialArchive : archivePath,
           resolution: Effect.sync(() => ({
-            status: "modified",
             commit: remoteCommit,
           })),
         });
@@ -2456,7 +2490,7 @@ describe("script package restore", () => {
             kind: "not-found",
             detail: "Not found",
           }),
-          resolution: { status: "modified", commit: REMOTE_COMMIT },
+          resolution: { commit: REMOTE_COMMIT },
         });
         const { manager, state } = yield* harness.services;
         const error = yield* manager
@@ -2491,7 +2525,7 @@ describe("script package restore", () => {
               resolvedTree: INSTALLED_TREE,
             },
           },
-          resolution: { status: "modified", commit: REMOTE_COMMIT },
+          resolution: { commit: REMOTE_COMMIT },
         });
         const { manager, state } = yield* harness.services;
         const error = yield* manager
@@ -2555,7 +2589,7 @@ describe("script package restore", () => {
           archivePath,
           workspaceDir,
           managed: { ...managed, source: sourceRecord },
-          resolution: { status: "modified", commit: REMOTE_COMMIT },
+          resolution: { commit: REMOTE_COMMIT },
           directoryTree: REMOTE_TREE,
         });
         const { manager, state, catalog } = yield* harness.services;
@@ -2709,7 +2743,7 @@ describe("bundled package restore", () => {
         managed,
         workspaceDir,
         archivePath,
-        resolution: { status: "modified", commit: REMOTE_COMMIT },
+        resolution: { commit: REMOTE_COMMIT },
       });
       const { manager } = yield* harness.services;
       const error = yield* manager

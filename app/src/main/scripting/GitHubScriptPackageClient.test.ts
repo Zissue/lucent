@@ -24,11 +24,13 @@ const jsonResponse = (value: unknown): DesktopHttpResponse => ({
 const makeClientHarness = (responses: readonly DesktopHttpResponse[]) => {
   const pending = [...responses];
   const requests: URL[] = [];
+  const requestEtags: Array<string | undefined> = [];
   const api = GitHubApiClient.of({
     download: () => Effect.die("Unexpected download."),
     get: (options) =>
       Effect.gen(function* () {
         requests.push(options.url);
+        requestEtags.push(options.etag);
         const response = pending.shift();
         if (response === undefined)
           throw new Error("Unexpected GitHub request.");
@@ -44,7 +46,7 @@ const makeClientHarness = (responses: readonly DesktopHttpResponse[]) => {
         return response;
       }),
   });
-  return { layer: makeClientLayer(api), requests };
+  return { layer: makeClientLayer(api), requests, requestEtags };
 };
 
 const makeClientLayer = (api: GitHubApiClient["Service"]) => {
@@ -102,6 +104,99 @@ const makeControlledHarness = Effect.gen(function* () {
 const repositoryUrl = "https://github.com/example/tools";
 
 describe("GitHubScriptPackageClient", () => {
+  it.effect.each([
+    {
+      name: "without an ETag",
+      headers: {},
+      expected: { commit: "new-commit" },
+    },
+    {
+      name: "with a new ETag",
+      headers: { etag: '"new-etag"' },
+      expected: { commit: "new-commit", etag: '"new-etag"' },
+    },
+  ])("returns a modified commit $name", ({ headers, expected }) =>
+    Effect.gen(function* () {
+      const harness = makeClientHarness([
+        { ...jsonResponse({ sha: "new-commit" }), headers },
+      ]);
+      const client = yield* GitHubScriptPackageClient.pipe(
+        Effect.provide(harness.layer),
+      );
+
+      const result = yield* client.resolveCommit({
+        repositoryUrl,
+        known: { commit: "cached-commit", etag: '"cached-etag"' },
+      });
+
+      expect(result).toEqual(expected);
+      expect(harness.requestEtags).toEqual(['"cached-etag"']);
+    }),
+  );
+
+  it.effect.each([
+    {
+      name: "keeps the known ETag when none is returned",
+      headers: {},
+      expected: { commit: "cached-commit", etag: '"cached-etag"' },
+    },
+    {
+      name: "uses a returned ETag",
+      headers: { etag: '"new-etag"' },
+      expected: { commit: "cached-commit", etag: '"new-etag"' },
+    },
+  ])("returns the known commit on 304 and $name", ({ headers, expected }) =>
+    Effect.gen(function* () {
+      const harness = makeClientHarness([
+        {
+          ...jsonResponse(null),
+          body: Buffer.alloc(0),
+          headers,
+          statusCode: 304,
+          statusMessage: "Not Modified",
+        },
+      ]);
+      const client = yield* GitHubScriptPackageClient.pipe(
+        Effect.provide(harness.layer),
+      );
+
+      const result = yield* client.resolveCommit({
+        repositoryUrl,
+        known: { commit: "cached-commit", etag: '"cached-etag"' },
+      });
+
+      expect(result).toEqual(expected);
+      expect(harness.requestEtags).toEqual(['"cached-etag"']);
+    }),
+  );
+
+  it.effect("rejects a 304 without a known commit", () =>
+    Effect.gen(function* () {
+      const harness = makeClientHarness([
+        {
+          ...jsonResponse(null),
+          body: Buffer.alloc(0),
+          statusCode: 304,
+          statusMessage: "Not Modified",
+        },
+      ]);
+      const client = yield* GitHubScriptPackageClient.pipe(
+        Effect.provide(harness.layer),
+      );
+
+      const error = yield* client
+        .resolveCommit({ repositoryUrl })
+        .pipe(Effect.flip);
+
+      expect(error).toMatchObject({
+        _tag: "GitHubScriptPackageClientError",
+        kind: "unexpected-response",
+        statusCode: 304,
+      });
+      expect(harness.requestEtags).toEqual([undefined]);
+    }),
+  );
+
   it.effect("rejects an oversized commit response", () =>
     Effect.gen(function* () {
       const harness = makeClientHarness([
@@ -151,7 +246,7 @@ describe("GitHubScriptPackageClient", () => {
       yield* Deferred.succeed(release, undefined);
       expect(
         yield* client.resolveCommit({ repositoryUrl, ref: "next" }),
-      ).toEqual({ status: "modified", commit: "commit" });
+      ).toEqual({ commit: "commit" });
     }),
   );
 
