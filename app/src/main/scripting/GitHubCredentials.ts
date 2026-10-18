@@ -31,9 +31,6 @@ const GitHubCredentialsFileSchema = Schema.Struct({
   credentials: Schema.Array(GitHubCredentialSchema),
 });
 
-const decodeGitHubCredential = Schema.decodeUnknownOption(
-  GitHubCredentialSchema,
-);
 const decodeCredentialsFile = Schema.decodeUnknownOption(
   GitHubCredentialsFileSchema,
 );
@@ -225,7 +222,6 @@ export const layer = Layer.effect(
             label: input.label.trim(),
             token: input.token.trim(),
           };
-          decodeGitHubCredential(credential);
           const next = new Map(current);
           next.set(id, credential);
           return [next, summary(credential)] as const;
