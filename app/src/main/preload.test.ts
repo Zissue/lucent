@@ -2,7 +2,12 @@ import { runInThisContext } from "node:vm";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_APP_SETTINGS } from "@lucent/core/settings";
-import type { DesktopBridge } from "../shared/desktopBridge";
+import type { DesktopBridge, DesktopBridgeView } from "../shared/desktopBridge";
+import { DesktopRendererKindSchema } from "../shared/ipc/windows";
+import * as CombatProfilesIpcMethods from "./ipc/methods/combatProfiles";
+import * as EnvironmentIpcMethods from "./ipc/methods/environment";
+import * as GameViewsIpcMethods from "./ipc/methods/gameViews";
+import * as ScriptingIpcMethods from "./ipc/methods/scripting";
 
 const electron = vi.hoisted(() => ({
   bridge: undefined as DesktopBridge | undefined,
@@ -52,6 +57,7 @@ vi.mock("electron", () => {
   };
 
   return {
+    ipcMain: undefined,
     contextBridge: {
       executeInMainWorld: ({
         func,
@@ -115,12 +121,86 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-const loadBridge = async () => {
+const loadBridge = async (view?: DesktopBridgeView) => {
+  if (view !== undefined) {
+    process.argv = process.argv.filter(
+      (argument) => !argument.startsWith("--lucent__view="),
+    );
+    process.argv.push(`--lucent__view=${view}`);
+  }
   await import("./preload");
   if (electron.bridge === undefined)
     throw new Error("Preload did not expose desktop");
   return electron.bridge;
 };
+
+describe("preload view capabilities", () => {
+  const groups = {
+    combatProfiles: CombatProfilesIpcMethods,
+    environment: EnvironmentIpcMethods,
+    gameViewHost: GameViewsIpcMethods,
+    scripting: ScriptingIpcMethods,
+  };
+
+  it.each(DesktopRendererKindSchema.literals)(
+    "matches main-process sender permissions for %s",
+    async (view) => {
+      const bridge = await loadBridge(view);
+      for (const [namespace, methods] of Object.entries(groups)) {
+        const capability: unknown = Reflect.get(bridge, namespace);
+        for (const [name, method] of Object.entries(methods)) {
+          if (
+            typeof method !== "object" ||
+            method === null ||
+            !("allowedSenders" in method) ||
+            (namespace === "gameViewHost" &&
+              [
+                "closeCurrent",
+                "dispatchGroupOptionHotkey",
+                "getPresentation",
+              ].includes(name))
+          )
+            continue;
+
+          expect(
+            method.allowedSenders.some(
+              (sender: DesktopBridgeView) => sender === view,
+            ),
+            `${view}.${namespace}.${name}`,
+          ).toBe(
+            typeof capability === "object" &&
+              capability !== null &&
+              name in capability,
+          );
+        }
+      }
+    },
+  );
+
+  it.each([
+    ["game", "combatProfiles", ["getState", "onChanged"]],
+    ["follower", "combatProfiles", ["getState", "onChanged"]],
+    ["account-manager", "scripting", ["selectFile"]],
+    [
+      "game-group-controls",
+      "gameViewHost",
+      ["dispatchGroupCommand", "getState", "onChanged", "setGroupControlsOpen"],
+    ],
+  ] as const)(
+    "limits %s.%s to its callers",
+    async (view, namespace, members) => {
+      const bridge = await loadBridge(view);
+      const capability: unknown = Reflect.get(bridge, namespace);
+      if (typeof capability !== "object" || capability === null)
+        throw new Error(`Missing ${namespace} bridge`);
+      expect(
+        Object.keys(capability).toSorted((left, right) =>
+          left.localeCompare(right),
+        ),
+      ).toEqual(members.toSorted((left, right) => left.localeCompare(right)));
+    },
+  );
+});
 
 describe("preload event bridge", () => {
   it("delivers event payloads and removes the registered subscription", async () => {

@@ -9,7 +9,7 @@ import { DesktopScriptLibrary } from "../../scripting/DesktopScriptLibrary";
 import { DesktopWindows } from "../../window/DesktopWindows";
 import { DesktopIpc, makeDesktopIpcMethod } from "../DesktopIpc";
 
-const scriptingSenders = ["account-manager", "game"] as const;
+const scriptingSenders = ["game"] as const;
 
 export const listCredentials = makeDesktopIpcMethod({
   descriptor: ScriptingIpc.listCredentials,
@@ -185,7 +185,7 @@ export const resolveReference = makeDesktopIpcMethod({
 
 export const selectFile = makeDesktopIpcMethod({
   descriptor: ScriptingIpc.selectFile,
-  allowedSenders: scriptingSenders,
+  allowedSenders: ["account-manager"],
   handler: Effect.fn("desktop.ipc.scripting.selectFile")(function* () {
     const scripts = yield* DesktopScriptLibrary;
     return yield* scripts.selectFile;

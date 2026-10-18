@@ -84,7 +84,7 @@ export const clear = makeDesktopIpcMethod({
 
 export const addQuest = makeDesktopIpcMethod({
   descriptor: EnvironmentIpc.addQuest,
-  allowedSenders,
+  allowedSenders: ["game"],
   handler: (payload, sender) =>
     mutate(sender, (state) =>
       addEnvironmentQuest(state, payload.questId, payload.rewardItemId),
@@ -93,7 +93,7 @@ export const addQuest = makeDesktopIpcMethod({
 
 export const addQuests = makeDesktopIpcMethod({
   descriptor: EnvironmentIpc.addQuests,
-  allowedSenders,
+  allowedSenders: ["environment"],
   handler: (payload, sender) =>
     mutate(sender, (state) => addEnvironmentQuests(state, payload.quests)),
 });
@@ -153,14 +153,14 @@ export const setAutomationEnabled = makeDesktopIpcMethod({
 
 export const addItem = makeDesktopIpcMethod({
   descriptor: EnvironmentIpc.addItem,
-  allowedSenders,
+  allowedSenders: ["game"],
   handler: (payload, sender) =>
     mutate(sender, (state) => addEnvironmentItem(state, payload.name)),
 });
 
 export const addItems = makeDesktopIpcMethod({
   descriptor: EnvironmentIpc.addItems,
-  allowedSenders,
+  allowedSenders: ["environment"],
   handler: (payload, sender) =>
     mutate(sender, (state) => addEnvironmentItems(state, payload.names)),
 });
@@ -196,14 +196,14 @@ export const clearItems = makeDesktopIpcMethod({
 
 export const addBoost = makeDesktopIpcMethod({
   descriptor: EnvironmentIpc.addBoost,
-  allowedSenders,
+  allowedSenders: ["game"],
   handler: (payload, sender) =>
     mutate(sender, (state) => addEnvironmentBoost(state, payload.name)),
 });
 
 export const addBoosts = makeDesktopIpcMethod({
   descriptor: EnvironmentIpc.addBoosts,
-  allowedSenders,
+  allowedSenders: ["environment"],
   handler: (payload, sender) =>
     mutate(sender, (state) => addEnvironmentBoosts(state, payload.names)),
 });
@@ -223,7 +223,7 @@ export const clearBoosts = makeDesktopIpcMethod({
 
 export const fetchBoosts = makeDesktopIpcMethod({
   descriptor: EnvironmentIpc.fetchBoosts,
-  allowedSenders,
+  allowedSenders: ["environment"],
   handler: Effect.fn("desktop.ipc.environment.fetchBoosts")(
     function* (_payload, sender) {
       const environments = yield* GameEnvironments;
@@ -235,7 +235,7 @@ export const fetchBoosts = makeDesktopIpcMethod({
 
 export const withdrawBoosts = makeDesktopIpcMethod({
   descriptor: EnvironmentIpc.withdrawBoosts,
-  allowedSenders,
+  allowedSenders: ["environment"],
   handler: Effect.fn("desktop.ipc.environment.withdrawBoosts")(
     function* (payload, sender) {
       const environments = yield* GameEnvironments;

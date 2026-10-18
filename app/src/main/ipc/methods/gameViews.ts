@@ -123,7 +123,7 @@ export const getState = makeDesktopIpcMethod({
 
 export const add = makeDesktopIpcMethod({
   descriptor: GameViewsIpc.add,
-  allowedSenders: hostSenders,
+  allowedSenders: gameHostSenders,
   handler: Effect.fn("desktop.ipc.gameViews.add")(function* (_payload, sender) {
     const windows = yield* DesktopWindows;
     return yield* windows.addGameView(sender.rendererId);
@@ -132,7 +132,7 @@ export const add = makeDesktopIpcMethod({
 
 export const select = makeDesktopIpcMethod({
   descriptor: GameViewsIpc.select,
-  allowedSenders: hostSenders,
+  allowedSenders: gameHostSenders,
   handler: Effect.fn("desktop.ipc.gameViews.select")((payload, sender) =>
     updateHost(sender.rendererId, {
       type: "select",
@@ -144,7 +144,7 @@ export const select = makeDesktopIpcMethod({
 
 export const close = makeDesktopIpcMethod({
   descriptor: GameViewsIpc.close,
-  allowedSenders: hostSenders,
+  allowedSenders: gameHostSenders,
   handler: Effect.fn("desktop.ipc.gameViews.close")(
     function* (payload, sender) {
       const windows = yield* DesktopWindows;
@@ -164,7 +164,7 @@ export const close = makeDesktopIpcMethod({
 
 export const reorder = makeDesktopIpcMethod({
   descriptor: GameViewsIpc.reorder,
-  allowedSenders: hostSenders,
+  allowedSenders: gameHostSenders,
   handler: Effect.fn("desktop.ipc.gameViews.reorder")((payload, sender) =>
     updateHost(sender.rendererId, {
       type: "reorder",
@@ -175,7 +175,7 @@ export const reorder = makeDesktopIpcMethod({
 
 export const setLayout = makeDesktopIpcMethod({
   descriptor: GameViewsIpc.setLayout,
-  allowedSenders: hostSenders,
+  allowedSenders: gameHostSenders,
   handler: Effect.fn("desktop.ipc.gameViews.setLayout")((payload, sender) =>
     updateHost(sender.rendererId, {
       type: "layout",
@@ -221,7 +221,7 @@ export const syncTabBarLayout = makeDesktopIpcMethod({
 
 export const setGroupTargets = makeDesktopIpcMethod({
   descriptor: GameViewsIpc.setGroupTargets,
-  allowedSenders: hostSenders,
+  allowedSenders: gameHostSenders,
   handler: Effect.fn("desktop.ipc.gameViews.setGroupTargets")(
     (payload, sender) =>
       updateHost(sender.rendererId, {
@@ -233,7 +233,7 @@ export const setGroupTargets = makeDesktopIpcMethod({
 
 export const dispatchGroupCommand = makeDesktopIpcMethod({
   descriptor: GameViewsIpc.dispatchGroupCommand,
-  allowedSenders: hostSenders,
+  allowedSenders: ["game-group-controls"],
   handler: Effect.fn("desktop.ipc.gameViews.dispatchGroupCommand")(
     function* (request, sender) {
       const ipc = yield* DesktopIpc;
