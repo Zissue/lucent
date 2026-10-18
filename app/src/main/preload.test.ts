@@ -3,6 +3,7 @@ import type { DesktopBridge } from "../shared/desktopBridge";
 
 const electron = vi.hoisted(() => ({
   bridge: undefined as DesktopBridge | undefined,
+  invoke: vi.fn(),
   send: vi.fn(),
 }));
 
@@ -12,7 +13,7 @@ vi.mock("electron", () => ({
       electron.bridge = bridge;
     },
   },
-  ipcRenderer: { send: electron.send, on: vi.fn(), invoke: vi.fn() },
+  ipcRenderer: { send: electron.send, on: vi.fn(), invoke: electron.invoke },
 }));
 
 const argv = process.argv;
@@ -21,6 +22,7 @@ let events: EventTarget;
 beforeEach(() => {
   vi.resetModules();
   electron.send.mockReset();
+  electron.invoke.mockReset();
   electron.bridge = undefined;
   events = new EventTarget();
   vi.stubGlobal("window", events);
@@ -32,6 +34,7 @@ afterEach(() => {
   process.argv = argv;
   vi.unstubAllGlobals();
   vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 
 const loadBridge = async () => {
@@ -42,6 +45,28 @@ const loadBridge = async () => {
 };
 
 describe("preload log bridge", () => {
+  it("handles a failed game close without duplicating its main-process log", async () => {
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    electron.invoke.mockRejectedValue(new Error("Game close failed"));
+    const bridge = await loadBridge();
+    if (bridge.view !== "game") throw new Error("Expected game bridge");
+
+    bridge.gameView.close();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect({
+      invocations: electron.invoke.mock.calls,
+      consoleErrors: consoleError.mock.calls,
+      forwardedLogs: electron.send.mock.calls,
+    }).toEqual({
+      invocations: [["desktop:game-views:close-current", undefined]],
+      consoleErrors: [],
+      forwardedLogs: [],
+    });
+  });
+
   it("exposes all log levels outside debug mode with the view and error details", async () => {
     const bridge = await loadBridge();
     const error = new Error("x");

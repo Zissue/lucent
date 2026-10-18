@@ -1,11 +1,18 @@
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Predicate from "effect/Predicate";
 
 import {
   type IpcBridgeError,
   type IpcInvokeDescriptor,
   type IpcInvokeEnvelope,
 } from "../../shared/ipc";
+import { logFailure } from "../../shared/logFailure";
+
+const failureTag = (error: unknown): string =>
+  Predicate.hasProperty(error, "_tag") && Predicate.isString(error._tag)
+    ? error._tag
+    : "UnknownError";
 
 const errorMessage = (cause: unknown, fallback: string): string => {
   if (cause instanceof Error && cause.message.length > 0) {
@@ -50,21 +57,33 @@ export const createDesktopIpcInvokeHandler =
         Effect.map(
           (value) => ({ ok: true, value }) satisfies IpcInvokeEnvelope<unknown>,
         ),
-        Effect.tapCauseIf(
-          (cause) => Cause.hasDies(cause) || Cause.hasInterrupts(cause),
-          (cause) =>
-            Effect.logError("IPC handler failed unexpectedly", cause).pipe(
-              Effect.annotateLogs({
-                component: "ipc",
-                data: { channel: descriptor.channel },
-              }),
-            ),
-        ),
         Effect.catchCause((cause) =>
-          Effect.succeed({
-            ok: false,
-            error: bridgeError(descriptor.channel, "IPC_HANDLER_FAILED", cause),
-          } satisfies IpcInvokeEnvelope<unknown>),
+          Effect.gen(function* () {
+            if (!Cause.hasInterruptsOnly(cause)) {
+              const logCause = Cause.map(cause, failureTag);
+              yield* (
+                Cause.hasDies(cause)
+                  ? logFailure("IPC handler failed unexpectedly", logCause)
+                  : logFailure("IPC handler failed", logCause, {
+                      failure: "warning",
+                    })
+              ).pipe(
+                Effect.annotateLogs({
+                  component: "ipc",
+                  data: { channel: descriptor.channel },
+                  repeatKey: descriptor.channel,
+                }),
+              );
+            }
+            return {
+              ok: false,
+              error: bridgeError(
+                descriptor.channel,
+                "IPC_HANDLER_FAILED",
+                cause,
+              ),
+            } satisfies IpcInvokeEnvelope<unknown>;
+          }),
         ),
       ),
     );
