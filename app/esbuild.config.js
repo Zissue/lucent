@@ -66,7 +66,6 @@ const mainOptions = {
   entryNames: "[name]",
   entryPoints: {
     index: "src/main/index.ts",
-    "script-file-worker": "src/main/scripting/ScriptFileWorker.ts",
   },
   external: ["electron", ...wsOptionalNativeAddons],
   format: "cjs",

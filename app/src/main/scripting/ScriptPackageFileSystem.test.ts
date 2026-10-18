@@ -36,7 +36,7 @@ describe("readStableFile", () => {
       return stat(...args);
     });
 
-    expect((await readStableFile(path)).toString("utf8")).toBe("third");
+    expect((await readStableFile(path, 16)).toString("utf8")).toBe("third");
     expect(checks).toBe(6);
   });
 
@@ -53,7 +53,7 @@ describe("readStableFile", () => {
       return stat(...args);
     });
 
-    await expect(readStableFile(path)).rejects.toThrow(
+    await expect(readStableFile(path, 16)).rejects.toThrow(
       `File changed while it was being read: ${path}.`,
     );
     expect(await fs.readFile(path, "utf8")).toBe("initial!!!");

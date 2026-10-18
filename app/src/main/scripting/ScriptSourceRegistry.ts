@@ -25,12 +25,11 @@ import {
   resolveRelativeScriptModulePath,
   scriptModulePathCandidates,
 } from "@lucent/core/scriptPackages";
+import { logScriptFileResolutionFailure, ScriptFiles } from "./ScriptFiles";
 import {
-  logScriptFileResolutionFailure,
-  ScriptFiles,
   ScriptFilesError,
-} from "./ScriptFiles";
-import type { ScriptFileAnalysis } from "./ScriptFileWorkerProtocol";
+  type ScriptFileAnalysis,
+} from "./ScriptFileAnalysis";
 import type { DiscoveredScriptPackage } from "./ScriptCatalogDiscovery";
 import {
   ScriptPackageCatalog,

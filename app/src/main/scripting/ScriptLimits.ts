@@ -20,8 +20,6 @@ export const SCRIPT_PACKAGE_METADATA_MAX_BYTES = 16 * MiB;
 
 export const SCRIPT_SOURCE_CACHE_MAX_BYTES = 128 * MiB;
 export const SCRIPT_SOURCE_CACHE_MAX_ENTRIES = 1_024;
-export const SCRIPT_ANALYSIS_CACHE_MAX_BYTES = 32 * MiB;
-export const SCRIPT_ANALYSIS_CACHE_MAX_ENTRIES = 64;
 
 export const formatBytes = (bytes: number): string => {
   if (bytes % MiB === 0) return `${bytes / MiB} MiB`;
