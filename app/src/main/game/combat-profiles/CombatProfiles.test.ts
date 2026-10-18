@@ -382,6 +382,8 @@ describe("CombatProfiles", () => {
     (operation) =>
       Effect.gen(function* () {
         const writeStarted = yield* Deferred.make<void>();
+        const firstPublished = yield* Deferred.make<void>();
+        const releasePublication = yield* Deferred.make<void>();
         let watchWrites = false;
         const { combatProfiles, path } = yield* makeHarness((fs) => ({
           ...fs,
@@ -403,9 +405,16 @@ describe("CombatProfiles", () => {
         yield* combatProfiles.load;
         yield* combatProfiles.saveProfile({ ...testProfile, label: "First" });
         const labels: string[] = [];
-        yield* combatProfiles.onChanged((library) => {
-          labels.push(library.profiles.at(-1)!.label);
-        });
+        yield* combatProfiles.onChanged((library) =>
+          Effect.gen(function* () {
+            const label = library.profiles.at(-1)!.label;
+            labels.push(label);
+            if (operation === "save" && label === "First") {
+              yield* Deferred.succeed(firstPublished, undefined);
+              yield* Deferred.await(releasePublication);
+            }
+          }),
+        );
 
         watchWrites = true;
         const first = yield* (
@@ -417,11 +426,13 @@ describe("CombatProfiles", () => {
           Effect.forkScoped,
         );
         yield* Deferred.await(writeStarted);
+        if (operation === "save") yield* Deferred.await(firstPublished);
         const second = yield* combatProfiles
           .saveProfile({ ...testProfile, label: "Second" })
           .pipe(Effect.forkScoped);
-        yield* Fiber.join(first);
         yield* Fiber.join(second);
+        yield* Deferred.succeed(releasePublication, undefined);
+        yield* Fiber.join(first);
 
         expect(labels).toEqual(
           operation === "reload" ? ["Second"] : ["First", "Second"],
@@ -714,6 +725,7 @@ describe("CombatProfiles", () => {
                 armed = false;
                 return Deferred.succeed(committed, undefined).pipe(
                   Effect.andThen(Deferred.await(hold)),
+                  Effect.interruptible,
                 );
               }),
             ),
@@ -753,10 +765,10 @@ describe("CombatProfiles", () => {
             : combatProfiles.load
         ).pipe(Effect.forkScoped);
         yield* Deferred.await(committed);
+        yield* Fiber.interrupt(running);
         expect((yield* combatProfiles.get).profiles.at(-1)?.label).toBe(
           "Committed",
         );
-        yield* Fiber.interrupt(running);
         expect(labels).toEqual(["Committed"]);
       }),
   );
@@ -794,3 +806,56 @@ for (const source of ["{", '{"version":1,"profiles":[null]}']) {
       }),
   );
 }
+
+it.effect("commits combat profiles interrupted after the file rename", () =>
+  Effect.gen(function* () {
+    let armed = false;
+    const { combatProfiles, path } = yield* makeHarness((fileSystem) =>
+      FileSystem.of({
+        ...fileSystem,
+        rename: (from, to) =>
+          fileSystem.rename(from, to).pipe(
+            Effect.tap(() =>
+              Effect.withFiber((fiber) => {
+                if (armed) {
+                  armed = false;
+                  fiber.interruptUnsafe();
+                }
+                return Effect.void;
+              }),
+            ),
+          ),
+      }),
+    );
+    yield* combatProfiles.load;
+    const received: string[] = [];
+    yield* combatProfiles.onChanged((next) =>
+      combatProfiles.get.pipe(
+        Effect.tap((current) =>
+          Effect.sync(() => {
+            expect(current.profiles.at(-1)?.label).toBe("Committed");
+            received.push(next.profiles.at(-1)?.label ?? "missing");
+          }),
+        ),
+      ),
+    );
+    armed = true;
+    const running = yield* combatProfiles
+      .saveProfile({ ...testProfile, label: "Committed" })
+      .pipe(Effect.forkChild);
+    const exit = yield* Fiber.await(running);
+    expect(exit).toMatchObject({
+      _tag: "Failure",
+      cause: { reasons: [{ _tag: "Interrupt" }] },
+    });
+    expect(
+      JSON.parse(
+        yield* Effect.promise(() => readFile(path, "utf8")),
+      ).profiles.at(-1)?.label,
+    ).toBe("Committed");
+    expect((yield* combatProfiles.get).profiles.at(-1)?.label).toBe(
+      "Committed",
+    );
+    expect(received).toEqual(["Committed"]);
+  }),
+);

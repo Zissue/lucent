@@ -4,6 +4,7 @@ import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Semaphore from "effect/Semaphore";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 import * as Schema from "effect/Schema";
 
@@ -304,6 +305,7 @@ const makeCombatProfiles = Effect.gen(function* () {
     readonly value: CombatProfileLibrary | null;
     readonly publicationRevision: number;
   }>({ value: null, publicationRevision: 0 });
+  const commitLock = yield* Semaphore.make(1);
   const libraryChanges = makeListenerRegistry<CombatProfileLibrary>();
 
   const readLibraryFromFile = Effect.fnUntraced(function* (
@@ -403,7 +405,7 @@ const makeCombatProfiles = Effect.gen(function* () {
         (library) => [library, { ...current, value: library }] as const,
       ),
     ),
-  );
+  ).pipe(Effect.uninterruptible, Semaphore.withPermit(commitLock));
   const load = SynchronizedRef.modifyEffect(libraryRef, (current) =>
     readLibraryFromFile(true).pipe(
       Effect.map(
@@ -417,31 +419,37 @@ const makeCombatProfiles = Effect.gen(function* () {
           ] as const,
       ),
     ),
-  ).pipe(Effect.ensuring(publishCurrent));
+  ).pipe(
+    Effect.uninterruptible,
+    Semaphore.withPermit(commitLock),
+    Effect.ensuring(publishCurrent),
+  );
   const update = (
     modify: (
       current: CombatProfileLibrary,
     ) => Effect.Effect<CombatProfileLibrary, CombatProfilesError>,
   ) =>
-    SynchronizedRef.modifyEffect(libraryRef, (current) =>
-      (current.value === null
-        ? readLibraryFromFile(false)
-        : Effect.succeed(current.value)
-      ).pipe(
-        Effect.flatMap(modify),
-        Effect.flatMap(writeLibraryFile),
-        Effect.map(
-          (saved) =>
-            [
-              saved,
-              {
-                value: saved,
-                publicationRevision: current.publicationRevision + 1,
-              },
-            ] as const,
+    Effect.uninterruptibleMask((restore) =>
+      SynchronizedRef.modifyEffect(libraryRef, (current) =>
+        (current.value === null
+          ? readLibraryFromFile(false)
+          : Effect.succeed(current.value)
+        ).pipe(
+          Effect.flatMap((value) => restore(modify(value))),
+          Effect.flatMap(writeLibraryFile),
+          Effect.map(
+            (saved) =>
+              [
+                saved,
+                {
+                  value: saved,
+                  publicationRevision: current.publicationRevision + 1,
+                },
+              ] as const,
+          ),
         ),
       ),
-    ).pipe(Effect.ensuring(publishCurrent));
+    ).pipe(Semaphore.withPermit(commitLock), Effect.ensuring(publishCurrent));
 
   const deleteProfile: CombatProfilesShape["deleteProfile"] = (profileId) =>
     update((current) => deleteProfileFromLibrary(current, profileId));

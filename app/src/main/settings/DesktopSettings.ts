@@ -5,6 +5,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import {
@@ -239,6 +240,7 @@ const makeDesktopSettings = Effect.gen(function* () {
     readonly value: AppSettings | null;
     readonly publicationRevision: number;
   }>({ value: null, publicationRevision: 0 });
+  const commitLock = yield* Semaphore.make(1);
   const settingsChanges = makeListenerRegistry<AppSettings>();
 
   const readSettingsFromFile = Effect.fnUntraced(function* (
@@ -324,38 +326,40 @@ const makeDesktopSettings = Effect.gen(function* () {
         (settings) => [settings, { ...current, value: settings }] as const,
       ),
     ),
-  );
+  ).pipe(Effect.uninterruptible, Semaphore.withPermit(commitLock));
   const load = SynchronizedRef.modifyEffect(settingsRef, (current) =>
     readSettingsFromFile(true).pipe(
       Effect.map(
         (settings) => [settings, { ...current, value: settings }] as const,
       ),
     ),
-  );
+  ).pipe(Effect.uninterruptible, Semaphore.withPermit(commitLock));
   const update = (
     modify: (
       current: AppSettings,
     ) => Effect.Effect<AppSettings, DesktopSettingsError>,
   ) =>
-    SynchronizedRef.modifyEffect(settingsRef, (current) =>
-      (current.value === null
-        ? readSettingsFromFile(false)
-        : Effect.succeed(current.value)
-      ).pipe(
-        Effect.flatMap(modify),
-        Effect.flatMap(writeSettingsFile),
-        Effect.map(
-          (saved) =>
-            [
-              saved,
-              {
-                value: saved,
-                publicationRevision: current.publicationRevision + 1,
-              },
-            ] as const,
+    Effect.uninterruptibleMask((restore) =>
+      SynchronizedRef.modifyEffect(settingsRef, (current) =>
+        (current.value === null
+          ? readSettingsFromFile(false)
+          : Effect.succeed(current.value)
+        ).pipe(
+          Effect.flatMap((value) => restore(modify(value))),
+          Effect.flatMap(writeSettingsFile),
+          Effect.map(
+            (saved) =>
+              [
+                saved,
+                {
+                  value: saved,
+                  publicationRevision: current.publicationRevision + 1,
+                },
+              ] as const,
+          ),
         ),
       ),
-    ).pipe(Effect.ensuring(publishCurrent));
+    ).pipe(Semaphore.withPermit(commitLock), Effect.ensuring(publishCurrent));
 
   const onChanged: DesktopSettingsShape["onChanged"] =
     settingsChanges.subscribe;

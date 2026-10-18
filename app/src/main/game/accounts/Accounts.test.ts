@@ -303,6 +303,7 @@ describe("Accounts", () => {
               armed = false;
               return Deferred.succeed(committed, undefined).pipe(
                 Effect.andThen(Deferred.await(hold)),
+                Effect.interruptible,
               );
             }),
           ),
@@ -331,12 +332,12 @@ describe("Accounts", () => {
           .createAccount({ username: "Committed", password: "secret" })
           .pipe(Effect.forkScoped);
         yield* Deferred.await(committed);
+        yield* Fiber.interrupt(running);
         expect(
           (yield* accounts.getState).accounts.map(
             (account) => account.username,
           ),
         ).toEqual(["Before", "Committed"]);
-        yield* Fiber.interrupt(running);
         expect(names).toEqual([["Before"], ["Before", "Committed"]]);
         yield* Effect.flip(
           accounts.createAccount({ username: "Committed", password: "secret" }),
@@ -1053,5 +1054,70 @@ it.effect("keeps missing game profiles silent after account removal", () =>
         ),
       ),
     );
+  }),
+);
+
+it.effect("commits accounts interrupted after the file rename", () =>
+  Effect.gen(function* () {
+    let armed = false;
+    const layer = yield* makeHarness({
+      wrapFileSystem: (fileSystem) =>
+        FileSystem.of({
+          ...fileSystem,
+          rename: (from, to) =>
+            fileSystem.rename(from, to).pipe(
+              Effect.tap(() =>
+                Effect.withFiber((fiber) => {
+                  if (armed) {
+                    armed = false;
+                    fiber.interruptUnsafe();
+                  }
+                  return Effect.void;
+                }),
+              ),
+            ),
+        }),
+    });
+    yield* Effect.gen(function* () {
+      const accounts = yield* Accounts;
+      yield* accounts.load;
+      const received: string[][] = [];
+      yield* accounts.onChanged((next) => {
+        received.push(next.accounts.map((account) => account.username));
+      });
+      armed = true;
+      const running = yield* accounts
+        .createAccount({ username: "Committed", password: "secret" })
+        .pipe(Effect.forkChild);
+      const exit = yield* Fiber.await(running);
+      expect(exit).toMatchObject({
+        _tag: "Failure",
+        cause: { reasons: [{ _tag: "Interrupt" }] },
+      });
+      const current = yield* accounts.getState;
+      const persisted = JSON.parse(
+        yield* Effect.promise(() => readFile(current.storagePath, "utf8")),
+      );
+      expect(persisted.accounts).toEqual([
+        { label: "Committed", username: "Committed", password: "secret" },
+      ]);
+      expect(current.accounts).toEqual([
+        { label: "Committed", username: "Committed", password: "secret" },
+      ]);
+      expect(received).toEqual([["Committed"]]);
+      yield* accounts.createAccount({ username: "After", password: "secret" });
+      expect(
+        (yield* accounts.getState).accounts.map((account) => account.username),
+      ).toEqual(["Committed", "After"]);
+      expect(
+        JSON.parse(
+          yield* Effect.promise(() => readFile(current.storagePath, "utf8")),
+        ).accounts,
+      ).toEqual([
+        { label: "Committed", username: "Committed", password: "secret" },
+        { label: "After", username: "After", password: "secret" },
+      ]);
+      expect(received).toEqual([["Committed"], ["Committed", "After"]]);
+    }).pipe(Effect.provide(layer));
   }),
 );
