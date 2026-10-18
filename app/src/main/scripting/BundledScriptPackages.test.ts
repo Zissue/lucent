@@ -164,6 +164,51 @@ afterEach(async () => {
 });
 
 describe("bundled script packages", () => {
+  it.effect("writes setup history only after completing a bundle", () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(makeFixture);
+      expect((yield* fixture.start()).managed).toEqual([]);
+      expect(yield* Effect.promise(() => pathExists(fixture.historyPath))).toBe(
+        false,
+      );
+
+      yield* Effect.promise(() => fixture.addPackage("a"));
+      expect((yield* fixture.start()).managed).toMatchObject([{ name: "a" }]);
+      expect(yield* Effect.promise(fixture.readHistory)).toEqual({
+        version: 1,
+        completed: ["a"],
+      });
+    }),
+  );
+
+  it.effect("leaves the catalog unscanned when every bundle is completed", () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(makeFixture);
+      yield* Effect.promise(() => fixture.addPackage("a"));
+      expect((yield* fixture.start()).catalog.packages).toMatchObject([
+        { name: "a", integrity: "verified" },
+      ]);
+      const listing = vi.spyOn(fs, "readdir");
+
+      const managed = yield* Effect.gen(function* () {
+        yield* initializeBundledScriptPackages;
+        const state = yield* ScriptPackageState;
+        return yield* state.getAll;
+      }).pipe(Effect.provide(fixture.makeLayer()));
+
+      expect(managed).toMatchObject([{ name: "a", directory: "a" }]);
+      expect(
+        listing.mock.calls
+          .map(([path]) => String(path))
+          .filter((path) => path.startsWith(fixture.workspace)),
+      ).toEqual([]);
+      expect(yield* Effect.promise(fixture.readHistory)).toEqual({
+        version: 1,
+        completed: ["a"],
+      });
+    }),
+  );
+
   it.effect(
     "installs ordinary managed packages without contacting GitHub",
     () =>
@@ -439,10 +484,9 @@ describe("bundled script packages", () => {
       const fixture = yield* Effect.promise(makeFixture);
       yield* Effect.promise(() => fixture.addPackage("a"));
       yield* fixture.start(true);
-      expect(yield* Effect.promise(fixture.readHistory)).toEqual({
-        version: 1,
-        completed: [],
-      });
+      expect(yield* Effect.promise(() => pathExists(fixture.historyPath))).toBe(
+        false,
+      );
       const file = join(fixture.workspace, "packages", "a", "index.js");
       yield* Effect.promise(async () => {
         await write(`${file}.tmp`, "user edits\n");
@@ -467,10 +511,9 @@ describe("bundled script packages", () => {
       const fixture = yield* Effect.promise(makeFixture);
       yield* Effect.promise(() => fixture.addPackage("a"));
       yield* fixture.start(true);
-      expect(yield* Effect.promise(fixture.readHistory)).toEqual({
-        version: 1,
-        completed: [],
-      });
+      expect(yield* Effect.promise(() => pathExists(fixture.historyPath))).toBe(
+        false,
+      );
       yield* TestClock.setTime(1234567890000);
       const result = yield* fixture.start();
       expect(result.catalog.packages).toMatchObject([
@@ -529,10 +572,9 @@ describe("bundled script packages", () => {
             fs.readdir(join(fixture.workspace, "packages")),
           ),
         ).toEqual(["a-2"]);
-        expect(yield* Effect.promise(fixture.readHistory)).toEqual({
-          version: 1,
-          completed: [],
-        });
+        expect(
+          yield* Effect.promise(() => pathExists(fixture.historyPath)),
+        ).toBe(false);
 
         const recovered = yield* fixture.start();
         expect(recovered.managed).toMatchObject([
@@ -701,6 +743,34 @@ describe("bundled script packages", () => {
       }),
   );
 
+  it.effect(
+    "preserves the first same-name bundle when saving state fails",
+    () =>
+      Effect.gen(function* () {
+        const fixture = yield* Effect.promise(makeFixture);
+        yield* Effect.promise(() =>
+          Promise.all([
+            fixture.addPackage("one", "same-name"),
+            fixture.addPackage("two", "same-name", "2.0.0"),
+          ]),
+        );
+        const result = yield* fixture.start(true);
+        expect(result.managed).toEqual([]);
+        expect(result.catalog.packages).toMatchObject([
+          { name: "same-name", version: "1.0.0", integrity: "unmanaged" },
+        ]);
+        expect(
+          yield* Effect.promise(() =>
+            fs.readdir(join(fixture.workspace, "packages")),
+          ),
+        ).toEqual(["same-name"]);
+        expect(yield* Effect.promise(fixture.readHistory)).toEqual({
+          version: 1,
+          completed: ["same-name"],
+        });
+      }),
+  );
+
   it.effect("cleans failed staging and retries with the current bundle", () =>
     Effect.gen(function* () {
       const fixture = yield* Effect.promise(makeFixture);
@@ -719,10 +789,9 @@ describe("bundled script packages", () => {
         });
       yield* fixture.start();
       failure.mockRestore();
-      expect(yield* Effect.promise(fixture.readHistory)).toEqual({
-        version: 1,
-        completed: [],
-      });
+      expect(yield* Effect.promise(() => pathExists(fixture.historyPath))).toBe(
+        false,
+      );
       expect(
         (yield* Effect.promise(() => fs.readdir(fixture.workspace))).filter(
           (name) => name.startsWith(".lucent-package-seed-"),

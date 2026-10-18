@@ -99,13 +99,6 @@ export class ScriptPackageState extends Context.Service<
   ScriptPackageStateShape
 >()("lucent/desktop/scripting/ScriptPackageState") {}
 
-const cloneRecord = (value: ManagedScriptPackage): ManagedScriptPackage => ({
-  ...value,
-  files: { ...value.files },
-  source: { ...value.source },
-  ...(value.update === undefined ? {} : { update: { ...value.update } }),
-});
-
 const invalidState = (message: string): ScriptPackageLoadState => ({
   status: "failed",
   error: new ScriptPackageStateError({
@@ -139,7 +132,7 @@ const stateFromUnknown = (value: unknown): ScriptPackageLoadState => {
   return {
     status: "loaded",
     packages: new Map(
-      decoded.value.packages.map((entry) => [entry.name, cloneRecord(entry)]),
+      decoded.value.packages.map((entry) => [entry.name, entry]),
     ),
   };
 };
@@ -148,9 +141,9 @@ const serializeState = (
   values: ReadonlyMap<string, ManagedScriptPackage>,
 ): unknown => ({
   version: 1,
-  packages: [...values.values()]
-    .map(cloneRecord)
-    .sort((left, right) => left.name.localeCompare(right.name)),
+  packages: [...values.values()].sort((left, right) =>
+    left.name.localeCompare(right.name),
+  ),
 });
 
 export const layer = Layer.effect(
@@ -214,15 +207,12 @@ export const layer = Layer.effect(
         SynchronizedRef.get(stateRef).pipe(
           Effect.map((state) => {
             if (state.status === "failed") return undefined;
-            const value = state.packages.get(name);
-            return value === undefined ? undefined : cloneRecord(value);
+            return state.packages.get(name);
           }),
         ),
       getAll: SynchronizedRef.get(stateRef).pipe(
         Effect.map((state) =>
-          state.status === "failed"
-            ? []
-            : [...state.packages.values()].map(cloneRecord),
+          state.status === "failed" ? [] : [...state.packages.values()],
         ),
       ),
       remove: (name) =>
@@ -234,7 +224,7 @@ export const layer = Layer.effect(
       save: (value) =>
         mutate((current) => {
           const next = new Map(current);
-          next.set(value.name, cloneRecord(value));
+          next.set(value.name, value);
           return next;
         }),
     });

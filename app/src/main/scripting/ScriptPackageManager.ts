@@ -24,10 +24,7 @@ import {
   type GitHubScriptPackageClientError,
   normalizeGitHubRepositoryUrl,
 } from "./GitHubScriptPackageClient";
-import {
-  decodeRepositorySubdirectory,
-  extractScriptPackageArchive,
-} from "./ScriptPackageArchive";
+import { extractScriptPackageArchive } from "./ScriptPackageArchive";
 import {
   inspectScriptPackageDirectory,
   inspectManagedPackageFolder,
@@ -466,18 +463,7 @@ export const layer = Layer.effect(
               cause,
             ),
         });
-        const subdirectory =
-          input.subdirectory === undefined
-            ? undefined
-            : yield* Effect.try({
-                try: () => decodeRepositorySubdirectory(input.subdirectory),
-                catch: (cause) =>
-                  managerError(
-                    "install",
-                    "Enter a valid repository-relative package directory.",
-                    cause,
-                  ),
-              });
+        const subdirectory = input.subdirectory;
         const resolvedSource =
           replacement?.kind === "restore"
             ? {
@@ -744,16 +730,9 @@ export const layer = Layer.effect(
               );
             }),
           (temporaryRoot) =>
-            fileSystem.remove(temporaryRoot, { recursive: true }).pipe(
-              Effect.mapError((cause) =>
-                managerError(
-                  "install",
-                  "Failed to clean package staging.",
-                  cause,
-                ),
-              ),
-              Effect.catch(() => Effect.void),
-            ),
+            fileSystem
+              .remove(temporaryRoot, { recursive: true })
+              .pipe(Effect.ignore),
         );
       },
     );
@@ -1154,11 +1133,10 @@ export const layer = Layer.effect(
 
         const lastSuccessfulCheckAt =
           managed.update?.status === "current" ||
-          managed.update?.status === "available"
+          managed.update?.status === "available" ||
+          managed.update?.status === "unknown"
             ? managed.update.checkedAt
-            : managed.update?.status === "unknown"
-              ? managed.update.checkedAt
-              : undefined;
+            : undefined;
         const next: ManagedScriptPackage =
           result.status === "succeeded"
             ? recordRemoteResolution(managed, result.value)

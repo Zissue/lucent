@@ -1,9 +1,7 @@
 import { promises as fs } from "node:fs";
 
-import * as Schema from "effect/Schema";
 import { list as listTar, extract as extractTar } from "tar";
 
-import { ScriptPackageRepositorySubdirectorySchema } from "@lucent/core/scriptPackages";
 import {
   formatBytes,
   SCRIPT_PACKAGE_ARCHIVE_MAX_ENTRIES,
@@ -11,10 +9,6 @@ import {
   SCRIPT_PACKAGE_MAX_BYTES,
   SCRIPT_PACKAGE_PATH_COMPONENT_MAX_BYTES,
 } from "./ScriptLimits";
-
-export const decodeRepositorySubdirectory = Schema.decodeUnknownSync(
-  ScriptPackageRepositorySubdirectorySchema,
-);
 
 interface ArchiveInventory {
   readonly root: string;
@@ -62,10 +56,7 @@ export const validateScriptPackageArchive = async (
 ): Promise<ArchiveInventory> => {
   const caseInsensitivePaths =
     process.platform === "darwin" || process.platform === "win32";
-  const subdirectory =
-    options.subdirectory === undefined
-      ? undefined
-      : decodeRepositorySubdirectory(options.subdirectory);
+  const subdirectory = options.subdirectory;
   const subdirectoryPrefix =
     subdirectory === undefined ? undefined : `${subdirectory}/`;
   const platformPaths = new Set<string>();
