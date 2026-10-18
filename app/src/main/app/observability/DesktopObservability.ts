@@ -84,7 +84,11 @@ const makeDesktopObservability = Effect.gen(function* () {
   let stopSource: QuitSource | undefined;
   const logsDir = join(env.appDataDir, "logs");
   const logFilePath = join(logsDir, "lucent.log");
-  const bufferedWriter = makeBufferedDesktopLogWriter(logsDir, logFilePath);
+  const bufferedWriter = makeBufferedDesktopLogWriter(
+    logsDir,
+    logFilePath,
+    clock,
+  );
   const mainWindows = new Map<string, RepeatWindow>();
   const rendererWindows = new Map<string, RepeatWindow>();
 

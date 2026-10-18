@@ -4,6 +4,7 @@ import { join } from "path";
 
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
 
 import {
@@ -300,7 +301,7 @@ export const initializeBundledScriptPackages = Effect.gen(function* () {
                 const managed: ManagedScriptPackage = {
                   name,
                   directory,
-                  installedAt: new Date().toISOString(),
+                  installedAt: (yield* DateTime.nowAsDate).toISOString(),
                   files: snapshot.files,
                   source: {
                     kind: "directory",

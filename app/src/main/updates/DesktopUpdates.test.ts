@@ -482,6 +482,7 @@ describe("DesktopUpdates", () => {
     "parses stable GitHub releases and reports newer semver versions",
     () =>
       Effect.gen(function* () {
+        yield* TestClock.setTime(1234567890000);
         mockGitHubResponse({
           body: JSON.stringify({
             draft: false,
@@ -499,8 +500,20 @@ describe("DesktopUpdates", () => {
         });
         const updates = yield* DesktopUpdates.pipe(Effect.provide(layer));
 
+        const states: unknown[] = [];
+        yield* updates.onStateChanged((state) =>
+          Effect.sync(() => {
+            states.push(state);
+          }),
+        );
         const state = yield* updates.checkNow();
 
+        expect(states[0]).toEqual({
+          status: "checking",
+          currentVersion: "1.2.2",
+          startedAt: "2009-02-13T23:31:30.000Z",
+        });
+        expect(state).toMatchObject({ checkedAt: "2009-02-13T23:31:30.000Z" });
         expect(state.status).toBe("available");
         if (state.status === "available") {
           expect(state.latestVersion).toBe("1.2.3");

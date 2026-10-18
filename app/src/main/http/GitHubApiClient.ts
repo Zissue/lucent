@@ -101,15 +101,18 @@ export const retryAtFromGitHubHeaders = (
 };
 
 /** Distinguishes GitHub throttling responses from ordinary permission errors. */
-export const isGitHubRateLimitResponse = (response: {
-  readonly body: Buffer;
-  readonly headers: IncomingHttpHeaders;
-  readonly statusCode: number;
-}): boolean => {
+export const isGitHubRateLimitResponse = (
+  response: {
+    readonly body: Buffer;
+    readonly headers: IncomingHttpHeaders;
+    readonly statusCode: number;
+  },
+  now: number,
+): boolean => {
   if (response.statusCode === 429) return true;
   if (response.statusCode !== 403) return false;
   return (
-    retryAtFromGitHubHeaders(response.headers, Date.now()) !== undefined ||
+    retryAtFromGitHubHeaders(response.headers, now) !== undefined ||
     /(?:secondary|rate) limit/i.test(response.body.toString("utf8").trim())
   );
 };
@@ -226,7 +229,7 @@ export const makeGitHubApiClient = (
     now: number,
   ): RateLimitState | undefined => {
     const current = rateLimits.get(key);
-    if (!isGitHubRateLimitResponse(response)) {
+    if (!isGitHubRateLimitResponse(response, now)) {
       if (current === observed) rateLimits.delete(key);
       return undefined;
     }

@@ -12,6 +12,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
+import * as TestClock from "effect/testing/TestClock";
 import { create as createTar } from "tar";
 
 import { DesktopEnvironment } from "../app/DesktopEnvironment";
@@ -384,6 +385,7 @@ describe("script package folders", () => {
 
   it.effect("stores the available folder chosen during installation", () =>
     Effect.gen(function* () {
+      yield* TestClock.setTime(1234567890000);
       const root = yield* Effect.promise(makeDirectory);
       const workspaceDir = join(root, "workspace");
       const sourceRoot = join(root, "source");
@@ -436,6 +438,8 @@ describe("script package folders", () => {
       expect(result).toMatchObject({ status: "completed", packageName });
       expect(yield* state.get(packageName)).toMatchObject({
         directory: "author-daily-tools-3",
+        installedAt: "2009-02-13T23:31:30.000Z",
+        update: { checkedAt: "2009-02-13T23:31:30.000Z" },
         name: packageName,
       });
       expect(

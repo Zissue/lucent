@@ -1,5 +1,6 @@
 import * as Cause from "effect/Cause";
 import { logFailure } from "../../../shared/logFailure";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -602,7 +603,7 @@ export const makeAccounts = Effect.gen(function* () {
           ? {}
           : { script: request.script }),
         ...(launchServer === undefined ? {} : { server: launchServer }),
-        requestedAt: Date.now(),
+        requestedAt: yield* Clock.currentTimeMillis,
       };
       let gameWindowId: number | undefined;
       const resolvedGameWindowId = yield* gameWindows

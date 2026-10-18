@@ -8,6 +8,7 @@ import { vi } from "vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as TestClock from "effect/testing/TestClock";
 
 import { DesktopEnvironment } from "../app/DesktopEnvironment";
 import { ElectronApp } from "../electron/ElectronApp";
@@ -166,11 +167,13 @@ describe("bundled script packages", () => {
     "installs ordinary managed packages without contacting GitHub",
     () =>
       Effect.gen(function* () {
+        yield* TestClock.setTime(1234567890000);
         const fixture = yield* Effect.promise(makeFixture);
         yield* Effect.promise(() =>
           fixture.addPackage("farming", "@lucent/farming"),
         );
         const result = yield* fixture.start();
+        expect(result.managed[0]?.installedAt).toBe("2009-02-13T23:31:30.000Z");
         expect(result.catalog.scriptCount).toBe(1);
         expect(result.catalog.packages).toMatchObject([
           {

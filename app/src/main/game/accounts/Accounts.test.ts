@@ -15,6 +15,7 @@ import {
 } from "../../../shared/logRecord";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 import { vi } from "vitest";
 
@@ -833,6 +834,7 @@ describe("Accounts", () => {
 
   it.effect("tracks launch intent separately from reported runtime", () =>
     Effect.gen(function* () {
+      yield* TestClock.setTime(1234567890000);
       const managedProfileKeys: Array<string | undefined> = [];
       const windowTargets: Array<AccountLaunchWindowTarget | undefined> = [];
       const layer = yield* makeHarness({
@@ -850,6 +852,7 @@ describe("Accounts", () => {
         windowTarget: { kind: "new" },
       });
       const payload = yield* accounts.getGameLaunch(launch.gameWindowId);
+      expect(payload?.requestedAt).toBe(1234567890000);
       expect(payload?.account.username).toBe("Alice");
       expect(payload?.script).toEqual({
         name: "farm.js",
