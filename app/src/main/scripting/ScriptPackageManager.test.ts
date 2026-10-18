@@ -1459,7 +1459,7 @@ describe("script package local modifications", () => {
 
 describe("script package update check races", () => {
   it.effect.each(["update", "remove"] as const)(
-    "logs inspection and fallback scan failures once during %s",
+    "logs inspection and fallback scan failures during %s",
     (operation) =>
       Effect.gen(function* () {
         const { destination, managed, workspaceDir } = yield* installedPackage;
@@ -1499,6 +1499,13 @@ describe("script package update check races", () => {
           name: "example",
           diagnostic: "EACCES",
         });
+        const inspectionFailure = {
+          level: "warn",
+          component: "script-packages",
+          message: "Failed to inspect script package files",
+          repeatKey: "example",
+          data: { packageNames: ["example"] },
+        };
         expect(
           logs.map(({ level, component, message, repeatKey, data }) => ({
             level,
@@ -1507,18 +1514,12 @@ describe("script package update check races", () => {
             repeatKey,
             data,
           })),
-        ).toEqual([
-          {
-            level: "warn",
-            component: "script-packages",
-            message: "Failed to inspect script package files",
-            repeatKey: "example",
-            data: { packageNames: ["example"] },
-          },
-        ]);
-        expect(logs[0]?.error).toEqual([
-          expect.objectContaining({ name: "Error", message: "EACCES" }),
-        ]);
+        ).toEqual([inspectionFailure, inspectionFailure]);
+        for (const record of logs) {
+          expect(record.error).toEqual([
+            expect.objectContaining({ name: "Error", message: "EACCES" }),
+          ]);
+        }
       }),
   );
 
@@ -1528,7 +1529,7 @@ describe("script package update check races", () => {
     { operation: "remove", warmed: true },
     { operation: "remove", warmed: false },
   ] as const)(
-    "logs unexpected integrity failures once during $operation with warmed catalog $warmed",
+    "logs unexpected integrity failures during $operation with warmed catalog $warmed",
     ({ operation, warmed }) =>
       Effect.gen(function* () {
         const { managed, workspaceDir } = yield* installedPackage;
@@ -1568,6 +1569,13 @@ describe("script package update check races", () => {
           name: "example",
           integrity: "modified",
         });
+        const inspectionFailure = {
+          level: "warn",
+          component: "script-packages",
+          message: "Failed to inspect script package files",
+          repeatKey: "example",
+          data: { packageNames: ["example"] },
+        };
         expect(
           logs.map(({ level, component, message, repeatKey, data }) => ({
             level,
@@ -1576,18 +1584,14 @@ describe("script package update check races", () => {
             repeatKey,
             data,
           })),
-        ).toEqual([
-          {
-            level: "warn",
-            component: "script-packages",
-            message: "Failed to inspect script package files",
-            repeatKey: "example",
-            data: { packageNames: ["example"] },
-          },
-        ]);
-        expect(logs[0]?.error).toEqual([
-          expect.objectContaining({ name: "Error", message: "EIO" }),
-        ]);
+        ).toEqual(
+          warmed ? [inspectionFailure] : [inspectionFailure, inspectionFailure],
+        );
+        for (const record of logs) {
+          expect(record.error).toEqual([
+            expect.objectContaining({ name: "Error", message: "EIO" }),
+          ]);
+        }
       }),
   );
 

@@ -209,7 +209,7 @@ describe("game view tab ids", () => {
 
 describe("layout failure logging", () => {
   it.effect(
-    "logs once per failed layout episode and keeps closing hosts silent",
+    "logs every failed layout attempt and keeps closing game hosts silent",
     () => {
       const records: DesktopLogRecord[] = [];
       return Effect.gen(function* () {
@@ -229,16 +229,15 @@ describe("layout failure logging", () => {
             }),
         );
         hosts.finishResize(host);
-        expect(records).toMatchObject([
-          {
-            level: "error",
-            message: "Failed to lay out game views",
-            component: "window",
-            data: { hostRendererId: 1 },
-            repeatKey: "1",
-            error: [{ message: "native bounds failure" }],
-          },
-        ]);
+        const failureRecord = {
+          level: "error",
+          message: "Failed to lay out game views",
+          component: "window",
+          data: { hostRendererId: 1 },
+          repeatKey: "1",
+          error: [{ message: "native bounds failure" }],
+        };
+        expect(records).toMatchObject([failureRecord, failureRecord]);
         expect(records[0]?.data).toEqual({ hostRendererId: 1 });
         boundsFailure.mockRestore();
         hosts.finishResize(host);
@@ -247,10 +246,10 @@ describe("layout failure logging", () => {
           throw new Error("native bounds failure");
         });
         resizeWindow(900, 530);
-        expect(records).toHaveLength(2);
+        expect(records).toHaveLength(3);
         host.nativeCloseRequested = true;
         hosts.finishResize(host);
-        expect(records).toHaveLength(2);
+        expect(records).toHaveLength(3);
       }).pipe(
         Effect.provide(
           Logger.layer(

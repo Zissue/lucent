@@ -17,10 +17,9 @@ import { DesktopIpc } from "../DesktopIpc";
 import { getState } from "./follower";
 
 it.effect(
-  "logs cached-state failure episodes and keeps closing races silent",
+  "logs each cached-state failure and keeps closing races silent",
   () => {
     const records: DesktopLogRecord[] = [];
-    const lifetime = makeLifetime(42);
     let fail = true;
     let ready = true;
     const cached = { ...createIdleFollowerState(), targetName: "private" };
@@ -46,7 +45,6 @@ it.effect(
             generation: 1,
             ready,
           })),
-        lifetime: () => Effect.succeed(lifetime),
         getOwnedRendererIds: () => Effect.succeed([]),
       }),
       Layer.mock(DesktopIpc, { sendToRendererIds: () => Effect.void }),
@@ -59,16 +57,15 @@ it.effect(
       });
       expect(yield* request).toEqual(cached);
       expect(yield* request).toEqual(cached);
-      expect(records).toMatchObject([
-        {
-          level: "warn",
-          message: "Game renderer request failed",
-          component: "game-renderer",
-          data: { rendererId: 42, operation: "FollowerGetState" },
-          repeatKey: "42:FollowerGetState",
-          error: [{ message: "state request failed" }],
-        },
-      ]);
+      const failureRecord = {
+        level: "warn",
+        message: "Game renderer request failed",
+        component: "game-renderer",
+        data: { rendererId: 42, operation: "FollowerGetState" },
+        repeatKey: "42:FollowerGetState",
+        error: [{ message: "state request failed" }],
+      };
+      expect(records).toMatchObject([failureRecord, failureRecord]);
       expect(records[0]?.data).toEqual({
         rendererId: 42,
         operation: "FollowerGetState",
@@ -77,13 +74,13 @@ it.effect(
       expect(yield* request).toEqual(cached);
       fail = true;
       expect(yield* request).toEqual(cached);
-      expect(records).toHaveLength(2);
+      expect(records).toHaveLength(3);
       fail = false;
       yield* request;
       fail = true;
       ready = false;
       expect(yield* request).toEqual(cached);
-      expect(records).toHaveLength(2);
+      expect(records).toHaveLength(3);
     }).pipe(
       Effect.provide(dependencies),
       Effect.provide(

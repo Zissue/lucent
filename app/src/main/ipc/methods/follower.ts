@@ -8,17 +8,12 @@ import * as Effect from "effect/Effect";
 
 import { FollowerIpc } from "../../../shared/ipc";
 import { GameFollowers } from "../../game/follower/GameFollowers";
-import {
-  DesktopWindows,
-  type RendererLifetime,
-} from "../../window/DesktopWindows";
+import { DesktopWindows } from "../../window/DesktopWindows";
 import { DesktopIpc, makeDesktopIpcMethod } from "../DesktopIpc";
 import {
   resolveGameRendererId,
   type DesktopIpcSender,
 } from "../DesktopIpcSenders";
-
-const stateFailureEpisodes = new WeakSet<RendererLifetime>();
 
 const notifyChanged = Effect.fn("desktop.ipc.follower.notifyChanged")(
   function* (
@@ -93,27 +88,18 @@ export const getState = makeDesktopIpcMethod({
       const followers = yield* GameFollowers;
       const windows = yield* DesktopWindows;
       const gameRendererId = yield* resolveGameRendererId(sender);
-      const lifetime = yield* windows.lifetime(gameRendererId);
       return yield* followers.fetchState(gameRendererId).pipe(
-        Effect.tap(() =>
-          Effect.sync(() => {
-            if (lifetime !== undefined) stateFailureEpisodes.delete(lifetime);
-          }),
-        ),
         Effect.tap((state) =>
           notifyChanged(gameRendererId, state, sender.rendererId),
         ),
         Effect.catchTag("GameFollowerRequestError", (error) =>
           Effect.gen(function* () {
-            if (lifetime !== undefined && !stateFailureEpisodes.has(lifetime)) {
-              const logged = yield* logGameRendererRequestFailure(
-                windows,
-                gameRendererId,
-                "FollowerGetState",
-                Cause.fail(error),
-              );
-              if (logged) stateFailureEpisodes.add(lifetime);
-            }
+            yield* logGameRendererRequestFailure(
+              windows,
+              gameRendererId,
+              "FollowerGetState",
+              Cause.fail(error),
+            );
             return yield* followers.get(gameRendererId);
           }),
         ),

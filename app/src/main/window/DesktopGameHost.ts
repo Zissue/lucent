@@ -198,7 +198,6 @@ export const makeDesktopGameHosts = (options: DesktopGameHostsOptions) => {
   const runSync = Effect.runSyncWith(
     Fiber.getCurrent()?.context ?? Context.empty(),
   );
-  const failedLayouts = new WeakSet<DesktopGameHostRecord>();
   const state = (host: DesktopGameHostRecord): GameViewHostState => ({
     capacity: MAX_GAME_VIEWS_PER_WINDOW,
     groupControlsOpen: host.groupControlsOpen,
@@ -278,7 +277,6 @@ export const makeDesktopGameHosts = (options: DesktopGameHostsOptions) => {
     applyGroupControlsLayout(host, width, height, topInset);
     applyHostViewLayout(host, width, height, topInset);
     publishPresentations(host);
-    failedLayouts.delete(host);
   };
 
   const isClosing = (host: DesktopGameHostRecord): boolean =>
@@ -293,8 +291,7 @@ export const makeDesktopGameHosts = (options: DesktopGameHostsOptions) => {
     try {
       applyLayout(host);
     } catch (cause) {
-      if (isClosing(host) || failedLayouts.has(host)) return;
-      failedLayouts.add(host);
+      if (isClosing(host)) return;
       runSync(
         logFailure("Failed to lay out game views", Cause.die(cause)).pipe(
           Effect.annotateLogs({
