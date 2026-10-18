@@ -10,6 +10,7 @@ import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
+import * as FiberSet from "effect/FiberSet";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as References from "effect/References";
@@ -41,6 +42,10 @@ vi.mock("electron", () => ({
   shell: {
     openExternal: vi.fn(),
   },
+}));
+
+vi.mock("effect/FiberSet", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("effect/FiberSet")>()),
 }));
 
 const httpRequests: DesktopHttpGetOptions[] = [];
@@ -225,6 +230,7 @@ const makeUpdatesHarness = (options: {
 
 const makeHangingCheckHarness = Effect.gen(function* () {
   const started = yield* Deferred.make<void>();
+  const secondStarted = yield* Deferred.make<void>();
   const events: string[] = [];
   const { layer } = yield* makeUpdatesHarness({
     checkForUpdates: true,
@@ -233,6 +239,9 @@ const makeHangingCheckHarness = Effect.gen(function* () {
       ...httpClient,
       get: () =>
         Deferred.succeed(started, undefined).pipe(
+          Effect.tap((first) =>
+            first ? Effect.void : Deferred.succeed(secondStarted, undefined),
+          ),
           Effect.andThen(Effect.never),
           Effect.onInterrupt(() =>
             Effect.sync(() => {
@@ -242,7 +251,7 @@ const makeHangingCheckHarness = Effect.gen(function* () {
         ),
     },
   });
-  return { events, layer, started };
+  return { events, layer, started, secondStarted };
 });
 
 afterEach(async () => {
@@ -257,7 +266,7 @@ afterEach(async () => {
 
 describe("DesktopUpdates", () => {
   it.effect.each([false, true])(
-    "logs one warning for a shared failed check with force %s",
+    "logs one warning for each failed check with force %s",
     (force) =>
       Effect.gen(function* () {
         const capture = makeLogCapture();
@@ -282,11 +291,11 @@ describe("DesktopUpdates", () => {
         });
         const states = yield* Effect.gen(function* () {
           const updates = yield* DesktopUpdates;
-          return yield* Effect.all(
-            [updates.checkNow({ force }), updates.checkNow({ force })],
-            { concurrency: "unbounded" },
-          );
-        }).pipe(Effect.provide(layer.pipe(Layer.provide(capture.layer))));
+          return yield* Effect.all([
+            updates.checkNow({ force }),
+            updates.checkNow({ force }),
+          ]);
+        }).pipe(Effect.provide(Layer.merge(layer, capture.layer)));
 
         expect(states.map((state) => state.status)).toEqual(["error", "error"]);
         expect(
@@ -304,10 +313,18 @@ describe("DesktopUpdates", () => {
               data: { currentVersion: "1.0.0", force },
             },
           },
+          {
+            level: "Warn",
+            message: ["Failed to check for updates"],
+            annotations: {
+              component: "updates",
+              data: { currentVersion: "1.0.0", force },
+            },
+          },
         ]);
         expect(
           capture.records.map((record) => Cause.hasFails(record.cause)),
-        ).toEqual([true]);
+        ).toEqual([true, true]);
       }),
   );
 
@@ -320,7 +337,7 @@ describe("DesktopUpdates", () => {
         yield* updates.checkNow().pipe(Effect.forkChild);
         yield* Deferred.await(started);
         expect((yield* updates.getState).status).toBe("checking");
-      }).pipe(Effect.provide(layer.pipe(Layer.provide(capture.layer))));
+      }).pipe(Effect.provide(Layer.merge(layer, capture.layer)));
 
       expect(events).toEqual(["check-interrupted"]);
       expect(capture.records).toEqual([]);
@@ -347,7 +364,9 @@ describe("DesktopUpdates", () => {
           checkForUpdates: true,
           currentVersion,
         });
-        const updates = yield* DesktopUpdates.pipe(Effect.provide(layer));
+        const updates = yield* DesktopUpdates.pipe(
+          Effect.provide(yield* Layer.build(layer)),
+        );
 
         const state = yield* updates.checkNow();
 
@@ -406,7 +425,7 @@ describe("DesktopUpdates", () => {
       }),
   );
 
-  it.effect("keeps a shared check running when one caller is interrupted", () =>
+  it.effect("keeps a check running when its caller is interrupted", () =>
     Effect.gen(function* () {
       const { events, layer, started } = yield* makeHangingCheckHarness;
 
@@ -430,14 +449,16 @@ describe("DesktopUpdates", () => {
     }),
   );
 
-  it.effect("reports a defect in the shared check to its caller", () =>
+  it.effect("reports a defect in a check to its caller", () =>
     Effect.gen(function* () {
       const { layer } = yield* makeUpdatesHarness({
         checkForUpdates: true,
         currentVersion: "1.0.0",
         httpClient: { ...httpClient, get: () => Effect.die("boom") },
       });
-      const updates = yield* DesktopUpdates.pipe(Effect.provide(layer));
+      const updates = yield* DesktopUpdates.pipe(
+        Effect.provide(yield* Layer.build(layer)),
+      );
 
       const exit = yield* Effect.exit(updates.checkNow());
 
@@ -445,18 +466,30 @@ describe("DesktopUpdates", () => {
     }),
   );
 
-  it.effect("interrupts an in-flight check when its layer closes", () =>
+  it.effect("interrupts all in-flight checks when its layer closes", () =>
     Effect.gen(function* () {
-      const { events, layer, started } = yield* makeHangingCheckHarness;
+      const { events, layer, started, secondStarted } =
+        yield* makeHangingCheckHarness;
 
       yield* Effect.gen(function* () {
         const updates = yield* DesktopUpdates;
-        yield* updates.checkNow().pipe(Effect.forkChild);
+        yield* updates
+          .checkNow()
+          .pipe(Effect.forkChild({ startImmediately: true }));
         yield* Deferred.await(started);
+        yield* updates
+          .checkNow({ force: true })
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Deferred.await(secondStarted);
+        yield* Effect.yieldNow;
       }).pipe(Effect.provide(layer));
       events.push("layer-closed");
 
-      expect(events).toEqual(["check-interrupted", "layer-closed"]);
+      expect(events).toEqual([
+        "check-interrupted",
+        "check-interrupted",
+        "layer-closed",
+      ]);
     }),
   );
 
@@ -466,7 +499,9 @@ describe("DesktopUpdates", () => {
         checkForUpdates: false,
         currentVersion: "1.0.0",
       });
-      const updates = yield* DesktopUpdates.pipe(Effect.provide(harness.layer));
+      const updates = yield* DesktopUpdates.pipe(
+        Effect.provide(yield* Layer.build(harness.layer)),
+      );
 
       const state = yield* updates.getState;
 
@@ -476,6 +511,172 @@ describe("DesktopUpdates", () => {
       }
       expect(httpRequests).toHaveLength(0);
     }),
+  );
+
+  it.effect(
+    "keeps the newer result when replacement checks start concurrently",
+    () =>
+      Effect.gen(function* () {
+        const startGate = yield* Deferred.make<void>();
+        const responseGate = yield* Deferred.make<void>();
+        for (const tagName of ["v1.0.0", "v1.1.0"]) {
+          mockGitHubResponse({
+            body: JSON.stringify({
+              draft: false,
+              html_url: `https://github.com/toommyliu/lucent/releases/tag/${tagName}`,
+              prerelease: false,
+              tag_name: tagName,
+            }),
+          });
+        }
+        const { layer } = yield* makeUpdatesHarness({
+          checkForUpdates: true,
+          currentVersion: "1.0.0",
+          httpClient: {
+            ...httpClient,
+            get: (options) =>
+              httpClient
+                .get(options)
+                .pipe(
+                  Effect.tap(() =>
+                    httpRequests.length === 1
+                      ? Deferred.await(responseGate)
+                      : Effect.void,
+                  ),
+                ),
+          },
+        });
+        const updates = yield* DesktopUpdates.pipe(
+          Effect.provide(yield* Layer.build(layer)),
+        );
+        yield* updates.shouldPromptForAvailableRelease("1.0.0");
+
+        const clear = FiberSet.clear;
+        const clearSpy = vi
+          .spyOn(FiberSet, "clear")
+          .mockImplementation((checks) =>
+            clear(checks).pipe(Effect.andThen(Deferred.await(startGate))),
+          );
+        yield* Effect.gen(function* () {
+          const older = yield* updates
+            .checkNow({ force: true })
+            .pipe(Effect.forkChild({ startImmediately: true }));
+          const newer = yield* updates
+            .checkNow({ force: true })
+            .pipe(Effect.forkChild({ startImmediately: true }));
+          yield* Deferred.succeed(startGate, undefined);
+
+          expect(yield* Fiber.join(newer)).toMatchObject({
+            status: "available",
+            latestVersion: "1.1.0",
+          });
+          yield* Deferred.succeed(responseGate, undefined);
+          yield* Fiber.join(older);
+
+          expect(yield* updates.getState).toMatchObject({
+            status: "available",
+            currentVersion: "1.0.0",
+            latestVersion: "1.1.0",
+          });
+        }).pipe(Effect.ensuring(Effect.sync(() => clearSpy.mockRestore())));
+      }),
+  );
+
+  it.effect(
+    "keeps a newer available result after an older check times out",
+    () =>
+      Effect.gen(function* () {
+        const started = yield* Deferred.make<void>();
+        mockGitHubResponse({
+          body: JSON.stringify({
+            draft: false,
+            html_url: "https://github.com/toommyliu/lucent/releases/tag/v1.1.0",
+            prerelease: false,
+            tag_name: "v1.1.0",
+          }),
+        });
+        const { layer } = yield* makeUpdatesHarness({
+          checkForUpdates: true,
+          currentVersion: "1.0.0",
+          httpClient: {
+            ...httpClient,
+            get: (options) =>
+              Deferred.succeed(started, undefined).pipe(
+                Effect.flatMap((first) =>
+                  first ? Effect.never : httpClient.get(options),
+                ),
+              ),
+          },
+        });
+        const updates = yield* DesktopUpdates.pipe(
+          Effect.provide(yield* Layer.build(layer)),
+        );
+        const startup = yield* updates.checkNow().pipe(Effect.forkChild);
+        yield* Deferred.await(started);
+
+        expect(yield* updates.checkNow({ force: true })).toMatchObject({
+          status: "available",
+          currentVersion: "1.0.0",
+          latestVersion: "1.1.0",
+        });
+
+        yield* TestClock.adjust(30_000);
+        yield* Fiber.join(startup);
+
+        expect(yield* updates.getState).toMatchObject({
+          status: "available",
+          currentVersion: "1.0.0",
+          latestVersion: "1.1.0",
+        });
+        expect(yield* updates.openReleasePage).toBe(true);
+      }),
+  );
+
+  it.effect(
+    "runs a forced check while a disabled startup check is in flight",
+    () =>
+      Effect.gen(function* () {
+        const started = yield* Deferred.make<void>();
+        const gate = yield* Deferred.make<void>();
+        mockGitHubResponse({
+          body: JSON.stringify({
+            draft: false,
+            html_url: "https://github.com/toommyliu/lucent/releases/tag/v1.1.0",
+            prerelease: false,
+            tag_name: "v1.1.0",
+          }),
+        });
+        const { layer } = yield* makeUpdatesHarness({
+          checkForUpdates: false,
+          currentVersion: "1.0.0",
+        });
+
+        yield* Effect.gen(function* () {
+          const updates = yield* DesktopUpdates;
+          yield* updates.onStateChanged((state) =>
+            state.status === "disabled"
+              ? Deferred.succeed(started, undefined).pipe(
+                  Effect.andThen(Deferred.await(gate)),
+                )
+              : Effect.void,
+          );
+          const startup = yield* updates
+            .checkNow()
+            .pipe(Effect.forkChild({ startImmediately: true }));
+          yield* Deferred.await(started);
+          const forced = yield* updates
+            .checkNow({ force: true })
+            .pipe(Effect.forkChild({ startImmediately: true }));
+          yield* Deferred.succeed(gate, undefined);
+
+          const state = yield* Fiber.join(forced);
+
+          expect(state.status).toBe("available");
+          expect(state).toMatchObject({ latestVersion: "1.1.0" });
+          expect((yield* Fiber.join(startup)).status).toBe("disabled");
+          expect(httpRequests).toHaveLength(1);
+        }).pipe(Effect.provide(layer));
+      }),
   );
 
   it.effect(
@@ -498,7 +699,9 @@ describe("DesktopUpdates", () => {
           checkForUpdates: true,
           currentVersion: "1.2.2",
         });
-        const updates = yield* DesktopUpdates.pipe(Effect.provide(layer));
+        const updates = yield* DesktopUpdates.pipe(
+          Effect.provide(yield* Layer.build(layer)),
+        );
 
         const states: unknown[] = [];
         yield* updates.onStateChanged((state) =>
@@ -568,7 +771,9 @@ describe("DesktopUpdates", () => {
           checkForUpdates: true,
           currentVersion: "0.1.0-beta.1",
         });
-        const updates = yield* DesktopUpdates.pipe(Effect.provide(layer));
+        const updates = yield* DesktopUpdates.pipe(
+          Effect.provide(yield* Layer.build(layer)),
+        );
 
         const state = yield* updates.checkNow();
 
@@ -600,7 +805,9 @@ describe("DesktopUpdates", () => {
         checkForUpdates: true,
         currentVersion: "0.1.0-beta.1",
       });
-      const updates = yield* DesktopUpdates.pipe(Effect.provide(layer));
+      const updates = yield* DesktopUpdates.pipe(
+        Effect.provide(yield* Layer.build(layer)),
+      );
 
       const state = yield* updates.checkNow();
 
@@ -633,7 +840,7 @@ describe("DesktopUpdates", () => {
             version: "0.1.0-beta.2",
           },
         };
-        for (let page = 1; page <= 5; page++) {
+        for (let page = 1; page <= 8; page++) {
           mockGitHubReleasePage(["v0.1.0-beta.3"], {
             link: `<https://api.github.com/repos/toommyliu/lucent/releases?per_page=100&page=${page + 1}>; rel="next"`,
           });
@@ -659,24 +866,27 @@ describe("DesktopUpdates", () => {
               ),
           },
         });
-        const updates = yield* DesktopUpdates.pipe(Effect.provide(layer));
+        const updates = yield* DesktopUpdates.pipe(
+          Effect.provide(yield* Layer.build(layer)),
+        );
         const check = yield* updates.checkNow().pipe(Effect.forkChild);
         yield* Deferred.await(started);
-        const manualCheck = yield* updates
-          .checkNow({ force: true })
+        const overlappingCheck = yield* updates
+          .checkNow()
           .pipe(Effect.forkChild);
 
         yield* TestClock.adjust("30 seconds");
 
         expect(yield* updates.getState).toMatchObject({ status: "error" });
         expect(yield* Fiber.join(check)).toMatchObject({
+          status: "checking",
+        });
+        expect(yield* Fiber.join(overlappingCheck)).toMatchObject({
           status: "error",
           message: "Update check timed out.",
         });
-        expect(yield* Fiber.join(manualCheck)).toMatchObject({
-          status: "error",
-        });
         expect(interrupted).toEqual([
+          "https://api.github.com/repos/toommyliu/lucent/releases?per_page=100&page=1",
           "https://api.github.com/repos/toommyliu/lucent/releases?per_page=100&page=4",
         ]);
         expect(
@@ -687,7 +897,7 @@ describe("DesktopUpdates", () => {
           ),
         ).toEqual(cache);
         yield* TestClock.adjust("1 minute");
-        expect(httpRequests).toHaveLength(4);
+        expect(httpRequests).toHaveLength(5);
 
         httpResponses.length = 0;
         delayMs = 0;
@@ -719,7 +929,9 @@ describe("DesktopUpdates", () => {
         checkForUpdates: true,
         currentVersion: "0.1.0-beta.1",
       });
-      const updates = yield* DesktopUpdates.pipe(Effect.provide(layer));
+      const updates = yield* DesktopUpdates.pipe(
+        Effect.provide(yield* Layer.build(layer)),
+      );
 
       expect(yield* updates.checkNow()).toMatchObject({
         status: "available",
@@ -769,7 +981,9 @@ describe("DesktopUpdates", () => {
           checkForUpdates: true,
           currentVersion: "0.1.0-beta.1",
         });
-        const updates = yield* DesktopUpdates.pipe(Effect.provide(layer));
+        const updates = yield* DesktopUpdates.pipe(
+          Effect.provide(yield* Layer.build(layer)),
+        );
 
         expect((yield* updates.checkNow()).status).toBe("error");
         expect(
@@ -805,7 +1019,9 @@ describe("DesktopUpdates", () => {
         checkForUpdates: true,
         currentVersion: "0.1.0-beta.2",
       });
-      const updates = yield* DesktopUpdates.pipe(Effect.provide(layer));
+      const updates = yield* DesktopUpdates.pipe(
+        Effect.provide(yield* Layer.build(layer)),
+      );
 
       const state = yield* updates.checkNow();
 
@@ -831,7 +1047,7 @@ describe("DesktopUpdates", () => {
         currentVersion: "1.2.2",
       });
       const draftUpdates = yield* DesktopUpdates.pipe(
-        Effect.provide(draftHarness.layer),
+        Effect.provide(yield* Layer.build(draftHarness.layer)),
       );
       const draftState = yield* draftUpdates.checkNow();
 
@@ -853,7 +1069,7 @@ describe("DesktopUpdates", () => {
         currentVersion: "1.2.2",
       });
       const prereleaseUpdates = yield* DesktopUpdates.pipe(
-        Effect.provide(prereleaseHarness.layer),
+        Effect.provide(yield* Layer.build(prereleaseHarness.layer)),
       );
       const prereleaseState = yield* prereleaseUpdates.checkNow();
 
@@ -885,7 +1101,7 @@ describe("DesktopUpdates", () => {
           currentVersion: "1.0.0",
         });
         const updates = yield* DesktopUpdates.pipe(
-          Effect.provide(harness.layer),
+          Effect.provide(yield* Layer.build(harness.layer)),
         );
 
         const state = yield* updates.checkNow();
@@ -902,7 +1118,7 @@ describe("DesktopUpdates", () => {
           currentVersion: "1.0.0",
         });
         const disabledUpdates = yield* DesktopUpdates.pipe(
-          Effect.provide(disabledHarness.layer),
+          Effect.provide(yield* Layer.build(disabledHarness.layer)),
         );
         const disabledState = yield* disabledUpdates.checkNow();
 
