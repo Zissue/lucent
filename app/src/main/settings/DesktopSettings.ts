@@ -63,7 +63,6 @@ export class DesktopSettingsError extends Schema.TaggedError<DesktopSettingsErro
 
 export interface DesktopSettingsShape {
   readonly get: Effect.Effect<AppSettings, DesktopSettingsError>;
-  readonly load: Effect.Effect<AppSettings, DesktopSettingsError>;
   readonly onChanged: (
     listener: Listener<AppSettings>,
   ) => Effect.Effect<void, never, Scope.Scope>;
@@ -248,13 +247,11 @@ const makeDesktopSettings = Effect.gen(function* () {
 
   const {
     get,
-    reload: load,
     update,
     subscribe: onChanged,
   } = yield* makeCommittedState({
     load: document.load,
     write: document.save,
-    shouldPublishReload: () => false,
   });
 
   const resetAppearance: DesktopSettingsShape["resetAppearance"] = update(
@@ -289,7 +286,6 @@ const makeDesktopSettings = Effect.gen(function* () {
 
   return DesktopSettings.of({
     get,
-    load,
     onChanged,
     resetAppearance,
     resetHotkeys,

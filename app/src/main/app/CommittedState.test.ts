@@ -164,6 +164,10 @@ describe("CommittedState", () => {
               return file;
             }),
         });
+        const received: number[] = [];
+        yield* state.subscribe((value) => {
+          received.push(value);
+        });
         const first = yield* state.get.pipe(Effect.forkChild);
         yield* Deferred.await(started);
         const second = yield* state.get.pipe(
@@ -175,8 +179,11 @@ describe("CommittedState", () => {
         file = 2;
         expect(yield* state.get).toBe(1);
         expect(diagnostics).toEqual([true]);
+        expect(received).toEqual([]);
         expect(yield* state.reload).toBe(2);
-        expect(diagnostics).toEqual([true, true]);
+        expect(yield* state.reload).toBe(2);
+        expect(received).toEqual([2, 2]);
+        expect(diagnostics).toEqual([true, true, true]);
       }),
   );
 

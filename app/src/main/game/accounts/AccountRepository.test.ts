@@ -64,13 +64,13 @@ describe("AccountRepository", () => {
         });
         expect(repository.current()).toBeNull();
         yield* repository.get;
-        yield* repository.load;
+        yield* repository.get;
         expect(repository.current()).toEqual({ accounts: [], groups: {} });
         yield* repository.update((storage) =>
           Effect.succeed({ ...storage, groups: { Raiders: [] } }),
         );
         yield* repository.update((storage) => Effect.succeed({ ...storage }));
-        yield* repository.load;
+        yield* repository.get;
         expect(repository.current()).toEqual({
           accounts: [],
           groups: { Raiders: [] },
@@ -78,15 +78,12 @@ describe("AccountRepository", () => {
         yield* Effect.promise(() =>
           writeFile(repository.path, '{"accounts":[],"groups":{"Alts":[]}}'),
         );
-        yield* repository.load;
+        yield* repository.get;
         expect(repository.current()).toEqual({
           accounts: [],
-          groups: { Alts: [] },
+          groups: { Raiders: [] },
         });
-        expect(received).toEqual([
-          { accounts: [], groups: { Raiders: [] } },
-          { accounts: [], groups: { Alts: [] } },
-        ]);
+        expect(received).toEqual([{ accounts: [], groups: { Raiders: [] } }]);
       }).pipe(Effect.provide(dependencies));
     }),
   );
@@ -234,7 +231,7 @@ describe("AccountRepository saved data", () => {
           yield* Effect.gen(function* () {
             const repository = yield* AccountRepository;
             yield* Effect.promise(() => writeFile(repository.path, source));
-            const { value, records } = yield* captureLogs(repository.load);
+            const { value, records } = yield* captureLogs(repository.get);
             expect(value).toEqual({ accounts: [], groups: {} });
             expect(records).toEqual([
               {
@@ -280,23 +277,31 @@ describe("AccountRepository saved data", () => {
     );
   }
 
-  it.effect("loads missing and valid optional fields silently", () =>
+  it.effect("loads missing storage silently", () =>
     Effect.gen(function* () {
       const dependencies = yield* makeLayer();
       yield* Effect.gen(function* () {
         const repository = yield* AccountRepository;
-        const missing = yield* captureLogs(repository.get);
-        expect(missing).toEqual({
+        expect(yield* captureLogs(repository.get)).toEqual({
           value: { accounts: [], groups: {} },
           records: [],
         });
+      }).pipe(Effect.provide(dependencies));
+    }),
+  );
+
+  it.effect("loads valid optional fields silently", () =>
+    Effect.gen(function* () {
+      const dependencies = yield* makeLayer();
+      yield* Effect.gen(function* () {
+        const repository = yield* AccountRepository;
         yield* Effect.promise(() =>
           writeFile(
             repository.path,
             '{"accounts":[{"label":"Hero","username":"Hero","password":"secret"}]}',
           ),
         );
-        const valid = yield* captureLogs(repository.load);
+        const valid = yield* captureLogs(repository.get);
         expect(valid).toEqual({
           value: {
             accounts: [{ label: "Hero", username: "Hero", password: "secret" }],

@@ -169,7 +169,7 @@ describe("CombatProfiles", () => {
       )}\n`;
       yield* Effect.promise(() => writeFile(path, original));
 
-      const { value, records } = yield* captureLogs(combatProfiles.load);
+      const { value, records } = yield* captureLogs(combatProfiles.get);
 
       expect(value).toEqual({
         version: 1,
@@ -236,7 +236,7 @@ describe("CombatProfiles", () => {
       Effect.gen(function* () {
         const { combatProfiles, path } = yield* makeHarness();
         yield* Effect.promise(() => writeFile(path, original));
-        const { value, records } = yield* captureLogs(combatProfiles.load);
+        const { value, records } = yield* captureLogs(combatProfiles.get);
         expect(value).toEqual({ version: 1, profiles: [genericProfile] });
         expect(records).toEqual([
           {
@@ -298,7 +298,7 @@ describe("CombatProfiles", () => {
       const { value, records } = yield* captureLogs(
         Effect.gen(function* () {
           try {
-            const loaded = yield* combatProfiles.load.pipe(Effect.result);
+            const loaded = yield* combatProfiles.get.pipe(Effect.result);
             const saved = yield* combatProfiles
               .saveProfile(testProfile)
               .pipe(Effect.result);
@@ -322,7 +322,7 @@ describe("CombatProfiles", () => {
       expect(yield* Effect.promise(() => readFile(path, "utf8"))).toBe(source);
       expect(records).toEqual([]);
       expect(
-        (yield* combatProfiles.load).profiles.find(
+        (yield* combatProfiles.get).profiles.find(
           (profile) => profile.id === "saved",
         ),
       ).toEqual({
@@ -335,12 +335,19 @@ describe("CombatProfiles", () => {
     }),
   );
 
+  it.effect("loads missing profiles silently", () =>
+    Effect.gen(function* () {
+      const { combatProfiles } = yield* makeHarness();
+      expect(yield* captureLogs(combatProfiles.get)).toEqual({
+        value: { version: 1, profiles: [genericProfile] },
+        records: [],
+      });
+    }),
+  );
+
   it.effect("keeps valid migrations and missing optional fields silent", () =>
     Effect.gen(function* () {
       const { combatProfiles, path } = yield* makeHarness();
-      const missing = yield* captureLogs(combatProfiles.load);
-      expect(missing.value).toEqual({ version: 1, profiles: [genericProfile] });
-      expect(missing.records).toEqual([]);
       yield* Effect.promise(() =>
         writeFile(
           path,
@@ -349,7 +356,7 @@ describe("CombatProfiles", () => {
           }),
         ),
       );
-      const migrated = yield* captureLogs(combatProfiles.load);
+      const migrated = yield* captureLogs(combatProfiles.get);
       expect(migrated.value).toEqual({
         version: 1,
         profiles: [
@@ -373,7 +380,7 @@ describe("CombatProfiles", () => {
     Effect.gen(function* () {
       const { combatProfiles } = yield* makeHarness();
 
-      yield* combatProfiles.load;
+      yield* combatProfiles.get;
       const saved = yield* combatProfiles.saveProfile(testProfile);
       expect(saved.profiles.at(-1)?.steps[0]?.priority).toBe(true);
 
@@ -418,7 +425,7 @@ describe("CombatProfiles", () => {
         yield* Effect.promise(() => writeFile(path, original, "utf8"));
 
         const { value: loaded, records } = yield* captureLogs(
-          combatProfiles.load,
+          combatProfiles.get,
         );
         const saved = yield* Effect.promise(() => readFile(path, "utf8"));
 
@@ -465,7 +472,7 @@ describe("CombatProfiles", () => {
           '{"version":2,"profiles":[{"id":"future","label":"Future","steps":[{"skill":2}]}],"futureOnly":"retain"}';
         yield* Effect.promise(() => writeFile(path, source));
         const { value: loaded, records } = yield* captureLogs(
-          combatProfiles.load,
+          combatProfiles.get,
         );
         expect(loaded.profiles[1]).toEqual({
           id: "future",
@@ -504,7 +511,7 @@ describe("CombatProfiles", () => {
       const { combatProfiles, path } = yield* makeHarness();
       const source = '{"version":2,"profiles":42}\n';
       yield* Effect.promise(() => writeFile(path, source));
-      expect(yield* captureLogs(combatProfiles.load)).toEqual({
+      expect(yield* captureLogs(combatProfiles.get)).toEqual({
         value: { version: 1, profiles: [genericProfile] },
         records: [
           {
@@ -536,53 +543,6 @@ describe("CombatProfiles", () => {
   );
 
   it.effect(
-    "publishes reads before and after a future file is replaced with a supported file",
-    () =>
-      Effect.gen(function* () {
-        const { combatProfiles, path } = yield* makeHarness();
-        const changes: CombatProfileLibrary[] = [];
-        yield* combatProfiles.onChanged((library) => {
-          changes.push(library);
-        });
-        yield* Effect.promise(() =>
-          writeFile(
-            path,
-            JSON.stringify({
-              version: COMBAT_PROFILE_LIBRARY_VERSION + 1,
-              profiles: [testProfile],
-            }),
-            "utf8",
-          ),
-        );
-
-        const newer = yield* combatProfiles.load;
-        yield* Effect.promise(() =>
-          writeFile(
-            path,
-            JSON.stringify({
-              version: COMBAT_PROFILE_LIBRARY_VERSION,
-              profiles: [testProfile],
-            }),
-            "utf8",
-          ),
-        );
-
-        const supported = yield* combatProfiles.load;
-
-        for (const library of [newer, supported]) {
-          expect(library).toMatchObject({
-            version: 1,
-            profiles: [
-              { id: "generic-base", label: "Generic" },
-              { id: "archpaladin-farm", label: "Farm Rotation" },
-            ],
-          });
-        }
-        expect(changes).toEqual([newer, supported]);
-      }),
-  );
-
-  it.effect(
     "orders a save behind an in-flight load and publishes committed state",
     () =>
       Effect.gen(function* () {
@@ -604,14 +564,14 @@ describe("CombatProfiles", () => {
               ),
             ),
         }));
-        const initial = yield* combatProfiles.load;
+        const initial = { version: 1, profiles: [genericProfile] };
         yield* Effect.promise(() => writeFile(path, JSON.stringify(initial)));
         const changes: CombatProfileLibrary[] = [];
         yield* combatProfiles.onChanged((library) => {
           changes.push(library);
         });
         blockRead = true;
-        const loading = yield* combatProfiles.load.pipe(Effect.forkScoped);
+        const loading = yield* combatProfiles.get.pipe(Effect.forkScoped);
         yield* Deferred.await(readStarted);
         const saving = yield* combatProfiles
           .saveProfile(testProfile)
@@ -628,7 +588,7 @@ describe("CombatProfiles", () => {
             steps: testProfile.steps,
           }),
         );
-        expect(changes).toEqual([initial, saved]);
+        expect(changes).toEqual([saved]);
         expect(yield* combatProfiles.get).toEqual(saved);
         expect(
           normalizeCombatProfileLibrary(
@@ -692,7 +652,7 @@ it.effect("commits combat profiles interrupted after the file rename", () =>
           ),
       }),
     );
-    yield* combatProfiles.load;
+    yield* combatProfiles.get;
     const received: string[] = [];
     yield* combatProfiles.onChanged((next) => {
       received.push(next.profiles.at(-1)?.label ?? "missing");
@@ -715,22 +675,5 @@ it.effect("commits combat profiles interrupted after the file rename", () =>
       "Committed",
     );
     expect(received).toEqual(["Committed"]);
-    expect((yield* combatProfiles.load).profiles.at(-1)?.label).toBe(
-      "Committed",
-    );
-    expect(received).toEqual(["Committed", "Committed"]);
-  }),
-);
-
-it.effect("publishes every load even when combat profiles are unchanged", () =>
-  Effect.gen(function* () {
-    const { combatProfiles } = yield* makeHarness();
-    const names: string[][] = [];
-    yield* combatProfiles.onChanged((value) => {
-      names.push(value.profiles.map((profile) => profile.label));
-    });
-    yield* combatProfiles.load;
-    yield* combatProfiles.load;
-    expect(names).toEqual([["Generic"], ["Generic"]]);
   }),
 );

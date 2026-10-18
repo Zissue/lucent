@@ -23,7 +23,6 @@ export interface GameEnvironmentsShape {
     gameRendererId: number,
   ) => Effect.Effect<EnvironmentBoostDiscovery, GameRendererUnavailableError>;
   readonly get: (gameRendererId: number) => Effect.Effect<EnvironmentState>;
-  readonly remove: (gameRendererId: number) => Effect.Effect<void>;
   readonly set: (
     gameRendererId: number,
     state: EnvironmentState,
@@ -69,7 +68,7 @@ export const makeGameEnvironments = Effect.gen(function* () {
       return next;
     });
 
-  const remove: GameEnvironmentsShape["remove"] = (gameRendererId) =>
+  const remove = (gameRendererId: number) =>
     Effect.sync(() => {
       states.delete(gameRendererId);
     });
@@ -105,7 +104,6 @@ export const makeGameEnvironments = Effect.gen(function* () {
   return GameEnvironments.of({
     fetchBoosts,
     get,
-    remove,
     set,
     update,
     withdrawBoosts,

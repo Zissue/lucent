@@ -1,4 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
+import { createEmptyEnvironmentState } from "@lucent/core/environment";
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
@@ -26,6 +27,51 @@ const makeEnvironments = Effect.fn(function* (
 });
 
 describe("GameEnvironments", () => {
+  it.effect("clears only a closed game renderer's environment", () =>
+    Effect.gen(function* () {
+      const game = yield* makeTestGameRenderer();
+      let closed: Effect.Effect<void, unknown> = Effect.die(
+        "Window observer was not registered.",
+      );
+      const environments = yield* makeGameEnvironments.pipe(
+        Effect.provideService(GameRendererRpc, game.rpc),
+        Effect.provideService(
+          DesktopWindows,
+          DesktopWindows.of({
+            ...game.windows,
+            observe: (filter, listener) => {
+              closed = listener({
+                type: "closed",
+                generation: 1,
+                kind: "game",
+                rendererId: TEST_GAME_RENDERER_ID,
+              });
+              return game.windows.observe(filter, listener);
+            },
+          }),
+        ),
+      );
+      yield* environments.set(TEST_GAME_RENDERER_ID, {
+        ...createEmptyEnvironmentState(),
+        questIds: [1],
+      });
+      yield* environments.set(43, {
+        ...createEmptyEnvironmentState(),
+        questIds: [2],
+      });
+      expect((yield* environments.get(TEST_GAME_RENDERER_ID)).questIds).toEqual(
+        [1],
+      );
+
+      yield* closed.pipe(Effect.orDie);
+
+      expect((yield* environments.get(TEST_GAME_RENDERER_ID)).questIds).toEqual(
+        [],
+      );
+      expect((yield* environments.get(43)).questIds).toEqual([2]);
+    }),
+  );
+
   it.effect("returns boosts discovered by the game renderer", () =>
     Effect.gen(function* () {
       const discovery: EnvironmentBoostDiscovery = {

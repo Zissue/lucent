@@ -261,6 +261,7 @@ const makeStartup = (options: {
   const appEvents = new EventEmitter();
   const openedWindows: string[] = [];
   const ipcHandlers = new Set<string>();
+  let initialSettingsRead = true;
 
   const emitWillQuit = (): void => {
     let defaultPrevented = false;
@@ -359,22 +360,15 @@ const makeStartup = (options: {
       ),
     ),
     Layer.mock(DesktopSettings, {
-      load: Effect.succeed(
-        normalizeAppSettings({
-          preferences: {
-            checkForUpdates: true,
-            launchMode: options.initialLaunchMode ?? "game",
-          },
-        }),
-      ),
-      get: Effect.sync(() =>
-        normalizeAppSettings({
-          preferences: {
-            checkForUpdates: true,
-            launchMode: options.launchMode ?? "game",
-          },
-        }),
-      ),
+      get: Effect.sync(() => {
+        const launchMode = initialSettingsRead
+          ? (options.initialLaunchMode ?? "game")
+          : (options.launchMode ?? "game");
+        initialSettingsRead = false;
+        return normalizeAppSettings({
+          preferences: { checkForUpdates: true, launchMode },
+        });
+      }),
       onChanged: () => Effect.void,
     }),
     Layer.mock(DesktopUpdates, {

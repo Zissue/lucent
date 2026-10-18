@@ -175,7 +175,6 @@ const makeHarness = (
         get: Effect.suspend(() => settingsRead).pipe(
           Effect.as(normalizeAppSettings({ preferences: { useGameTabs } })),
         ),
-        load: Effect.succeed(DEFAULT_APP_SETTINGS),
         onChanged: () => Effect.void,
         resetAppearance: Effect.succeed(DEFAULT_APP_SETTINGS),
         resetHotkeys: Effect.succeed(DEFAULT_APP_SETTINGS),

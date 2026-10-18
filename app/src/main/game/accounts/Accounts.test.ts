@@ -406,7 +406,7 @@ describe("Accounts", () => {
       yield* accounts.onChanged((state) => {
         names.push(state.accounts.map((account) => account.username));
       });
-      yield* accounts.load;
+      yield* accounts.getState;
       yield* accounts.deleteAccounts([]);
       yield* Effect.flip(
         accounts.createAccount({ username: "", password: "secret" }),
@@ -415,7 +415,7 @@ describe("Accounts", () => {
       yield* accounts.createAccount({ username: "Alice", password: "secret" });
       yield* accounts.updateAccount("Alice", {});
       yield* accounts.deleteAccounts([]);
-      yield* accounts.load;
+      yield* accounts.getState;
       yield* accounts.reportSession(42, {
         rendererGeneration: 1,
         revision: 1,
@@ -436,9 +436,10 @@ describe("Accounts", () => {
           '{"accounts":[{"label":"Bob","username":"Bob","password":"secret"}],"groups":{}}',
         ),
       );
-      yield* accounts.load;
-      yield* accounts.load;
-      expect(names).toEqual([["Alice"], ["Bob"]]);
+      expect((yield* accounts.getState).accounts).toEqual([
+        { label: "Alice", username: "Alice", password: "secret" },
+      ]);
+      expect(names).toEqual([["Alice"]]);
     }),
   );
 
@@ -970,7 +971,7 @@ it.effect("commits accounts interrupted after the file rename", () =>
     });
     yield* Effect.gen(function* () {
       const accounts = yield* Accounts;
-      yield* accounts.load;
+      yield* accounts.getState;
       const received: string[][] = [];
       yield* accounts.onChanged((next) => {
         received.push(next.accounts.map((account) => account.username));
@@ -1004,11 +1005,6 @@ it.effect("commits accounts interrupted after the file rename", () =>
           yield* Effect.promise(() => readFile(current.storagePath, "utf8")),
         ).accounts,
       ).toEqual([
-        { label: "Committed", username: "Committed", password: "secret" },
-        { label: "After", username: "After", password: "secret" },
-      ]);
-      expect(received).toEqual([["Committed"], ["Committed", "After"]]);
-      expect((yield* accounts.load).accounts).toEqual([
         { label: "Committed", username: "Committed", password: "secret" },
         { label: "After", username: "After", password: "secret" },
       ]);
@@ -1065,7 +1061,7 @@ it.effect("orders overlapping repository and session notifications", () =>
         revision: 2,
         runtime: { ...report.runtime, connection: { state: "offline" } },
       });
-      yield* accounts.load;
+      yield* accounts.getState;
       yield* accounts.reportSession(gameWindowId, report);
       for (const received of [first, later]) {
         expect(received).toEqual([
@@ -1147,153 +1143,4 @@ it.effect("orders overlapping repository and session notifications", () =>
       }
     }).pipe(Effect.provide(layer));
   }),
-);
-
-it.effect(
-  "publishes coherent storage while reload and session reports overlap",
-  () =>
-    Effect.gen(function* () {
-      const readStarted = yield* Deferred.make<void>();
-      const releaseRead = yield* Deferred.make<void>();
-      const reportsStarted = yield* Deferred.make<void>();
-      const releaseReports = yield* Deferred.make<void>();
-      let holdRead = false;
-      let pendingReports = 0;
-      const layer = yield* makeHarness({
-        wrapFileSystem: (fileSystem) =>
-          FileSystem.of({
-            ...fileSystem,
-            stream: (path, options) =>
-              fileSystem.stream(path, options).pipe(
-                Stream.tap(() =>
-                  Effect.gen(function* () {
-                    if (!holdRead) return;
-                    holdRead = false;
-                    yield* Deferred.succeed(readStarted, undefined);
-                    yield* Deferred.await(releaseRead);
-                  }),
-                ),
-              ),
-          }),
-        beforeSetName: () =>
-          Effect.gen(function* () {
-            pendingReports += 1;
-            if (pendingReports === 2)
-              yield* Deferred.succeed(reportsStarted, undefined);
-            yield* Deferred.await(releaseReports);
-          }),
-      });
-      yield* Effect.gen(function* () {
-        const accounts = yield* Accounts;
-        const windows = yield* AccountGameWindows;
-        const windowId = yield* windows.open();
-        yield* accounts.createAccount({
-          username: "Alice",
-          password: "secret",
-        });
-        const received: Omit<AccountManagerState, "storagePath">[] = [];
-        yield* accounts.onChanged((state) => {
-          received.push({
-            accounts: state.accounts,
-            groups: state.groups,
-            sessions: state.sessions,
-          });
-        });
-        const repository = yield* AccountRepository.AccountRepository;
-        yield* Effect.promise(() =>
-          writeFile(
-            repository.path,
-            '{"accounts":[{"label":"Alice","username":"Alice","password":"secret"},{"label":"Bob","username":"Bob","password":"secret"}],"groups":{}}',
-          ),
-        );
-        holdRead = true;
-        const loading = yield* accounts.load.pipe(Effect.forkChild);
-        yield* Deferred.await(readStarted);
-        const firstReport = yield* accounts
-          .reportSession(windowId, {
-            rendererGeneration: 1,
-            revision: 1,
-            runtime: {
-              connection: { state: "online", username: "Alice" },
-              login: { state: "idle" },
-              script: { state: "idle" },
-            },
-          })
-          .pipe(Effect.forkChild({ startImmediately: true }));
-        const secondReport = yield* accounts
-          .reportSession(windowId, {
-            rendererGeneration: 1,
-            revision: 2,
-            runtime: {
-              connection: { state: "offline" },
-              login: { state: "idle" },
-              script: { state: "idle" },
-            },
-          })
-          .pipe(Effect.forkChild({ startImmediately: true }));
-        yield* Deferred.await(reportsStarted);
-        yield* Deferred.succeed(releaseRead, undefined);
-        yield* Fiber.join(loading);
-        yield* Deferred.succeed(releaseReports, undefined);
-        yield* Fiber.join(firstReport);
-        yield* Fiber.join(secondReport);
-        expect(received).toEqual([
-          {
-            accounts: [
-              { label: "Alice", username: "Alice", password: "secret" },
-            ],
-            groups: {},
-            sessions: [
-              {
-                gameWindowId: 1,
-                gameWindowGroupId: 1,
-                rendererGeneration: 1,
-                revision: 2,
-                updatedAt: 0,
-                connection: { state: "online", username: "Alice" },
-                login: { state: "idle" },
-                script: { state: "idle" },
-              },
-            ],
-          },
-          {
-            accounts: [
-              { label: "Alice", username: "Alice", password: "secret" },
-            ],
-            groups: {},
-            sessions: [
-              {
-                gameWindowId: 1,
-                gameWindowGroupId: 1,
-                rendererGeneration: 1,
-                revision: 3,
-                updatedAt: 0,
-                connection: { state: "offline" },
-                login: { state: "idle" },
-                script: { state: "idle" },
-              },
-            ],
-          },
-          {
-            accounts: [
-              { label: "Alice", username: "Alice", password: "secret" },
-              { label: "Bob", username: "Bob", password: "secret" },
-            ],
-            groups: {},
-            sessions: [
-              {
-                gameWindowId: 1,
-                gameWindowGroupId: 1,
-                rendererGeneration: 1,
-                revision: 3,
-                updatedAt: 0,
-                connection: { state: "offline" },
-                login: { state: "idle" },
-                script: { state: "idle" },
-              },
-            ],
-          },
-        ]);
-      }).pipe(Effect.provide(layer));
-    }),
 );

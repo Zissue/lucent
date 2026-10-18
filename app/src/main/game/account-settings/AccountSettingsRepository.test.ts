@@ -80,13 +80,11 @@ const makeRepository = (
 
 describe("AccountSettingsRepository", () => {
   it.effect(
-    "uses a lowercase username filename without creating defaults",
+    "uses a lowercase username filename and only writes after an edit",
     () =>
       Effect.gen(function* () {
-        const { repository } = yield* makeRepository();
-        const path = yield* repository.pathFor("  Hero Name  ");
-
-        expect(path).toMatch(/account-settings\/hero name\.json$/u);
+        const { env, repository } = yield* makeRepository();
+        const path = join(env.appDataDir, "account-settings", "hero name.json");
         expect(yield* repository.get("Hero Name")).toEqual(
           DEFAULT_ACCOUNT_SETTINGS,
         );
@@ -98,6 +96,19 @@ describe("AccountSettingsRepository", () => {
             ),
           ),
         ).toBe(false);
+        yield* repository.update("  Hero Name  ", {
+          scripts: { safeStartStop: false },
+        });
+        expect(
+          JSON.parse(yield* Effect.promise(() => readFile(path, "utf8"))),
+        ).toEqual({
+          version: 1,
+          scripts: {
+            restartAfterReconnect: false,
+            roomPolicy: { kind: "random-private" },
+            safeStartStop: false,
+          },
+        });
       }),
   );
 
@@ -105,8 +116,8 @@ describe("AccountSettingsRepository", () => {
     "normalizes fields independently and preserves siblings on update",
     () =>
       Effect.gen(function* () {
-        const { repository } = yield* makeRepository();
-        const path = yield* repository.pathFor("Hero");
+        const { env, repository } = yield* makeRepository();
+        const path = join(env.appDataDir, "account-settings", "hero.json");
         yield* Effect.promise(() => mkdir(dirname(path), { recursive: true }));
         yield* Effect.promise(() =>
           writeFile(
@@ -143,8 +154,8 @@ describe("AccountSettingsRepository", () => {
 
   it.effect("leaves malformed JSON untouched until an edit heals it", () =>
     Effect.gen(function* () {
-      const { repository } = yield* makeRepository();
-      const path = yield* repository.pathFor("Hero");
+      const { env, repository } = yield* makeRepository();
+      const path = join(env.appDataDir, "account-settings", "hero.json");
       yield* Effect.promise(() => mkdir(dirname(path), { recursive: true }));
       yield* Effect.promise(() => writeFile(path, "{not-json", "utf8"));
 
@@ -197,7 +208,11 @@ describe("AccountSettingsRepository saved data", () => {
     () =>
       Effect.gen(function* () {
         const { env, repository } = yield* makeRepository();
-        const path = yield* repository.pathFor("Private Hero");
+        const path = join(
+          env.appDataDir,
+          "account-settings",
+          "private hero.json",
+        );
         const source =
           '{"scripts":{"restartAfterReconnect":"invalid","roomPolicy":{"kind":"specific","roomNumber":42},"safeStartStop":false}}';
         yield* Effect.promise(() => mkdir(dirname(path), { recursive: true }));
@@ -268,7 +283,11 @@ describe("AccountSettingsRepository saved data", () => {
       () =>
         Effect.gen(function* () {
           const { env, repository } = yield* makeRepository();
-          const path = yield* repository.pathFor("Private Hero");
+          const path = join(
+            env.appDataDir,
+            "account-settings",
+            "private hero.json",
+          );
           yield* Effect.promise(() =>
             mkdir(dirname(path), { recursive: true }),
           );
@@ -354,7 +373,7 @@ describe("AccountSettingsRepository saved data", () => {
   it.effect("fails unreadable storage without overwriting it on update", () =>
     Effect.gen(function* () {
       let unreadablePath: string | undefined;
-      const { repository } = yield* makeRepository((fileSystem) =>
+      const { env, repository } = yield* makeRepository((fileSystem) =>
         FileSystem.of({
           ...fileSystem,
           stream: (path, options) =>
@@ -370,7 +389,7 @@ describe("AccountSettingsRepository saved data", () => {
               : fileSystem.stream(path, options),
         }),
       );
-      const path = yield* repository.pathFor("Hero");
+      const path = join(env.appDataDir, "account-settings", "hero.json");
       const source =
         '{"version":1,"scripts":{"restartAfterReconnect":true,"roomPolicy":{"kind":"specific","roomNumber":42},"safeStartStop":false}}\n';
       yield* Effect.promise(() => mkdir(dirname(path), { recursive: true }));
@@ -415,8 +434,8 @@ describe("AccountSettingsRepository saved data", () => {
 
   it.effect("loads missing files and valid optional fields silently", () =>
     Effect.gen(function* () {
-      const { repository } = yield* makeRepository();
-      const path = yield* repository.pathFor("Hero");
+      const { env, repository } = yield* makeRepository();
+      const path = join(env.appDataDir, "account-settings", "hero.json");
       const missing = yield* captureLogs(repository.get("Hero"));
       expect(missing).toEqual({
         value: {
@@ -454,7 +473,11 @@ it.effect(
   () =>
     Effect.gen(function* () {
       const { env, repository } = yield* makeRepository();
-      const path = yield* repository.pathFor("Private Hero");
+      const path = join(
+        env.appDataDir,
+        "account-settings",
+        "private hero.json",
+      );
       const source =
         '{"version":"wrong","scripts":{"roomPolicy":{"kind":"specific","roomNumber":0},"safeStartStop":null}}';
       yield* Effect.promise(() => mkdir(dirname(path), { recursive: true }));
@@ -493,8 +516,8 @@ it.effect(
   "reads newer account settings silently and writes the current version on update",
   () =>
     Effect.gen(function* () {
-      const { repository } = yield* makeRepository();
-      const path = yield* repository.pathFor("Hero");
+      const { env, repository } = yield* makeRepository();
+      const path = join(env.appDataDir, "account-settings", "hero.json");
       yield* Effect.promise(() => mkdir(dirname(path), { recursive: true }));
       const source =
         '{"version":2,"scripts":{"safeStartStop":false},"futureOnly":"retain"}';

@@ -140,7 +140,7 @@ export const makeDesktopRuntime = <ROut, E, RIn, OOut, OE, OIn>(
             );
 
           yield* installDesktopRendererObservability;
-          const settings = yield* settingsService.load;
+          const settings = yield* settingsService.get;
           const requestedLaunchMode =
             cliOptions.launchMode ?? settings.preferences.launchMode;
           const version = yield* app.getVersion;

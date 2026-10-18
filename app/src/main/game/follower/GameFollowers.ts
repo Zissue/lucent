@@ -45,7 +45,6 @@ export interface GameFollowersShape {
     gameRendererId: number,
   ) => Effect.Effect<FollowerPlayers>;
   readonly me: (gameRendererId: number) => FollowerRequest<string>;
-  readonly remove: (gameRendererId: number) => Effect.Effect<void>;
   readonly fetchState: (
     gameRendererId: number,
   ) => FollowerRequest<FollowerState>;
@@ -193,7 +192,7 @@ export const makeGameFollowers = Effect.gen(function* () {
       ]);
     });
 
-  const remove: GameFollowersShape["remove"] = (gameRendererId) =>
+  const remove = (gameRendererId: number) =>
     invalidate(gameRendererId).pipe(
       Effect.andThen(Effect.sync(() => configs.delete(gameRendererId))),
       Effect.asVoid,
@@ -244,7 +243,6 @@ export const makeGameFollowers = Effect.gen(function* () {
     get,
     getPlayers,
     me,
-    remove,
     fetchState,
     set,
     setPlayers,
