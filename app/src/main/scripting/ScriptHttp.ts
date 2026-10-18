@@ -14,6 +14,7 @@ import {
   type HttpResult,
   type HttpErrorReason,
 } from "../../shared/http";
+import { logFailure } from "../../shared/logFailure";
 import {
   DesktopHttpClient,
   type DesktopHttpClientShape,
@@ -189,6 +190,20 @@ export const makeScriptHttp = (
       // Keep the IPC handler alive so cancellation can return a typed result.
       Effect.forkChild({ startImmediately: true }),
       Effect.flatMap(Fiber.await),
+      Effect.tap((exit) =>
+        Exit.isFailure(exit) && Cause.hasDies(exit.cause)
+          ? logFailure(
+              "Script HTTP request failed unexpectedly",
+              exit.cause,
+            ).pipe(
+              Effect.annotateLogs({
+                component: "script-http",
+                data: { rendererId, requestId: payload.requestId },
+                repeatKey: `${rendererId}:${payload.requestId}`,
+              }),
+            )
+          : Effect.void,
+      ),
       Effect.map((exit): HttpResult => {
         if (Exit.isSuccess(exit)) return exit.value;
         const cause = exit.cause;

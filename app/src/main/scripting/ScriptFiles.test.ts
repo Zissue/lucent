@@ -3,7 +3,9 @@ import { tmpdir } from "os";
 import { join, resolve as resolvePath } from "path";
 import { Worker } from "node:worker_threads";
 import { build } from "esbuild";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Logger from "effect/Logger";
 import * as Fiber from "effect/Fiber";
 import * as Result from "effect/Result";
 import * as TestClock from "effect/testing/TestClock";
@@ -18,7 +20,12 @@ import {
   it,
 } from "@effect/vitest";
 
-import { makeScriptFileResolver, makeScriptFileWorker } from "./ScriptFiles";
+import {
+  makeScriptFileResolver,
+  makeScriptFileWorker,
+  makeScriptFiles,
+} from "./ScriptFiles";
+import { desktopLogRecord } from "../../shared/logRecord";
 import { processScriptFile } from "./ScriptFileAnalysis";
 import type { ScriptFileAnalysisResolution } from "./ScriptFileWorkerProtocol";
 import { SCRIPT_FILE_MAX_BYTES } from "./ScriptLimits";
@@ -317,3 +324,206 @@ it.effect("replaces an idle worker before accepting the next request", () =>
     expect(workers).toHaveLength(2);
   }),
 );
+
+describe("script resolution failure logging", () => {
+  it.effect(
+    "logs unexpected file I/O once and keeps expected source outcomes silent",
+    () =>
+      Effect.gen(function* () {
+        const directory = yield* Effect.promise(makeTempDirectory);
+        const missingPath = join(directory, "missing.js");
+        const malformedPath = join(directory, "malformed.js");
+        const oversizedPath = join(directory, "oversized.js");
+        yield* Effect.promise(() =>
+          writeFile(malformedPath, "module.exports = function* ("),
+        );
+        yield* Effect.promise(() => writeFile(oversizedPath, ""));
+        yield* Effect.promise(() =>
+          truncate(oversizedPath, SCRIPT_FILE_MAX_BYTES + 1),
+        );
+        const files = makeScriptFiles(processScriptFile);
+        const logs: unknown[] = [];
+        const logger = Logger.make((options) => {
+          const { level, component, message, data, repeatKey } =
+            desktopLogRecord(options);
+          logs.push({ level, component, message, data, repeatKey });
+        });
+        const results = yield* Effect.all([
+          files.resolve(directory),
+          files.resolve(missingPath),
+          files.resolve(malformedPath),
+          files.resolve(oversizedPath),
+        ]).pipe(Effect.withLogger(logger));
+        expect(results.map((result) => result.status)).toEqual([
+          "failed",
+          "missing",
+          "failed",
+          "failed",
+        ]);
+        expect(results[1]).toEqual({ status: "missing", path: missingPath });
+        expect(results[2]).toMatchObject({
+          message: "Script source could not be parsed.",
+        });
+        expect(logs).toEqual([
+          {
+            level: "warn",
+            component: "script-files",
+            message: "Failed to resolve script file",
+            data: { path: directory },
+            repeatKey: directory,
+          },
+        ]);
+      }),
+  );
+
+  it.effect("logs a rejected worker defect once with its original cause", () =>
+    Effect.gen(function* () {
+      const error = new Error("worker crashed");
+      const files = makeScriptFiles(() => Promise.reject(error));
+      const logs: unknown[] = [];
+      const causes: unknown[] = [];
+      const result = yield* files.resolve("/scripts/broken.js").pipe(
+        Effect.withLogger(
+          Logger.make((options) => {
+            const { level, component, message, data, repeatKey } =
+              desktopLogRecord(options);
+            logs.push({ level, component, message, data, repeatKey });
+            causes.push(Cause.squash(options.cause));
+          }),
+        ),
+      );
+      expect(result).toMatchObject({
+        status: "failed",
+        path: "/scripts/broken.js",
+        message: "worker crashed",
+      });
+      expect(logs).toEqual([
+        {
+          level: "error",
+          component: "script-files",
+          message: "Script file analysis failed unexpectedly",
+          data: { path: "/scripts/broken.js" },
+          repeatKey: "/scripts/broken.js",
+        },
+      ]);
+      expect(causes).toEqual([error]);
+    }),
+  );
+
+  it.effect("preserves I/O failure causes through the bundled worker", () =>
+    Effect.gen(function* () {
+      const directory = yield* Effect.promise(makeTempDirectory);
+      const malformedPath = join(directory, "malformed.js");
+      yield* Effect.promise(() =>
+        writeFile(malformedPath, "module.exports = function* ("),
+      );
+      const processFile = yield* makeScriptFileWorker(
+        () => new Worker(workerPath),
+      );
+      const runPromise = Effect.runPromiseWith(yield* Effect.context());
+      const files = makeScriptFiles((path) => runPromise(processFile(path)));
+      const logs: unknown[] = [];
+      const causes: unknown[] = [];
+      const logger = Logger.make((options) => {
+        const { level, component, message, data, repeatKey } =
+          desktopLogRecord(options);
+        logs.push({ level, component, message, data, repeatKey });
+        causes.push(Cause.squash(options.cause));
+      });
+      const result = yield* files
+        .resolve(directory)
+        .pipe(Effect.withLogger(logger));
+      const malformed = yield* files
+        .resolve(malformedPath)
+        .pipe(Effect.withLogger(logger));
+      const missing = yield* files
+        .resolve(join(directory, "missing.js"))
+        .pipe(Effect.withLogger(logger));
+      expect(result).toMatchObject({ status: "failed", path: directory });
+      expect(malformed).toMatchObject({
+        status: "failed",
+        path: malformedPath,
+        message: "Script source could not be parsed.",
+      });
+      expect(missing).toEqual({
+        status: "missing",
+        path: join(directory, "missing.js"),
+      });
+      expect(causes).toEqual([expect.any(Error)]);
+      expect(logs).toEqual([
+        {
+          level: "warn",
+          component: "script-files",
+          message: "Failed to resolve script file",
+          data: { path: directory },
+          repeatKey: directory,
+        },
+      ]);
+    }),
+  );
+
+  it.effect(
+    "logs a crashed RPC worker once and keeps the next missing file silent",
+    () =>
+      Effect.gen(function* () {
+        let workers = 0;
+        const processFile = yield* makeScriptFileWorker(() =>
+          workers++ === 0
+            ? new Worker("throw new Error('worker crashed')", { eval: true })
+            : new Worker(workerPath),
+        );
+        const runPromise = Effect.runPromiseWith(yield* Effect.context());
+        const files = makeScriptFiles((path) => runPromise(processFile(path)));
+        const logs: unknown[] = [];
+        const logger = Logger.make((options) => {
+          const { level, component, message, data, repeatKey } =
+            desktopLogRecord(options);
+          logs.push({ level, component, message, data, repeatKey });
+        });
+        const crashed = yield* files
+          .resolve("/scripts/crash.js")
+          .pipe(Effect.withLogger(logger));
+        const missing = yield* files
+          .resolve("/scripts/missing.js")
+          .pipe(Effect.withLogger(logger));
+        expect(crashed).toMatchObject({
+          status: "failed",
+          path: "/scripts/crash.js",
+          message: "WorkerReceiveError: Script file worker failed.",
+        });
+        expect(missing).toEqual({
+          status: "missing",
+          path: "/scripts/missing.js",
+        });
+        expect(logs).toEqual([
+          {
+            level: "error",
+            component: "script-files",
+            message: "Script file analysis failed unexpectedly",
+            data: { path: "/scripts/crash.js" },
+            repeatKey: "/scripts/crash.js",
+          },
+        ]);
+      }),
+  );
+
+  it.effect("keeps an interrupt-only resolution failure silent", () =>
+    Effect.gen(function* () {
+      const files = makeScriptFiles(() => Promise.reject(Cause.interrupt()));
+      const logs: unknown[] = [];
+      const result = yield* files
+        .resolve("/scripts/cancelled.js")
+        .pipe(
+          Effect.withLogger(
+            Logger.make((options) => logs.push(desktopLogRecord(options))),
+          ),
+        );
+      expect(result).toMatchObject({
+        status: "failed",
+        path: "/scripts/cancelled.js",
+        message: "All fibers interrupted without error",
+      });
+      expect(logs).toEqual([]);
+    }),
+  );
+});

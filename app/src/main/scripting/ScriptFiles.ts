@@ -2,6 +2,7 @@ import { join, resolve as resolvePath } from "path";
 import { Worker } from "worker_threads";
 
 import * as Deferred from "effect/Deferred";
+import * as Cause from "effect/Cause";
 import * as FiberSet from "effect/FiberSet";
 import * as Duration from "effect/Duration";
 import * as Exit from "effect/Exit";
@@ -26,6 +27,7 @@ import type {
   ScriptFile,
   ScriptFileResolution,
 } from "@lucent/core/scriptInputs";
+import { logFailure } from "../../shared/logFailure";
 import {
   SCRIPT_FILE_WORKER_HEAP_MB,
   SCRIPT_FILE_WORKER_QUEUE_LIMIT,
@@ -35,12 +37,17 @@ import {
   ScriptFileWorkerRpcs,
 } from "./ScriptFileWorkerProtocol";
 
+const isRpcClientError = Schema.is(RpcClientError);
+
 export class ScriptFilesError extends Schema.TaggedError<ScriptFilesError>()(
   "ScriptFilesError",
   {
     path: Schema.String,
     detail: Schema.String,
     cause: Schema.optionalKey(Schema.Defect()),
+    failureCause: Schema.optionalKey(
+      Schema.Cause(Schema.Defect(), Schema.Defect()),
+    ),
   },
 ) {
   override get message(): string {
@@ -210,17 +217,39 @@ export const makeScriptFileWorker = Effect.fn("makeScriptFileWorker")(
 
 const failureResolution = (
   path: string,
-  error: unknown,
+  failureCause: Cause.Cause<unknown>,
 ): ScriptFileAnalysisResolution => {
+  const error = Cause.squash(failureCause);
   const normalized = error instanceof Error ? error : new Error(String(error));
   return {
     status: "failed",
     path,
     message: normalized.message || "Script file processing failed.",
+    failureCause,
     ...(normalized.stack === undefined
       ? {}
       : { detailsText: normalized.stack }),
   };
+};
+
+export const logScriptFileResolutionFailure = (
+  path: string,
+  cause: Cause.Cause<unknown>,
+): Effect.Effect<void> => {
+  if (cause.reasons.length === 0) return Effect.void;
+  return (
+    Cause.hasDies(cause)
+      ? logFailure("Script file analysis failed unexpectedly", cause)
+      : logFailure("Failed to resolve script file", cause, {
+          failure: "warning",
+        })
+  ).pipe(
+    Effect.annotateLogs({
+      component: "script-files",
+      data: { path },
+      repeatKey: path,
+    }),
+  );
 };
 
 export const makeScriptFiles = (
@@ -230,12 +259,22 @@ export const makeScriptFiles = (
 
   const resolve: ScriptFilesShape["resolve"] = (path) =>
     Effect.promise(() => resolveFile(path)).pipe(
-      Effect.map(
-        (resolution): ScriptFileResolution =>
-          resolution.status === "found"
-            ? { status: "found", file: resolution.analysis.file }
-            : resolution,
+      Effect.tap((resolution) =>
+        resolution.status === "failed" && resolution.failureCause !== undefined
+          ? logScriptFileResolutionFailure(
+              resolution.path,
+              resolution.failureCause,
+            )
+          : Effect.void,
       ),
+      Effect.map((resolution): ScriptFileResolution => {
+        if (resolution.status === "found") {
+          return { status: "found", file: resolution.analysis.file };
+        }
+        if (resolution.status === "missing") return resolution;
+        const { failureCause: _, ...failed } = resolution;
+        return failed;
+      }),
     );
 
   const analyze: ScriptFilesShape["analyze"] = (path) =>
@@ -256,6 +295,9 @@ export const makeScriptFiles = (
               new ScriptFilesError({
                 path: resolution.path,
                 detail: resolution.message,
+                ...(resolution.failureCause === undefined
+                  ? {}
+                  : { failureCause: resolution.failureCause }),
                 ...(resolution.detailsText === undefined
                   ? {}
                   : { cause: new Error(resolution.detailsText) }),
@@ -282,7 +324,12 @@ export const makeScriptFileResolver = (
     if (pending !== undefined) return pending;
 
     const created = processFile(normalizedPath)
-      .catch((error: unknown) => failureResolution(normalizedPath, error))
+      .catch((error: unknown) =>
+        failureResolution(
+          normalizedPath,
+          Cause.isCause(error) ? error : Cause.die(error),
+        ),
+      )
       .finally(() => {
         if (inFlight.get(normalizedPath) === created) {
           inFlight.delete(normalizedPath);
@@ -305,6 +352,20 @@ export const layer = Layer.effect(
         processFile(path).pipe(
           Effect.forkIn(scope),
           Effect.flatMap(Fiber.join),
+          Effect.catchCause((cause) =>
+            Effect.succeed(
+              failureResolution(
+                path,
+                Cause.fromReasons(
+                  cause.reasons.map((reason) =>
+                    Cause.isFailReason(reason) && isRpcClientError(reason.error)
+                      ? Cause.makeDieReason(reason.error)
+                      : reason,
+                  ),
+                ),
+              ),
+            ),
+          ),
         ),
       ),
     );

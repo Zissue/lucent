@@ -28,10 +28,12 @@ import {
   decodePackageName,
   inspectManagedPackageFolder,
   integrityFor,
+  isUnexpectedPackageFileError,
   isJavaScriptFile,
   readScriptPackageManifest,
   type InspectedScriptPackageDirectory,
   type ScriptPackageManifest,
+  type ScriptPackageInspectionFailure,
 } from "./ScriptPackageInspection";
 import type { ManagedScriptPackage } from "./ScriptPackageState";
 
@@ -287,6 +289,9 @@ export interface DiscoverScriptCatalogOptions {
   readonly managedPackages?: readonly ManagedScriptPackage[];
   readonly packagesDir: string;
   readonly scriptsDir: string;
+  readonly onInspectionFailure?: (
+    failure: ScriptPackageInspectionFailure,
+  ) => void;
 }
 
 type ValidPackageSummary = Extract<
@@ -375,7 +380,11 @@ export const discoverScriptCatalog = async (
         options.currentVersion,
         manifest.lucentVersion,
       );
-      const integrity = await integrityFor(directory, managed);
+      const integrity = await integrityFor(
+        directory,
+        managed,
+        options.onInspectionFailure,
+      );
       const warning =
         compatibility.status === "unknown"
           ? compatibility.warning
@@ -439,6 +448,15 @@ export const discoverScriptCatalog = async (
         summary,
       });
     } catch (cause) {
+      if (isUnexpectedPackageFileError(cause)) {
+        options.onInspectionFailure?.({
+          packageName:
+            validatedName ??
+            managedPackages.get(entry.name)?.name ??
+            entry.name,
+          cause,
+        });
+      }
       scannedPackages.push({
         status: "invalid",
         summary: {
