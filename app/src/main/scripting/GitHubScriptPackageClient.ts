@@ -273,6 +273,7 @@ export const layer = Layer.effect(
                   ? {}
                   : { credentialId: input.credentialId }),
                 ...(input.etag === undefined ? {} : { etag: input.etag }),
+                maxBytes: SCRIPT_PACKAGE_METADATA_MAX_BYTES,
                 timeoutMs: REQUEST_TIMEOUT_MS,
                 ...(token === undefined ? {} : { token }),
                 url,

@@ -31,6 +31,7 @@ import { DesktopSettings } from "../settings/DesktopSettings";
 import { parseAllowedUpdateReleaseUrl } from "./UpdateReleaseOpenPolicy";
 
 const RELEASES_URL = "https://api.github.com/repos/toommyliu/lucent/releases";
+const RELEASE_RESPONSE_MAX_BYTES = 16 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 10_000;
 const CHECK_TIMEOUT_MS = 30_000;
 const CHECK_ATTEMPTS = 3;
@@ -190,6 +191,7 @@ const fetchLatestStableGitHubRelease = Effect.fn(
     .get({
       attempts: CHECK_ATTEMPTS,
       ...(options?.etag === undefined ? {} : { etag: options.etag }),
+      maxBytes: RELEASE_RESPONSE_MAX_BYTES,
       timeoutMs: REQUEST_TIMEOUT_MS,
       url: new URL(`${RELEASES_URL}/latest`),
     })
@@ -224,6 +226,7 @@ const fetchNewestGitHubRelease = Effect.fn(
     const response = yield* api
       .get({
         attempts: CHECK_ATTEMPTS,
+        maxBytes: RELEASE_RESPONSE_MAX_BYTES,
         timeoutMs: REQUEST_TIMEOUT_MS,
         url: new URL(`${RELEASES_URL}?per_page=100&page=${page}`),
       })
