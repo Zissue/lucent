@@ -1,6 +1,6 @@
-import { createHash } from "crypto";
-import { promises as fs } from "fs";
-import { basename, dirname, join } from "path";
+import { createHash } from "node:crypto";
+import { promises as fs } from "node:fs";
+import { basename, dirname, join } from "node:path";
 
 import {
   listRegularFilePaths,

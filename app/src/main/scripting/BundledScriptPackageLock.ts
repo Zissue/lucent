@@ -1,7 +1,7 @@
-import { randomBytes } from "crypto";
-import { promises as fs } from "fs";
-import { createConnection, createServer } from "net";
-import { join } from "path";
+import { randomBytes } from "node:crypto";
+import { promises as fs } from "node:fs";
+import { createConnection, createServer } from "node:net";
+import { join } from "node:path";
 
 import * as Schema from "effect/Schema";
 

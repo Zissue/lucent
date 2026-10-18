@@ -1,5 +1,5 @@
-import { cpus, totalmem } from "os";
-import { basename, join } from "path";
+import { cpus, totalmem } from "node:os";
+import { basename, join } from "node:path";
 
 import type { TraceConfig } from "electron";
 import * as Cause from "effect/Cause";

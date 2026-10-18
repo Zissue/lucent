@@ -1,4 +1,4 @@
-import type { IncomingHttpHeaders } from "http";
+import type { IncomingHttpHeaders } from "node:http";
 
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";

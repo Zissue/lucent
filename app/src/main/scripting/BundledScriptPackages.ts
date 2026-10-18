@@ -1,6 +1,6 @@
-import { randomBytes } from "crypto";
-import { promises as fs, type Stats } from "fs";
-import { join } from "path";
+import { randomBytes } from "node:crypto";
+import { promises as fs, type Stats } from "node:fs";
+import { join } from "node:path";
 
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";

@@ -1,6 +1,6 @@
-import { promises as fs } from "fs";
-import { tmpdir } from "os";
-import { dirname, join, resolve } from "path";
+import { promises as fs } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { setTimeout } from "node:timers/promises";
 
 import { afterEach, describe, expect, it } from "@effect/vitest";

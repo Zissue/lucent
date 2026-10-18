@@ -1,5 +1,5 @@
-import { randomBytes } from "crypto";
-import { dirname, join } from "path";
+import { randomBytes } from "node:crypto";
+import { dirname, join } from "node:path";
 
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";

@@ -1,4 +1,4 @@
-import type { EventEmitter } from "events";
+import type { EventEmitter } from "node:events";
 
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";

@@ -1,6 +1,6 @@
 import { net, protocol, type Session } from "electron";
-import { join, normalize, sep } from "path";
-import { pathToFileURL } from "url";
+import { join, normalize, sep } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { ARTIX_DOMAINS } from "./GameRequestHeaders";
 

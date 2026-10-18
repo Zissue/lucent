@@ -1,4 +1,4 @@
-import { join } from "path";
+import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
 import * as Cause from "effect/Cause";

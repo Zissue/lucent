@@ -1,6 +1,13 @@
-import { mkdtemp, rm, stat, truncate, utimes, writeFile } from "fs/promises";
-import { tmpdir } from "os";
-import { join, resolve as resolvePath } from "path";
+import {
+  mkdtemp,
+  rm,
+  stat,
+  truncate,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve as resolvePath } from "node:path";
 import { Worker } from "node:worker_threads";
 import { build } from "esbuild";
 import * as Cause from "effect/Cause";

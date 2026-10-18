@@ -1,5 +1,5 @@
-import { randomBytes } from "crypto";
-import { join } from "path";
+import { randomBytes } from "node:crypto";
+import { join } from "node:path";
 
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";

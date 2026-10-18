@@ -1,5 +1,5 @@
 import type { WebContents } from "electron";
-import { watchFile, unwatchFile, type Stats } from "fs";
+import { watchFile, unwatchFile, type Stats } from "node:fs";
 
 import { electronRendererRegistry } from "../electron/ElectronRendererRegistry";
 
