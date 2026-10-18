@@ -131,7 +131,7 @@ export const initializeBundledScriptPackages = Effect.gen(function* () {
           if (existing !== undefined) {
             const files = yield* Effect.tryPromise(() =>
               hashDirectory(existing.rootPath),
-            );
+            ).pipe(Effect.orElseSucceed(() => undefined));
             if (!isDeepStrictEqual(files, snapshot.files)) {
               yield* finish(name);
               return;

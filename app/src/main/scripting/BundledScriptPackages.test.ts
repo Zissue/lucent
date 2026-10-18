@@ -328,6 +328,51 @@ describe("bundled script packages", () => {
     }),
   );
 
+  it.effect(
+    "leaves a local package with a symlink unmanaged without retrying setup",
+    () =>
+      Effect.gen(function* () {
+        const fixture = yield* Effect.promise(makeFixture);
+        yield* Effect.promise(() => fixture.addPackage("a"));
+        const destination = join(
+          fixture.workspace,
+          "packages",
+          "custom-folder",
+        );
+        yield* Effect.promise(() => writePackage(destination, "a"));
+        yield* Effect.promise(() =>
+          fs.symlink("index.js", join(destination, "linked.js")),
+        );
+
+        const result = yield* fixture.start();
+        expect(result.managed).toEqual([]);
+        expect(result.catalog.packages).toMatchObject([
+          { name: "a", version: "1.0.0", integrity: "unmanaged" },
+        ]);
+        expect(yield* Effect.promise(fixture.readHistory)).toEqual({
+          version: 1,
+          completed: ["a"],
+        });
+
+        const writes = vi.spyOn(fs, "writeFile");
+        const restarted = yield* fixture.start();
+        expect(writes).toHaveBeenCalledTimes(0);
+        expect(restarted.managed).toEqual([]);
+        expect(restarted.catalog.packages).toMatchObject([
+          { name: "a", version: "1.0.0", integrity: "unmanaged" },
+        ]);
+        expect(
+          yield* Effect.promise(() =>
+            fs.readlink(join(destination, "linked.js")),
+          ),
+        ).toBe("index.js");
+        expect(yield* Effect.promise(fixture.readHistory)).toEqual({
+          version: 1,
+          completed: ["a"],
+        });
+      }),
+  );
+
   it.effect("preserves completed packages from the old journal format", () =>
     Effect.gen(function* () {
       const fixture = yield* Effect.promise(makeFixture);
