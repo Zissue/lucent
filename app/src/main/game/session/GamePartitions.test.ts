@@ -454,10 +454,7 @@ describe("Electron game partitions", () => {
 
 describe("Electron game partition leases", () => {
   it("uses memory sessions for concurrent clients of the same managed account", () => {
-    const partitions = makeGamePartitionRegistry({
-      makeRandomId: () => "a".repeat(24),
-      processId: 42,
-    });
+    const partitions = makeGamePartitionRegistry();
     const managed = partitions.acquire({
       kind: "managed-account",
       key: "Alice",
@@ -468,7 +465,7 @@ describe("Electron game partition leases", () => {
     });
 
     expect(managed).toBe(managedGamePartition("ALICE"));
-    expect(duplicate).toBe(`lucent-game-temporary-42-${"a".repeat(24)}`);
+    expect(duplicate).toMatch(/^lucent-game-temporary-[a-f0-9]{24}$/);
 
     partitions.release(managed);
     expect(
@@ -477,15 +474,15 @@ describe("Electron game partition leases", () => {
   });
 
   it("persists one default profile and keeps concurrent clients in memory", () => {
-    const partitions = makeGamePartitionRegistry({
-      makeRandomId: () => "b".repeat(24),
-      processId: 42,
-    });
+    const partitions = makeGamePartitionRegistry();
     const primary = partitions.acquire({ kind: "default" });
     const concurrent = partitions.acquire({ kind: "default" });
 
     expect(primary).toBe(defaultGamePartition);
-    expect(concurrent).toBe(`lucent-game-temporary-42-${"b".repeat(24)}`);
+    expect(concurrent).toMatch(/^lucent-game-temporary-[a-f0-9]{24}$/);
+    const another = partitions.acquire({ kind: "default" });
+    expect(another).toMatch(/^lucent-game-temporary-[a-f0-9]{24}$/);
+    expect(another).not.toBe(concurrent);
 
     partitions.release(primary);
     expect(partitions.acquire({ kind: "default" })).toEqual(primary);
