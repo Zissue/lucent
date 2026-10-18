@@ -89,7 +89,7 @@ describe("DesktopApplicationMenu logging", () => {
         Layer.succeed(DesktopChromiumPerformanceRecording, {
           captureHeapSnapshot: Effect.die("Unused"),
           getState: Effect.succeed({ status: "idle" as const }),
-          onChanged: () => Effect.succeed(() => undefined),
+          onChanged: () => Effect.void,
           start: Effect.void,
           stop: Effect.succeed(undefined),
         }),
@@ -100,7 +100,7 @@ describe("DesktopApplicationMenu logging", () => {
         Layer.succeed(DesktopSettings, {
           get: Effect.succeed(DEFAULT_APP_SETTINGS),
           load: Effect.succeed(DEFAULT_APP_SETTINGS),
-          onChanged: () => Effect.succeed(() => undefined),
+          onChanged: () => Effect.void,
           resetAppearance: Effect.succeed(DEFAULT_APP_SETTINGS),
           resetHotkeys: Effect.succeed(DEFAULT_APP_SETTINGS),
           updateAppearance: () =>

@@ -130,7 +130,7 @@ describe("environment fallback logging", () => {
                 Effect.failCause(
                   defect ? Cause.die(failure) : Cause.fail(failure),
                 ),
-              onConnected: () => Effect.succeed(() => {}),
+              onConnected: () => Effect.void,
             }),
           ),
           Effect.provide(
@@ -212,7 +212,7 @@ describe("environment fallback logging", () => {
           GameRendererRpc,
           GameRendererRpc.of({
             call: () => Effect.interrupt,
-            onConnected: () => Effect.succeed(() => {}),
+            onConnected: () => Effect.void,
           }),
         ),
         Effect.provide(

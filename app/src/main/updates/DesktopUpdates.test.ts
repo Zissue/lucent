@@ -180,7 +180,7 @@ const makeUpdatesHarness = (options: {
     const settingsService = DesktopSettings.of({
       get: Effect.succeed(settings),
       load: Effect.succeed(settings),
-      onChanged: () => Effect.succeed(() => undefined),
+      onChanged: () => Effect.void,
       resetAppearance: Effect.succeed(settings),
       resetHotkeys: Effect.succeed(settings),
       updateAppearance: () => Effect.succeed(settings),
@@ -191,7 +191,7 @@ const makeUpdatesHarness = (options: {
       exit: () => Effect.void,
       getAppMetrics: Effect.succeed([]),
       getVersion: Effect.succeed(options.currentVersion),
-      on: () => Effect.succeed(() => undefined),
+      on: () => Effect.void,
       relaunch: Effect.void,
       quit: Effect.void,
       whenReady: Effect.void,

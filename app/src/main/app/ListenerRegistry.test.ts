@@ -2,8 +2,10 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Logger from "effect/Logger";
+import * as Scope from "effect/Scope";
 
 import { makeListenerRegistry } from "./ListenerRegistry";
 
@@ -70,12 +72,15 @@ describe("ListenerRegistry", () => {
     Effect.gen(function* () {
       const registry = makeListenerRegistry<number>();
       const received: number[] = [];
-      const unsubscribe = yield* registry.subscribe((value) => {
-        received.push(value);
-      });
+      const scope = yield* Scope.make();
+      yield* registry
+        .subscribe((value) => {
+          received.push(value);
+        })
+        .pipe(Effect.provideService(Scope.Scope, scope));
 
       yield* registry.publish(1);
-      unsubscribe();
+      yield* Scope.close(scope, Exit.void);
       yield* registry.publish(2);
 
       expect(received).toEqual([1]);

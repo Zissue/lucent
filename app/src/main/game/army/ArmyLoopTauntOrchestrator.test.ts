@@ -47,7 +47,7 @@ const makeHarness = Effect.fn("ArmyLoopTauntOrchestrator.test.makeHarness")(
     ) => ArmyCoordinator["Service"] = (coordinator) => coordinator,
     beforeOrchestrator: (
       coordinator: ArmyCoordinator["Service"],
-    ) => Effect.Effect<void> = () => Effect.void,
+    ) => Effect.Effect<void, never, Scope.Scope> = () => Effect.void,
   ): Effect.fn.Return<Harness, ArmyCoordinatorError, Scope.Scope> {
     const coordinator = yield* makeArmyCoordinator();
     const ids = players.map(() => nextParticipantId++);

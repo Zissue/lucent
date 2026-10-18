@@ -5,6 +5,7 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import type * as Scope from "effect/Scope";
 
 import {
   removeGroupMemberUsername,
@@ -91,7 +92,7 @@ export interface AccountsShape {
   readonly load: Effect.Effect<AccountManagerState, AccountsError>;
   readonly onChanged: (
     listener: Listener<AccountManagerState>,
-  ) => Effect.Effect<() => void>;
+  ) => Effect.Effect<void, never, Scope.Scope>;
   readonly refreshServers: Effect.Effect<
     AccountGameServersResult,
     AccountsError

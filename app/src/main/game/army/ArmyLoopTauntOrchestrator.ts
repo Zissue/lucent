@@ -57,7 +57,7 @@ export interface ArmyLoopTauntOrchestratorShape {
     listener: (
       event: ArmyLoopTauntCommandEvent,
     ) => Effect.Effect<void, unknown>,
-  ) => Effect.Effect<() => void>;
+  ) => Effect.Effect<void, never, Scope.Scope>;
   readonly register: (
     payload: ArmyLoopTauntRegisterPayload,
     senderId: ArmyParticipantId,

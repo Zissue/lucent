@@ -56,10 +56,9 @@ export const installDesktopNativeAppearanceSync = (
       );
 
     yield* applyNativeAppearance(initialSettings);
-    const unsubscribe = yield* settingsService.onChanged((settings) =>
+    yield* settingsService.onChanged((settings) =>
       applyNativeAppearance(settings).pipe(Effect.ignoreCause),
     );
-    yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
   });
 
 const checkForUpdatesAtStartup = Effect.fn("checkForUpdatesAtStartup")(
@@ -120,7 +119,7 @@ export const makeDesktopRuntime = <ROut, E, RIn, OOut, OE, OIn>(
         Queue.unbounded<CliOptions>(),
         Queue.shutdown,
       );
-      const disposeSecondInstance = yield* app.on(
+      yield* app.on(
         "second-instance",
         (_, argv, _workingDirectory, additionalData) => {
           const originalArgv = Schema.is(secondInstanceDataSchema)(
@@ -131,7 +130,6 @@ export const makeDesktopRuntime = <ROut, E, RIn, OOut, OE, OIn>(
           Queue.offerUnsafe(pendingLaunches, parseCliOptions(originalArgv));
         },
       );
-      yield* Effect.addFinalizer(() => Effect.sync(disposeSecondInstance));
 
       const source = yield* Effect.raceFirst(
         lifecycle.awaitQuit,

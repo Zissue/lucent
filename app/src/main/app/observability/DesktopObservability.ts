@@ -2,7 +2,6 @@ import { ipcMain, type IpcMainEvent } from "electron";
 import * as Clock from "effect/Clock";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
-import type { EventEmitter } from "events";
 import { join } from "path";
 import * as Cause from "effect/Cause";
 import * as Logger from "effect/Logger";
@@ -13,6 +12,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Scope from "effect/Scope";
 
+import { listen } from "../../electron/NativeListener";
 import type { QuitSource } from "../DesktopLifecycle";
 import { DesktopEnvironment } from "../DesktopEnvironment";
 import { makeBufferedDesktopLogWriter } from "./DesktopLogWriter";
@@ -248,22 +248,8 @@ const makeDesktopObservability = Effect.gen(function* () {
       ).catch(() => undefined);
     };
 
-    yield* Effect.sync(() => {
-      process.on("uncaughtException", handleUncaughtException);
-      process.on("unhandledRejection", handleUnhandledRejection);
-    });
-    yield* Effect.addFinalizer(() =>
-      Effect.sync(() => {
-        (process as EventEmitter).removeListener(
-          "uncaughtException",
-          handleUncaughtException,
-        );
-        (process as EventEmitter).removeListener(
-          "unhandledRejection",
-          handleUnhandledRejection,
-        );
-      }),
-    );
+    yield* listen(process, "uncaughtException", handleUncaughtException);
+    yield* listen(process, "unhandledRejection", handleUnhandledRejection);
   });
 
   yield* Effect.addFinalizer(() =>
@@ -296,18 +282,7 @@ const makeDesktopObservability = Effect.gen(function* () {
     Effect.forkScoped,
   );
 
-  yield* Effect.acquireRelease(
-    Effect.sync(() =>
-      ipcMain.on(RendererLogIpc.record.channel, handleRendererRecord),
-    ),
-    () =>
-      Effect.sync(() => {
-        ipcMain.removeListener(
-          RendererLogIpc.record.channel,
-          handleRendererRecord,
-        );
-      }),
-  );
+  yield* listen(ipcMain, RendererLogIpc.record.channel, handleRendererRecord);
 
   return Context.make(
     DesktopObservability,

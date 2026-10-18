@@ -249,20 +249,17 @@ export const makeGameFollowers = Effect.gen(function* () {
         return Effect.void;
     }
   });
-  yield* Effect.acquireRelease(
-    rpc.onConnected((gameRendererId) =>
-      reconcile(gameRendererId).pipe(
-        Effect.catch((error) =>
-          logGameRendererRequestFailure(
-            windows,
-            gameRendererId,
-            "FollowerConfigure",
-            Cause.fail(error),
-          ).pipe(Effect.asVoid),
-        ),
+  yield* rpc.onConnected((gameRendererId) =>
+    reconcile(gameRendererId).pipe(
+      Effect.catch((error) =>
+        logGameRendererRequestFailure(
+          windows,
+          gameRendererId,
+          "FollowerConfigure",
+          Cause.fail(error),
+        ).pipe(Effect.asVoid),
       ),
     ),
-    (unsubscribe) => Effect.sync(unsubscribe),
   );
 
   return GameFollowers.of({

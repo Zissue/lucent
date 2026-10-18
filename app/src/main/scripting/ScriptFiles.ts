@@ -27,6 +27,7 @@ import type {
   ScriptFile,
   ScriptFileResolution,
 } from "@lucent/core/scriptInputs";
+import { listen } from "../electron/NativeListener";
 import { logFailure } from "../../shared/logFailure";
 import {
   SCRIPT_FILE_WORKER_HEAP_MB,
@@ -129,18 +130,10 @@ export const makeScriptFileWorker = Effect.fn("makeScriptFileWorker")(
           };
           const onExit = (code: number) =>
             onError(new Error(`Script file worker exited with code ${code}.`));
-          thread.on("message", onMessage);
-          thread.on("messageerror", onError);
-          thread.on("error", onError);
-          thread.on("exit", onExit);
-          yield* Effect.addFinalizer(() =>
-            Effect.sync(() => {
-              thread.off("message", onMessage);
-              thread.off("messageerror", onError);
-              thread.off("error", onError);
-              thread.off("exit", onExit);
-            }),
-          );
+          yield* listen(thread, "message", onMessage);
+          yield* listen(thread, "messageerror", onError);
+          yield* listen(thread, "error", onError);
+          yield* listen(thread, "exit", onExit);
           return {
             supportsAck: true,
             supportsTransferables: false,

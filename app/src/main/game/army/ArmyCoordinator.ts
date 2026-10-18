@@ -150,7 +150,7 @@ export interface ArmyCoordinatorShape {
   readonly leave: (participantId: ArmyParticipantId) => Effect.Effect<void>;
   readonly onSessionEnded: (
     listener: (event: ArmySessionEndedEvent) => Effect.Effect<void, unknown>,
-  ) => Effect.Effect<() => void>;
+  ) => Effect.Effect<void, never, Scope.Scope>;
   readonly progress: (
     sessionId: string,
     participantId: ArmyParticipantId,

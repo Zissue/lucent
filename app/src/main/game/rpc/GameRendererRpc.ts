@@ -55,7 +55,7 @@ export interface GameRendererRpcShape {
   >;
   readonly onConnected: (
     listener: (gameRendererId: number) => Effect.Effect<void>,
-  ) => Effect.Effect<() => void>;
+  ) => Effect.Effect<void, never, Scope.Scope>;
 }
 
 export class GameRendererRpc extends Context.Service<
@@ -252,12 +252,15 @@ export const makeGameRendererRpc = Effect.fn("makeGameRendererRpc")(function* (
     );
 
   const onConnected: GameRendererRpcShape["onConnected"] = (listener) =>
-    Effect.sync(() => {
-      connectedListeners.add(listener);
-      return () => {
-        connectedListeners.delete(listener);
-      };
-    });
+    Effect.acquireRelease(
+      Effect.sync(() => {
+        connectedListeners.add(listener);
+      }),
+      () =>
+        Effect.sync(() => {
+          connectedListeners.delete(listener);
+        }),
+    );
 
   yield* windows.observe({ kind: "game" }, (event) => {
     switch (event.type) {
