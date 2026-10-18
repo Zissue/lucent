@@ -1,15 +1,13 @@
-import "../shared/immediate";
-
 import { contextBridge, ipcRenderer } from "electron";
 
 import {
   applyAppearanceSnapshotToDocument,
-  readDesktopViewArgument,
   readAppearanceSnapshotArgument,
   readSettingsSnapshotArgument,
 } from "../shared/appearance";
 import {
   readDebugModeArgument,
+  readDesktopViewArgument,
   readGameConsoleObservabilityArgument,
   readGameViewLayoutArgument,
 } from "../shared/rendererBootstrapArguments";

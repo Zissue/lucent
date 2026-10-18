@@ -1,17 +1,25 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { makeMessageChannelImmediate, type Immediate } from "./immediate";
+import { makeMessageChannelImmediate } from "./immediate";
 
 describe("makeMessageChannelImmediate", () => {
-  let immediate: Immediate | undefined;
+  let channel: MessageChannel;
+
+  beforeEach(() => {
+    channel = new MessageChannel();
+    vi.spyOn(globalThis, "MessageChannel").mockImplementation(function () {
+      return channel;
+    });
+  });
 
   afterEach(() => {
-    immediate?.close();
-    immediate = undefined;
+    channel.port1.close();
+    channel.port2.close();
+    vi.restoreAllMocks();
   });
 
   it("runs callbacks asynchronously in scheduling order", async () => {
-    const { setImmediate } = (immediate = makeMessageChannelImmediate());
+    const { setImmediate } = makeMessageChannelImmediate();
     const calls: number[] = [];
 
     const done = new Promise<void>((resolve) => {
@@ -28,7 +36,7 @@ describe("makeMessageChannelImmediate", () => {
   });
 
   it("passes extra arguments to the callback", async () => {
-    const { setImmediate } = (immediate = makeMessageChannelImmediate());
+    const { setImmediate } = makeMessageChannelImmediate();
 
     const received = await new Promise<readonly [string, number]>((resolve) => {
       setImmediate(
@@ -42,8 +50,7 @@ describe("makeMessageChannelImmediate", () => {
   });
 
   it("skips cleared callbacks", async () => {
-    const { setImmediate, clearImmediate } = (immediate =
-      makeMessageChannelImmediate());
+    const { setImmediate, clearImmediate } = makeMessageChannelImmediate();
     const calls: string[] = [];
 
     const done = new Promise<void>((resolve) => {

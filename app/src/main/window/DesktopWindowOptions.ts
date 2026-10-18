@@ -10,7 +10,6 @@ import type { AppSettings } from "@lucent/core/settings";
 import appBranding from "../../../appBranding.json";
 import {
   type AppearanceSnapshot,
-  serializeDesktopViewArgument,
   serializeAppearanceSnapshotArgument,
   serializeSettingsSnapshotArgument,
 } from "../../shared/appearance";
@@ -19,6 +18,7 @@ import type { GameViewLayout } from "../../shared/gameViews";
 import {
   DEBUG_MODE_ARGUMENT,
   GAME_CONSOLE_OBSERVABILITY_ARGUMENT,
+  serializeDesktopViewArgument,
   serializeGameViewLayoutArgument,
 } from "../../shared/rendererBootstrapArguments";
 import type { DesktopEnvironment } from "../app/DesktopEnvironment";
