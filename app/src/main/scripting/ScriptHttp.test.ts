@@ -5,6 +5,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Logger from "effect/Logger";
 import * as References from "effect/References";
+import * as TestClock from "effect/testing/TestClock";
 
 import type { HttpRequestPayload } from "../../shared/http";
 import { DesktopHttpClientError } from "../http/DesktopHttpClient";
@@ -68,6 +69,31 @@ describe("script HTTP failure logging", () => {
           url: "https://example.com/b?q=1#part",
         },
       });
+    }),
+  );
+
+  it.effect("gives the request the time left before its deadline", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(1_000_000);
+      const timeouts: (number | undefined)[] = [];
+      const http = makeScriptHttp({
+        request: ({ timeoutMs, url }) => {
+          timeouts.push(timeoutMs);
+          return Effect.succeed({
+            body: Buffer.from([]),
+            headers: {},
+            statusCode: 200,
+            statusMessage: "OK",
+            url: url.href,
+          });
+        },
+      });
+      const session = yield* http.openSession(42);
+      yield* http.request(42, {
+        ...requestPayload(session),
+        deadline: 1_005_000,
+      });
+      expect(timeouts).toEqual([5_000]);
     }),
   );
 
