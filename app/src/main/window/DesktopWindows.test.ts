@@ -561,6 +561,25 @@ describe("DesktopWindows.open", () => {
 });
 
 describe("DesktopWindows.getVisibleParentWindowId", () => {
+  it.effect("cancels a hide-on-close event synchronously before hiding", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const windows = yield* DesktopWindows;
+      const id = yield* windows.open("settings");
+      const window = harness.created.get(id)!;
+      const visibilityAtCancellation: boolean[] = [];
+      window.emit("close", {
+        preventDefault: () => visibilityAtCancellation.push(window.isVisible()),
+      });
+      expect(visibilityAtCancellation).toEqual([true]);
+      expect(window.isVisible()).toBe(false);
+      expect(yield* windows.describe(id)).toMatchObject({
+        rendererId: 101,
+        kind: "settings",
+      });
+    }).pipe(Effect.provide(harness.layer));
+  });
+
   it.effect(
     "uses the native game host and excludes it as soon as close starts",
     () => {

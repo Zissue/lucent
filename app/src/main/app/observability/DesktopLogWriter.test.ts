@@ -258,6 +258,47 @@ describe("DesktopLogWriter", () => {
     ]);
   });
 
+  it("serializes circular and repeated arrays", async () => {
+    const { logFilePath, writer } = await makeFixture();
+    const array: unknown[] = [42];
+    array.push(array);
+    writer.write({ data: [array, array] });
+    await writer.close();
+    expect(await readRecords(logFilePath)).toEqual([
+      { data: [[42, "[Circular]"], "[Circular]"] },
+    ]);
+  });
+
+  it("contains hostile level and serialization getters", async () => {
+    const { logFilePath, writer } = await makeFixture();
+    writer.write({
+      get level() {
+        throw new Error("hostile level");
+      },
+    });
+    writer.write({
+      level: "warn",
+      get data() {
+        throw new Error("hostile data");
+      },
+    });
+    await writer.close();
+    expect(await readRecords(logFilePath)).toEqual([
+      {
+        at,
+        level: "error",
+        component: "observability",
+        message: "Failed to serialize log record",
+      },
+      {
+        at,
+        level: "error",
+        component: "observability",
+        message: "Failed to serialize log record",
+      },
+    ]);
+  });
+
   it("retains detached losses and new drops across repeated append failures", async () => {
     const { logFilePath, writer } = await makeFixture();
     const entered = makeSignal();

@@ -1,5 +1,6 @@
 import { promises as fs } from "fs";
 import { basename, join } from "path";
+import * as Predicate from "effect/Predicate";
 
 import { desktopLogErrorDetails } from "../../../shared/logRecord";
 
@@ -33,7 +34,8 @@ const addCounts = (target: LevelCounts, source: LevelCounts): void => {
 const recordLevel = (record: unknown): LogLevel => {
   try {
     const value =
-      typeof record === "object" && record !== null && "level" in record
+      Predicate.isObjectOrArray(record) &&
+      Predicate.hasProperty(record, "level")
         ? record.level
         : undefined;
     return LOG_LEVELS.find((level) => level === value) ?? "info";
@@ -53,13 +55,13 @@ const serializeDiagnostic = (record: unknown): string => {
   const seen = new WeakSet<object>();
   try {
     const source = JSON.stringify(record, (_key, value: unknown) => {
-      if (typeof value === "bigint") {
+      if (Predicate.isBigInt(value)) {
         return value.toString();
       }
-      if (value instanceof Error) {
+      if (Predicate.isError(value)) {
         return desktopLogErrorDetails(value);
       }
-      if (typeof value === "object" && value !== null) {
+      if (Predicate.isObjectOrArray(value)) {
         if (seen.has(value)) {
           return "[Circular]";
         }
@@ -77,14 +79,19 @@ const serializeDiagnostic = (record: unknown): string => {
     }
 
     const serialized: unknown = JSON.parse(source);
-    const metadata =
-      typeof serialized === "object" && serialized !== null ? serialized : {};
-    const message = "message" in metadata ? metadata.message : undefined;
+    const metadata = Predicate.isObjectOrArray(serialized) ? serialized : {};
+    const message = Predicate.hasProperty(metadata, "message")
+      ? metadata.message
+      : undefined;
     return `${JSON.stringify({
-      at: "at" in metadata ? metadata.at : undefined,
-      level: "level" in metadata ? metadata.level : undefined,
-      component: "component" in metadata ? metadata.component : undefined,
-      message: typeof message === "string" ? message.slice(0, 1024) : undefined,
+      at: Predicate.hasProperty(metadata, "at") ? metadata.at : undefined,
+      level: Predicate.hasProperty(metadata, "level")
+        ? metadata.level
+        : undefined,
+      component: Predicate.hasProperty(metadata, "component")
+        ? metadata.component
+        : undefined,
+      message: Predicate.isString(message) ? message.slice(0, 1024) : undefined,
       truncated: { bytes },
     })}\n`;
   } catch {
@@ -93,7 +100,9 @@ const serializeDiagnostic = (record: unknown): string => {
 };
 
 const isMissingFileError = (cause: unknown): boolean =>
-  cause instanceof Error && "code" in cause && cause.code === "ENOENT";
+  Predicate.isError(cause) &&
+  Predicate.hasProperty(cause, "code") &&
+  cause.code === "ENOENT";
 
 export interface DesktopLogWriter {
   readonly close: (finalRecord?: unknown) => Promise<void>;

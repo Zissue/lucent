@@ -3,6 +3,7 @@ import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Logger from "effect/Logger";
 import * as References from "effect/References";
+import * as Schema from "effect/Schema";
 import { logFailure } from "../shared/logFailure";
 import { desktopLogJsonSafe, desktopLogRecord } from "../shared/logRecord";
 import { RendererLogIpc } from "../shared/ipc/rendererLog";
@@ -29,23 +30,16 @@ export type IpcEventTransport = {
   ) => void;
 };
 
-export class DesktopBridgeError extends Error {
-  readonly code: string;
-  readonly channel?: string;
-
-  constructor(error: {
-    readonly channel?: string;
-    readonly code: string;
-    readonly message: string;
-  }) {
-    super(error.message);
-    this.name = "DesktopBridgeError";
-    this.code = error.code;
-    if (error.channel !== undefined) {
-      this.channel = error.channel;
-    }
-  }
-}
+export class DesktopBridgeError extends Schema.TaggedError<DesktopBridgeError>()(
+  "DesktopBridgeError",
+  {
+    message: Schema.String,
+    code: Schema.String,
+    channel: Schema.optional(Schema.String).pipe(
+      Schema.withConstructorDefault(Effect.succeed(undefined)),
+    ),
+  },
+) {}
 
 export const createInvoke =
   (transport: IpcInvokeTransport) =>

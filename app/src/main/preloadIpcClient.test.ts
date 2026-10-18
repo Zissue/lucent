@@ -18,6 +18,57 @@ import {
 } from "./preloadIpcClient";
 
 describe("preload ipc client", () => {
+  it.each([{}, { channel: "desktop:test:invoke" }])(
+    "preserves bridge failure details for %j",
+    async (fields) => {
+      const invoke = createInvoke(async () => ({
+        ok: false,
+        error: {
+          ...fields,
+          code: "UNAVAILABLE",
+          message: "Service unavailable.",
+        },
+      }));
+      const error: unknown = await invoke(
+        UpdatesIpc.openReleasePage,
+        undefined,
+      ).catch((cause: unknown) => cause);
+      expect(error).toBeInstanceOf(Error);
+      expect(error).toBeInstanceOf(DesktopBridgeError);
+      if (!(error instanceof DesktopBridgeError)) throw error;
+      expect({
+        name: error.name,
+        message: error.message,
+        code: error.code,
+        channel: error.channel,
+        text: String(error),
+        ownChannel: Object.hasOwn(error, "channel"),
+      }).toEqual({
+        name: "DesktopBridgeError",
+        message: "Service unavailable.",
+        code: "UNAVAILABLE",
+        channel: fields.channel,
+        text: "DesktopBridgeError: Service unavailable.",
+        ownChannel: true,
+      });
+    },
+  );
+
+  it("accepts an explicitly undefined bridge channel", () => {
+    const fields = { code: "UNAVAILABLE", message: "Service unavailable." };
+    Reflect.set(fields, "channel", undefined);
+    const error = new DesktopBridgeError(fields);
+    expect({
+      channel: error.channel,
+      code: error.code,
+      message: error.message,
+    }).toEqual({
+      channel: undefined,
+      code: "UNAVAILABLE",
+      message: "Service unavailable.",
+    });
+  });
+
   it("unwraps successful and failed invoke envelopes", async () => {
     const calls: Array<{
       readonly channel: string;
