@@ -105,10 +105,7 @@ export const layer = Layer.effect(
         const pings = yield* pingAccountServers(servers).pipe(
           pingLoads.withPermits(1),
         );
-        const measuredAt = yield* Clock.currentTimeMillis;
         return {
-          expiresAt: measuredAt + ACCOUNT_SERVER_PING_CACHE_TTL_MS,
-          measuredAt,
           pings,
         } satisfies AccountGameServerPingsResult;
       }),

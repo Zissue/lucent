@@ -31,7 +31,6 @@ import * as AccountRepository from "./AccountRepository";
 import { retireManagedGamePartitionProfile } from "../session/GamePartitions";
 import { Accounts, layer as accountsLayer } from "./Accounts";
 import { AccountsError } from "./AccountsError";
-import { AccountServers } from "./AccountServers";
 import * as AccountSessions from "./AccountSessions";
 
 const tempDirs = new Set<string>();
@@ -158,11 +157,6 @@ const makeHarness = (harnessOptions: HarnessOptions = {}) =>
           ),
         ),
     });
-    const servers = AccountServers.of({
-      get: Effect.succeed({ refreshAvailableAt: 0, servers: [] }),
-      getPings: Effect.succeed({ expiresAt: 0, measuredAt: 0, pings: [] }),
-      refresh: Effect.succeed({ refreshAvailableAt: 0, servers: [] }),
-    });
     const dependencies = Layer.mergeAll(
       AccountRepository.layer.pipe(
         Layer.provide(
@@ -180,7 +174,6 @@ const makeHarness = (harnessOptions: HarnessOptions = {}) =>
       ),
       AccountSessions.layer,
       Layer.succeed(AccountGameWindows, gameWindows),
-      Layer.succeed(AccountServers, servers),
     );
 
     return accountsLayer.pipe(Layer.provideMerge(dependencies));

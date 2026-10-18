@@ -145,8 +145,10 @@ describe("account server pings", () => {
         for (const socket of sockets) socket.emit("connect");
         const [first, concurrent] = yield* Fiber.join(pending);
         expect(first).toEqual(concurrent);
-        expect(first.measuredAt).toBe(10);
-        expect(first.expiresAt).toBe(30_010);
+        expect(first.pings).toEqual([
+          { serverName: "Artix", status: "ok", latencyMs: 10 },
+          { serverName: "Yorumi", status: "ok", latencyMs: 10 },
+        ]);
         yield* TestClock.adjust(29_999);
         expect(yield* accounts.getPings).toEqual(first);
         expect(sockets).toHaveLength(2);
