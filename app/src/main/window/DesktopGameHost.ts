@@ -181,9 +181,7 @@ const setShortcutModifierPressed = (
 ): void => {
   if (host.shortcutModifierPressed === pressed) return;
   host.shortcutModifierPressed = pressed;
-  try {
-    send(host.hostView, GameViewsIpc.shortcutModifierChanged.channel, pressed);
-  } catch {}
+  send(host.hostView, GameViewsIpc.shortcutModifierChanged.channel, pressed);
 };
 
 const send = (
@@ -381,13 +379,11 @@ export const makeDesktopGameHosts = (options: DesktopGameHostsOptions) => {
         host.hostView.webContents.focus();
       } catch {}
     }
-    try {
-      send(
-        host.hostView,
-        GameViewsIpc.tabMenuOpenChanged.channel,
-        host.tabMenuOpen,
-      );
-    } catch {}
+    send(
+      host.hostView,
+      GameViewsIpc.tabMenuOpenChanged.channel,
+      host.tabMenuOpen,
+    );
   };
 
   const setGroupControlsOpen = (

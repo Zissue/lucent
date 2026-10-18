@@ -111,7 +111,6 @@ export const createWindowOptions = (
   settings: AppSettings,
   snapshot: AppearanceSnapshot,
   renderer?: {
-    readonly bridgeView: DesktopBridgeView;
     readonly partition?: string;
   },
 ): ElectronWindowCreateOptions => {
@@ -120,7 +119,7 @@ export const createWindowOptions = (
     webPreferences: {
       ...createRendererWebPreferences(
         env,
-        renderer?.bridgeView ?? definition.kind,
+        definition.kind,
         settings,
         snapshot,
         definition.kind === "game" ? { backgroundThrottling: false } : {},

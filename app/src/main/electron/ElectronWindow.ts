@@ -70,7 +70,6 @@ export interface ElectronNativeWindowHandle {
   readonly removeListener: BaseWindow["removeListener"];
   readonly restore: () => void;
   readonly setBackgroundColor: (backgroundColor: string) => void;
-  readonly setMenuBarVisibility: (visible: boolean) => void;
   readonly setTitle: (title: string) => void;
   readonly show: () => void;
 }

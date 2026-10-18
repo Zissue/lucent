@@ -13,7 +13,6 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FiberSet from "effect/FiberSet";
 import * as Layer from "effect/Layer";
-import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 
 import type { ThemeMode } from "@lucent/core/settings";
@@ -50,17 +49,6 @@ const themeModes: readonly {
   { label: "Dark", mode: "dark" },
   { label: "System", mode: "system" },
 ];
-
-class DesktopAppDataClearError extends Schema.TaggedError<DesktopAppDataClearError>()(
-  "DesktopAppDataClearError",
-  {
-    cause: Schema.Defect(),
-  },
-) {
-  override get message(): string {
-    return "Failed to clear app data.";
-  }
-}
 
 const reloadContents = (target: WebContents, bypassCache: boolean): void => {
   if (target.isDestroyed()) {
@@ -297,10 +285,6 @@ const makeDesktopApplicationMenu = Effect.gen(function* () {
     );
   };
 
-  const clearAppData = gameSessions.clearAppData.pipe(
-    Effect.mapError((cause) => new DesktopAppDataClearError({ cause })),
-  );
-
   const showDataClearResult = (result: "succeeded" | "failed") =>
     Effect.gen(function* () {
       if (result === "succeeded") {
@@ -331,7 +315,7 @@ const makeDesktopApplicationMenu = Effect.gen(function* () {
 
   const clearData = (): void => {
     run(
-      clearAppData.pipe(
+      gameSessions.clearAppData.pipe(
         Effect.flatMap(() => showDataClearResult("succeeded")),
         Effect.catch((cause) =>
           Effect.logError("Failed to clear app data", Cause.fail(cause))
@@ -567,9 +551,7 @@ const makeDesktopApplicationMenu = Effect.gen(function* () {
       if (!isDarwin) {
         yield* windows.observe({ kind: "about" }, (event) =>
           event.type === "created"
-            ? removeRendererWindowMenu(event.rendererId).pipe(
-                Effect.catch(() => Effect.void),
-              )
+            ? removeRendererWindowMenu(event.rendererId)
             : Effect.void,
         );
       }

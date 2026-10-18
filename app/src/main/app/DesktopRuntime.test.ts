@@ -34,7 +34,7 @@ import {
   ElectronDialogMessageBoxError,
 } from "../electron/ElectronDialog";
 import { ElectronShell } from "../electron/ElectronShell";
-import { ElectronTheme, ElectronThemeError } from "../electron/ElectronTheme";
+import { ElectronTheme } from "../electron/ElectronTheme";
 import { GitHubCredentials } from "../scripting/GitHubCredentials";
 import * as AccountSessions from "../game/accounts/AccountSessions";
 import { AccountSettingsRepository } from "../game/account-settings/AccountSettingsRepository";
@@ -80,72 +80,54 @@ vi.mock("electron", async () => {
 });
 
 describe("desktop native appearance sync", () => {
-  it.effect.each(["typed", "defect"] as const)(
-    "isolates %s appearance failures without adding listener errors",
-    (kind) =>
-      Effect.gen(function* () {
-        const changes = makeListenerRegistry<AppSettings>();
-        const received: string[] = [];
-        const records: unknown[] = [];
-        const initial = normalizeAppSettings({
-          appearance: { themeMode: "light" },
-        });
-        const changed = normalizeAppSettings({
-          appearance: { themeMode: "dark" },
-        });
-        yield* Effect.scoped(
-          Effect.gen(function* () {
-            yield* installDesktopNativeAppearanceSync(initial);
-            yield* changes.subscribe((settings) => {
-              received.push(settings.appearance.themeMode);
-            });
-            yield* changes.publish(changed);
-            yield* Effect.promise(() => yieldToEventLoop());
-          }).pipe(
-            Effect.provide(
-              Layer.mergeAll(
-                Layer.mock(DesktopSettings, { onChanged: changes.subscribe }),
-                Layer.mock(ElectronTheme, {
-                  setThemeMode: (mode) =>
-                    mode === "light"
-                      ? Effect.void
-                      : kind === "typed"
-                        ? Effect.fail(
-                            new ElectronThemeError({
-                              cause: new Error("Native appearance failed"),
-                              themeMode: mode,
-                            }),
-                          )
-                        : Effect.die(new Error("Native appearance defect")),
-                  shouldUseDarkColors: Effect.succeed(false),
+  it.effect("isolates appearance defects without adding listener errors", () =>
+    Effect.gen(function* () {
+      const changes = makeListenerRegistry<AppSettings>();
+      const received: string[] = [];
+      const records: unknown[] = [];
+      const initial = normalizeAppSettings({
+        appearance: { themeMode: "light" },
+      });
+      const changed = normalizeAppSettings({
+        appearance: { themeMode: "dark" },
+      });
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          yield* installDesktopNativeAppearanceSync(initial);
+          yield* changes.subscribe((settings) => {
+            received.push(settings.appearance.themeMode);
+          });
+          yield* changes.publish(changed);
+          yield* Effect.promise(() => yieldToEventLoop());
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              Layer.mock(DesktopSettings, { onChanged: changes.subscribe }),
+              Layer.mock(ElectronTheme, {
+                setThemeMode: (mode) =>
+                  mode === "light"
+                    ? Effect.void
+                    : Effect.die(new Error("Native appearance defect")),
+                shouldUseDarkColors: Effect.succeed(false),
+              }),
+              Layer.mock(DesktopWindows, {
+                setBackgroundColor: () => Effect.void,
+              }),
+              Logger.layer([
+                Logger.make((options) => {
+                  records.push({
+                    level: options.logLevel,
+                    message: options.message,
+                  });
                 }),
-                Layer.mock(DesktopWindows, {
-                  setBackgroundColor: () => Effect.void,
-                }),
-                Logger.layer([
-                  Logger.make((options) => {
-                    records.push({
-                      level: options.logLevel,
-                      message: options.message,
-                    });
-                  }),
-                ]),
-              ),
+              ]),
             ),
           ),
-        );
-        expect(received).toEqual(["dark"]);
-        expect(records).toEqual(
-          kind === "typed"
-            ? [
-                {
-                  level: "Warn",
-                  message: ["Failed to update Electron native appearance"],
-                },
-              ]
-            : [],
-        );
-      }),
+        ),
+      );
+      expect(received).toEqual(["dark"]);
+      expect(records).toEqual([]);
+    }),
   );
 
   it.effect("awaits native appearance through listener publication", () =>

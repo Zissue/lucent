@@ -47,13 +47,7 @@ export const installDesktopNativeAppearanceSync = (
         const systemPrefersDark = yield* theme.shouldUseDarkColors;
         const snapshot = createAppearanceSnapshot(settings, systemPrefersDark);
         yield* windows.setBackgroundColor(snapshot.backgroundColor);
-      }).pipe(
-        Effect.catch((cause) =>
-          Effect.logWarning("Failed to update Electron native appearance").pipe(
-            Effect.annotateLogs({ component: "appearance", data: { cause } }),
-          ),
-        ),
-      );
+      });
 
     yield* applyNativeAppearance(initialSettings);
     yield* settingsService.onChanged((settings) =>
