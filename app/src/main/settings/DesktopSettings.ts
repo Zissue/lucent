@@ -235,7 +235,10 @@ const makeDesktopSettings = Effect.gen(function* () {
   const env = yield* DesktopEnvironment;
   const jsonFile = makeJsonFile(yield* FileSystem);
   const settingsPath = join(env.appDataDir, "settings.json");
-  const settingsRef = yield* SynchronizedRef.make<AppSettings | null>(null);
+  const settingsRef = yield* SynchronizedRef.make<{
+    readonly value: AppSettings | null;
+    readonly publicationRevision: number;
+  }>({ value: null, publicationRevision: 0 });
   const settingsChanges = makeListenerRegistry<AppSettings>();
 
   const readSettingsFromFile = Effect.fnUntraced(function* (
@@ -305,15 +308,28 @@ const makeDesktopSettings = Effect.gen(function* () {
       .pipe(Effect.mapError(wrapDataError), Effect.as(normalized));
   };
 
-  const get = SynchronizedRef.modifyEffect(settingsRef, (current) =>
-    (current === null
-      ? readSettingsFromFile(true)
-      : Effect.succeed(current)
-    ).pipe(Effect.map((settings) => [settings, settings] as const)),
+  const publishCurrent = SynchronizedRef.get(settingsRef).pipe(
+    Effect.flatMap(({ value, publicationRevision }) =>
+      value === null || publicationRevision === 0
+        ? Effect.void
+        : settingsChanges.publishLatest(publicationRevision, value),
+    ),
   );
-  const load = SynchronizedRef.modifyEffect(settingsRef, () =>
+  const get = SynchronizedRef.modifyEffect(settingsRef, (current) =>
+    (current.value === null
+      ? readSettingsFromFile(true)
+      : Effect.succeed(current.value)
+    ).pipe(
+      Effect.map(
+        (settings) => [settings, { ...current, value: settings }] as const,
+      ),
+    ),
+  );
+  const load = SynchronizedRef.modifyEffect(settingsRef, (current) =>
     readSettingsFromFile(true).pipe(
-      Effect.map((settings) => [settings, settings] as const),
+      Effect.map(
+        (settings) => [settings, { ...current, value: settings }] as const,
+      ),
     ),
   );
   const update = (
@@ -322,15 +338,24 @@ const makeDesktopSettings = Effect.gen(function* () {
     ) => Effect.Effect<AppSettings, DesktopSettingsError>,
   ) =>
     SynchronizedRef.modifyEffect(settingsRef, (current) =>
-      (current === null
+      (current.value === null
         ? readSettingsFromFile(false)
-        : Effect.succeed(current)
+        : Effect.succeed(current.value)
       ).pipe(
         Effect.flatMap(modify),
         Effect.flatMap(writeSettingsFile),
-        Effect.map((saved) => [saved, saved] as const),
+        Effect.map(
+          (saved) =>
+            [
+              saved,
+              {
+                value: saved,
+                publicationRevision: current.publicationRevision + 1,
+              },
+            ] as const,
+        ),
       ),
-    ).pipe(Effect.tap(settingsChanges.publish));
+    ).pipe(Effect.ensuring(publishCurrent));
 
   const onChanged: DesktopSettingsShape["onChanged"] =
     settingsChanges.subscribe;
