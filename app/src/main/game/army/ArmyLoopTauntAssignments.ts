@@ -11,7 +11,6 @@ import {
   type AssignmentState,
   COMMAND_CONFIRMATION_TIMEOUT_MS,
   DEGRADED_AFTER_SWEEPS,
-  DEGRADED_TIMEOUT_MS,
   DEGRADED_WARNING_MS,
   type DegradedState,
   loopError,
@@ -356,8 +355,6 @@ export const attemptAssignment = (
     : assignment.degradationRevision;
   const degraded: DegradedState | undefined = enteringDegraded
     ? {
-        accumulatedMs: 0,
-        activeSince: now,
         reason: "readiness",
         revision: degradationRevision,
       }
@@ -410,16 +407,6 @@ export const attemptAssignment = (
       type: "retry",
     },
   ];
-  if (enteringDegraded) {
-    timers.push({
-      assignmentId,
-      delayMs: DEGRADED_TIMEOUT_MS,
-      revision: degraded!.revision,
-      runId: run.runId,
-      sessionId: run.sessionId,
-      type: "degraded-timeout",
-    });
-  }
   return { commands, readiness: [], run, terminals: [], timers };
 };
 
@@ -561,8 +548,6 @@ const reconcileTopology = (inputRun: RunState, now: number): RunMutation => {
         degradationRevision,
         degraded: enteringDegraded
           ? {
-              accumulatedMs: 0,
-              activeSince: now,
               reason: "target-consensus",
               revision: degradationRevision,
             }
@@ -583,14 +568,6 @@ const reconcileTopology = (inputRun: RunState, now: number): RunMutation => {
               runId: run.runId,
               sessionId: run.sessionId,
               type: "degraded-warning",
-            },
-            {
-              assignmentId,
-              delayMs: DEGRADED_TIMEOUT_MS,
-              revision: degradationRevision,
-              runId: run.runId,
-              sessionId: run.sessionId,
-              type: "degraded-timeout",
             },
           ],
         });
@@ -624,55 +601,12 @@ const reconcileTopology = (inputRun: RunState, now: number): RunMutation => {
 
     const turn = assignment.turn;
     if (!assignment.active || turn === undefined) {
-      // Preemption and active Focus pause degradation; time without a required
-      // taunt must not consume the assignment's recovery budget.
-      let degraded = assignment.degraded;
-      let degradationRevision = assignment.degradationRevision;
-      if (degraded?.activeSince !== undefined) {
-        degradationRevision += 1;
-        degraded = {
-          accumulatedMs:
-            degraded.accumulatedMs + Math.max(0, now - degraded.activeSince),
-          reason: degraded.reason,
-          revision: degradationRevision,
-        };
-      }
       assignment = {
         ...assignment,
-        degradationRevision,
-        degraded,
         turn: undefined,
       };
       run = setAssignment(run, assignment);
       continue;
-    }
-
-    if (
-      assignment.degraded !== undefined &&
-      assignment.degraded.activeSince === undefined
-    ) {
-      const degradationRevision = assignment.degradationRevision + 1;
-      const degraded: DegradedState = {
-        ...assignment.degraded,
-        activeSince: now,
-        revision: degradationRevision,
-      };
-      assignment = { ...assignment, degradationRevision, degraded };
-      effects = mergeMutationEffects(effects, {
-        commands: [],
-        readiness: [],
-        terminals: [],
-        timers: [
-          {
-            assignmentId,
-            delayMs: Math.max(0, DEGRADED_TIMEOUT_MS - degraded.accumulatedMs),
-            revision: degraded.revision,
-            runId: run.runId,
-            sessionId: run.sessionId,
-            type: "degraded-timeout",
-          },
-        ],
-      });
     }
 
     const pendingParticipantId = turn.pending?.participantId;
