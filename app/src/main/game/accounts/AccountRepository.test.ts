@@ -5,9 +5,7 @@ import { join } from "node:path";
 import { layer as fileSystemLayer } from "@effect/platform-node/NodeFileSystem";
 import { afterEach, describe, expect, it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
-import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
-import * as Fiber from "effect/Fiber";
 import { FileSystem } from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
@@ -55,76 +53,74 @@ const makeLayer = (
   });
 
 describe("AccountRepository", () => {
-  it.effect(
-    "advances revisions only for changed storage across loads and updates",
-    () =>
-      Effect.gen(function* () {
-        const dependencies = yield* makeLayer();
-        yield* Effect.gen(function* () {
-          const repository = yield* AccountRepository;
-          expect(yield* repository.getWithRevision).toBeNull();
-          yield* repository.get;
-          yield* repository.load;
-          expect(yield* repository.getWithRevision).toEqual({
-            storage: { accounts: [], groups: {} },
-            revision: 0,
-          });
-          yield* repository.update((storage) =>
-            Effect.succeed({ ...storage, groups: { Raiders: [] } }),
-          );
-          yield* repository.update((storage) => Effect.succeed({ ...storage }));
-          yield* repository.load;
-          expect(yield* repository.getWithRevision).toEqual({
-            storage: { accounts: [], groups: { Raiders: [] } },
-            revision: 1,
-          });
-          yield* Effect.promise(() =>
-            writeFile(repository.path, '{"accounts":[],"groups":{"Alts":[]}}'),
-          );
-          yield* repository.load;
-          expect(yield* repository.getWithRevision).toEqual({
-            storage: { accounts: [], groups: { Alts: [] } },
-            revision: 2,
-          });
-        }).pipe(Effect.provide(dependencies));
-      }),
+  it.effect("notifies only changed storage and never the first load", () =>
+    Effect.gen(function* () {
+      const dependencies = yield* makeLayer();
+      yield* Effect.gen(function* () {
+        const repository = yield* AccountRepository;
+        const received: unknown[] = [];
+        yield* repository.subscribe((storage) => {
+          received.push(storage);
+        });
+        expect(repository.current()).toBeNull();
+        yield* repository.get;
+        yield* repository.load;
+        expect(repository.current()).toEqual({ accounts: [], groups: {} });
+        yield* repository.update((storage) =>
+          Effect.succeed({ ...storage, groups: { Raiders: [] } }),
+        );
+        yield* repository.update((storage) => Effect.succeed({ ...storage }));
+        yield* repository.load;
+        expect(repository.current()).toEqual({
+          accounts: [],
+          groups: { Raiders: [] },
+        });
+        yield* Effect.promise(() =>
+          writeFile(repository.path, '{"accounts":[],"groups":{"Alts":[]}}'),
+        );
+        yield* repository.load;
+        expect(repository.current()).toEqual({
+          accounts: [],
+          groups: { Alts: [] },
+        });
+        expect(received).toEqual([
+          { accounts: [], groups: { Raiders: [] } },
+          { accounts: [], groups: { Alts: [] } },
+        ]);
+      }).pipe(Effect.provide(dependencies));
+    }),
   );
 
-  it.effect(
-    "keeps revisions and storage when a save fails or changes nothing",
-    () =>
-      Effect.gen(function* () {
-        const dependencies = yield* makeLayer();
-        yield* Effect.gen(function* () {
-          const repository = yield* AccountRepository;
-          yield* repository.update((storage) => Effect.succeed({ ...storage }));
-          expect(yield* repository.getWithRevision).toEqual({
-            storage: { accounts: [], groups: {} },
-            revision: 0,
-          });
-          yield* repository.update((storage) =>
-            Effect.succeed({ ...storage, groups: { Raiders: [] } }),
-          );
-          yield* Effect.promise(async () => {
-            await rm(repository.path);
-            await mkdir(repository.path);
-          });
-          const unchanged = yield* repository.update((storage) =>
-            Effect.succeed({ ...storage }),
-          );
-          expect(unchanged).toEqual({ accounts: [], groups: { Raiders: [] } });
-          const error = yield* repository
-            .update((storage) =>
-              Effect.succeed({ ...storage, groups: { Alts: [] } }),
-            )
-            .pipe(Effect.flip);
-          expect(error.operation).toBe("rename");
-          expect(yield* repository.getWithRevision).toEqual({
-            storage: { accounts: [], groups: { Raiders: [] } },
-            revision: 1,
-          });
-        }).pipe(Effect.provide(dependencies));
-      }),
+  it.effect("keeps storage when a save fails or changes nothing", () =>
+    Effect.gen(function* () {
+      const dependencies = yield* makeLayer();
+      yield* Effect.gen(function* () {
+        const repository = yield* AccountRepository;
+        yield* repository.update((storage) => Effect.succeed({ ...storage }));
+        expect(repository.current()).toEqual({ accounts: [], groups: {} });
+        yield* repository.update((storage) =>
+          Effect.succeed({ ...storage, groups: { Raiders: [] } }),
+        );
+        yield* Effect.promise(async () => {
+          await rm(repository.path);
+          await mkdir(repository.path);
+        });
+        const unchanged = yield* repository.update((storage) =>
+          Effect.succeed({ ...storage }),
+        );
+        expect(unchanged).toEqual({ accounts: [], groups: { Raiders: [] } });
+        const error = yield* repository
+          .update((storage) =>
+            Effect.succeed({ ...storage, groups: { Alts: [] } }),
+          )
+          .pipe(Effect.flip);
+        expect(error.operation).toBe("rename");
+        expect(repository.current()).toEqual({
+          accounts: [],
+          groups: { Raiders: [] },
+        });
+      }).pipe(Effect.provide(dependencies));
+    }),
   );
 });
 
@@ -203,14 +199,9 @@ describe("AccountRepository saved data", () => {
           expect(
             yield* Effect.promise(() => readFile(repository.path, "utf8")),
           ).toBe(source);
-          expect(yield* repository.getWithRevision).toEqual({
-            storage: {
-              accounts: [
-                { label: "Hero", username: "Hero", password: "secret" },
-              ],
-              groups: { Raiders: ["Hero"] },
-            },
-            revision: 0,
+          expect(repository.current()).toEqual({
+            accounts: [{ label: "Hero", username: "Hero", password: "secret" }],
+            groups: { Raiders: ["Hero"] },
           });
           yield* repository.update((storage) =>
             Effect.succeed({
@@ -226,14 +217,9 @@ describe("AccountRepository saved data", () => {
             accounts: [{ label: "Hero", username: "Hero", password: "secret" }],
             groups: { Raiders: ["Hero"], Alts: [] },
           });
-          expect(yield* repository.getWithRevision).toEqual({
-            storage: {
-              accounts: [
-                { label: "Hero", username: "Hero", password: "secret" },
-              ],
-              groups: { Raiders: ["Hero"], Alts: [] },
-            },
-            revision: 1,
+          expect(repository.current()).toEqual({
+            accounts: [{ label: "Hero", username: "Hero", password: "secret" }],
+            groups: { Raiders: ["Hero"], Alts: [] },
           });
         }).pipe(Effect.provide(dependencies));
       }),
@@ -446,7 +432,7 @@ it.effect(
               cause: { _tag: "JsonFileError", operation: "read" },
             });
             expect(records).toEqual([]);
-            expect(yield* repository.getWithRevision).toBeNull();
+            expect(repository.current()).toBeNull();
           }
         } finally {
           unreadablePath = undefined;
@@ -496,7 +482,7 @@ it.effect("rejects accounts above the read limit without replacing them", () =>
           },
         });
         expect(records).toEqual([]);
-        expect(yield* repository.getWithRevision).toBeNull();
+        expect(repository.current()).toBeNull();
       }
       expect(
         yield* Effect.promise(() => readFile(repository.path, "utf8")),
@@ -530,33 +516,3 @@ for (const source of ["{", '{"accounts":[null],"groups":{}}']) {
       }),
   );
 }
-
-it.effect("interrupts an update while its change is still being computed", () =>
-  Effect.gen(function* () {
-    const dependencies = yield* makeLayer();
-    yield* Effect.gen(function* () {
-      const repository = yield* AccountRepository;
-      yield* Effect.promise(() =>
-        writeFile(repository.path, '{"accounts":[],"groups":{}}'),
-      );
-      yield* repository.get;
-      const before = yield* Effect.promise(() =>
-        readFile(repository.path, "utf8"),
-      );
-      const started = yield* Deferred.make<void>();
-      const updating = yield* repository
-        .update(() =>
-          Deferred.succeed(started, undefined).pipe(
-            Effect.andThen(Effect.never),
-          ),
-        )
-        .pipe(Effect.forkChild);
-      yield* Deferred.await(started);
-      yield* Fiber.interrupt(updating);
-      expect(
-        yield* Effect.promise(() => readFile(repository.path, "utf8")),
-      ).toBe(before);
-      expect(yield* repository.get).toEqual({ accounts: [], groups: {} });
-    }).pipe(Effect.provide(dependencies));
-  }),
-);

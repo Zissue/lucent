@@ -65,7 +65,6 @@ const lastConnectionUsername = (
     : runtime.connection.lastUsername;
 
 export interface AccountSessionsShape {
-  readonly revision: number;
   readonly closeWindow: (gameWindowId: number, closedAt: number) => boolean;
   readonly recentlyClosed: (
     gameWindowGroupId: number,
@@ -97,7 +96,7 @@ export interface AccountSessionsShape {
     gameWindowGroupId: number | undefined,
     rendererGeneration: number,
     pending: PendingAccountLaunch,
-  ) => void;
+  ) => boolean;
 }
 
 export class AccountSessions extends Context.Service<
@@ -110,7 +109,6 @@ export const layer = Layer.effect(
   Effect.gen(function* () {
     const clock = yield* Clock.Clock;
     const sessions = new Map<number, TrackedSession>();
-    let revision = 0;
     const closedByGroup = new Map<
       number,
       readonly RecentlyClosedGameSession[]
@@ -169,7 +167,6 @@ export const layer = Layer.effect(
     const remove: AccountSessionsShape["remove"] = (gameWindowId) => {
       const groupId = sessions.get(gameWindowId)?.snapshot.gameWindowGroupId;
       const removed = sessions.delete(gameWindowId);
-      if (removed) revision += 1;
       if (
         groupId !== undefined &&
         ![...sessions.values()].some(
@@ -237,7 +234,6 @@ export const layer = Layer.effect(
           updatedAt: clock.currentTimeMillisUnsafe(),
         },
       });
-      revision += 1;
       return true;
     };
 
@@ -279,7 +275,6 @@ export const layer = Layer.effect(
           updatedAt: clock.currentTimeMillisUnsafe(),
         },
       });
-      revision += 1;
       return true;
     };
 
@@ -311,7 +306,6 @@ export const layer = Layer.effect(
           updatedAt: clock.currentTimeMillisUnsafe(),
         },
       });
-      revision += 1;
       return true;
     };
 
@@ -327,7 +321,7 @@ export const layer = Layer.effect(
         previous === undefined ||
         rendererGeneration !== previous.snapshot.rendererGeneration
       ) {
-        return;
+        return false;
       }
 
       const payload: AccountGameLaunchPayload = {
@@ -362,7 +356,7 @@ export const layer = Layer.effect(
           updatedAt: clock.currentTimeMillisUnsafe(),
         },
       });
-      revision += 1;
+      return true;
     };
 
     const applyReport: AccountSessionsShape["applyReport"] = (
@@ -401,7 +395,6 @@ export const layer = Layer.effect(
         rendererRevision: report.revision,
         snapshot: nextSnapshot,
       });
-      revision += 1;
 
       return previousUsername === nextUsername
         ? {}
@@ -409,9 +402,6 @@ export const layer = Layer.effect(
     };
 
     return AccountSessions.of({
-      get revision() {
-        return revision;
-      },
       closeWindow,
       recentlyClosed,
       forgetClosed,

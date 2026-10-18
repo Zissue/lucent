@@ -3,7 +3,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "@effect/vitest";
-import { vi } from "vitest";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -16,7 +15,6 @@ import * as PlatformError from "effect/PlatformError";
 import * as References from "effect/References";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
-import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import { DEFAULT_APP_SETTINGS } from "@lucent/core/settings";
 import { DesktopEnvironment } from "../app/DesktopEnvironment";
@@ -663,71 +661,7 @@ describe("saved settings recovery", () => {
   );
 });
 
-vi.mock("effect/SynchronizedRef", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("effect/SynchronizedRef")>()),
-}));
-
 describe("settings change publication", () => {
-  it.effect(
-    "publishes committed settings exactly once when interrupted before publication",
-    () =>
-      Effect.gen(function* () {
-        const committed = yield* Deferred.make<void>();
-        const hold = yield* Deferred.make<void>();
-        let armed = false;
-        const modifyEffect = SynchronizedRef.modifyEffect;
-        yield* Effect.acquireUseRelease(
-          Effect.sync(() =>
-            vi
-              .spyOn(SynchronizedRef, "modifyEffect")
-              .mockImplementation((ref, change) =>
-                modifyEffect(ref, change).pipe(
-                  Effect.tap(() => {
-                    if (!armed) return Effect.void;
-                    armed = false;
-                    return Deferred.succeed(committed, undefined).pipe(
-                      Effect.andThen(Deferred.await(hold)),
-                      Effect.interruptible,
-                    );
-                  }),
-                ),
-              ),
-          ),
-          () =>
-            Effect.gen(function* () {
-              const { settings, path } = yield* makeRecoverySettings();
-              yield* settings.load;
-              const received: string[][] = [];
-              yield* settings.onChanged((next) =>
-                Effect.gen(function* () {
-                  const current = yield* settings.get;
-                  received.push([
-                    next.appearance.themeMode,
-                    current.appearance.themeMode,
-                  ]);
-                }),
-              );
-              armed = true;
-              const running = yield* settings
-                .updateAppearance({ themeMode: "light" })
-                .pipe(Effect.forkChild);
-              yield* Deferred.await(committed);
-              yield* Fiber.interrupt(running);
-              expect((yield* settings.get).appearance.themeMode).toBe("light");
-              expect(
-                JSON.parse(yield* Effect.promise(() => readFile(path, "utf8")))
-                  .appearance.themeMode,
-              ).toBe("light");
-              expect(received).toEqual([["light", "light"]]);
-            }),
-          (spy) =>
-            Effect.sync(() => {
-              spy.mockRestore();
-            }),
-        );
-      }),
-  );
-
   it.effect(
     "publishes concurrent updates in commit order without a stale overwrite",
     () =>
@@ -754,15 +688,17 @@ describe("settings change publication", () => {
           .updateAppearance({ themeMode: "light" })
           .pipe(Effect.forkChild);
         yield* Deferred.await(started);
-        const second = yield* settings.updateAppearance({
-          themeMode: "system",
-        });
+        const second = yield* settings
+          .updateAppearance({
+            themeMode: "system",
+          })
+          .pipe(Effect.forkChild({ startImmediately: true }));
         yield* Deferred.succeed(finish, undefined);
         const firstResult = yield* Fiber.join(first);
         expect(firstResult.appearance.themeMode).toBe("light");
-        expect(second.appearance.themeMode).toBe("system");
+        expect((yield* Fiber.join(second)).appearance.themeMode).toBe("system");
         expect(publications).toEqual(["light", "system"]);
-        expect(received).toEqual(["system"]);
+        expect(received).toEqual(["light", "system"]);
         expect((yield* settings.get).appearance.themeMode).toBe("system");
         expect(
           JSON.parse(yield* Effect.promise(() => readFile(path, "utf8")))
@@ -826,6 +762,27 @@ it.effect("commits settings interrupted after the file rename", () =>
     expect(persisted.appearance.themeMode).toBe("light");
     expect(persisted.preferences.checkForUpdates).toBe(true);
     expect(received).toEqual(["light", "light"]);
+    const reloaded = yield* settings.load;
+    expect(reloaded.appearance.themeMode).toBe("light");
+    expect(reloaded.preferences.checkForUpdates).toBe(true);
+    expect(received).toEqual(["light", "light"]);
     expect(records).toEqual([]);
+  }),
+);
+
+it.effect("reloads settings silently before and after an update", () =>
+  Effect.gen(function* () {
+    const { settings, path } = yield* makeRecoverySettings();
+    const themes: string[] = [];
+    yield* settings.onChanged((value) => {
+      themes.push(value.appearance.themeMode);
+    });
+    yield* settings.load;
+    yield* settings.updateAppearance({ themeMode: "light" });
+    yield* Effect.promise(() =>
+      writeFile(path, '{"appearance":{"themeMode":"system"}}'),
+    );
+    expect((yield* settings.load).appearance.themeMode).toBe("system");
+    expect(themes).toEqual(["light"]);
   }),
 );

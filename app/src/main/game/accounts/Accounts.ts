@@ -6,6 +6,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import type * as Scope from "effect/Scope";
+import * as Semaphore from "effect/Semaphore";
 
 import {
   removeGroupMemberUsername,
@@ -286,12 +287,11 @@ const normalizeGroupPatch = Effect.fnUntraced(function* (
   };
 });
 
-export const makeAccounts = Effect.gen(function* () {
+const makeAccounts = Effect.gen(function* () {
   const gameWindows = yield* AccountGameWindows;
   const repository = yield* AccountRepository;
   const servers = yield* AccountServers;
   const sessions = yield* AccountSessions;
-  const stateChanges = makeListenerRegistry<AccountManagerState>();
   const reopening = new Set<number>();
   const getRecentlyClosed: AccountsShape["getRecentlyClosed"] = (groupId) =>
     Effect.sync(() => sessions.recentlyClosed(groupId));
@@ -315,33 +315,36 @@ export const makeAccounts = Effect.gen(function* () {
 
   const getState = repository.get.pipe(Effect.map(toState));
 
-  const publishCurrent = repository.getWithRevision.pipe(
-    Effect.flatMap((current) =>
-      current === null
-        ? repository.get.pipe(Effect.andThen(repository.getWithRevision))
-        : Effect.succeed(current),
+  const stateChanges = makeListenerRegistry<AccountManagerState>();
+  const publicationLock = yield* Semaphore.make(1);
+  const publishCurrent = Effect.suspend(() =>
+    repository.current() === null
+      ? repository.get.pipe(Effect.ignore)
+      : Effect.void,
+  ).pipe(
+    Effect.andThen(
+      Effect.suspend(() => {
+        const current = repository.current();
+        return current === null
+          ? Effect.void
+          : stateChanges.publish(toState(current));
+      }).pipe(Semaphore.withPermit(publicationLock)),
     ),
-    Effect.orElseSucceed(() => null),
-    Effect.flatMap((current) => {
-      if (current === null) return Effect.void;
-      const revision = current.revision + sessions.revision;
-      return revision === 0
-        ? Effect.void
-        : stateChanges.publishLatest(revision, toState(current.storage));
-    }),
+    Effect.uninterruptible,
   );
+  yield* repository.subscribe(() => publishCurrent);
 
-  const withSessionPublication = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-    effect.pipe(Effect.asVoid, Effect.ensuring(publishCurrent));
+  const changeSession = <A>(change: () => A) =>
+    Effect.sync(change).pipe(
+      Effect.tap((changed) => (changed ? publishCurrent : Effect.void)),
+      Effect.uninterruptible,
+    );
 
   const updateStorage = (
     modify: (
       storage: AccountManagerStorage,
     ) => Effect.Effect<AccountManagerStorage, AccountsError>,
-  ) =>
-    repository
-      .update(modify)
-      .pipe(Effect.map(toState), Effect.ensuring(publishCurrent));
+  ) => repository.update(modify).pipe(Effect.map(toState));
 
   const retireGameProfiles = Effect.fnUntraced(function* (
     keys: Iterable<string>,
@@ -373,35 +376,31 @@ export const makeAccounts = Effect.gen(function* () {
   });
 
   const removeWindowSession = (gameWindowId: number) =>
-    withSessionPublication(Effect.sync(() => sessions.remove(gameWindowId)));
+    changeSession(() => sessions.remove(gameWindowId)).pipe(Effect.asVoid);
 
   const registerWindowSession = (event: AccountGameWindowEvent) =>
-    withSessionPublication(
-      Effect.sync(() =>
-        sessions.openWindow(
-          event.gameWindowId,
-          event.gameWindowGroupId,
-          event.rendererGeneration,
-        ),
+    changeSession(() =>
+      sessions.openWindow(
+        event.gameWindowId,
+        event.gameWindowGroupId,
+        event.rendererGeneration,
       ),
-    );
+    ).pipe(Effect.asVoid);
 
   const reloadWindowSession = (event: AccountGameWindowEvent) =>
-    withSessionPublication(
-      Effect.sync(() =>
-        sessions.reloadWindow(
-          event.gameWindowId,
-          event.gameWindowGroupId,
-          event.rendererGeneration,
-        ),
-      ).pipe(
-        Effect.flatMap((changed) =>
-          changed
-            ? gameWindows
-                .setName(event.gameWindowId, "")
-                .pipe(Effect.catch(() => Effect.void))
-            : Effect.void,
-        ),
+    changeSession(() =>
+      sessions.reloadWindow(
+        event.gameWindowId,
+        event.gameWindowGroupId,
+        event.rendererGeneration,
+      ),
+    ).pipe(
+      Effect.flatMap((changed) =>
+        changed
+          ? gameWindows
+              .setName(event.gameWindowId, "")
+              .pipe(Effect.catch(() => Effect.void))
+          : Effect.void,
       ),
     );
 
@@ -411,10 +410,8 @@ export const makeAccounts = Effect.gen(function* () {
   const closeWindowSession = Effect.fn("Accounts.closeWindowSession")(
     function* (gameWindowId: number) {
       const now = yield* DateTime.now;
-      yield* withSessionPublication(
-        Effect.sync(() =>
-          sessions.closeWindow(gameWindowId, DateTime.toEpochMillis(now)),
-        ),
+      yield* changeSession(() =>
+        sessions.closeWindow(gameWindowId, DateTime.toEpochMillis(now)),
       );
     },
   );
@@ -607,22 +604,20 @@ export const makeAccounts = Effect.gen(function* () {
             ? {}
             : { gameViewLayout: request.gameViewLayout }),
           onCreated: (event) =>
-            withSessionPublication(
-              Effect.sync(() => {
-                gameWindowId = event.gameWindowId;
-                sessions.openWindow(
-                  event.gameWindowId,
-                  event.gameWindowGroupId,
-                  event.rendererGeneration,
-                );
-                sessions.trackLaunch(
-                  event.gameWindowId,
-                  event.gameWindowGroupId,
-                  event.rendererGeneration,
-                  pending,
-                );
-              }),
-            ),
+            changeSession(() => {
+              gameWindowId = event.gameWindowId;
+              sessions.openWindow(
+                event.gameWindowId,
+                event.gameWindowGroupId,
+                event.rendererGeneration,
+              );
+              return sessions.trackLaunch(
+                event.gameWindowId,
+                event.gameWindowGroupId,
+                event.rendererGeneration,
+                pending,
+              );
+            }).pipe(Effect.asVoid),
         })
         .pipe(
           Effect.catch((cause) => {
@@ -638,14 +633,12 @@ export const makeAccounts = Effect.gen(function* () {
           optionalGameWindowGroupId(resolvedGameWindowId),
           gameWindows.getGeneration(resolvedGameWindowId),
         ]);
-        yield* withSessionPublication(
-          Effect.sync(() =>
-            sessions.trackLaunch(
-              resolvedGameWindowId,
-              gameWindowGroupId,
-              rendererGeneration,
-              pending,
-            ),
+        yield* changeSession(() =>
+          sessions.trackLaunch(
+            resolvedGameWindowId,
+            gameWindowGroupId,
+            rendererGeneration,
+            pending,
           ),
         );
       }
@@ -701,10 +694,7 @@ export const makeAccounts = Effect.gen(function* () {
     ),
   );
 
-  const load: AccountsShape["load"] = repository.load.pipe(
-    Effect.map(toState),
-    Effect.ensuring(publishCurrent),
-  );
+  const load: AccountsShape["load"] = repository.load.pipe(Effect.map(toState));
 
   const onChanged: AccountsShape["onChanged"] = stateChanges.subscribe;
 
@@ -715,9 +705,10 @@ export const makeAccounts = Effect.gen(function* () {
   // that made the renderer unresponsive.
   const suppressGameWindowLaunchScript: AccountsShape["suppressGameWindowLaunchScript"] =
     (gameWindowId, message) =>
-      withSessionPublication(
-        Effect.sync(() => sessions.suppressLaunchScript(gameWindowId, message)),
+      changeSession(() =>
+        sessions.suppressLaunchScript(gameWindowId, message),
       ).pipe(
+        Effect.asVoid,
         Effect.mapError((cause) =>
           accountError(
             "recover-game-window",
@@ -816,18 +807,15 @@ export const makeAccounts = Effect.gen(function* () {
     gameWindowId,
     report,
   ) =>
-    withSessionPublication(
-      Effect.sync(() => sessions.applyReport(gameWindowId, report)).pipe(
-        Effect.flatMap((result) => {
-          if (result === null) return Effect.void;
-          return result.windowName === undefined
-            ? Effect.void
-            : gameWindows
-                .setName(gameWindowId, result.windowName)
-                .pipe(Effect.catch(() => Effect.void));
-        }),
-      ),
-    ).pipe(
+    changeSession(() => sessions.applyReport(gameWindowId, report)).pipe(
+      Effect.flatMap((result) => {
+        if (result === null) return Effect.void;
+        return result.windowName === undefined
+          ? Effect.void
+          : gameWindows
+              .setName(gameWindowId, result.windowName)
+              .pipe(Effect.catch(() => Effect.void));
+      }),
       Effect.mapError((cause) =>
         accountError(
           "report-session",

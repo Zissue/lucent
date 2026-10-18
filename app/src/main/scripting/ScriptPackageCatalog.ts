@@ -6,7 +6,6 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import * as SynchronizedRef from "effect/SynchronizedRef";
 import type * as Scope from "effect/Scope";
 
 import type {
@@ -18,7 +17,8 @@ import type {
   ScriptReference,
 } from "@lucent/core/scriptPackages";
 import { DesktopEnvironment } from "../app/DesktopEnvironment";
-import { makeListenerRegistry, type Listener } from "../app/ListenerRegistry";
+import type { Listener } from "../app/ListenerRegistry";
+import { makeCommittedState } from "../app/CommittedState";
 import { ElectronApp } from "../electron/ElectronApp";
 import {
   catalogOverview,
@@ -106,11 +106,6 @@ export const layer = Layer.effect(
     const { packagesDir, scriptsDir } = resolveScriptWorkspacePaths(
       env.workspaceDir,
     );
-    const changes = makeListenerRegistry<ScriptCatalogChange>();
-    const discoveryRef = yield* SynchronizedRef.make<{
-      readonly value: DiscoveredScriptCatalog | null;
-      readonly publicationRevision: number;
-    }>({ value: null, publicationRevision: 0 });
     const scan = Effect.gen(function* () {
       const managedPackages = yield* state.getAll;
       const failures: ScriptPackageInspectionFailure[] = [];
@@ -145,68 +140,20 @@ export const layer = Layer.effect(
         yield* logScriptPackageInspectionFailures(failures);
       return discovery;
     });
-    const publishCurrent = SynchronizedRef.get(discoveryRef).pipe(
-      Effect.flatMap(({ value, publicationRevision }) =>
-        value === null || publicationRevision === 0
-          ? Effect.void
-          : changes.publishLatest(publicationRevision, {
-              revision: value.catalog.revision,
-            }),
-      ),
-    );
-    const getDiscovery = SynchronizedRef.modifyEffect(discoveryRef, (current) =>
-      (current.value === null ? scan : Effect.succeed(current.value)).pipe(
-        Effect.map((next) => [next, { ...current, value: next }] as const),
-      ),
-    );
-    const refresh = SynchronizedRef.modifyEffect(discoveryRef, (current) =>
-      scan.pipe(
-        Effect.map(
-          (next) =>
-            [
-              next,
-              {
-                value: next,
-                publicationRevision: current.publicationRevision + 1,
-              },
-            ] as const,
-        ),
-      ),
-    ).pipe(Effect.ensuring(publishCurrent), Effect.map(catalogOverview));
+    const discovery = yield* makeCommittedState({
+      load: () => scan,
+    });
+    const refresh = discovery.reload.pipe(Effect.map(catalogOverview));
     const updateDiscovery = Effect.fn("ScriptPackageCatalog.updateDiscovery")(
       function* (
         transform: (
           current: DiscoveredScriptCatalog,
         ) => DiscoveredScriptCatalog | undefined,
       ) {
-        const next = yield* SynchronizedRef.modifyEffect(
-          discoveryRef,
-          (current) =>
-            (current.value === null
-              ? scan
-              : Effect.succeed(current.value)
-            ).pipe(
-              Effect.flatMap((previous) => {
-                const transformed = transform(previous);
-                return (
-                  transformed === undefined ? scan : Effect.succeed(transformed)
-                ).pipe(
-                  Effect.map(
-                    (next) =>
-                      [
-                        next,
-                        {
-                          value: next,
-                          publicationRevision:
-                            current.publicationRevision +
-                            (previous === next ? 0 : 1),
-                        },
-                      ] as const,
-                  ),
-                );
-              }),
-            ),
-        ).pipe(Effect.ensuring(publishCurrent));
+        const next = yield* discovery.update((previous) => {
+          const transformed = transform(previous);
+          return transformed === undefined ? scan : Effect.succeed(transformed);
+        });
         return catalogOverview(next);
       },
     );
@@ -228,16 +175,16 @@ export const layer = Layer.effect(
           return undefined;
         }
 
-        const discovery = yield* getDiscovery;
-        return discovery.paths.get(resolve(path));
+        const current = yield* discovery.get;
+        return current.paths.get(resolve(path));
       },
     );
 
     return ScriptPackageCatalog.of({
-      getDiscovery,
-      getOverview: getDiscovery.pipe(Effect.map(catalogOverview)),
+      getDiscovery: discovery.get,
+      getOverview: discovery.get.pipe(Effect.map(catalogOverview)),
       getPage: (request) =>
-        getDiscovery.pipe(
+        discovery.get.pipe(
           Effect.map((discovery) => {
             const query = request.query.trim().toLocaleLowerCase();
             const matching =
@@ -263,7 +210,10 @@ export const layer = Layer.effect(
             } satisfies ScriptCatalogPage;
           }),
         ),
-      onChanged: changes.subscribe,
+      onChanged: (listener) =>
+        discovery.subscribe((value) =>
+          listener({ revision: value.catalog.revision }),
+        ),
       referenceForPath,
       refresh,
       removePackage: (packageName) =>
@@ -291,8 +241,8 @@ export const layer = Layer.effect(
               relativePath: resolved.path,
             } satisfies ScriptCatalogEntry;
           }
-          const discovery = yield* getDiscovery;
-          return discovery.scripts.get(referenceKey(reference));
+          const current = yield* discovery.get;
+          return current.scripts.get(referenceKey(reference));
         },
       ),
       updateManagedPackage: (managed) =>

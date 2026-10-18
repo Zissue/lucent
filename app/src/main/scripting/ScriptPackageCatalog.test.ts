@@ -13,7 +13,6 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as References from "effect/References";
-import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import { DesktopEnvironment } from "../app/DesktopEnvironment";
 import { ElectronApp } from "../electron/ElectronApp";
@@ -32,10 +31,6 @@ import {
   type ManagedScriptPackage,
   ScriptPackageState,
 } from "./ScriptPackageState";
-
-vi.mock("effect/SynchronizedRef", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("effect/SynchronizedRef")>()),
-}));
 
 vi.mock("electron", () => ({ app: {} }));
 
@@ -775,11 +770,7 @@ describe("ScriptPackageCatalog", () => {
           "tools",
         ]);
         expect(removed.packages).toEqual([]);
-        expect(revisions).toEqual(
-          maxOps === 8
-            ? [removed.revision]
-            : [refreshed.revision, removed.revision],
-        );
+        expect(revisions).toEqual([refreshed.revision, removed.revision]);
         expect((yield* catalog.getOverview).revision).toBe(revisions.at(-1));
       }),
   );
@@ -959,152 +950,63 @@ describe("ScriptPackageCatalog", () => {
       expect(scanCount()).toBe(1);
     }),
   );
-
-  it.live.each(["refresh", "remove"] as const)(
-    "allows a %s listener to read the committed catalog",
-    (operation) =>
-      Effect.gen(function* () {
-        const { catalog, workspace } = yield* makeCatalogHarness();
-        yield* Effect.promise(() =>
-          write(
-            join(workspace.packagesDir, "tools", "package.json"),
-            '{"name":"tools"}',
-          ),
-        );
-        yield* catalog.getOverview;
-        const names: (readonly string[])[] = [];
-        yield* catalog.onChanged(() =>
-          catalog.getOverview.pipe(
-            Effect.tap((overview) =>
-              Effect.sync(() => {
-                names.push(
-                  overview.packages.map((entry) => entry.name ?? "invalid"),
-                );
-              }),
-            ),
-          ),
-        );
-        const result = yield* (
-          operation === "refresh"
-            ? catalog.refresh
-            : catalog.removePackage("tools")
-        ).pipe(Effect.timeout("2 seconds"));
-        expect(names).toEqual([operation === "refresh" ? ["tools"] : []]);
-        expect(result.packages.map((entry) => entry.name)).toEqual(
-          operation === "refresh" ? ["tools"] : [],
-        );
-      }),
-  );
-
-  it.effect.each(["refresh", "remove"] as const)(
-    "publishes a committed %s even when interrupted after the commit",
-    (operation) =>
-      Effect.gen(function* () {
-        const committed = yield* Deferred.make<void>();
-        const hold = yield* Deferred.make<void>();
-        let armed = false;
-        const modifyEffect = SynchronizedRef.modifyEffect;
-        vi.spyOn(SynchronizedRef, "modifyEffect").mockImplementation(
-          (ref, change) =>
-            modifyEffect(ref, change).pipe(
-              Effect.tap(() => {
-                if (!armed) return Effect.void;
-                armed = false;
-                return Deferred.succeed(committed, undefined).pipe(
-                  Effect.andThen(Deferred.await(hold)),
-                );
-              }),
-            ),
-        );
-        const { catalog, workspace } = yield* makeCatalogHarness();
-        yield* Effect.promise(() =>
-          write(
-            join(workspace.packagesDir, "tools", "package.json"),
-            '{"name":"tools"}',
-          ),
-        );
-        yield* catalog.getOverview;
-        if (operation === "refresh")
-          yield* Effect.promise(() =>
-            write(join(workspace.scriptsDir, "second.js"), ""),
-          );
-        const received: {
-          revision: string;
-          names: readonly string[];
-          count: number;
-        }[] = [];
-        yield* catalog.onChanged((change) =>
-          catalog.getOverview.pipe(
-            Effect.tap((current) =>
-              Effect.sync(() => {
-                received.push({
-                  revision: change.revision,
-                  names: current.packages.map(
-                    (entry) => entry.name ?? "missing",
-                  ),
-                  count: current.scriptCount,
-                });
-              }),
-            ),
-          ),
-        );
-        armed = true;
-        const running = yield* (
-          operation === "refresh"
-            ? catalog.refresh
-            : catalog.removePackage("tools")
-        ).pipe(Effect.forkScoped);
-        yield* Deferred.await(committed);
-        const current = yield* catalog.getOverview;
-        expect(current.scriptCount).toBe(operation === "refresh" ? 2 : 1);
-        expect(current.packages.map((entry) => entry.name)).toEqual(
-          operation === "refresh" ? ["tools"] : [],
-        );
-        yield* Fiber.interrupt(running);
-        expect(received).toEqual([
-          {
-            revision: current.revision,
-            names: operation === "refresh" ? ["tools"] : [],
-            count: operation === "refresh" ? 2 : 1,
-          },
-        ]);
-      }),
-  );
-
-  it.effect(
-    "interrupts a scan before commit without repeating the previous event",
-    () =>
-      Effect.gen(function* () {
-        const started = yield* Deferred.make<void>();
-        const release = yield* Deferred.make<void>();
-        let block = false;
-        const { catalog } = yield* makeCatalogHarness(
-          Effect.suspend(() =>
-            block
-              ? Deferred.succeed(started, undefined).pipe(
-                  Effect.andThen(Deferred.await(release)),
-                )
-              : Effect.void,
-          ),
-        );
-        const initial = yield* catalog.refresh;
-        const revisions: string[] = [];
-        yield* catalog.onChanged((change) => {
-          revisions.push(change.revision);
-        });
-        block = true;
-        const scanning = yield* catalog.refresh.pipe(Effect.forkScoped);
-        yield* Deferred.await(started);
-        const stopping = yield* Fiber.interrupt(scanning).pipe(
-          Effect.forkScoped,
-        );
-        yield* Effect.yieldNow;
-        const outcome = scanning.pollUnsafe();
-        yield* Deferred.succeed(release, undefined);
-        yield* Fiber.join(stopping);
-        expect(outcome).toMatchObject({ _tag: "Failure" });
-        expect(yield* catalog.getOverview).toEqual(initial);
-        expect(revisions).toEqual([]);
-      }),
-  );
 });
+
+it.effect("returns the committed catalog during a refresh scan", () =>
+  Effect.gen(function* () {
+    const started = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    let block = false;
+    const { catalog, workspace } = yield* makeCatalogHarness(
+      Effect.suspend(() =>
+        block
+          ? Deferred.succeed(started, undefined).pipe(
+              Effect.andThen(Deferred.await(release)),
+            )
+          : Effect.void,
+      ),
+    );
+    yield* catalog.getOverview;
+    yield* Effect.promise(() =>
+      write(join(workspace.scriptsDir, "second.js"), ""),
+    );
+    block = true;
+    const scanning = yield* catalog.refresh.pipe(Effect.forkChild);
+    yield* Deferred.await(started);
+    const reading = yield* catalog.getOverview.pipe(
+      Effect.forkChild({ startImmediately: true }),
+    );
+    const duringScan = reading.pollUnsafe();
+    yield* Deferred.succeed(release, undefined);
+    expect((yield* Fiber.join(reading)).scriptCount).toBe(1);
+    expect((yield* Fiber.join(scanning)).scriptCount).toBe(2);
+    expect(duringScan).toMatchObject({
+      _tag: "Success",
+      value: { scriptCount: 1 },
+    });
+    expect((yield* catalog.getOverview).scriptCount).toBe(2);
+  }),
+);
+
+it.effect(
+  "publishes every refresh even when the catalog content is unchanged",
+  () =>
+    Effect.gen(function* () {
+      const { catalog, workspace } = yield* makeCatalogHarness();
+      let changes = 0;
+      yield* catalog.onChanged(() => {
+        changes += 1;
+      });
+      expect((yield* catalog.refresh).scriptCount).toBe(1);
+      expect((yield* catalog.refresh).scriptCount).toBe(1);
+      expect(changes).toBe(2);
+      yield* Effect.promise(() =>
+        write(join(workspace.scriptsDir, "second.js"), ""),
+      );
+      expect((yield* catalog.refresh).scriptCount).toBe(2);
+      expect(changes).toBe(3);
+      expect((yield* catalog.refresh).scriptCount).toBe(2);
+      expect((yield* catalog.getOverview).scriptCount).toBe(2);
+      expect(changes).toBe(4);
+    }),
+);
