@@ -8,6 +8,7 @@ import * as Effect from "effect/Effect";
 import { FileSystem } from "effect/FileSystem";
 import { layer } from "@effect/platform-node/NodeFileSystem";
 import { JSON_FILE_MAX_BYTES, makeJsonFile } from "./JsonFile";
+import { desktopLogErrorDetails } from "../../shared/logRecord";
 
 const fixtureDirectories = new Set<string>();
 
@@ -27,6 +28,32 @@ afterEach(async () => {
 });
 
 testLayer(layer)("JsonFile", (it) => {
+  it.effect("keeps corrupt file contents out of logged parse failures", () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.promise(makeFixture);
+      const path = join(root, "credentials.json");
+      yield* Effect.promise(() =>
+        fs.writeFile(path, '{"password": hunter2-secret-token}'),
+      );
+
+      const failure = yield* makeJsonFile(yield* FileSystem)
+        .read(path)
+        .pipe(Effect.flip);
+      const logged = desktopLogErrorDetails(failure);
+
+      expect(failure).toMatchObject({
+        _tag: "JsonFileError",
+        operation: "parse",
+      });
+      expect(JSON.stringify(logged)).not.toContain("hunter2");
+      expect(logged.cause).toMatchObject({
+        name: "SyntaxError",
+        message: "Invalid JSON",
+      });
+      expect(logged.cause?.cause).toBeUndefined();
+    }),
+  );
+
   it.effect("distinguishes missing files and preserves the JSON format", () =>
     Effect.gen(function* () {
       const root = yield* Effect.promise(makeFixture);
