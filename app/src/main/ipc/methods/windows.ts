@@ -7,6 +7,7 @@ import {
   DesktopWindows,
 } from "../../window/DesktopWindows";
 import { makeDesktopIpcMethod } from "../DesktopIpc";
+import { resolveGameRendererId } from "../DesktopIpcSenders";
 
 export const open = makeDesktopIpcMethod({
   descriptor: WindowsIpc.open,
@@ -22,21 +23,9 @@ export const open = makeDesktopIpcMethod({
 
     const definition = getDesktopWindowDefinition(payload.kind);
     const ownerRendererId =
-      definition.scope !== "game-child"
-        ? undefined
-        : sender.kind === "game"
-          ? sender.rendererId
-          : yield* windows.describe(sender.rendererId).pipe(
-              Effect.flatMap((info) =>
-                info?.ownerId === undefined
-                  ? new DesktopWindowError({
-                      detail:
-                        "This window is no longer linked to a game. Reopen it from the game.",
-                      id: String(sender.rendererId),
-                    })
-                  : Effect.succeed(info.ownerId),
-              ),
-            );
+      definition.scope === "game-child"
+        ? yield* resolveGameRendererId(sender)
+        : undefined;
 
     const rendererId = yield* windows.open(
       payload.kind,
