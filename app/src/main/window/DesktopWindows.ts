@@ -309,7 +309,7 @@ const publishStandaloneGameViewPresentation = (
   record.publishedPresentation = presentation;
   record.window.webContents.send(
     GameViewsIpc.presentationChanged.channel,
-    presentation,
+    GameViewsIpc.presentationChanged.encodePayload(presentation),
   );
 };
 

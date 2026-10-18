@@ -25,7 +25,6 @@ export const DesktopRendererKindSchema = Schema.Literals([
 export const WindowsIpc = {
   open: defineInvoke({
     channel: `${namespace}:open`,
-    name: "windows.open",
     payload: Schema.Struct({
       kind: DesktopWindowKindSchema,
     }),

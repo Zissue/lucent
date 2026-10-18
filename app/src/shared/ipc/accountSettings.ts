@@ -15,13 +15,11 @@ const UsernamePayloadSchema = Schema.Struct({
 export const AccountSettingsIpc = {
   get: defineInvoke({
     channel: `${namespace}:get`,
-    name: "accountSettings.get",
     payload: UsernamePayloadSchema,
     result: AccountSettingsSchema,
   }),
   update: defineInvoke({
     channel: `${namespace}:update`,
-    name: "accountSettings.update",
     payload: Schema.Struct({
       username: Schema.String,
       patch: AccountSettingsPatchSchema,

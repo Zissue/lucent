@@ -21,14 +21,12 @@ import {
 
 const descriptor = defineInvoke({
   channel: "desktop:test:echo",
-  name: "test.echo",
   payload: Schema.String,
   result: Schema.String,
 });
 
 const eventDescriptor = defineEvent({
   channel: "desktop:test:event",
-  name: "test.event",
   payload: Schema.String,
 });
 

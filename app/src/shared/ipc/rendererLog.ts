@@ -24,7 +24,6 @@ export type RendererLogRecord = typeof RendererLogRecordSchema.Type;
 export const RendererLogIpc = {
   record: defineEvent({
     channel: "desktop:renderer-log:record",
-    name: "rendererLog.record",
     payload: RendererLogRecordSchema,
   }),
 } as const;
