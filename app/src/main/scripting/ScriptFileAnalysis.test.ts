@@ -75,6 +75,31 @@ it.effect("reports a changed file after two attempts", () =>
   }),
 );
 
+it.effect("retries when the file disappears after reading", () =>
+  Effect.gen(function* () {
+    const root = yield* Effect.promise(() =>
+      fs.mkdtemp(join(tmpdir(), "lucent-analysis-")),
+    );
+    directories.push(root);
+    const path = join(root, "value.js");
+    yield* Effect.promise(() => fs.writeFile(path, "exports.value = 1;"));
+    const stat = fs.stat;
+    let checks = 0;
+    vi.spyOn(fs, "stat").mockImplementation(async (...args) => {
+      checks += 1;
+      if (checks === 2) {
+        throw Object.assign(new Error("File disappeared"), { code: "ENOENT" });
+      }
+      return stat(...args);
+    });
+
+    expect(yield* analyzeScriptFile(path)).toMatchObject({
+      file: { source: "exports.value = 1;", path },
+    });
+    expect(checks).toBe(4);
+  }),
+);
+
 it.effect("does not retry permission failures", () =>
   Effect.gen(function* () {
     const root = yield* Effect.promise(() =>

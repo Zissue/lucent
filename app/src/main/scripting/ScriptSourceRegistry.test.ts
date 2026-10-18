@@ -10,7 +10,7 @@ import * as Logger from "effect/Logger";
 import { vi } from "vitest";
 import { desktopLogRecord } from "../../shared/logRecord";
 
-import { makeScriptFiles, ScriptFiles } from "./ScriptFiles";
+import { analyzeScriptFile } from "./ScriptFileAnalysis";
 import * as ScriptSourceParser from "./ScriptSourceParser";
 import {
   discoverScriptCatalog,
@@ -47,7 +47,7 @@ const makeWorkspace = async () => {
 
 const makeLayer = (
   discovery: DiscoveredScriptCatalog,
-  scriptFiles = makeScriptFiles(),
+  analyze = analyzeScriptFile,
   limits?: Parameters<typeof makeScriptSourceRegistry>[0],
   catalogOverrides: Partial<ScriptPackageCatalogShape> = {},
 ) => {
@@ -87,15 +87,8 @@ const makeLayer = (
   });
   return Layer.effect(
     ScriptSourceRegistry,
-    makeScriptSourceRegistry(limits),
-  ).pipe(
-    Layer.provide(
-      Layer.mergeAll(
-        Layer.succeed(ScriptPackageCatalog, catalog),
-        Layer.succeed(ScriptFiles, scriptFiles),
-      ),
-    ),
-  );
+    makeScriptSourceRegistry(limits, analyze),
+  ).pipe(Layer.provide(Layer.succeed(ScriptPackageCatalog, catalog)));
 };
 
 afterEach(async () => {
@@ -138,13 +131,12 @@ describe("script source dependency discovery", () => {
             scriptsDir: workspace.scriptsDir,
           }),
         );
-        const scriptFiles = makeScriptFiles();
         const registry = yield* ScriptSourceRegistry.pipe(
           Effect.provide(
-            makeLayer(discovery, {
-              ...scriptFiles,
-              analyze: Effect.fnUntraced(function* (path: string) {
-                const analysis = yield* scriptFiles.analyze(path);
+            makeLayer(
+              discovery,
+              Effect.fnUntraced(function* (path: string) {
+                const analysis = yield* analyzeScriptFile(path);
                 if (path === helperPath) {
                   yield* Effect.promise(() =>
                     Promise.all([
@@ -155,7 +147,7 @@ describe("script source dependency discovery", () => {
                 }
                 return analysis;
               }),
-            }),
+            ),
           ),
         );
         const reference =
@@ -256,27 +248,23 @@ describe("script source dependency discovery", () => {
         }),
       );
       const bothReading = yield* Deferred.make<void>();
-      const scriptFiles = makeScriptFiles();
       let sharedReads = 0;
       let otherReads = 0;
       const registry = yield* ScriptSourceRegistry.pipe(
         Effect.provide(
           makeLayer(
             discovery,
-            {
-              ...scriptFiles,
-              analyze: Effect.fnUntraced(function* (path: string) {
-                if (path === sharedPath) {
-                  sharedReads += 1;
-                  if (sharedReads === 2) {
-                    yield* Deferred.succeed(bothReading, undefined);
-                  }
-                  if (sharedReads <= 2) yield* Deferred.await(bothReading);
+            Effect.fnUntraced(function* (path: string) {
+              if (path === sharedPath) {
+                sharedReads += 1;
+                if (sharedReads === 2) {
+                  yield* Deferred.succeed(bothReading, undefined);
                 }
-                if (path === otherPath) otherReads += 1;
-                return yield* scriptFiles.analyze(path);
-              }),
-            },
+                if (sharedReads <= 2) yield* Deferred.await(bothReading);
+              }
+              if (path === otherPath) otherReads += 1;
+              return yield* analyzeScriptFile(path);
+            }),
             { maxBytes: 36, maxEntries: 8 },
           ),
         ),
@@ -343,27 +331,23 @@ describe("script source dependency discovery", () => {
           }),
         );
         const bothReading = yield* Deferred.make<void>();
-        const scriptFiles = makeScriptFiles();
         let sharedReads = 0;
         const registry = yield* ScriptSourceRegistry.pipe(
           Effect.provide(
             makeLayer(
               discovery,
-              {
-                ...scriptFiles,
-                analyze: Effect.fnUntraced(function* (path: string) {
-                  if (path === sharedPath) {
-                    sharedReads += 1;
-                    if (sharedReads === 3) {
-                      yield* Deferred.succeed(bothReading, undefined);
-                    }
-                    if (sharedReads === 2 || sharedReads === 3) {
-                      yield* Deferred.await(bothReading);
-                    }
+              Effect.fnUntraced(function* (path: string) {
+                if (path === sharedPath) {
+                  sharedReads += 1;
+                  if (sharedReads === 3) {
+                    yield* Deferred.succeed(bothReading, undefined);
                   }
-                  return yield* scriptFiles.analyze(path);
-                }),
-              },
+                  if (sharedReads === 2 || sharedReads === 3) {
+                    yield* Deferred.await(bothReading);
+                  }
+                }
+                return yield* analyzeScriptFile(path);
+              }),
               { maxBytes: 36, maxEntries: 8 },
             ),
           ),

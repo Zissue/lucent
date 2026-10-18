@@ -1,7 +1,6 @@
-import { constants } from "node:buffer";
 import { promises as fs, type Dirent, type Stats } from "node:fs";
 import * as Effect from "effect/Effect";
-import type { FileSystem } from "effect/FileSystem";
+import { FileSystem } from "effect/FileSystem";
 import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
@@ -20,21 +19,20 @@ export class FileChangedWhileReading extends Schema.TaggedError<FileChangedWhile
   { path: Schema.String },
 ) {}
 
+export const fileFingerprint = (stat: Stats): string =>
+  [stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(":");
+
+export const isMissingFileError = (cause: unknown): boolean =>
+  typeof cause === "object" &&
+  cause !== null &&
+  "code" in cause &&
+  (cause.code === "ENOENT" || cause.code === "ENOTDIR");
+
 export const readFileBounded = Effect.fn("readFileBounded")(function* (
   fileSystem: FileSystem,
   path: string,
   maxBytes: number,
 ) {
-  if (
-    !Number.isSafeInteger(maxBytes) ||
-    maxBytes < 0 ||
-    maxBytes > constants.MAX_LENGTH
-  ) {
-    return yield* PlatformError.badArgument({
-      module: "FileSystem",
-      method: "readFileBounded",
-    });
-  }
   const chunks = yield* Stream.runCollect(
     fileSystem.stream(path, { bytesToRead: BigInt(maxBytes) + 1n }),
   );
@@ -52,6 +50,51 @@ export const readFileBounded = Effect.fn("readFileBounded")(function* (
     offset += chunk.byteLength;
   }
   return bytes;
+});
+
+export const readStableFile = Effect.fnUntraced(function* (
+  path: string,
+  maxBytes: number,
+  options: {
+    readonly requireRegularFile?: boolean;
+    readonly missingAfterReadIsChange?: boolean;
+  } = {},
+) {
+  const fileSystem = yield* FileSystem;
+  const stat = Effect.tryPromise({
+    try: () => fs.stat(path),
+    catch: (cause) => cause,
+  });
+  const before = yield* stat;
+  if (options.requireRegularFile && !before.isFile())
+    return yield* Effect.fail(new Error(`Expected a regular file: ${path}.`));
+  if (before.size > maxBytes)
+    return yield* new FileSystemLimitError({
+      path,
+      limit: maxBytes,
+      kind: "bytes",
+    });
+  const bytes = yield* readFileBounded(fileSystem, path, maxBytes).pipe(
+    Effect.mapError((cause) =>
+      cause._tag === "FileSystemLimitError"
+        ? cause
+        : (cause.reason.cause ?? cause),
+    ),
+  );
+  const after = yield* stat.pipe(
+    Effect.mapError((cause) =>
+      options.missingAfterReadIsChange && isMissingFileError(cause)
+        ? new FileChangedWhileReading({ path })
+        : cause,
+    ),
+  );
+  const fingerprint = fileFingerprint(after);
+  if (fileFingerprint(before) !== fingerprint)
+    return yield* new FileChangedWhileReading({ path });
+  return {
+    contents: Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength),
+    fingerprint,
+  };
 });
 
 export const nativeFileError = (
@@ -102,12 +145,6 @@ export const readDirectoryBounded = Effect.fn("readDirectoryBounded")(
       readonly include: (name: string) => boolean;
     },
   ) {
-    if (!Number.isSafeInteger(options.maxEntries) || options.maxEntries < 0) {
-      return yield* PlatformError.badArgument({
-        module: "FileSystem",
-        method: "readDirectoryBounded",
-      });
-    }
     return yield* Effect.acquireUseRelease(
       Effect.tryPromise({
         try: () => fs.opendir(path),

@@ -21,7 +21,6 @@ import {
 } from "@lucent/core/scriptPackages";
 import {
   hashDirectory,
-  isMissingFileError,
   isPathInside,
   listRegularFilePaths,
   portablePath,
@@ -33,7 +32,10 @@ import {
 } from "./ScriptLimits";
 import type { ManagedScriptPackage } from "./ScriptPackageState";
 import { logFailure } from "../../shared/logFailure";
-import { readFileBounded } from "../filesystem/BoundedFileSystem";
+import {
+  isMissingFileError,
+  readFileBounded,
+} from "../filesystem/BoundedFileSystem";
 
 export interface ScriptPackageInspectionFailure {
   readonly packageName: string;

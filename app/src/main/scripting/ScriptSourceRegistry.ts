@@ -4,7 +4,6 @@ import * as Context from "effect/Context";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 
 import type {
@@ -25,8 +24,12 @@ import {
   resolveRelativeScriptModulePath,
   scriptModulePathCandidates,
 } from "@lucent/core/scriptPackages";
-import { logScriptFileResolutionFailure, ScriptFiles } from "./ScriptFiles";
+import { isMissingFileError } from "../filesystem/BoundedFileSystem";
 import {
+  analyzeScriptFile,
+  logScriptFileResolutionFailure,
+  readScriptFile,
+  resolveScriptFile,
   ScriptFilesError,
   type ScriptFileAnalysis,
 } from "./ScriptFileAnalysis";
@@ -189,11 +192,7 @@ const resolutionFailureCause = (
           ? []
           : resolutionFailureCause(Cause.fail(error.cause)).reasons;
       }
-      if (
-        Predicate.isObject(error) &&
-        "code" in error &&
-        (error["code"] === "ENOENT" || error["code"] === "ENOTDIR")
-      ) {
+      if (isMissingFileError(error)) {
         return [];
       }
       return [reason];
@@ -228,9 +227,9 @@ export const makeScriptSourceRegistry = Effect.fn("makeScriptSourceRegistry")(
       maxBytes: SCRIPT_SOURCE_CACHE_MAX_BYTES,
       maxEntries: SCRIPT_SOURCE_CACHE_MAX_ENTRIES,
     },
+    analyze: typeof analyzeScriptFile = analyzeScriptFile,
   ) {
     const catalog = yield* ScriptPackageCatalog;
-    const scriptFiles = yield* ScriptFiles;
     const sourceCache = new Map<string, CachedSource>();
     let sourceCacheBytes = 0;
 
@@ -289,7 +288,7 @@ export const makeScriptSourceRegistry = Effect.fn("makeScriptSourceRegistry")(
         return cached;
       }
 
-      const analysis = yield* scriptFiles.analyze(target.absolutePath).pipe(
+      const analysis = yield* analyze(target.absolutePath).pipe(
         Effect.mapError(
           (cause) =>
             new ScriptSourceRegistryError({
@@ -536,7 +535,7 @@ export const makeScriptSourceRegistry = Effect.fn("makeScriptSourceRegistry")(
             path: entry.path,
           });
         }
-        const parsedEntry = yield* scriptFiles.analyze(entry.path).pipe(
+        const parsedEntry = yield* analyze(entry.path).pipe(
           Effect.mapError(
             (cause) =>
               new ScriptSourceRegistryError({
@@ -590,7 +589,7 @@ export const makeScriptSourceRegistry = Effect.fn("makeScriptSourceRegistry")(
         ),
         Effect.flatMap((reference) =>
           reference === undefined
-            ? scriptFiles.read(path).pipe(
+            ? readScriptFile(path).pipe(
                 Effect.mapError(
                   (cause) =>
                     new ScriptSourceRegistryError({
@@ -635,7 +634,7 @@ export const makeScriptSourceRegistry = Effect.fn("makeScriptSourceRegistry")(
       catalog.referenceForPath(path).pipe(
         Effect.flatMap((reference) =>
           reference === undefined
-            ? scriptFiles.resolve(path)
+            ? resolveScriptFile(path)
             : resolveReference(reference),
         ),
         Effect.catch((cause) => resolveFailure(resolve(path), cause)),

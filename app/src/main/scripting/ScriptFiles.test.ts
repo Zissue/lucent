@@ -15,7 +15,11 @@ import { vi } from "vitest";
 
 import { afterEach, describe, expect, it } from "@effect/vitest";
 
-import { layer, makeScriptFiles, ScriptFiles } from "./ScriptFiles";
+import {
+  analyzeScriptFile,
+  readScriptFile,
+  resolveScriptFile,
+} from "./ScriptFileAnalysis";
 import { desktopLogRecord } from "../../shared/logRecord";
 import * as ScriptSourceParser from "./ScriptSourceParser";
 
@@ -37,14 +41,13 @@ afterEach(async () => {
   tempDirectories.clear();
 });
 
-describe("ScriptFiles service", () => {
+describe("script files", () => {
   it.effect(
     "returns the current source and extracted inputs after a same-size edit",
     () =>
       Effect.gen(function* () {
         const directory = yield* Effect.promise(makeTempDirectory);
         const path = join(directory, "farm.js");
-        const files = makeScriptFiles();
         const firstSource = [
           'const helper = require("./helper");',
           "module.exports = function* run() { return 1; };",
@@ -55,13 +58,13 @@ describe("ScriptFiles service", () => {
 
         yield* Effect.promise(() => writeFile(path, firstSource));
         const firstStat = yield* Effect.promise(() => stat(path));
-        const first = yield* files.analyze(path);
+        const first = yield* analyzeScriptFile(path);
 
         yield* Effect.promise(() => writeFile(path, secondSource));
         yield* Effect.promise(() =>
           utimes(path, firstStat.atime, firstStat.mtime),
         );
-        const second = yield* files.analyze(path);
+        const second = yield* analyzeScriptFile(path);
 
         expect(first.file.source).toBe(firstSource);
         expect(second.file.source).toBe(secondSource);
@@ -76,8 +79,7 @@ describe("ScriptFiles service", () => {
       const directory = yield* Effect.promise(makeTempDirectory);
       const path = join(directory, "empty.js");
       yield* Effect.promise(() => writeFile(path, ""));
-      const files = yield* ScriptFiles;
-      expect(yield* files.read(relative(process.cwd(), path))).toEqual({
+      expect(yield* readScriptFile(relative(process.cwd(), path))).toEqual({
         inputs: null,
         name: "empty.js",
         path,
@@ -85,16 +87,15 @@ describe("ScriptFiles service", () => {
           "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         source: "",
       });
-    }).pipe(Effect.provide(layer)),
+    }),
   );
 
   it.effect("does not cache missing files", () =>
     Effect.gen(function* () {
       const directory = yield* Effect.promise(makeTempDirectory);
       const path = join(directory, "created-later.js");
-      const files = makeScriptFiles();
 
-      expect(yield* files.resolve(path)).toEqual({
+      expect(yield* resolveScriptFile(path)).toEqual({
         status: "missing",
         path,
       });
@@ -102,7 +103,7 @@ describe("ScriptFiles service", () => {
       yield* Effect.promise(() =>
         writeFile(path, "module.exports = function* run() {};"),
       );
-      expect(yield* files.resolve(path)).toMatchObject({
+      expect(yield* resolveScriptFile(path)).toMatchObject({
         status: "found",
         file: {
           path,
@@ -119,13 +120,11 @@ describe("ScriptFiles service", () => {
       const parent = join(directory, "parent.js");
       yield* Effect.promise(() => writeFile(parent, ""));
       const path = join(parent, "child.js");
-      expect(yield* makeScriptFiles().resolve(path)).toEqual({
+      expect(yield* resolveScriptFile(path)).toEqual({
         status: "missing",
         path,
       });
-      expect(
-        yield* makeScriptFiles().analyze(path).pipe(Effect.flip),
-      ).toMatchObject({
+      expect(yield* analyzeScriptFile(path).pipe(Effect.flip)).toMatchObject({
         _tag: "ScriptFilesError",
         path,
         message: `Script file was not found at ${path}.`,
@@ -147,15 +146,14 @@ describe("ScriptFiles service", () => {
         yield* Effect.promise(() =>
           truncate(oversizedPath, 16 * 1024 * 1024 + 1),
         );
-        const files = makeScriptFiles();
 
-        expect(yield* files.resolve(malformedPath)).toMatchObject({
+        expect(yield* resolveScriptFile(malformedPath)).toMatchObject({
           status: "failed",
           path: malformedPath,
           message: "Script source could not be parsed.",
           detailsText: expect.stringContaining("ScriptInputsExtractorError"),
         });
-        expect(yield* files.resolve(oversizedPath)).toMatchObject({
+        expect(yield* resolveScriptFile(oversizedPath)).toMatchObject({
           status: "failed",
           path: oversizedPath,
           message: `Script file exceeds the 16 MiB limit: ${oversizedPath}.`,
@@ -171,14 +169,13 @@ describe("ScriptFiles service", () => {
         const path = join(directory, "boundary.js");
         const source = `//${"é".repeat(8 * 1024 * 1024 - 1)}`;
         yield* Effect.promise(() => writeFile(path, source));
-        const files = makeScriptFiles();
-        expect(yield* files.read(path)).toMatchObject({
+        expect(yield* readScriptFile(path)).toMatchObject({
           path,
           source,
           inputs: null,
         });
         yield* Effect.promise(() => writeFile(path, `${source}é`));
-        expect(yield* files.resolve(path)).toMatchObject({
+        expect(yield* resolveScriptFile(path)).toMatchObject({
           status: "failed",
           path,
           message: `Script file exceeds the 16 MiB limit: ${path}.`,
@@ -203,7 +200,6 @@ describe("script resolution failure logging", () => {
         yield* Effect.promise(() =>
           truncate(oversizedPath, 16 * 1024 * 1024 + 1),
         );
-        const files = makeScriptFiles();
         const logs: unknown[] = [];
         const causes: unknown[] = [];
         const logger = Logger.make((options) => {
@@ -213,10 +209,10 @@ describe("script resolution failure logging", () => {
           causes.push(Cause.squash(options.cause));
         });
         const results = yield* Effect.all([
-          files.resolve(directory),
-          files.resolve(missingPath),
-          files.resolve(malformedPath),
-          files.resolve(oversizedPath),
+          resolveScriptFile(directory),
+          resolveScriptFile(missingPath),
+          resolveScriptFile(malformedPath),
+          resolveScriptFile(oversizedPath),
         ]).pipe(Effect.withLogger(logger));
         expect(results.map((result) => result.status)).toEqual([
           "failed",
@@ -250,7 +246,6 @@ describe("script resolution failure logging", () => {
       vi.spyOn(ScriptSourceParser, "analyzeScriptSource").mockReturnValue(
         Effect.die(error),
       );
-      const files = makeScriptFiles();
       const logs: unknown[] = [];
       const causes: unknown[] = [];
       const logger = Logger.make((options) => {
@@ -259,10 +254,12 @@ describe("script resolution failure logging", () => {
         logs.push({ level, component, message, data, repeatKey });
         causes.push(Cause.squash(options.cause));
       });
-      const result = yield* files.resolve(path).pipe(Effect.withLogger(logger));
-      const missing = yield* files
-        .resolve(join(directory, "missing.js"))
-        .pipe(Effect.withLogger(logger));
+      const result = yield* resolveScriptFile(path).pipe(
+        Effect.withLogger(logger),
+      );
+      const missing = yield* resolveScriptFile(
+        join(directory, "missing.js"),
+      ).pipe(Effect.withLogger(logger));
       expect(result).toMatchObject({
         status: "failed",
         path,
@@ -294,13 +291,11 @@ describe("script resolution failure logging", () => {
         Effect.interrupt,
       );
       const logs: unknown[] = [];
-      const result = yield* makeScriptFiles()
-        .resolve(path)
-        .pipe(
-          Effect.withLogger(
-            Logger.make((options) => logs.push(desktopLogRecord(options))),
-          ),
-        );
+      const result = yield* resolveScriptFile(path).pipe(
+        Effect.withLogger(
+          Logger.make((options) => logs.push(desktopLogRecord(options))),
+        ),
+      );
       expect(result).toMatchObject({
         status: "failed",
         path,

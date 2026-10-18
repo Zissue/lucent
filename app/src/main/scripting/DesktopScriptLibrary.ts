@@ -21,7 +21,7 @@ import type {
 import { DesktopEnvironment } from "../app/DesktopEnvironment";
 import { ElectronDialog } from "../electron/ElectronDialog";
 import { ElectronShell } from "../electron/ElectronShell";
-import { ScriptFiles } from "./ScriptFiles";
+import { readScriptFile } from "./ScriptFileAnalysis";
 import { ScriptPackageCatalog } from "./ScriptPackageCatalog";
 import { normalizeGitHubRepositoryUrl } from "./GitHubScriptPackageClient";
 import { ScriptSourceRegistry } from "./ScriptSourceRegistry";
@@ -118,7 +118,6 @@ export const layer = Layer.effect(
     const dialog = yield* ElectronDialog;
     const env = yield* DesktopEnvironment;
     const fileSystem = yield* FileSystem;
-    const files = yield* ScriptFiles;
     const catalog = yield* ScriptPackageCatalog;
     const sources = yield* ScriptSourceRegistry;
     const shell = yield* ElectronShell;
@@ -155,7 +154,7 @@ export const layer = Layer.effect(
                   new Error("The selected script is no longer available."),
                 ),
               )
-            : files.read(entry.path).pipe(
+            : readScriptFile(entry.path).pipe(
                 Effect.map((file) => ({
                   ...file,
                   name: entry.name,
@@ -237,7 +236,7 @@ export const layer = Layer.effect(
         const file =
           reference?.kind === "package"
             ? yield* loadReference(reference)
-            : yield* files.read(path).pipe(
+            : yield* readScriptFile(path).pipe(
                 Effect.map((file) =>
                   reference === undefined ? file : { ...file, reference },
                 ),
