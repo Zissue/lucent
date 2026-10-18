@@ -95,15 +95,3 @@ export const FileSystemIpc = {
     result: resultSchema(Schema.Void),
   }),
 } as const;
-
-export const FileSystemIpcMethods = [
-  FileSystemIpc.openSession,
-  FileSystemIpc.closeSession,
-  FileSystemIpc.exists,
-  FileSystemIpc.list,
-  FileSystemIpc.readJson,
-  FileSystemIpc.readText,
-  FileSystemIpc.remove,
-  FileSystemIpc.writeJson,
-  FileSystemIpc.writeText,
-] as const;

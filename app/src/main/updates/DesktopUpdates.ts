@@ -11,11 +11,7 @@ import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import { gt, prerelease, valid } from "semver";
 
-import {
-  UpdateReleaseInfo,
-  type UpdateCheckState,
-  type UpdateReleaseCache,
-} from "../../shared/updates";
+import { UpdateReleaseInfo, type UpdateCheckState } from "../../shared/updates";
 import { DesktopEnvironment } from "../app/DesktopEnvironment";
 import { makeListenerRegistry, type Listener } from "../app/ListenerRegistry";
 import { ElectronApp } from "../electron/ElectronApp";
@@ -101,6 +97,7 @@ const UpdateReleaseCacheSchema = Schema.Struct({
   etag: Schema.optionalKey(Schema.String),
   skippedVersion: Schema.optionalKey(Schema.String),
 });
+type UpdateReleaseCache = typeof UpdateReleaseCacheSchema.Type;
 const decodeUpdateReleaseCache = Schema.decodeUnknownOption(
   UpdateReleaseCacheSchema,
 );
