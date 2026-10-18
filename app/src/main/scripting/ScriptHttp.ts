@@ -6,6 +6,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 
 import {
   HttpError,
@@ -36,6 +37,7 @@ const errorReasons: Record<DesktopHttpClientError["kind"], HttpErrorReason> = {
   timeout: "timeout",
   aborted: "aborted",
 };
+const decodeUrl = Schema.decodeUnknownEffect(Schema.URLFromString);
 
 /** Owns HTTP operations by renderer and script run, including renderer loss. */
 export const makeScriptHttp = (
@@ -116,16 +118,16 @@ export const makeScriptHttp = (
           return Effect.succeed(session);
         }),
         () =>
-          Effect.try({
-            try: () => new URL(payload.url),
-            catch: (cause) =>
-              new HttpError({
-                reason: "request",
-                detail: "Invalid HTTP request URL.",
-                url: payload.url,
-                cause,
-              }),
-          }).pipe(
+          decodeUrl(payload.url).pipe(
+            Effect.mapError(
+              (cause) =>
+                new HttpError({
+                  reason: "request",
+                  detail: "Invalid HTTP request URL.",
+                  url: payload.url,
+                  cause,
+                }),
+            ),
             Effect.flatMap((url) =>
               http
                 .request({

@@ -5,7 +5,7 @@ import * as Exit from "effect/Exit";
 import { FileSystem } from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
-import { HttpClient } from "effect/http";
+import { HttpClient, HttpClientError } from "effect/http";
 import type { HttpClientResponse } from "effect/http/HttpClientResponse";
 import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
 import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient";
@@ -86,7 +86,7 @@ const boundedBody = (
   url: URL,
 ) =>
   Stream.suspend(() => {
-    let bytes = 0;
+    if (maxBytes === undefined) return response.stream;
     const tooLarge = () =>
       clientError(
         "response-too-large",
@@ -96,18 +96,15 @@ const boundedBody = (
     const contentLength = Number(response.headers["content-length"]);
     if (
       response.request.method !== "HEAD" &&
-      maxBytes !== undefined &&
       Number.isSafeInteger(contentLength) &&
       contentLength > maxBytes
     )
       return Stream.fail(tooLarge());
     return response.stream.pipe(
-      Stream.mapEffect((chunk) => {
-        bytes += chunk.byteLength;
-        return maxBytes !== undefined && bytes > maxBytes
-          ? Effect.fail(tooLarge())
-          : Effect.succeed(chunk);
-      }),
+      Stream.limitBytes<
+        HttpClientError.HttpClientError | DesktopHttpClientError,
+        never
+      >(BigInt(maxBytes), () => Stream.fail(tooLarge())),
     );
   });
 
@@ -142,17 +139,23 @@ const readResponse = (
     ),
   );
 
-const normalizeError = (cause: unknown, url: URL): DesktopHttpClientError =>
-  cause instanceof DesktopHttpClientError
-    ? cause
-    : clientError(
-        "request-failed",
-        cause instanceof Error && cause.message.trim() !== ""
-          ? cause.message
-          : "HTTP request failed.",
-        url,
-        cause,
-      );
+const normalizeError = (cause: unknown, url: URL): DesktopHttpClientError => {
+  if (cause instanceof DesktopHttpClientError) return cause;
+  if (
+    HttpClientError.isHttpClientError(cause) &&
+    cause.reason.cause instanceof DesktopHttpClientError &&
+    cause.reason.cause.kind === "timeout"
+  )
+    return cause.reason.cause;
+  return clientError(
+    "request-failed",
+    cause instanceof Error && cause.message.trim() !== ""
+      ? cause.message
+      : "HTTP request failed.",
+    url,
+    cause,
+  );
+};
 
 export const makeDesktopHttpClient = Effect.gen(function* () {
   const client = yield* HttpClient.HttpClient;

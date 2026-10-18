@@ -8,18 +8,23 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as ScopedCache from "effect/ScopedCache";
+import * as Url from "effect/http/Url";
 import { createWebSocketStream, WebSocketServer, type WebSocket } from "ws";
 
 import { logFailure } from "../../../shared/logFailure";
 import { isArtixHost } from "./GameRequestHeaders";
 
-interface RelayTarget {
-  readonly host: string;
-  readonly port: number;
-}
+const RelayTarget = Schema.Struct({
+  host: Schema.String.check(Schema.makeFilter(isArtixHost)),
+  port: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65_535 })),
+});
+type RelayTarget = typeof RelayTarget.Type;
+const decodeRelayTarget = Schema.decodeUnknownOption(RelayTarget);
 
 const RELAY_HOST = "127.0.0.1";
 const POLICY_VIOLATION = 1008;
@@ -42,28 +47,14 @@ export class RuffleSocketProxy extends Context.Service<
   }
 >()("lucent/desktop/game/session/RuffleSocketProxy") {}
 
-const requestUrl = (request: IncomingMessage): URL =>
-  new URL(request.url ?? "/", "http://localhost");
-const hasToken = (request: IncomingMessage, token: string): boolean => {
-  try {
-    return requestUrl(request).pathname === `/${token}`;
-  } catch {
-    return false;
-  }
-};
-const parseRelayTarget = (request: IncomingMessage): RelayTarget | null => {
-  const params = requestUrl(request).searchParams;
-  const host = params.get("host");
-  const port = Number(params.get("port"));
-  if (
-    host === null ||
-    !isArtixHost(host) ||
-    !Number.isInteger(port) ||
-    port < 1 ||
-    port > 65_535
-  )
-    return null;
-  return { host, port };
+const parseRelayTarget = (url: URL): RelayTarget | null => {
+  const params = url.searchParams;
+  return Option.getOrNull(
+    decodeRelayTarget({
+      host: params.get("host"),
+      port: Number(params.get("port")),
+    }),
+  );
 };
 
 const relay = (
@@ -117,14 +108,11 @@ const startRelay = Effect.gen(function* () {
       }),
     ),
     (server) =>
-      Effect.promise(
-        () =>
-          new Promise<void>((resolve) => {
-            for (const tcp of connections) tcp.destroy();
-            server.closeAllConnections();
-            server.close(() => resolve());
-          }),
-      ),
+      Effect.callback<void>((resume) => {
+        for (const tcp of connections) tcp.destroy();
+        server.closeAllConnections();
+        server.close(() => resume(Effect.void));
+      }),
   );
   const websockets = yield* Effect.acquireRelease(
     Effect.try({
@@ -132,23 +120,27 @@ const startRelay = Effect.gen(function* () {
         new WebSocketServer({
           server,
           perMessageDeflate: false,
-          verifyClient: ({ req }: { req: IncomingMessage }) =>
-            hasToken(req, token),
+          verifyClient: ({ req }: { req: IncomingMessage }) => {
+            const url = Result.getOrNull(
+              Url.fromString(req.url ?? "/", "http://localhost"),
+            );
+            return url !== null && url.pathname === `/${token}`;
+          },
         }),
       catch: (cause) => new RuffleSocketProxyError({ cause }),
     }),
     (websockets) =>
-      Effect.promise(
-        () =>
-          new Promise<void>((resolve) => {
-            closing = true;
-            for (const client of websockets.clients) client.terminate();
-            websockets.close(() => resolve());
-          }),
-      ),
+      Effect.callback<void>((resume) => {
+        closing = true;
+        for (const client of websockets.clients) client.terminate();
+        websockets.close(() => resume(Effect.void));
+      }),
   );
   websockets.on("connection", (ws, request) => {
-    const target = parseRelayTarget(request);
+    const url = Result.getOrNull(
+      Url.fromString(request.url ?? "/", "http://localhost"),
+    );
+    const target = url === null ? null : parseRelayTarget(url);
     if (target === null) {
       ws.close(POLICY_VIOLATION, "host not allowed");
       return;

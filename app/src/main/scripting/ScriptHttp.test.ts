@@ -40,6 +40,67 @@ const requestPayload = (sessionId: string): HttpRequestPayload => ({
 });
 
 describe("script HTTP failure logging", () => {
+  it.effect("parses and normalizes an absolute request URL", () =>
+    Effect.gen(function* () {
+      const http = makeScriptHttp({
+        request: ({ url }) =>
+          Effect.succeed({
+            body: Buffer.from([1, 2]),
+            headers: {},
+            statusCode: 200,
+            statusMessage: "OK",
+            url: url.href,
+          }),
+      });
+      const session = yield* http.openSession(42);
+      const result = yield* http.request(42, {
+        ...requestPayload(session),
+        url: "  HTTPS://EXAMPLE.COM/a/../b?q=1#part  ",
+      });
+
+      expect(result).toEqual({
+        ok: true,
+        value: {
+          body: new Uint8Array([1, 2]),
+          headers: [],
+          status: 200,
+          statusText: "OK",
+          url: "https://example.com/b?q=1#part",
+        },
+      });
+    }),
+  );
+
+  it.effect.each(["not a URL", "/relative", "https://[invalid", ""])(
+    "returns a request error for the invalid URL %s",
+    (url) =>
+      Effect.gen(function* () {
+        const capture = makeLogCapture();
+        const http = makeScriptHttp({
+          request: () => Effect.die(new Error("Unexpected HTTP request")),
+        });
+        const session = yield* http.openSession(42);
+        const result = yield* http
+          .request(42, { ...requestPayload(session), url })
+          .pipe(
+            Effect.provideService(
+              Logger.CurrentLoggers,
+              new Set([capture.logger]),
+            ),
+          );
+
+        expect(result).toEqual({
+          ok: false,
+          error: {
+            reason: "request",
+            detail: "Invalid HTTP request URL.",
+            url,
+          },
+        });
+        expect(capture.records).toEqual([]);
+      }),
+  );
+
   it.effect("logs a defect once before returning a failed request", () =>
     Effect.gen(function* () {
       const capture = makeLogCapture();

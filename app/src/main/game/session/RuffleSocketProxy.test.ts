@@ -164,6 +164,61 @@ testLayer(proxyLayer)("Ruffle socket relay", (it) => {
     );
   }
 
+  it.effect.each([
+    "port=5588",
+    "host=localhost&port=5588",
+    "host=aq.com.example.com&port=5588",
+    "host=notaq.com&port=5588",
+    "host=game.aq.com",
+    "host=game.aq.com&port=",
+    "host=game.aq.com&port=NaN",
+  ])("rejects invalid relay destination fields %s", (query) =>
+    withProxy(async (proxyUrl) => {
+      const client = connect(`${proxyUrl}?${query}`);
+      const [code, reason] = await once(client, "close");
+      expect(code).toBe(1008);
+      expect(reason.toString()).toBe("host not allowed");
+      expect(relayTest.connect).not.toHaveBeenCalled();
+    }),
+  );
+
+  it.effect.each(["0x15d4", "5.588e3", "05588", " 5588 "])(
+    "preserves numeric port coercion for %s",
+    (port) =>
+      withProxy(async (proxyUrl) => {
+        const client = connect(
+          `${proxyUrl}?host=GAME.AQ.COM&port=${encodeURIComponent(port)}`,
+        );
+        await once(client, "open");
+        const response = once(client, "message");
+        client.send(Buffer.from("coerced port"));
+        expect((await response)[0].toString()).toBe("coerced port");
+        expect(relayTest.connect).toHaveBeenCalledWith({
+          host: "GAME.AQ.COM",
+          port: 5588,
+          noDelay: true,
+        });
+      }),
+  );
+
+  it.effect("rejects a malformed handshake URL before upgrading", () =>
+    withProxy(async (proxyUrl) => {
+      const url = new URL(proxyUrl);
+      const client = new WebSocket(proxyUrl, {
+        finishRequest(request) {
+          request.path = `http://[invalid${url.pathname}?host=game.aq.com&port=5588`;
+          request.end();
+        },
+      });
+      client.on("error", () => {});
+      clients.add(client);
+      const [, response] = await once(client, "unexpected-response");
+      expect(response.statusCode).toBe(401);
+      response.resume();
+      expect(relayTest.connect).not.toHaveBeenCalled();
+    }),
+  );
+
   it.effect(
     "retries failed startup and shuts down every open connection with its scope",
     () =>
