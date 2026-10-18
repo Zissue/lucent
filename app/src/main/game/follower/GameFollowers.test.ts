@@ -13,7 +13,6 @@ import {
   type DesktopLogRecord,
 } from "../../../shared/logRecord";
 import * as Ref from "effect/Ref";
-import { RpcClientDefect, RpcClientError } from "effect/rpc/RpcClientError";
 import { TestClock } from "effect/testing";
 
 import { FollowerIpc } from "../../../shared/ipc/follower";
@@ -28,7 +27,7 @@ import {
   TEST_GAME_RENDERER_ID,
   type GameRendererRpcHandlerMap,
 } from "../rpc/GameRendererRpcTesting";
-import { GameFollowerRequestError, makeGameFollowers } from "./GameFollowers";
+import { makeGameFollowers } from "./GameFollowers";
 
 const idleIpc = DesktopIpc.of({
   handle: () => Effect.void,
@@ -52,43 +51,6 @@ const makeFollowers = Effect.fn(function* (
 });
 
 describe("GameFollowers", () => {
-  it.effect("preserves the renderer RPC failure chain", () =>
-    Effect.gen(function* () {
-      const rpcFailure = new RpcClientError({
-        reason: new RpcClientDefect({
-          message: "The connection was closed.",
-          cause: undefined,
-        }),
-      });
-      const original = Object.assign(
-        new GameRendererUnavailableError({
-          detail: "The connection was unavailable.",
-        }),
-        { cause: rpcFailure },
-      );
-      const game = yield* makeTestGameRenderer();
-      const followers = yield* makeGameFollowers.pipe(
-        Effect.provideService(DesktopIpc, idleIpc),
-        Effect.provideService(DesktopWindows, game.windows),
-        Effect.provideService(
-          GameRendererRpc,
-          GameRendererRpc.of({
-            call: () => Effect.fail(original),
-            onConnected: () => Effect.void,
-          }),
-        ),
-      );
-
-      const error = yield* followers
-        .me(TEST_GAME_RENDERER_ID)
-        .pipe(Effect.flip);
-
-      expect(error.message).toBe("The connection was unavailable.");
-      expect(error.cause).toBe(original);
-      expect(error.cause).toHaveProperty("cause", rpcFailure);
-    }),
-  );
-
   it.effect("isolates, deduplicates, and clears cached player rosters", () =>
     Effect.gen(function* () {
       const sent = yield* Ref.make<
@@ -121,6 +83,42 @@ describe("GameFollowers", () => {
       yield* followers.remove(42);
       expect(yield* followers.getPlayers(42)).toEqual([]);
       expect(yield* Ref.get(sent)).toEqual([{ ids: [142], payload: [] }]);
+    }),
+  );
+
+  it.effect("normalizes optional text when receiving renderer state", () =>
+    Effect.gen(function* () {
+      const { followers, game } = yield* makeFollowers({
+        handlers: {
+          FollowerGetState: () =>
+            Effect.succeed({
+              ...createIdleFollowerState(),
+              targetName: "target",
+              profileId: " profile ",
+              profileLabel: " Profile ",
+              lastError: "  ",
+              stoppedReason: " Stopped ",
+              warning: " Warning ",
+            }),
+        },
+      });
+      yield* game.ready;
+
+      const expected = {
+        enabled: false,
+        running: false,
+        targetName: "target",
+        phase: "idle",
+        attemptsRemaining: 3,
+        profileId: "profile",
+        profileLabel: "Profile",
+        stoppedReason: "Stopped",
+        warning: "Warning",
+      };
+      expect(yield* followers.fetchState(TEST_GAME_RENDERER_ID)).toEqual(
+        expected,
+      );
+      expect(yield* followers.get(TEST_GAME_RENDERER_ID)).toEqual(expected);
     }),
   );
 
@@ -160,7 +158,8 @@ describe("GameFollowers", () => {
           .configure(TEST_GAME_RENDERER_ID, config)
           .pipe(Effect.flip);
         expect(error).toEqual(
-          new GameFollowerRequestError({
+          new GameRendererUnavailableError({
+            reason: "loading",
             detail: "The game is still loading. Try again in a moment.",
           }),
         );
@@ -189,7 +188,8 @@ describe("GameFollowers", () => {
       yield* TestClock.adjust("5 seconds");
 
       expect(yield* Fiber.join(request)).toEqual(
-        new GameFollowerRequestError({
+        new GameRendererUnavailableError({
+          reason: "timeout",
           detail: "The game did not respond in time. Try again.",
         }),
       );
@@ -213,6 +213,7 @@ describe("follower reconciliation logging", () => {
               call: () =>
                 Effect.fail(
                   new GameRendererUnavailableError({
+                    reason: "timeout",
                     detail: "request timed out",
                   }),
                 ),

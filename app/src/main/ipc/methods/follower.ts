@@ -1,5 +1,6 @@
 import {
   normalizeFollowerConfig,
+  normalizeFollowerState,
   type FollowerState,
 } from "@lucent/core/follower";
 import * as Cause from "effect/Cause";
@@ -92,7 +93,7 @@ export const getState = makeDesktopIpcMethod({
         Effect.tap((state) =>
           notifyChanged(gameRendererId, state, sender.rendererId),
         ),
-        Effect.catchTag("GameFollowerRequestError", (error) =>
+        Effect.catchTag("GameRendererUnavailableError", (error) =>
           Effect.gen(function* () {
             yield* logGameRendererRequestFailure(
               windows,
@@ -154,7 +155,10 @@ export const publishState = makeDesktopIpcMethod({
   handler: Effect.fn("desktop.ipc.follower.publishState")(
     function* (incoming, sender) {
       const followers = yield* GameFollowers;
-      const state = yield* followers.set(sender.rendererId, incoming);
+      const state = yield* followers.set(
+        sender.rendererId,
+        normalizeFollowerState(incoming),
+      );
       yield* notifyChanged(sender.rendererId, state);
     },
   ),

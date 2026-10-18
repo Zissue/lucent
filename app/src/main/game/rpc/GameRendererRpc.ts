@@ -33,6 +33,7 @@ export interface GameRendererRpcTransport {
 export class GameRendererUnavailableError extends Schema.TaggedError<GameRendererUnavailableError>()(
   "GameRendererUnavailableError",
   {
+    reason: Schema.Literals(["loading", "disconnected", "timeout"]),
     detail: Schema.String,
     cause: Schema.optionalKey(Schema.Defect()),
   },
@@ -177,6 +178,7 @@ export const makeGameRendererRpc = Effect.fn("makeGameRendererRpc")(function* (
       try: () => transport.open(rendererId),
       catch: (cause) =>
         new GameRendererUnavailableError({
+          reason: "disconnected",
           detail: "The connection was unavailable.",
           cause,
         }),
@@ -218,6 +220,7 @@ export const makeGameRendererRpc = Effect.fn("makeGameRendererRpc")(function* (
         const connection = connections.get(gameRendererId);
         if (!rendererReady || connection === undefined) {
           return yield* new GameRendererUnavailableError({
+            reason: "loading",
             detail: "The game is still loading. Try again in a moment.",
           });
         }
@@ -227,6 +230,7 @@ export const makeGameRendererRpc = Effect.fn("makeGameRendererRpc")(function* (
       (cause) =>
         Effect.fail(
           new GameRendererUnavailableError({
+            reason: "disconnected",
             detail: "The connection was unavailable.",
             cause,
           }),
@@ -236,6 +240,7 @@ export const makeGameRendererRpc = Effect.fn("makeGameRendererRpc")(function* (
       Effect.catchCauseIf(Cause.hasInterruptsOnly, () =>
         Effect.fail(
           new GameRendererUnavailableError({
+            reason: "disconnected",
             detail: "The connection was unavailable.",
           }),
         ),
@@ -245,6 +250,7 @@ export const makeGameRendererRpc = Effect.fn("makeGameRendererRpc")(function* (
         orElse: () =>
           Effect.fail(
             new GameRendererUnavailableError({
+              reason: "timeout",
               detail: "The game did not respond in time. Try again.",
             }),
           ),
