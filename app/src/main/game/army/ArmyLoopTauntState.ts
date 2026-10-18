@@ -19,7 +19,7 @@ import type {
 import type {
   ArmyAuthenticatedParticipant,
   ArmyParticipantId,
-} from "./ArmyCoordinator";
+} from "./ArmySession";
 
 export const COMMAND_CONFIRMATION_TIMEOUT_MS = 7_000;
 const DEGRADED_AFTER_SWEEPS = 3;

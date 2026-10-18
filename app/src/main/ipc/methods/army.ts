@@ -5,10 +5,8 @@ import {
   ArmyConfigRepository,
   type ArmyConfigRepositoryError,
 } from "../../game/army/ArmyConfigRepository";
-import {
-  ArmyCoordinator,
-  type ArmyCoordinatorError,
-} from "../../game/army/ArmyCoordinator";
+import { ArmyCoordinator } from "../../game/army/ArmyCoordinator";
+import type { ArmyCoordinatorError } from "../../game/army/ArmySession";
 import {
   ArmyLoopTauntOrchestrator,
   type ArmyLoopTauntOrchestratorError,
