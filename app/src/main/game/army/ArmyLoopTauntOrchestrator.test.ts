@@ -2,6 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as Logger from "effect/Logger";
 import * as Scope from "effect/Scope";
 import * as TestClock from "effect/testing/TestClock";
 
@@ -11,6 +12,10 @@ import type {
   ArmyLoopTauntRegistrationAssignment,
   ArmyLoopTauntReport,
 } from "@lucent/core/army";
+import {
+  desktopLogRecord,
+  type DesktopLogRecord,
+} from "../../../shared/logRecord";
 import { ArmyCoordinator, makeArmyCoordinator } from "./ArmyCoordinator";
 import type { ArmyCoordinatorError } from "./ArmySession";
 import type { ArmyLoopTauntCommandEvent } from "./ArmyLoopTauntModel";
@@ -171,10 +176,10 @@ const tauntEvents = (
 ): readonly ArmyLoopTauntCommandEvent[] =>
   events.filter((event) => event.command.command.type === "taunt");
 
-const diagnosticEvents = (
-  events: readonly ArmyLoopTauntCommandEvent[],
-): readonly ArmyLoopTauntCommandEvent[] =>
-  events.filter((event) => event.command.command.type === "diagnostic");
+const warningLogger = (records: DesktopLogRecord[]) =>
+  Logger.make((options) => {
+    if (options.logLevel === "Warn") records.push(desktopLogRecord(options));
+  });
 
 const requireTaunt = (event: ArmyLoopTauntCommandEvent | undefined) => {
   if (event?.command.command.type !== "taunt") {
@@ -560,49 +565,79 @@ describe("ArmyLoopTauntOrchestrator", () => {
     }),
   );
 
-  it.effect("opens the readiness gate only for the full Army roster", () =>
-    Effect.gen(function* () {
-      const harness = yield* makeHarness(["Alice", "Bob"]);
-      const registration = makeRegistration(harness.sessionId);
-      const aliceRun = yield* harness.orchestrator.register(
-        registration,
-        harness.ids[0]!,
-      );
-      const aliceReady = yield* harness.orchestrator
-        .ready(
+  it.effect(
+    "activates with the full roster and taunts from periodic readiness reports",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* makeHarness(["Alice", "Bob"]);
+        const registration = makeRegistration(harness.sessionId, [
+          assignment({
+            target: {
+              focusActive: false,
+              lifeRevision: 0,
+              monsterMapId: 42,
+              state: "alive",
+            },
+          }),
+        ]);
+        const aliceRun = yield* harness.orchestrator.register(
+          registration,
+          harness.ids[0]!,
+        );
+        const aliceReady = yield* harness.orchestrator
+          .ready(
+            {
+              runId: aliceRun.runId,
+              sessionId: harness.sessionId,
+            },
+            harness.ids[0]!,
+          )
+          .pipe(Effect.forkScoped);
+
+        yield* Effect.yieldNow;
+        expect(aliceReady.pollUnsafe()).toBeUndefined();
+        expect(harness.events).toHaveLength(0);
+
+        const bobRun = yield* harness.orchestrator.register(
+          registration,
+          harness.ids[1]!,
+        );
+        yield* harness.orchestrator.ready(
           {
-            runId: aliceRun.runId,
+            runId: bobRun.runId,
             sessionId: harness.sessionId,
           },
-          harness.ids[0]!,
-        )
-        .pipe(Effect.forkScoped);
+          harness.ids[1]!,
+        );
+        yield* Fiber.join(aliceReady);
 
-      yield* Effect.yieldNow;
-      expect(aliceReady.pollUnsafe()).toBeUndefined();
-      expect(harness.events).toHaveLength(0);
-
-      const bobRun = yield* harness.orchestrator.register(
-        registration,
-        harness.ids[1]!,
-      );
-      yield* harness.orchestrator.ready(
-        {
-          runId: bobRun.runId,
-          sessionId: harness.sessionId,
-        },
-        harness.ids[1]!,
-      );
-      yield* Fiber.join(aliceReady);
-
-      expect(aliceRun.runId).toBe(bobRun.runId);
-      expect(
-        harness.events.filter(
-          (event) => event.command.command.type === "probe",
-        ),
-      ).toHaveLength(1);
-      expect(harness.events[0]?.participantIds).toEqual(harness.ids);
-    }),
+        expect(aliceRun.runId).toBe(bobRun.runId);
+        expect(harness.events).toEqual([]);
+        yield* Effect.forever(
+          Effect.forEach(
+            harness.ids,
+            (senderId) =>
+              report(harness, aliceRun.runId, senderId, {
+                alive: true,
+                cooldownMs: 0,
+                type: "participant-state",
+                usable: true,
+              }),
+            { discard: true },
+          ).pipe(Effect.andThen(Effect.sleep("250 millis"))),
+        ).pipe(Effect.forkScoped);
+        yield* Effect.yieldNow;
+        expect(harness.events).toHaveLength(1);
+        expect(requireTaunt(harness.events[0]).participantIds).toEqual([
+          harness.ids[0],
+        ]);
+        expect(harness.events[0]?.command.command).toMatchObject({
+          assignmentId: 7,
+          lifeRevision: 0,
+          monsterMapId: 42,
+          type: "taunt",
+        });
+      }),
   );
 
   it.effect("fails registration when the roster never becomes complete", () =>
@@ -895,8 +930,9 @@ describe("ArmyLoopTauntOrchestrator", () => {
 
   it.effect(
     "retries an all-skipped rotation without degrading the assignment",
-    () =>
-      Effect.gen(function* () {
+    () => {
+      const warnings: DesktopLogRecord[] = [];
+      return Effect.gen(function* () {
         const harness = yield* makeHarness(["Alice", "Bob"]);
         const { runId } = yield* registerAll(
           harness,
@@ -944,13 +980,14 @@ describe("ArmyLoopTauntOrchestrator", () => {
             type: "command-result",
           });
 
-          expect(diagnosticEvents(harness.events)).toHaveLength(0);
+          expect(warnings).toHaveLength(0);
           expect(tauntEvents(harness.events)).toHaveLength((sweep + 1) * 2);
           if (sweep === 0) {
             yield* advance("1 second");
           }
         }
-      }),
+      }).pipe(Effect.withLogger(warningLogger(warnings)));
+    },
   );
 
   it.effect(
@@ -1079,7 +1116,6 @@ describe("ArmyLoopTauntOrchestrator", () => {
           lifeRevision: 1,
           message: "The seal is broken!",
           monsterMapId: 99,
-          source: "animation",
           type: "message",
         });
         expect(tauntEvents(harness.events)).toHaveLength(0);
@@ -1134,7 +1170,6 @@ describe("ArmyLoopTauntOrchestrator", () => {
           lifeRevision: 0,
           message: "Nothing relevant happened",
           monsterMapId: 42,
-          source: "animation",
           type: "message",
         });
         expect(tauntEvents(harness.events)).toHaveLength(0);
@@ -1144,7 +1179,6 @@ describe("ArmyLoopTauntOrchestrator", () => {
           lifeRevision: 0,
           message: "  YOUR   defenses are broken!  ",
           monsterMapId: 42,
-          source: "animation",
           type: "message",
         });
         const first = requireTaunt(tauntEvents(harness.events)[0]);
@@ -1160,7 +1194,6 @@ describe("ArmyLoopTauntOrchestrator", () => {
           lifeRevision: 0,
           message: "your defenses are broken",
           monsterMapId: 42,
-          source: "aura",
           type: "message",
         });
         expect(tauntEvents(harness.events)).toHaveLength(1);
@@ -1171,7 +1204,6 @@ describe("ArmyLoopTauntOrchestrator", () => {
           lifeRevision: 0,
           message: "your defenses are broken",
           monsterMapId: 42,
-          source: "aura",
           type: "message",
         });
         const second = requireTaunt(tauntEvents(harness.events)[1]);
@@ -1364,9 +1396,58 @@ describe("ArmyLoopTauntOrchestrator", () => {
   );
 
   it.effect(
+    "debounces each consensus episode and ignores earlier episode timers",
+    () => {
+      const warnings: DesktopLogRecord[] = [];
+      return Effect.gen(function* () {
+        const harness = yield* makeHarness(["Alice", "Bob"]);
+        const { runId } = yield* registerAll(
+          harness,
+          makeRegistration(harness.sessionId),
+        );
+        const targetState = (state: "alive" | "dead") =>
+          report(harness, runId, harness.ids[0]!, {
+            assignmentId: 7,
+            lifeRevision: 0,
+            monsterMapId: 42,
+            state,
+            type: "target-state",
+          });
+
+        yield* targetState("dead");
+        yield* advance("1 second");
+        yield* targetState("alive");
+        yield* advance("1 second");
+        yield* targetState("dead");
+        yield* advance("1 second");
+        expect(warnings).toEqual([]);
+        yield* advance("1999 millis");
+        expect(warnings).toEqual([]);
+        yield* advance("1 millis");
+        expect(warnings).toHaveLength(1);
+        expect(warnings[0]).toMatchObject({
+          component: "army",
+          data: { assignmentId: 7, code: "degraded", runId },
+          level: "warn",
+          message: "Loop Taunt is degraded",
+        });
+
+        yield* targetState("alive");
+        yield* targetState("dead");
+        yield* advance("3 seconds");
+        expect(warnings).toHaveLength(2);
+        expect(warnings[1]).toMatchObject({
+          data: { assignmentId: 7, code: "degraded", runId },
+        });
+      }).pipe(Effect.withLogger(warningLogger(warnings)));
+    },
+  );
+
+  it.effect(
     "keeps sustained target disagreement active and warns exactly once",
-    () =>
-      Effect.gen(function* () {
+    () => {
+      const warnings: DesktopLogRecord[] = [];
+      return Effect.gen(function* () {
         const harness = yield* makeHarness(["Alice", "Bob"]);
         const { runId } = yield* registerAll(
           harness,
@@ -1400,21 +1481,29 @@ describe("ArmyLoopTauntOrchestrator", () => {
           type: "target-state",
         });
         yield* advance("2999 millis");
-        expect(diagnosticEvents(harness.events)).toHaveLength(0);
+        expect(warnings).toHaveLength(0);
 
         yield* advance("1 millis");
-        expect(diagnosticEvents(harness.events)).toHaveLength(1);
+        expect(warnings).toHaveLength(1);
+        expect(warnings[0]).toMatchObject({
+          component: "army",
+          data: { assignmentId: 7, code: "degraded", runId },
+          level: "warn",
+          message: "Loop Taunt is degraded",
+        });
 
         yield* advance("60 seconds");
         expect(waiting.pollUnsafe()).toBeUndefined();
-        expect(diagnosticEvents(harness.events)).toHaveLength(1);
-      }),
+        expect(warnings).toHaveLength(1);
+      }).pipe(Effect.withLogger(warningLogger(warnings)));
+    },
   );
 
   it.effect(
-    "keeps probing degraded readiness every second until the session ends",
-    () =>
-      Effect.gen(function* () {
+    "keeps retrying degraded readiness and recovers through periodic reports",
+    () => {
+      const warnings: DesktopLogRecord[] = [];
+      return Effect.gen(function* () {
         const harness = yield* makeHarness(["Alice", "Bob"]);
         const { runId } = yield* registerAll(
           harness,
@@ -1433,36 +1522,68 @@ describe("ArmyLoopTauntOrchestrator", () => {
           .await({ runId, sessionId: harness.sessionId }, harness.ids[0]!)
           .pipe(Effect.forkScoped);
 
+        yield* advance("1999 millis");
+        expect(warnings).toEqual([]);
+        yield* advance("1 millis");
+        expect(warnings).toHaveLength(1);
+        expect(warnings[0]).toMatchObject({
+          component: "army",
+          data: { assignmentId: 7, code: "degraded", runId },
+          level: "warn",
+          message: "Loop Taunt is degraded",
+        });
         yield* advance("60 seconds");
         expect(waiting.pollUnsafe()).toBeUndefined();
-        expect(diagnosticEvents(harness.events)).toHaveLength(1);
-        expect(
-          diagnosticEvents(harness.events)[0]?.command.command,
-        ).toMatchObject({
-          assignmentId: 7,
-          code: "degraded",
-          level: "warning",
-          type: "diagnostic",
+        expect(warnings).toHaveLength(1);
+        expect(harness.events).toEqual([]);
+
+        const periodic = yield* Effect.forever(
+          Effect.forEach(
+            harness.ids,
+            (senderId) =>
+              report(harness, runId, senderId, {
+                alive: true,
+                cooldownMs: 0,
+                type: "participant-state",
+                usable: true,
+              }),
+            { discard: true },
+          ).pipe(Effect.andThen(Effect.sleep("250 millis"))),
+        ).pipe(Effect.forkScoped);
+        yield* Effect.yieldNow;
+        const first = requireTaunt(harness.events[0]);
+        expect(first.participantIds).toEqual([harness.ids[0]]);
+        yield* report(harness, runId, harness.ids[0]!, {
+          commandId: first.command.commandId,
+          outcome: "confirmed",
+          type: "command-result",
         });
-
-        const eventCount = harness.events.length;
-        yield* advance("999 millis");
-        expect(harness.events.slice(eventCount)).toEqual([]);
-
-        yield* advance("1 millis");
-        expect(
-          harness.events
-            .slice(eventCount)
-            .map((event) => event.command.command),
-        ).toEqual([{ type: "probe" }]);
-
         yield* advance("1 second");
-        expect(
-          harness.events
-            .slice(eventCount)
-            .map((event) => event.command.command),
-        ).toEqual([{ type: "probe" }, { type: "probe" }]);
-        expect(diagnosticEvents(harness.events)).toHaveLength(1);
+        expect(harness.events).toHaveLength(1);
+        expect(warnings).toHaveLength(1);
+        yield* Fiber.interrupt(periodic);
+        for (const senderId of harness.ids) {
+          yield* report(harness, runId, senderId, {
+            alive: true,
+            cooldownMs: 0,
+            type: "participant-state",
+            usable: false,
+          });
+          yield* report(harness, runId, senderId, {
+            active: false,
+            assignmentId: 7,
+            lifeRevision: 0,
+            monsterMapId: 42,
+            type: "focus-state",
+          });
+        }
+        yield* advance("1999 millis");
+        expect(warnings).toHaveLength(1);
+        yield* advance("1 millis");
+        expect(warnings).toHaveLength(2);
+        expect(warnings[1]).toMatchObject({
+          data: { assignmentId: 7, code: "degraded", runId },
+        });
 
         yield* harness.coordinator.abortSession(harness.sessionId, {
           kind: "requested",
@@ -1473,8 +1594,9 @@ describe("ArmyLoopTauntOrchestrator", () => {
           status: "failed",
         });
         yield* advance("2 seconds");
-        expect(harness.events).toHaveLength(eventCount + 2);
-      }),
+        expect(harness.events).toHaveLength(1);
+      }).pipe(Effect.withLogger(warningLogger(warnings)));
+    },
   );
 
   it.effect("waits for an assigned participant's reported cooldown", () =>

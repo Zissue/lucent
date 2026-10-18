@@ -147,7 +147,6 @@ export type ArmyLoopTauntReport =
   | {
       readonly alive: boolean;
       readonly cooldownMs: number | null;
-      readonly reason?: string;
       readonly type: "participant-state";
       readonly usable: boolean;
     }
@@ -171,7 +170,6 @@ export type ArmyLoopTauntReport =
       readonly lifeRevision: number;
       readonly message: string;
       readonly monsterMapId: number;
-      readonly source: "animation" | "aura";
       readonly type: "message";
     }
   | {
@@ -183,7 +181,6 @@ export type ArmyLoopTauntReport =
         | "cast-failed"
         | "not-ready"
         | "skipped";
-      readonly reason?: string;
       readonly type: "command-result";
     }
   | {
@@ -195,24 +192,13 @@ export interface ArmyLoopTauntReportPayload extends ArmyLoopTauntRunPayload {
   readonly report: ArmyLoopTauntReport;
 }
 
-export type ArmyLoopTauntCommand =
-  | {
-      readonly assignmentId: number;
-      readonly expiresAt: number;
-      readonly lifeRevision: number;
-      readonly monsterMapId: number;
-      readonly type: "taunt";
-    }
-  | {
-      readonly type: "probe";
-    }
-  | {
-      readonly assignmentId: number;
-      readonly code: "degraded";
-      readonly level: "warning";
-      readonly message: string;
-      readonly type: "diagnostic";
-    };
+export type ArmyLoopTauntCommand = {
+  readonly assignmentId: number;
+  readonly expiresAt: number;
+  readonly lifeRevision: number;
+  readonly monsterMapId: number;
+  readonly type: "taunt";
+};
 
 export interface ArmyLoopTauntCommandPayload extends ArmyLoopTauntRunPayload {
   readonly command: ArmyLoopTauntCommand;
@@ -334,7 +320,6 @@ export const ArmyLoopTauntReportSchema = Schema.Union([
   Schema.Struct({
     alive: Schema.Boolean,
     cooldownMs: Schema.NullOr(NonNegativeFiniteNumber),
-    reason: Schema.optionalKey(Schema.String),
     type: Schema.Literal("participant-state"),
     usable: Schema.Boolean,
   }),
@@ -358,7 +343,6 @@ export const ArmyLoopTauntReportSchema = Schema.Union([
     lifeRevision: NonNegativeInt,
     message: Schema.String,
     monsterMapId: Schema.Int,
-    source: Schema.Literals(["animation", "aura"]),
     type: Schema.Literal("message"),
   }),
   Schema.Struct({
@@ -371,7 +355,6 @@ export const ArmyLoopTauntReportSchema = Schema.Union([
       "not-ready",
       "skipped",
     ]),
-    reason: Schema.optionalKey(Schema.String),
     type: Schema.Literal("command-result"),
   }),
   Schema.Struct({
@@ -386,25 +369,13 @@ export const ArmyLoopTauntReportPayloadSchema = Schema.Struct({
   sessionId: Schema.String,
 });
 
-export const ArmyLoopTauntCommandSchema = Schema.Union([
-  Schema.Struct({
-    assignmentId: NonNegativeInt,
-    expiresAt: NonNegativeFiniteNumber,
-    lifeRevision: NonNegativeInt,
-    monsterMapId: Schema.Int,
-    type: Schema.Literal("taunt"),
-  }),
-  Schema.Struct({
-    type: Schema.Literal("probe"),
-  }),
-  Schema.Struct({
-    assignmentId: NonNegativeInt,
-    code: Schema.Literal("degraded"),
-    level: Schema.Literal("warning"),
-    message: Schema.String,
-    type: Schema.Literal("diagnostic"),
-  }),
-]);
+export const ArmyLoopTauntCommandSchema = Schema.Struct({
+  assignmentId: NonNegativeInt,
+  expiresAt: NonNegativeFiniteNumber,
+  lifeRevision: NonNegativeInt,
+  monsterMapId: Schema.Int,
+  type: Schema.Literal("taunt"),
+});
 
 export const ArmyLoopTauntCommandPayloadSchema = Schema.Struct({
   command: ArmyLoopTauntCommandSchema,

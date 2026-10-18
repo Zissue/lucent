@@ -564,7 +564,7 @@ export const arriveAtStep = (
   },
 ): ArmyTransition<Result.Result<void, ArmyCoordinatorError>> => {
   const { sessionId, signature, step } = args;
-  if (!Number.isSafeInteger(step) || step < 0) {
+  if (step < 0) {
     return unchanged(
       state,
       Result.fail(

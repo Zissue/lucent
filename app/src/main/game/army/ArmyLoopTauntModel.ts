@@ -80,11 +80,6 @@ interface TurnState {
   readonly pending?: PendingTaunt | undefined;
 }
 
-export interface DegradedState {
-  readonly reason: "readiness" | "target-consensus";
-  readonly revision: number;
-}
-
 interface PendingMessage {
   readonly lifeRevision: number;
   readonly monsterMapId: number;
@@ -94,8 +89,8 @@ interface PendingMessage {
 export interface AssignmentState {
   readonly active: boolean;
   readonly assignmentId: number;
-  readonly degradationRevision: number;
-  readonly degraded?: DegradedState | undefined;
+  readonly consensusRevision: number;
+  readonly consensusWarningRevision?: number | undefined;
   readonly focusActive: boolean;
   readonly focusLossHandled: boolean;
   readonly lastMessageAt?: number | undefined;
@@ -195,6 +190,11 @@ export interface MutationEffects {
     readonly result: ArmyLoopTauntTerminalResult;
   }[];
   readonly timers: readonly ScheduledTimer[];
+  readonly warnings: readonly {
+    readonly assignmentId: number;
+    readonly code: "degraded";
+    readonly runId: string;
+  }[];
 }
 
 export interface RunMutation extends MutationEffects {
@@ -206,6 +206,7 @@ export const noEffects = (): MutationEffects => ({
   readiness: [],
   terminals: [],
   timers: [],
+  warnings: [],
 });
 
 export const mergeMutationEffects = (
@@ -216,6 +217,7 @@ export const mergeMutationEffects = (
   readiness: [...left.readiness, ...right.readiness],
   terminals: [...left.terminals, ...right.terminals],
   timers: [...left.timers, ...right.timers],
+  warnings: [...left.warnings, ...right.warnings],
 });
 
 export const loopError = (

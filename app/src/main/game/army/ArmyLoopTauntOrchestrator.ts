@@ -174,6 +174,14 @@ export const makeArmyLoopTauntOrchestrator = Effect.fnUntraced(
         yield* Effect.forEach(effects.timers, scheduleTimer, {
           discard: true,
         });
+        yield* Effect.forEach(
+          effects.warnings,
+          (warning) =>
+            Effect.logWarning("Loop Taunt is degraded").pipe(
+              Effect.annotateLogs({ component: "army", data: warning }),
+            ),
+          { discard: true },
+        );
         yield* publishCommands(effects.commands);
       });
 
