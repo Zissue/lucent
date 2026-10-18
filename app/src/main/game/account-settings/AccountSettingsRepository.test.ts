@@ -315,7 +315,7 @@ describe("AccountSettingsRepository saved data", () => {
                     "account-settings",
                     "[account].json",
                   ),
-                  reset: ["scripts"],
+                  ignored: { file: 1 },
                 },
               },
             },
@@ -486,5 +486,55 @@ it.effect(
         },
       ]);
       expect(yield* Effect.promise(() => readFile(path, "utf8"))).toBe(source);
+    }),
+);
+
+it.effect(
+  "reads newer account settings silently and writes the current version on update",
+  () =>
+    Effect.gen(function* () {
+      const { repository } = yield* makeRepository();
+      const path = yield* repository.pathFor("Hero");
+      yield* Effect.promise(() => mkdir(dirname(path), { recursive: true }));
+      const source =
+        '{"version":2,"scripts":{"safeStartStop":false},"futureOnly":"retain"}';
+      yield* Effect.promise(() => writeFile(path, source));
+      expect(yield* captureLogs(repository.get("Hero"))).toEqual({
+        value: {
+          version: 1,
+          scripts: {
+            restartAfterReconnect: false,
+            roomPolicy: { kind: "random-private" },
+            safeStartStop: false,
+          },
+        },
+        records: [],
+      });
+      expect(yield* Effect.promise(() => readFile(path, "utf8"))).toBe(source);
+      expect(
+        yield* captureLogs(
+          repository.update("Hero", { scripts: { safeStartStop: true } }),
+        ),
+      ).toEqual({
+        value: {
+          version: 1,
+          scripts: {
+            restartAfterReconnect: false,
+            roomPolicy: { kind: "random-private" },
+            safeStartStop: true,
+          },
+        },
+        records: [],
+      });
+      expect(
+        JSON.parse(yield* Effect.promise(() => readFile(path, "utf8"))),
+      ).toEqual({
+        version: 1,
+        scripts: {
+          restartAfterReconnect: false,
+          roomPolicy: { kind: "random-private" },
+          safeStartStop: true,
+        },
+      });
     }),
 );
