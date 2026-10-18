@@ -6,7 +6,7 @@ import { LoaderGrabberIpc } from "../../../shared/ipc";
 import {
   GameRendererRpc,
   type GameRendererRpcClient,
-} from "../../internal/game-renderer/GameRendererRpc";
+} from "../../game/rpc/GameRendererRpc";
 import { makeDesktopIpcMethod } from "../DesktopIpc";
 import {
   resolveGameRendererId,

@@ -17,7 +17,7 @@ import type {
 import {
   makeArmyCoordinator,
   type ArmyCoordinatorShape,
-} from "../../../../main/internal/army/ArmyCoordinator";
+} from "../../../../main/game/army/ArmyCoordinator";
 import type { DesktopArmyBridge } from "../../../../shared/desktopBridge";
 import { Api, type ApiService } from "../flash/api/Api";
 import { ArmyApi, layer as armyLayer, type ArmyApiRuntimeShape } from "./Army";

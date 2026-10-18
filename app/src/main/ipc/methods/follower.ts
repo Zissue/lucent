@@ -5,7 +5,7 @@ import {
 import * as Effect from "effect/Effect";
 
 import { FollowerIpc } from "../../../shared/ipc";
-import { GameFollowers } from "../../internal/follower/GameFollowers";
+import { GameFollowers } from "../../game/follower/GameFollowers";
 import { DesktopWindows } from "../../window/DesktopWindows";
 import { DesktopIpc, makeDesktopIpcMethod } from "../DesktopIpc";
 import {

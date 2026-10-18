@@ -6,19 +6,19 @@ import * as DesktopGameRendererRecovery from "./DesktopGameRendererRecovery";
 import * as DesktopLifecycle from "./DesktopLifecycle";
 import * as DesktopChromiumPerformanceRecording from "./observability/DesktopChromiumPerformanceRecording";
 import * as DesktopObservability from "./observability/DesktopObservability";
-import * as ArmyConfigRepository from "../internal/army/ArmyConfigRepository";
-import * as ArmyCoordinator from "../internal/army/ArmyCoordinator";
-import * as ArmyLoopTauntOrchestrator from "../internal/army/ArmyLoopTauntOrchestrator";
-import * as AccountRepository from "../internal/accounts/AccountRepository";
-import * as AccountSettingsRepository from "../internal/account-settings/AccountSettingsRepository";
-import * as Accounts from "../internal/accounts/Accounts";
-import * as AccountServers from "../internal/accounts/AccountServers";
-import * as AccountSessions from "../internal/accounts/AccountSessions";
-import * as CombatProfiles from "../internal/combat-profiles/CombatProfiles";
-import * as GameEnvironments from "../internal/environment/GameEnvironments";
-import * as GameFollowers from "../internal/follower/GameFollowers";
-import * as GamePackets from "../internal/packets/GamePackets";
-import * as GameRendererRpc from "../internal/game-renderer/GameRendererRpc";
+import * as ArmyConfigRepository from "../game/army/ArmyConfigRepository";
+import * as ArmyCoordinator from "../game/army/ArmyCoordinator";
+import * as ArmyLoopTauntOrchestrator from "../game/army/ArmyLoopTauntOrchestrator";
+import * as AccountRepository from "../game/accounts/AccountRepository";
+import * as AccountSettingsRepository from "../game/account-settings/AccountSettingsRepository";
+import * as Accounts from "../game/accounts/Accounts";
+import * as AccountServers from "../game/accounts/AccountServers";
+import * as AccountSessions from "../game/accounts/AccountSessions";
+import * as CombatProfiles from "../game/combat-profiles/CombatProfiles";
+import * as GameEnvironments from "../game/environment/GameEnvironments";
+import * as GameFollowers from "../game/follower/GameFollowers";
+import * as GamePackets from "../game/packets/GamePackets";
+import * as GameRendererRpc from "../game/rpc/GameRendererRpc";
 import * as GitHubApiClient from "../github/GitHubApiClient";
 import * as DesktopHttpClient from "../http/DesktopHttpClient";
 import * as DesktopIpc from "../ipc/DesktopIpc";
@@ -43,11 +43,11 @@ import * as DesktopWindows from "../window/DesktopWindows";
 import * as ElectronApp from "../electron/ElectronApp";
 import * as ElectronChromiumPerformance from "../electron/ElectronChromiumPerformance";
 import * as ElectronDialog from "../electron/ElectronDialog";
-import * as ElectronSession from "../electron/ElectronSession";
+import * as GameSessions from "../game/session/GameSessions";
 import * as ElectronShell from "../electron/ElectronShell";
 import * as ElectronTheme from "../electron/ElectronTheme";
 import * as ElectronWindow from "../electron/ElectronWindow";
-import * as RuffleSocketProxy from "../ruffle/RuffleSocketProxy";
+import * as RuffleSocketProxy from "../game/session/RuffleSocketProxy";
 import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
 
 export const makeDesktopLayer = (
@@ -86,7 +86,7 @@ export const makeDesktopLayer = (
 
   const storage = Layer.mergeAll(
     DesktopSettings.layer,
-    ElectronSession.layer,
+    GameSessions.layer,
     AccountRepository.layer,
     AccountSettingsRepository.layer,
     ArmyConfigRepository.layer,

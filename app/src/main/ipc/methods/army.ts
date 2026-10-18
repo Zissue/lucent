@@ -4,15 +4,15 @@ import { ArmyIpc } from "../../../shared/ipc";
 import {
   ArmyConfigRepository,
   type ArmyConfigRepositoryError,
-} from "../../internal/army/ArmyConfigRepository";
+} from "../../game/army/ArmyConfigRepository";
 import {
   ArmyCoordinator,
   type ArmyCoordinatorError,
-} from "../../internal/army/ArmyCoordinator";
+} from "../../game/army/ArmyCoordinator";
 import {
   ArmyLoopTauntOrchestrator,
   type ArmyLoopTauntOrchestratorError,
-} from "../../internal/army/ArmyLoopTauntOrchestrator";
+} from "../../game/army/ArmyLoopTauntOrchestrator";
 import { DesktopWindows } from "../../window/DesktopWindows";
 import {
   DesktopIpc,

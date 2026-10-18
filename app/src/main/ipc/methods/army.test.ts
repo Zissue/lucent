@@ -11,12 +11,12 @@ import { makeLifetime } from "../../window/RendererLifetimeTesting";
 import type { ArmyConfigPayload } from "@lucent/core/army";
 import { ArmyIpc } from "../../../shared/ipc";
 import { makeListenerRegistry } from "../../app/ListenerRegistry";
-import { ArmyConfigRepository } from "../../internal/army/ArmyConfigRepository";
+import { ArmyConfigRepository } from "../../game/army/ArmyConfigRepository";
 import {
   ArmyCoordinator,
   layer as armyCoordinatorLayer,
-} from "../../internal/army/ArmyCoordinator";
-import { ArmyLoopTauntOrchestrator } from "../../internal/army/ArmyLoopTauntOrchestrator";
+} from "../../game/army/ArmyCoordinator";
+import { ArmyLoopTauntOrchestrator } from "../../game/army/ArmyLoopTauntOrchestrator";
 import {
   DesktopWindows,
   type DesktopRendererEvent,

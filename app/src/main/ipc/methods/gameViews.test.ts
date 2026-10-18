@@ -5,11 +5,11 @@ import * as Layer from "effect/Layer";
 import { makeLifetime } from "../../window/RendererLifetimeTesting";
 import type { GameViewHostState } from "../../../shared/gameViews";
 import { ElectronDialog } from "../../electron/ElectronDialog";
-import { Accounts } from "../../internal/accounts/Accounts";
+import { Accounts } from "../../game/accounts/Accounts";
 import {
   AccountSessions,
   layer as sessionsLayer,
-} from "../../internal/accounts/AccountSessions";
+} from "../../game/accounts/AccountSessions";
 import {
   DesktopWindowError,
   DesktopWindows,

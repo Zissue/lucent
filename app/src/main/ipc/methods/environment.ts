@@ -23,7 +23,7 @@ import {
 import * as Effect from "effect/Effect";
 
 import { EnvironmentIpc } from "../../../shared/ipc";
-import { GameEnvironments } from "../../internal/environment/GameEnvironments";
+import { GameEnvironments } from "../../game/environment/GameEnvironments";
 import { DesktopWindows } from "../../window/DesktopWindows";
 import { DesktopIpc, makeDesktopIpcMethod } from "../DesktopIpc";
 import {

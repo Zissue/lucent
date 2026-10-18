@@ -32,7 +32,7 @@ import { makeListenerRegistry } from "../app/ListenerRegistry";
 import { DesktopEnvironment } from "../app/DesktopEnvironment";
 import { logFailure } from "../../shared/logFailure";
 import { ElectronApp } from "../electron/ElectronApp";
-import { ElectronSession } from "../electron/ElectronSession";
+import { GameSessions } from "../game/session/GameSessions";
 import { ElectronShell } from "../electron/ElectronShell";
 import { ElectronTheme } from "../electron/ElectronTheme";
 import {
@@ -42,7 +42,7 @@ import {
   type ElectronWindowHandle,
   type ElectronNativeWindowHandle,
 } from "../electron/ElectronWindow";
-import { RuffleSocketProxy } from "../ruffle/RuffleSocketProxy";
+import { RuffleSocketProxy } from "../game/session/RuffleSocketProxy";
 import { DesktopSettings } from "../settings/DesktopSettings";
 import {
   getDesktopWindowDefinition,
@@ -329,7 +329,7 @@ const makeDesktopWindows = Effect.gen(function* () {
   const app = yield* ElectronApp;
   const env = yield* DesktopEnvironment;
   const electronWindow = yield* ElectronWindow;
-  const electronSession = yield* ElectronSession;
+  const gameSessions = yield* GameSessions;
   const electronShell = yield* ElectronShell;
   const settings = yield* DesktopSettings;
   const theme = yield* ElectronTheme;
@@ -1090,7 +1090,7 @@ const makeDesktopWindows = Effect.gen(function* () {
 
       const layout = options?.gameViewLayout ?? "focused";
       const announceClosed = yield* publishClosedOnClose(scope, "game");
-      const gamePartition = yield* electronSession
+      const gamePartition = yield* gameSessions
         .acquireGamePartition(gamePartitionOwner(options))
         .pipe(
           Effect.mapError(
@@ -1430,7 +1430,7 @@ const makeDesktopWindows = Effect.gen(function* () {
         bootstrapSettings,
         systemPrefersDark,
       );
-      yield* electronSession.prepareGameNetworking;
+      yield* gameSessions.prepareGameNetworking;
       yield* inScope(host.scope, (scope) =>
         createGameViewInHost(scope, host, bootstrapSettings, snapshot),
       );
@@ -1729,7 +1729,7 @@ const makeDesktopWindows = Effect.gen(function* () {
           systemPrefersDark,
         );
         if (kind === "game") {
-          yield* electronSession.prepareGameNetworking;
+          yield* gameSessions.prepareGameNetworking;
         }
 
         if (kind === "game" && bootstrapSettings.preferences.useGameTabs) {
@@ -1778,7 +1778,7 @@ const makeDesktopWindows = Effect.gen(function* () {
         const announceClosed = yield* publishClosedOnClose(scope, kind);
         const gamePartition =
           kind === "game"
-            ? yield* electronSession.acquireGamePartition(
+            ? yield* gameSessions.acquireGamePartition(
                 gamePartitionOwner(options),
               )
             : undefined;
