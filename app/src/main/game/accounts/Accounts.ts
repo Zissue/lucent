@@ -12,8 +12,6 @@ import {
   removeGroupMemberUsername,
   renameGroupMemberUsername,
   type AccountGameLaunchPayload,
-  type AccountGameServerPingsResult,
-  type AccountGameServersResult,
   type AccountLaunchRequest,
   type AccountLaunchResult,
   type AccountLaunchWindowTarget,
@@ -37,7 +35,6 @@ import {
   type AccountGameWindowEvent,
 } from "./AccountGameWindows";
 import { AccountRepository } from "./AccountRepository";
-import { AccountServers } from "./AccountServers";
 import { AccountSessions, type PendingAccountLaunch } from "./AccountSessions";
 import {
   AccountsError,
@@ -74,12 +71,7 @@ export interface AccountsShape {
   ) => Effect.Effect<AccountManagerState, AccountsError>;
   readonly getGameLaunch: (
     gameWindowId: number,
-  ) => Effect.Effect<AccountGameLaunchPayload | null, AccountsError>;
-  readonly getServerPings: Effect.Effect<
-    AccountGameServerPingsResult,
-    AccountsError
-  >;
-  readonly getServers: Effect.Effect<AccountGameServersResult, AccountsError>;
+  ) => Effect.Effect<AccountGameLaunchPayload | null>;
   readonly getState: Effect.Effect<AccountManagerState, AccountsError>;
   readonly launch: (
     request: AccountLaunchRequest,
@@ -88,14 +80,10 @@ export interface AccountsShape {
   readonly onChanged: (
     listener: Listener<AccountManagerState>,
   ) => Effect.Effect<void, never, Scope.Scope>;
-  readonly refreshServers: Effect.Effect<
-    AccountGameServersResult,
-    AccountsError
-  >;
   readonly suppressGameWindowLaunchScript: (
     gameWindowId: number,
     message: string,
-  ) => Effect.Effect<void, AccountsError>;
+  ) => Effect.Effect<void>;
   readonly updateAccount: (
     username: string,
     patch: ManagedAccountPatch,
@@ -107,7 +95,7 @@ export interface AccountsShape {
   readonly reportSession: (
     gameWindowId: number,
     report: AccountSessionReport,
-  ) => Effect.Effect<void, AccountsError>;
+  ) => Effect.Effect<void>;
 }
 
 export class Accounts extends Context.Service<Accounts, AccountsShape>()(
@@ -115,13 +103,10 @@ export class Accounts extends Context.Service<Accounts, AccountsShape>()(
 ) {}
 
 const normalizeRequiredString = Effect.fnUntraced(function* (
-  value: unknown,
+  value: string,
   field: string,
   operation: AccountOperation,
 ): Effect.fn.Return<string, AccountsError> {
-  if (typeof value !== "string") {
-    return yield* accountError(operation, `${field} must be a string`);
-  }
   const normalized = value.trim();
   if (normalized === "") {
     return yield* accountError(operation, `${field} is required`);
@@ -129,8 +114,10 @@ const normalizeRequiredString = Effect.fnUntraced(function* (
   return normalized;
 });
 
-const normalizeOptionalString = (value: unknown): string | undefined => {
-  if (typeof value !== "string") return undefined;
+const normalizeOptionalString = (
+  value: string | undefined,
+): string | undefined => {
+  if (value === undefined) return undefined;
   const normalized = value.trim();
   return normalized === "" ? undefined : normalized;
 };
@@ -150,7 +137,7 @@ const normalizeAccountDraft = Effect.fnUntraced(function* (
     operation,
   );
   const label =
-    typeof draft.label === "string" && draft.label.trim() !== ""
+    draft.label !== undefined && draft.label.trim() !== ""
       ? draft.label.trim()
       : username;
   return { label, password, username };
@@ -284,21 +271,10 @@ const normalizeGroupPatch = Effect.fnUntraced(function* (
 const makeAccounts = Effect.gen(function* () {
   const gameWindows = yield* AccountGameWindows;
   const repository = yield* AccountRepository;
-  const servers = yield* AccountServers;
   const sessions = yield* AccountSessions;
   const reopening = new Set<number>();
   const getRecentlyClosed: AccountsShape["getRecentlyClosed"] = (groupId) =>
     Effect.sync(() => sessions.recentlyClosed(groupId));
-
-  const optionalGameWindowGroupId = (
-    gameWindowId: number,
-  ): Effect.Effect<number | undefined> =>
-    gameWindows.getGroupId(gameWindowId).pipe(
-      Effect.match({
-        onFailure: (): undefined => undefined,
-        onSuccess: (groupId): number | undefined => groupId,
-      }),
-    );
 
   const toState = (storage: AccountManagerStorage): AccountManagerState => ({
     accounts: storage.accounts,
@@ -543,19 +519,7 @@ const makeAccounts = Effect.gen(function* () {
     );
 
   const getGameLaunch: AccountsShape["getGameLaunch"] = (gameWindowId) =>
-    Effect.sync(() => sessions.getLaunch(gameWindowId)).pipe(
-      Effect.mapError((cause) =>
-        accountError(
-          "get-game-launch",
-          `Failed to read game launch payload: ${gameWindowId}`,
-          cause,
-        ),
-      ),
-    );
-
-  const getServerPings: AccountsShape["getServerPings"] = servers.getPings;
-
-  const getServers: AccountsShape["getServers"] = servers.get;
+    Effect.sync(() => sessions.getLaunch(gameWindowId));
 
   const launch: AccountsShape["launch"] = (request) =>
     Effect.gen(function* () {
@@ -618,7 +582,7 @@ const makeAccounts = Effect.gen(function* () {
         );
       if (sessions.getLaunch(resolvedGameWindowId) === null) {
         const [gameWindowGroupId, rendererGeneration] = yield* Effect.all([
-          optionalGameWindowGroupId(resolvedGameWindowId),
+          gameWindows.getGroupId(resolvedGameWindowId),
           gameWindows.getGeneration(resolvedGameWindowId),
         ]);
         yield* changeSession(() =>
@@ -686,8 +650,6 @@ const makeAccounts = Effect.gen(function* () {
 
   const onChanged: AccountsShape["onChanged"] = stateChanges.subscribe;
 
-  const refreshServers: AccountsShape["refreshServers"] = servers.refresh;
-
   // Renderer recovery reloads the same game client. Remove only its launch
   // script so account login can resume without immediately running the loop
   // that made the renderer unresponsive.
@@ -695,16 +657,7 @@ const makeAccounts = Effect.gen(function* () {
     (gameWindowId, message) =>
       changeSession(() =>
         sessions.suppressLaunchScript(gameWindowId, message),
-      ).pipe(
-        Effect.asVoid,
-        Effect.mapError((cause) =>
-          accountError(
-            "recover-game-window",
-            `Failed to suppress the launch script for game window: ${gameWindowId}`,
-            cause,
-          ),
-        ),
-      );
+      ).pipe(Effect.asVoid);
 
   const updateAccount: AccountsShape["updateAccount"] = (username, patch) =>
     Effect.gen(function* () {
@@ -804,13 +757,6 @@ const makeAccounts = Effect.gen(function* () {
               .setName(gameWindowId, result.windowName)
               .pipe(Effect.catch(() => Effect.void));
       }),
-      Effect.mapError((cause) =>
-        accountError(
-          "report-session",
-          `Failed to report session for game window: ${gameWindowId}`,
-          cause,
-        ),
-      ),
     );
 
   return Accounts.of({
@@ -822,13 +768,10 @@ const makeAccounts = Effect.gen(function* () {
     focusGameWindow,
     getGameLaunch,
     getRecentlyClosed,
-    getServerPings,
-    getServers,
     getState,
     launch,
     load,
     onChanged,
-    refreshServers,
     reportSession,
     reopenGameWindow,
     suppressGameWindowLaunchScript,

@@ -40,7 +40,6 @@ const settle = Effect.yieldNow.pipe(Effect.repeat({ times: 4 }));
 const makeHarness = (
   options: {
     readonly holdSuppression?: boolean;
-    readonly suppressionFailure?: Error;
     readonly promptFailure?: Effect.Effect<never, unknown>;
     readonly observeRenderer?: boolean;
   } = {},
@@ -138,8 +137,6 @@ const makeHarness = (
       suppressLaunchScript: () =>
         Effect.gen(function* () {
           timeline.push("suppress");
-          if (options.suppressionFailure !== undefined)
-            return yield* Effect.fail(options.suppressionFailure);
           if (options.holdSuppression !== true) return;
           const release = yield* Deferred.make<void>();
           suppressions.push(release);
@@ -312,43 +309,6 @@ describe("makeDesktopGameRendererRecovery", () => {
         },
       ]);
     }),
-  );
-
-  it.effect.each([false, true])(
-    "keeps a script suppression Cause during crash recovery %s",
-    (crashed) =>
-      Effect.gen(function* () {
-        const harness = yield* makeHarness({
-          suppressionFailure: new Error("suppression unavailable"),
-        });
-        yield* harness.startScript;
-        yield* crashed ? harness.crash : harness.hang;
-        yield* harness.answer(0, RELOAD);
-        expect(
-          harness.records.filter((record) => record.level === "error"),
-        ).toEqual([
-          {
-            at: "1970-01-01T00:00:00.000Z",
-            level: "error",
-            component: "game-renderer-recovery",
-            message: crashed
-              ? "Failed to suppress a script before renderer crash recovery"
-              : "Failed to suppress a script before renderer recovery",
-            data: { rendererId: 7 },
-            error: [
-              {
-                name: "Error",
-                message: "suppression unavailable",
-                stack: expect.any(String),
-              },
-            ],
-          },
-        ]);
-        expect(harness.causes).toEqual([
-          [{ name: "Error", message: "suppression unavailable" }],
-          [],
-        ]);
-      }),
   );
 
   it.effect.each([false, true])(

@@ -39,6 +39,7 @@ import { GitHubCredentials } from "../scripting/GitHubCredentials";
 import * as AccountSessions from "../game/accounts/AccountSessions";
 import { AccountSettingsRepository } from "../game/account-settings/AccountSettingsRepository";
 import { Accounts } from "../game/accounts/Accounts";
+import { AccountServers } from "../game/accounts/AccountServers";
 import { ArmyConfigRepository } from "../game/army/ArmyConfigRepository";
 import { ArmyCoordinator } from "../game/army/ArmyCoordinator";
 import { ArmyLoopTauntOrchestrator } from "../game/army/ArmyLoopTauntOrchestrator";
@@ -235,6 +236,7 @@ const reorderedSecondArgv = [
 
 const servicesStartupNeverCalls = Layer.mergeAll(
   AccountSessions.layer,
+  Layer.mock(AccountServers, {}),
   Layer.mock(AccountSettingsRepository, {}),
   Layer.mock(ArmyConfigRepository, {}),
   Layer.mock(DesktopIpcSenders, {}),

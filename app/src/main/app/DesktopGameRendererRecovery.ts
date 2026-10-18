@@ -71,7 +71,7 @@ export interface DesktopGameRendererRecoveryDependencies {
   readonly suppressLaunchScript: (
     rendererId: number,
     message: string,
-  ) => Effect.Effect<void, unknown>;
+  ) => Effect.Effect<void>;
 }
 
 export interface DesktopGameRendererRecoveryShape {
@@ -165,19 +165,7 @@ export const makeDesktopGameRendererRecovery = (
     const rendererId = target.id;
     if (!isExclusiveRendererProcess(target, dependencies.allWebContents))
       return;
-    yield* dependencies.suppressLaunchScript(rendererId, RECOVERY_MESSAGE).pipe(
-      Effect.catch((cause) =>
-        Effect.logError(
-          "Failed to suppress a script before renderer recovery",
-          Cause.fail(cause),
-        ).pipe(
-          Effect.annotateLogs({
-            component: "game-renderer-recovery",
-            data: { rendererId },
-          }),
-        ),
-      ),
-    );
+    yield* dependencies.suppressLaunchScript(rendererId, RECOVERY_MESSAGE);
     if (
       !(yield* isCurrent(target, lifetime)) ||
       !lifetime.isCurrent() ||
@@ -205,21 +193,10 @@ export const makeDesktopGameRendererRecovery = (
     const rendererId = target.id;
 
     if (crash.scriptWasRunning) {
-      yield* dependencies
-        .suppressLaunchScript(rendererId, RENDERER_RECOVERY_MESSAGE)
-        .pipe(
-          Effect.catch((cause) =>
-            Effect.logError(
-              "Failed to suppress a script before renderer crash recovery",
-              Cause.fail(cause),
-            ).pipe(
-              Effect.annotateLogs({
-                component: "game-renderer-recovery",
-                data: { rendererId },
-              }),
-            ),
-          ),
-        );
+      yield* dependencies.suppressLaunchScript(
+        rendererId,
+        RENDERER_RECOVERY_MESSAGE,
+      );
     }
     if (!(yield* isCurrent(target, lifetime))) return;
     executions.delete(lifetime);

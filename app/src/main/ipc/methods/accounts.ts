@@ -2,6 +2,7 @@ import * as Effect from "effect/Effect";
 
 import { AccountsIpc } from "../../../shared/ipc";
 import { Accounts } from "../../game/accounts/Accounts";
+import { AccountServers } from "../../game/accounts/AccountServers";
 import { DesktopWindows } from "../../window/DesktopWindows";
 import { DesktopIpc, makeDesktopIpcMethod } from "../DesktopIpc";
 
@@ -23,8 +24,8 @@ export const getServers = makeDesktopIpcMethod({
   descriptor: AccountsIpc.getServers,
   allowedSenders: accountManagerSenders,
   handler: Effect.fn("desktop.ipc.accounts.getServers")(function* () {
-    const accounts = yield* Accounts;
-    return yield* accounts.getServers;
+    const servers = yield* AccountServers;
+    return yield* servers.get;
   }),
 });
 
@@ -32,8 +33,8 @@ export const getServerPings = makeDesktopIpcMethod({
   descriptor: AccountsIpc.getServerPings,
   allowedSenders: accountManagerSenders,
   handler: Effect.fn("desktop.ipc.accounts.getServerPings")(function* () {
-    const accounts = yield* Accounts;
-    return yield* accounts.getServerPings;
+    const servers = yield* AccountServers;
+    return yield* servers.getPings;
   }),
 });
 
@@ -41,8 +42,8 @@ export const refreshServers = makeDesktopIpcMethod({
   descriptor: AccountsIpc.refreshServers,
   allowedSenders: accountManagerSenders,
   handler: Effect.fn("desktop.ipc.accounts.refreshServers")(function* () {
-    const accounts = yield* Accounts;
-    return yield* accounts.refreshServers;
+    const servers = yield* AccountServers;
+    return yield* servers.refresh;
   }),
 });
 
