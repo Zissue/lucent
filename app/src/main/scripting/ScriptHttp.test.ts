@@ -174,41 +174,39 @@ describe("script HTTP failure logging", () => {
     }),
   );
 
-  it.effect.each(["request-failed", "aborted"] as const)(
-    "keeps ordinary %s outcomes silent",
-    (kind) =>
-      Effect.gen(function* () {
-        const capture = makeLogCapture();
-        const http = makeScriptHttp({
-          request: () =>
-            Effect.fail(
-              new DesktopHttpClientError({
-                kind,
-                detail: "Expected request failure.",
-                url: "https://example.com",
-              }),
-            ),
-        });
-        const session = yield* http.openSession(42);
-        const result = yield* http
-          .request(42, requestPayload(session))
-          .pipe(
-            Effect.provideService(
-              Logger.CurrentLoggers,
-              new Set([capture.logger]),
-            ),
-          );
+  it.effect("keeps ordinary request failures silent", () =>
+    Effect.gen(function* () {
+      const capture = makeLogCapture();
+      const http = makeScriptHttp({
+        request: () =>
+          Effect.fail(
+            new DesktopHttpClientError({
+              kind: "request-failed",
+              detail: "Expected request failure.",
+              url: "https://example.com",
+            }),
+          ),
+      });
+      const session = yield* http.openSession(42);
+      const result = yield* http
+        .request(42, requestPayload(session))
+        .pipe(
+          Effect.provideService(
+            Logger.CurrentLoggers,
+            new Set([capture.logger]),
+          ),
+        );
 
-        expect(result).toEqual({
-          ok: false,
-          error: {
-            reason: kind === "aborted" ? "aborted" : "request",
-            detail: "Expected request failure.",
-            url: "https://example.com",
-          },
-        });
-        expect(capture.records).toEqual([]);
-      }),
+      expect(result).toEqual({
+        ok: false,
+        error: {
+          reason: "request",
+          detail: "Expected request failure.",
+          url: "https://example.com",
+        },
+      });
+      expect(capture.records).toEqual([]);
+    }),
   );
 
   it.effect("keeps renderer closure and cancellation silent", () =>

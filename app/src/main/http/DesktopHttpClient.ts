@@ -18,7 +18,7 @@ export {
 } from "./DesktopHttpError";
 
 const DEFAULT_TIMEOUT_MS = 20_000;
-const DEFAULT_ERROR_RESPONSE_MAX_BYTES = 1024 * 1024;
+const ERROR_RESPONSE_MAX_BYTES = 1024 * 1024;
 
 export interface DesktopHttpResponse {
   readonly body: Buffer;
@@ -31,7 +31,6 @@ export interface DesktopHttpResponse {
 export interface DesktopHttpGetOptions {
   readonly headers?: Readonly<Record<string, string>>;
   readonly maxBytes?: number;
-  readonly maxRedirects?: number;
   readonly timeoutMs?: number;
   readonly url: URL;
 }
@@ -39,11 +38,11 @@ export interface DesktopHttpGetOptions {
 export interface DesktopHttpRequestOptions extends DesktopHttpGetOptions {
   readonly method?: string;
   readonly body?: Uint8Array;
+  readonly maxRedirects?: number;
   readonly redirect?: "follow" | "manual" | "error";
 }
 
 export interface DesktopHttpDownloadOptions {
-  readonly errorResponseMaxBytes?: number;
   readonly headers?: Readonly<Record<string, string>>;
   readonly maxBytes: number;
   readonly maxRedirects?: number;
@@ -211,7 +210,7 @@ export const makeDesktopHttpClient = Effect.gen(function* () {
           url: input.url,
           headers: input.headers ?? {},
           method: "GET",
-          maxRedirects: input.maxRedirects ?? 0,
+          maxRedirects: 0,
           httpsOnly: true,
           socketTimeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
         },
@@ -231,11 +230,7 @@ export const makeDesktopHttpClient = Effect.gen(function* () {
         (response, url) =>
           response.status >= 200 && response.status < 300
             ? downloadBody(response, input, url)
-            : readResponse(
-                response,
-                input.errorResponseMaxBytes ?? DEFAULT_ERROR_RESPONSE_MAX_BYTES,
-                url,
-              ),
+            : readResponse(response, ERROR_RESPONSE_MAX_BYTES, url),
       ).pipe(Effect.mapError((cause) => normalizeError(cause, input.url))),
   });
 });
