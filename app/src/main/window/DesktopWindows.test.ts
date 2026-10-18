@@ -271,7 +271,7 @@ const makeHarness = (
 
 const ownerOptions = (kind: DesktopWindowKind) =>
   Effect.gen(function* () {
-    if (getDesktopWindowDefinition(kind).scope !== "game-child") {
+    if (!getDesktopWindowDefinition(kind).gameChild) {
       return undefined;
     }
     const windows = yield* DesktopWindows;

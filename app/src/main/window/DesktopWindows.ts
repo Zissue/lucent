@@ -495,7 +495,7 @@ const makeDesktopWindows = Effect.gen(function* () {
     [...renderers.values()].some(
       (record) =>
         !("host" in record) &&
-        getDesktopWindowDefinition(record.kind).scope !== "game-child" &&
+        !getDesktopWindowDefinition(record.kind).gameChild &&
         (isGameViewRecord(record) || !record.hidden),
     );
 
@@ -602,7 +602,7 @@ const makeDesktopWindows = Effect.gen(function* () {
       "host" in record
         ? record.kind !== "game-host"
         : isGameViewRecord(record) ||
-          getDesktopWindowDefinition(record.kind).scope === "game-child"
+          getDesktopWindowDefinition(record.kind).gameChild
     ) {
       return undefined;
     }
@@ -1628,19 +1628,13 @@ const makeDesktopWindows = Effect.gen(function* () {
   const open: DesktopWindowsShape["open"] = (kind, options) =>
     Effect.gen(function* () {
       const definition = getDesktopWindowDefinition(kind);
-      if (
-        definition.scope !== "game-child" &&
-        options?.ownerRendererId !== undefined
-      ) {
+      if (!definition.gameChild && options?.ownerRendererId !== undefined) {
         return yield* new DesktopWindowError({
           id: kind,
           detail: `${kind} does not accept a logical owner window.`,
         });
       }
-      if (
-        definition.scope === "game-child" &&
-        options?.ownerRendererId === undefined
-      ) {
+      if (definition.gameChild && options?.ownerRendererId === undefined) {
         return yield* new DesktopWindowError({
           id: kind,
           detail: `${kind} requires an owning game window.`,
@@ -1651,7 +1645,7 @@ const makeDesktopWindows = Effect.gen(function* () {
           ? undefined
           : getWindowRenderer(options.ownerRendererId);
       if (
-        definition.scope === "game-child" &&
+        definition.gameChild &&
         (owner === undefined ||
           owner.kind !== "game" ||
           owner.ownerId !== undefined)
@@ -1662,7 +1656,7 @@ const makeDesktopWindows = Effect.gen(function* () {
         });
       }
       const ownerId = owner?.rendererId;
-      const isTopLevelWindow = definition.scope !== "game-child";
+      const isTopLevelWindow = !definition.gameChild;
       const openEffect = Effect.fn(function* (scope: Scope.Closeable) {
         const bootstrapSettings = yield* getBootstrapSettings;
         const systemPrefersDark = yield* theme.shouldUseDarkColors;
@@ -1728,7 +1722,6 @@ const makeDesktopWindows = Effect.gen(function* () {
             gamePartition === undefined
               ? undefined
               : {
-                  bridgeView: "game",
                   partition: gamePartition,
                 },
           ),

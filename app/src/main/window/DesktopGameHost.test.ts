@@ -116,6 +116,30 @@ const makeHost = (ids: readonly number[]) => {
 };
 
 describe("game view layout", () => {
+  it("sends chrome updates while live and skips destroyed host views", () => {
+    const { host, hosts } = makeHost([2]);
+    const send = vi
+      .spyOn(host.hostView.webContents, "send")
+      .mockImplementation(() => {});
+
+    hosts.setShortcutModifierPressed(host, true);
+    hosts.setTabMenuOpen(host, true);
+    expect(send.mock.calls).toEqual([
+      ["desktop:game-views:shortcut-modifier-changed", true],
+      ["desktop:game-views:tab-menu-open-changed", true],
+    ]);
+
+    vi.spyOn(host.hostView.webContents, "isDestroyed").mockReturnValue(true);
+    hosts.setShortcutModifierPressed(host, false);
+    hosts.setTabMenuOpen(host, false);
+    expect(host.shortcutModifierPressed).toBe(false);
+    expect(host.tabMenuOpen).toBe(false);
+    expect(send.mock.calls).toEqual([
+      ["desktop:game-views:shortcut-modifier-changed", true],
+      ["desktop:game-views:tab-menu-open-changed", true],
+    ]);
+  });
+
   it("resizes only the selected view when returning to the focused layout", () => {
     const { show, size, tiled } = makeHost([2, 3, 4, 5]);
     expect([size(2), size(3)]).toEqual(["1200x800", "1200x800"]);

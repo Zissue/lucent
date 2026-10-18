@@ -22,10 +22,9 @@ export const open = makeDesktopIpcMethod({
     }
 
     const definition = getDesktopWindowDefinition(payload.kind);
-    const ownerRendererId =
-      definition.scope === "game-child"
-        ? yield* resolveGameRendererId(sender)
-        : undefined;
+    const ownerRendererId = definition.gameChild
+      ? yield* resolveGameRendererId(sender)
+      : undefined;
 
     const rendererId = yield* windows.open(
       payload.kind,
