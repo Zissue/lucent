@@ -5,6 +5,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
 import * as Fiber from "effect/Fiber";
+import * as FiberSet from "effect/FiberSet";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
@@ -301,8 +302,6 @@ const makeDesktopUpdates = Effect.fnUntraced(function* (
   options: DesktopUpdatesOptions,
 ): Effect.fn.Return<DesktopUpdatesShape, never, Scope.Scope> {
   const currentVersion = normalizeVersion(options.currentVersion);
-  const context = yield* Effect.context<never>();
-  const runFork = Effect.runForkWith(context);
   const disabledState = (): UpdateCheckState => ({
     status: "disabled",
     currentVersion,
@@ -322,10 +321,7 @@ const makeDesktopUpdates = Effect.fnUntraced(function* (
   const cacheRef = yield* Ref.make<UpdateReleaseCache | null>(null);
   const cacheLoadedRef = yield* Ref.make(false);
   const stateChanges = makeListenerRegistry<UpdateCheckState>();
-  let inFlight: Fiber.Fiber<UpdateCheckState> | null = null;
-  yield* Effect.addFinalizer(() =>
-    inFlight === null ? Effect.void : Fiber.interrupt(inFlight),
-  );
+  const checks = yield* FiberSet.make<UpdateCheckState>();
 
   const setState = (state: UpdateCheckState): Effect.Effect<void> =>
     Ref.set(stateRef, state).pipe(
@@ -498,21 +494,11 @@ const makeDesktopUpdates = Effect.fnUntraced(function* (
       Effect.orElseSucceed(() => false),
     );
 
-  const startCheck = (force: boolean): Fiber.Fiber<UpdateCheckState> => {
-    const fiber = runFork(runCheck(force));
-    inFlight = fiber;
-    fiber.addObserver(() => {
-      if (inFlight === fiber) {
-        inFlight = null;
-      }
-    });
-    return fiber;
-  };
-
   const checkNow: DesktopUpdatesShape["checkNow"] = (checkOptions) =>
-    Effect.suspend(() =>
-      Fiber.join(inFlight ?? startCheck(checkOptions?.force === true)),
-    ).pipe(Effect.catchCauseIf(Cause.hasInterruptsOnly, () => getState));
+    FiberSet.run(checks, runCheck(checkOptions?.force === true)).pipe(
+      Effect.flatMap(Fiber.join),
+      Effect.catchCauseIf(Cause.hasInterruptsOnly, () => getState),
+    );
 
   return {
     checkNow,
