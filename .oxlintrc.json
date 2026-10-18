@@ -91,6 +91,32 @@
           }
         ]
       }
+    },
+    {
+      "files": ["app/src/main/**/*.ts", "app/src/shared/**/*.ts"],
+      "excludeFiles": ["**/*.test.ts"],
+      "rules": {
+        "eslint/no-console": "error",
+        "eslint/no-restricted-properties": [
+          "error",
+          {
+            "object": "Effect",
+            "property": "log",
+            "message": "Use an explicit log level: logError, logWarning, logInfo, logDebug."
+          },
+          {
+            "object": "Effect",
+            "property": "logTrace",
+            "message": "Use an allowed log level: logError, logWarning, logInfo, logDebug."
+          },
+          {
+            "object": "Effect",
+            "property": "logFatal",
+            "message": "Use an allowed log level: logError, logWarning, logInfo, logDebug."
+          }
+        ],
+        "lucent/log-message-literal": "error"
+      }
     }
   ]
 }
