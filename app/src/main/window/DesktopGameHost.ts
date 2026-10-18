@@ -17,7 +17,7 @@ import {
   type GameViewSelectionFocus,
   type GameViewSession,
 } from "../../shared/gameViews";
-import { GameViewsIpc } from "../../shared/ipc";
+import { GameViewsIpc, type IpcEventDescriptor } from "../../shared/ipc";
 import type {
   ElectronGameViewHandle,
   ElectronNativeWindowHandle,
@@ -181,15 +181,19 @@ const setShortcutModifierPressed = (
 ): void => {
   if (host.shortcutModifierPressed === pressed) return;
   host.shortcutModifierPressed = pressed;
-  send(host.hostView, GameViewsIpc.shortcutModifierChanged.channel, pressed);
+  send(host.hostView, GameViewsIpc.shortcutModifierChanged, pressed);
 };
 
-const send = (
+const send = <Payload>(
   view: ElectronGameViewHandle,
-  channel: string,
-  payload: unknown,
+  descriptor: IpcEventDescriptor<Payload>,
+  payload: Payload,
 ): void => {
-  if (!view.webContents.isDestroyed()) view.webContents.send(channel, payload);
+  if (!view.webContents.isDestroyed())
+    view.webContents.send(
+      descriptor.channel,
+      descriptor.encodePayload(payload),
+    );
 };
 
 export const makeDesktopGameHosts = (options: DesktopGameHostsOptions) => {
@@ -330,18 +334,14 @@ export const makeDesktopGameHosts = (options: DesktopGameHostsOptions) => {
         continue;
       }
       record.publishedPresentation = nextPresentation;
-      send(
-        record.gameView,
-        GameViewsIpc.presentationChanged.channel,
-        nextPresentation,
-      );
+      send(record.gameView, GameViewsIpc.presentationChanged, nextPresentation);
     }
   };
 
   const publishState = (host: DesktopGameHostRecord): void => {
     const nextState = state(host);
-    send(host.hostView, GameViewsIpc.changed.channel, nextState);
-    send(host.groupControlsView, GameViewsIpc.changed.channel, nextState);
+    send(host.hostView, GameViewsIpc.changed, nextState);
+    send(host.groupControlsView, GameViewsIpc.changed, nextState);
     publishPresentations(host);
     options.onStateChanged(host);
   };
@@ -379,11 +379,7 @@ export const makeDesktopGameHosts = (options: DesktopGameHostsOptions) => {
         host.hostView.webContents.focus();
       } catch {}
     }
-    send(
-      host.hostView,
-      GameViewsIpc.tabMenuOpenChanged.channel,
-      host.tabMenuOpen,
-    );
+    send(host.hostView, GameViewsIpc.tabMenuOpenChanged, host.tabMenuOpen);
   };
 
   const setGroupControlsOpen = (

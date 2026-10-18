@@ -15,6 +15,7 @@ export interface IpcInvokeDescriptor<Payload, Result> {
 export interface IpcEventDescriptor<Payload> {
   readonly channel: string;
   decodePayload(input: unknown): Payload;
+  encodePayload(input: Payload): unknown;
   encodePayloadEffect(
     input: Payload,
   ): Effect.Effect<unknown, Schema.SchemaError>;
@@ -69,5 +70,6 @@ export const defineEvent = <Payload>(descriptor: {
 }): IpcEventDescriptor<Payload> => ({
   channel: descriptor.channel,
   decodePayload: Schema.decodeUnknownSync(descriptor.payload, ipcDecodeOptions),
+  encodePayload: Schema.encodeSync(descriptor.payload),
   encodePayloadEffect: Schema.encodeEffect(descriptor.payload),
 });
