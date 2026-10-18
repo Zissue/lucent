@@ -52,37 +52,8 @@ export const managedGamePartition = (key: string): string => {
 
 export const defaultGamePartition = `${PERSISTENT_PARTITION_PREFIX}${DEFAULT_PARTITION_NAME}`;
 
-const temporaryGamePartition = (
-  processId: number,
-  randomId: string,
-): string => {
-  if (!Number.isSafeInteger(processId) || processId <= 0) {
-    throw new Error(`Invalid game partition process ID: ${processId}`);
-  }
-  if (!/^[a-f0-9]{24}$/.test(randomId)) {
-    throw new Error(`Invalid game partition random ID: ${randomId}`);
-  }
-  return `${TEMPORARY_PARTITION_PREFIX}${processId}-${randomId}`;
-};
-
-export const makeGamePartitionRegistry = (
-  options: {
-    readonly makeRandomId?: () => string;
-    readonly processId?: number;
-  } = {},
-): GamePartitionRegistry => {
+export const makeGamePartitionRegistry = (): GamePartitionRegistry => {
   const inUse = new Set<string>();
-  const makeRandomId =
-    options.makeRandomId ?? (() => randomBytes(12).toString("hex"));
-  const processId = options.processId ?? process.pid;
-
-  const acquireTemporary = (): string => {
-    let partition: string;
-    do {
-      partition = temporaryGamePartition(processId, makeRandomId());
-    } while (inUse.has(partition));
-    return partition;
-  };
 
   return {
     acquire: (owner) => {
@@ -95,9 +66,7 @@ export const makeGamePartitionRegistry = (
         return persistentPartition;
       }
 
-      const partition = acquireTemporary();
-      inUse.add(partition);
-      return partition;
+      return `${TEMPORARY_PARTITION_PREFIX}${randomBytes(12).toString("hex")}`;
     },
     release: (partition) => {
       inUse.delete(partition);
