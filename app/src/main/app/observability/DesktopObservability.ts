@@ -13,6 +13,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Scope from "effect/Scope";
 
+import type { QuitSource } from "../DesktopLifecycle";
 import { DesktopEnvironment } from "../DesktopEnvironment";
 import { makeBufferedDesktopLogWriter } from "./DesktopLogWriter";
 import {
@@ -64,6 +65,9 @@ const boundRendererError = (
 
 export interface DesktopObservabilityShape {
   readonly flush: Effect.Effect<void>;
+  readonly setSessionStop: (
+    source: QuitSource | undefined,
+  ) => Effect.Effect<void>;
   readonly installProcessHooks: Effect.Effect<void, never, Scope.Scope>;
   readonly logFilePath: string;
 }
@@ -76,6 +80,8 @@ export class DesktopObservability extends Context.Service<
 const makeDesktopObservability = Effect.gen(function* () {
   const env = yield* DesktopEnvironment;
   const clock = yield* Clock.Clock;
+  const startedAt = yield* clock.monotonicTimeNanos;
+  let stopSource: QuitSource | undefined;
   const logsDir = join(env.appDataDir, "logs");
   const logFilePath = join(logsDir, "lucent.log");
   const bufferedWriter = makeBufferedDesktopLogWriter(logsDir, logFilePath);
@@ -257,7 +263,27 @@ const makeDesktopObservability = Effect.gen(function* () {
   });
 
   yield* Effect.addFinalizer(() =>
-    Effect.promise(() => bufferedWriter.close()),
+    Effect.gen(function* () {
+      const at = yield* DateTime.nowAsDate;
+      const stoppedAt = yield* clock.monotonicTimeNanos;
+      yield* Effect.promise(() =>
+        bufferedWriter.close(
+          stopSource === undefined
+            ? undefined
+            : {
+                at: at.toISOString(),
+                level: "info",
+                component: "lifecycle",
+                message: "Lucent desktop runtime stopped",
+                data: {
+                  source: stopSource,
+                  uptimeMs: Number((stoppedAt - startedAt) / 1_000_000n),
+                  outcome: "clean",
+                },
+              },
+        ),
+      );
+    }),
   );
   yield* Effect.addFinalizer(() => drainWindows(true));
   yield* drainWindows(false).pipe(
@@ -283,6 +309,10 @@ const makeDesktopObservability = Effect.gen(function* () {
     DesktopObservability,
     DesktopObservability.of({
       flush,
+      setSessionStop: (source) =>
+        Effect.sync(() => {
+          stopSource = source;
+        }),
       installProcessHooks,
       logFilePath,
     }),

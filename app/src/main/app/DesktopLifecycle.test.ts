@@ -43,6 +43,7 @@ const makeHarness = (flushCompletes: boolean) => {
     : flushStarted.pipe(Effect.andThen(Effect.never));
   const observability = DesktopObservability.of({
     flush,
+    setSessionStop: () => Effect.void,
     installProcessHooks: Effect.void,
     logFilePath: "lucent.log",
   });
@@ -148,7 +149,7 @@ describe("DesktopLifecycle", () => {
             }),
           );
           harness.emitWillQuit();
-          yield* lifecycle.awaitQuit;
+          expect(yield* lifecycle.awaitQuit).toBe("will-quit");
         }).pipe(Effect.provide(harness.layer)),
       );
 
