@@ -1,14 +1,32 @@
+import { runInThisContext } from "node:vm";
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DesktopBridge } from "../shared/desktopBridge";
 
 const electron = vi.hoisted(() => ({
   bridge: undefined as DesktopBridge | undefined,
   invoke: vi.fn(),
+  page: new EventTarget(),
   send: vi.fn(),
 }));
 
 vi.mock("electron", () => ({
   contextBridge: {
+    executeInMainWorld: ({
+      func,
+      args,
+    }: {
+      func: (...args: unknown[]) => unknown;
+      args: unknown[];
+    }) => {
+      const preloadWindow = window;
+      vi.stubGlobal("window", electron.page);
+      try {
+        return runInThisContext(`(${func.toString()})`)(...args);
+      } finally {
+        vi.stubGlobal("window", preloadWindow);
+      }
+    },
     exposeInMainWorld: (_name: string, bridge: DesktopBridge) => {
       electron.bridge = bridge;
     },
@@ -24,6 +42,7 @@ beforeEach(() => {
   electron.send.mockReset();
   electron.invoke.mockReset();
   electron.bridge = undefined;
+  electron.page = new EventTarget();
   events = new EventTarget();
   vi.stubGlobal("window", events);
   vi.stubGlobal("navigation", new EventTarget());
@@ -83,6 +102,7 @@ describe("preload log bridge", () => {
           message: "Failed",
           component: "renderer",
           data: { view: "game" },
+          repeatKey: "Error:x",
           error: [{ name: "Error", message: "x", stack: "error stack" }],
         },
       ],
@@ -93,6 +113,7 @@ describe("preload log bridge", () => {
           message: "Warning",
           component: "renderer",
           data: { view: "game" },
+          repeatKey: "NonError:plain cause",
           error: [{ name: "NonError", message: "plain cause" }],
         },
       ],
@@ -167,19 +188,22 @@ describe("preload log bridge", () => {
     ]);
   });
 
-  for (const debug of [false, true]) {
-    it(`keeps global error hooks and console forwarding gated with debug=${debug}`, async () => {
+  for (const { debug, consoleObservability } of [
+    { debug: false, consoleObservability: false },
+    { debug: false, consoleObservability: true },
+    { debug: true, consoleObservability: false },
+    { debug: true, consoleObservability: true },
+  ]) {
+    it(`reports global errors with debug=${debug} and console forwarding=${consoleObservability}`, async () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date("2026-10-14T12:00:00.000Z"));
-      if (debug)
-        process.argv.push(
-          "--lucent__debug",
-          "--lucent__gameConsoleObservability",
-        );
+      if (debug) process.argv.push("--lucent__debug");
+      if (consoleObservability)
+        process.argv.push("--lucent__gameConsoleObservability");
       const bridge = await loadBridge();
       const error = new Error("bad view");
       error.stack = "renderer stack";
-      events.dispatchEvent(
+      electron.page.dispatchEvent(
         Object.assign(new Event("error"), {
           error,
           message: "bad view",
@@ -188,50 +212,63 @@ describe("preload log bridge", () => {
           filename: "game.js",
         }),
       );
-      events.dispatchEvent(
+      electron.page.dispatchEvent(
         Object.assign(new Event("unhandledrejection"), {
           reason: "request failed",
         }),
       );
       if (bridge.view !== "game") throw new Error("Expected game bridge");
       bridge.gameConsoleObservability?.message("warn", "hello");
+      bridge.gameConsoleObservability?.message("log", "world");
       bridge.log.info("Ready");
       expect(electron.send.mock.calls).toEqual([
-        ...(debug
+        [
+          "desktop:renderer-log:record",
+          {
+            level: "error",
+            message: "Renderer error",
+            component: "renderer",
+            data: {
+              columnNumber: 3,
+              lineNumber: 12,
+              observedAt: "2026-10-14T12:00:00.000Z",
+              source: "game.js",
+              view: "game",
+            },
+            repeatKey: "Error:bad view",
+            error: [
+              {
+                name: "Error",
+                message: "bad view",
+                stack: "renderer stack",
+              },
+            ],
+          },
+        ],
+        [
+          "desktop:renderer-log:record",
+          {
+            level: "error",
+            message: "Renderer unhandled rejection",
+            component: "renderer",
+            data: {
+              observedAt: "2026-10-14T12:00:00.000Z",
+              view: "game",
+            },
+            repeatKey: "NonError:request failed",
+            error: [{ name: "NonError", message: "request failed" }],
+          },
+        ],
+        ...(debug && consoleObservability
           ? [
               [
                 "desktop:renderer-log:record",
                 {
-                  level: "error",
-                  message: "Renderer error",
+                  level: "debug",
+                  message: "Renderer console message",
                   component: "renderer",
-                  data: {
-                    columnNumber: 3,
-                    lineNumber: 12,
-                    observedAt: "2026-10-14T12:00:00.000Z",
-                    source: "game.js",
-                    view: "game",
-                  },
-                  error: [
-                    {
-                      name: "Error",
-                      message: "bad view",
-                      stack: "renderer stack",
-                    },
-                  ],
-                },
-              ],
-              [
-                "desktop:renderer-log:record",
-                {
-                  level: "error",
-                  message: "Renderer unhandled rejection",
-                  component: "renderer",
-                  data: {
-                    observedAt: "2026-10-14T12:00:00.000Z",
-                    view: "game",
-                  },
-                  error: [{ name: "NonError", message: "request failed" }],
+                  data: { method: "warn", message: "hello" },
+                  repeatKey: "hello",
                 },
               ],
               [
@@ -240,7 +277,8 @@ describe("preload log bridge", () => {
                   level: "debug",
                   message: "Renderer console message",
                   component: "renderer",
-                  data: { method: "warn", message: "hello" },
+                  data: { method: "log", message: "world" },
+                  repeatKey: "world",
                 },
               ],
             ]
@@ -255,7 +293,160 @@ describe("preload log bridge", () => {
           },
         ],
       ]);
-      expect(bridge.gameConsoleObservability === undefined).toBe(!debug);
+      expect(bridge.gameConsoleObservability === undefined).toBe(
+        !(debug && consoleObservability),
+      );
     });
   }
+
+  it("omits URL credentials, queries, fragments, and schemes from error repeat keys", async () => {
+    const bridge = await loadBridge();
+    const error = new Error("bad view");
+    error.stack =
+      "Error: bad view\n    at mount (https://user:p@ss@assets.example/game.js?token=secret#section:12:3)";
+    bridge.log.error("Failed", error);
+    expect(electron.send.mock.calls).toEqual([
+      [
+        "desktop:renderer-log:record",
+        {
+          level: "error",
+          message: "Failed",
+          component: "renderer",
+          data: { view: "game" },
+          repeatKey: "Error:at mount (assets.example/game.js:12:3)",
+          error: [
+            {
+              name: "Error",
+              message: "bad view",
+              stack:
+                "Error: bad view\n    at mount (https://user:p@ss@assets.example/game.js?token=secret#section:12:3)",
+            },
+          ],
+        },
+      ],
+    ]);
+  });
+
+  it("separates global error identities by name, first stack frame, and fallback message", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-14T12:00:00.000Z"));
+    await loadBridge();
+    const mountError = new Error("bad view");
+    mountError.stack =
+      "Error: bad view\n    at mount (game.js:12:3)\n    at render (game.js:4:1)";
+    const updateError = new Error("bad view");
+    updateError.stack = "Error: bad view\n    at update (game.js:15:2)";
+    const typeError = new TypeError("bad view");
+    typeError.stack = "TypeError: bad view\n    at mount (game.js:12:3)";
+    for (const error of [mountError, updateError, typeError]) {
+      electron.page.dispatchEvent(
+        Object.assign(new Event("error"), {
+          error,
+          message: "bad view",
+          colno: 0,
+          lineno: 0,
+          filename: "",
+        }),
+      );
+    }
+    for (const reason of [
+      "first request failed",
+      "second request failed",
+      undefined,
+    ]) {
+      electron.page.dispatchEvent(
+        Object.assign(new Event("unhandledrejection"), { reason }),
+      );
+    }
+    expect(electron.send.mock.calls.map(([, record]) => record)).toEqual([
+      {
+        level: "error",
+        message: "Renderer error",
+        component: "renderer",
+        data: { observedAt: "2026-10-14T12:00:00.000Z", view: "game" },
+        repeatKey: "Error:at mount (game.js:12:3)",
+        error: [
+          {
+            name: "Error",
+            message: "bad view",
+            stack:
+              "Error: bad view\n    at mount (game.js:12:3)\n    at render (game.js:4:1)",
+          },
+        ],
+      },
+      {
+        level: "error",
+        message: "Renderer error",
+        component: "renderer",
+        data: { observedAt: "2026-10-14T12:00:00.000Z", view: "game" },
+        repeatKey: "Error:at update (game.js:15:2)",
+        error: [
+          {
+            name: "Error",
+            message: "bad view",
+            stack: "Error: bad view\n    at update (game.js:15:2)",
+          },
+        ],
+      },
+      {
+        level: "error",
+        message: "Renderer error",
+        component: "renderer",
+        data: { observedAt: "2026-10-14T12:00:00.000Z", view: "game" },
+        repeatKey: "TypeError:at mount (game.js:12:3)",
+        error: [
+          {
+            name: "TypeError",
+            message: "bad view",
+            stack: "TypeError: bad view\n    at mount (game.js:12:3)",
+          },
+        ],
+      },
+      {
+        level: "error",
+        message: "Renderer unhandled rejection",
+        component: "renderer",
+        data: { observedAt: "2026-10-14T12:00:00.000Z", view: "game" },
+        repeatKey: "NonError:first request failed",
+        error: [{ name: "NonError", message: "first request failed" }],
+      },
+      {
+        level: "error",
+        message: "Renderer unhandled rejection",
+        component: "renderer",
+        data: { observedAt: "2026-10-14T12:00:00.000Z", view: "game" },
+        repeatKey: "NonError:second request failed",
+        error: [{ name: "NonError", message: "second request failed" }],
+      },
+      {
+        level: "error",
+        message: "Renderer unhandled rejection",
+        component: "renderer",
+        data: { observedAt: "2026-10-14T12:00:00.000Z", view: "game" },
+        repeatKey: "NonError:undefined",
+        error: [{ name: "NonError", message: "undefined" }],
+      },
+    ]);
+  });
+
+  it("reports rejections from the preload's own world", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-14T12:00:00.000Z"));
+    await loadBridge();
+    events.dispatchEvent(
+      Object.assign(new Event("unhandledrejection"), {
+        reason: "listener failed",
+      }),
+    );
+    expect(electron.send.mock.calls.map(([, record]) => record)).toEqual([
+      {
+        level: "error",
+        message: "Renderer unhandled rejection",
+        component: "renderer",
+        data: { observedAt: "2026-10-14T12:00:00.000Z", view: "game" },
+        repeatKey: "NonError:listener failed",
+        error: [{ name: "NonError", message: "listener failed" }],
+      },
+    ]);
+  });
 });

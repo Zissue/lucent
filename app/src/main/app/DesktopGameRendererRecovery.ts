@@ -235,13 +235,6 @@ export const makeDesktopGameRendererRecovery = (
       const { target } = attempt;
       const rendererId = target.id;
 
-      yield* Effect.logWarning("Game renderer crashed").pipe(
-        Effect.annotateLogs({
-          component: "game-renderer-recovery",
-          data: { reason: crash.reason, rendererId },
-        }),
-      );
-
       const response = yield* dependencies.showRendererRecoveryPrompt(
         attempt.parentWindowId,
       );

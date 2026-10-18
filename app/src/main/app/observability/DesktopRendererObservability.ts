@@ -14,7 +14,19 @@ export const installDesktopRendererObservability = Effect.gen(function* () {
       (details.reason === "clean-exit"
         ? Effect.logInfo("Child process gone")
         : Effect.logError("Child process gone")
-      ).pipe(Effect.annotateLogs({ component: "process", data: details })),
+      ).pipe(
+        Effect.annotateLogs({
+          component: "process",
+          repeatKey: [
+            details.type,
+            details.serviceName ?? details.name,
+            details.reason,
+          ]
+            .filter(Boolean)
+            .join(":"),
+          data: details,
+        }),
+      ),
     );
   };
 
@@ -30,6 +42,7 @@ export const installDesktopRendererObservability = Effect.gen(function* () {
       ).pipe(
         Effect.annotateLogs({
           component: "renderer",
+          repeatKey: `${contents.id}:${details.reason}`,
           data: { rendererId: contents.id, ...details },
         }),
       ),
@@ -44,16 +57,19 @@ export const installDesktopRendererObservability = Effect.gen(function* () {
       validatedUrl: string,
       isMainFrame: boolean,
     ): void => {
+      if (errorCode === -3 || errorDescription === "ERR_ABORTED") return;
+      const host = URL.parse(validatedUrl)?.host;
       runFork(
         Effect.logWarning("Renderer load failed").pipe(
           Effect.annotateLogs({
             component: "renderer",
+            repeatKey: `${contents.id}:${errorCode}`,
             data: {
               errorCode,
               errorDescription,
               isMainFrame,
               rendererId: contents.id,
-              validatedUrl,
+              ...(host ? { host } : {}),
             },
           }),
         ),
@@ -64,6 +80,7 @@ export const installDesktopRendererObservability = Effect.gen(function* () {
         Effect.logInfo("Renderer responsive").pipe(
           Effect.annotateLogs({
             component: "renderer",
+            repeatKey: String(contents.id),
             data: { rendererId: contents.id },
           }),
         ),
@@ -74,6 +91,7 @@ export const installDesktopRendererObservability = Effect.gen(function* () {
         Effect.logWarning("Renderer unresponsive").pipe(
           Effect.annotateLogs({
             component: "renderer",
+            repeatKey: String(contents.id),
             data: { rendererId: contents.id },
           }),
         ),

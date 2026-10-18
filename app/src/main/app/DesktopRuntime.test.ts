@@ -3,6 +3,7 @@ import { mkdtempSync, promises as fs, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setImmediate as yieldToEventLoop } from "node:timers/promises";
+import { app } from "electron";
 
 import { afterEach, beforeEach, describe, expect, it } from "@effect/vitest";
 import { vi } from "vitest";
@@ -69,7 +70,7 @@ import {
 
 vi.mock("electron", async () => {
   const { EventEmitter } = await import("node:events");
-  return { ipcMain: new EventEmitter() };
+  return { app: new EventEmitter(), ipcMain: new EventEmitter() };
 });
 
 const availableUpdate: UpdateCheckState = {
@@ -399,6 +400,130 @@ afterEach(() => {
 });
 
 describe("makeDesktopRuntime", () => {
+  it.live(
+    "writes distinct renderer failures and clean exits without debug",
+    () =>
+      Effect.gen(function* () {
+        const checking = yield* Deferred.make<void>();
+        const startup = makeStartup({
+          realLog: true,
+          checkNow: Deferred.succeed(checking, undefined).pipe(
+            Effect.andThen(Effect.never),
+          ),
+          showMessageBox: Effect.never,
+        });
+        yield* startup.quitDuringStartup(
+          checking,
+          Effect.sync(() => {
+            const first = Object.assign(new EventEmitter(), { id: 42 });
+            const second = Object.assign(new EventEmitter(), { id: 43 });
+            app.emit("web-contents-created", {}, first);
+            app.emit("web-contents-created", {}, second);
+            app.emit("render-process-gone", {}, first, {
+              reason: "crashed",
+              exitCode: 1,
+            });
+            app.emit("render-process-gone", {}, second, {
+              reason: "crashed",
+              exitCode: 1,
+            });
+            app.emit("render-process-gone", {}, first, {
+              reason: "oom",
+              exitCode: 2,
+            });
+            app.emit("render-process-gone", {}, first, {
+              reason: "clean-exit",
+              exitCode: 0,
+            });
+            first.emit("did-fail-load", {}, -3, "ERR_ABORTED", "", true);
+            first.emit(
+              "did-fail-load",
+              {},
+              -7,
+              "ERR_TIMED_OUT",
+              "https://example.com/game?token=private",
+              true,
+            );
+            first.emit(
+              "did-fail-load",
+              {},
+              -105,
+              "ERR_NAME_NOT_RESOLVED",
+              "https://example.com/game?token=private",
+              true,
+            );
+            second.emit(
+              "did-fail-load",
+              {},
+              -7,
+              "ERR_TIMED_OUT",
+              "https://example.com/game?token=private",
+              true,
+            );
+          }).pipe(Effect.andThen(Effect.yieldNow)),
+        );
+        expect(
+          startup.records
+            .filter((record) => record.component === "renderer")
+            .map(({ level, message, data }) => ({ level, message, data })),
+        ).toEqual([
+          {
+            level: "error",
+            message: "Renderer process gone",
+            data: { rendererId: 42, reason: "crashed", exitCode: 1 },
+          },
+          {
+            level: "error",
+            message: "Renderer process gone",
+            data: { rendererId: 43, reason: "crashed", exitCode: 1 },
+          },
+          {
+            level: "error",
+            message: "Renderer process gone",
+            data: { rendererId: 42, reason: "oom", exitCode: 2 },
+          },
+          {
+            level: "info",
+            message: "Renderer process gone",
+            data: { rendererId: 42, reason: "clean-exit", exitCode: 0 },
+          },
+          {
+            level: "warn",
+            message: "Renderer load failed",
+            data: {
+              rendererId: 42,
+              errorCode: -7,
+              errorDescription: "ERR_TIMED_OUT",
+              isMainFrame: true,
+              host: "example.com",
+            },
+          },
+          {
+            level: "warn",
+            message: "Renderer load failed",
+            data: {
+              rendererId: 42,
+              errorCode: -105,
+              errorDescription: "ERR_NAME_NOT_RESOLVED",
+              isMainFrame: true,
+              host: "example.com",
+            },
+          },
+          {
+            level: "warn",
+            message: "Renderer load failed",
+            data: {
+              rendererId: 43,
+              errorCode: -7,
+              errorDescription: "ERR_TIMED_OUT",
+              isMainFrame: true,
+              host: "example.com",
+            },
+          },
+        ]);
+      }),
+  );
+
   it.live.each([
     { initialLaunchMode: "account-manager" },
     { initialLaunchMode: "game", cliLaunchMode: "account-manager" },

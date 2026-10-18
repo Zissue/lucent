@@ -149,9 +149,7 @@ export const makeDesktopRuntime = <ROut, E, RIn, OOut, OE, OIn>(
               launchMode === "account-manager" ? "account-manager" : "game",
             );
 
-          if (env.debug === true) {
-            yield* installDesktopRendererObservability;
-          }
+          yield* installDesktopRendererObservability;
           const settings = yield* settingsService.load;
           const requestedLaunchMode =
             cliOptions.launchMode ?? settings.preferences.launchMode;

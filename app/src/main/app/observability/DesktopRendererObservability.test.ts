@@ -54,7 +54,7 @@ describe("DesktopRendererObservability", () => {
               {},
               -7,
               "Timed out",
-              "https://example.com/game",
+              "https://account:secret@example.com:8443/game?token=private#secret",
               true,
             );
             contents.emit("unresponsive");
@@ -78,35 +78,40 @@ describe("DesktopRendererObservability", () => {
             level: "Error",
             message: ["Renderer process gone"],
             component: "renderer",
+            repeatKey: "42:crashed",
             data: { rendererId: 42, reason: "crashed", exitCode: 1 },
           },
           {
             level: "Info",
             message: ["Renderer process gone"],
             component: "renderer",
+            repeatKey: "42:clean-exit",
             data: { rendererId: 42, reason: "clean-exit", exitCode: 0 },
           },
           {
             level: "Error",
             message: ["Child process gone"],
             component: "process",
+            repeatKey: "GPU:crashed",
             data: { type: "GPU", reason: "crashed", exitCode: 2 },
           },
           {
             level: "Info",
             message: ["Child process gone"],
             component: "process",
+            repeatKey: "Utility:clean-exit",
             data: { type: "Utility", reason: "clean-exit", exitCode: 0 },
           },
           {
             level: "Warn",
             message: ["Renderer load failed"],
             component: "renderer",
+            repeatKey: "42:-7",
             data: {
               rendererId: 42,
               errorCode: -7,
               errorDescription: "Timed out",
-              validatedUrl: "https://example.com/game",
+              host: "example.com:8443",
               isMainFrame: true,
             },
           },
@@ -114,15 +119,76 @@ describe("DesktopRendererObservability", () => {
             level: "Warn",
             message: ["Renderer unresponsive"],
             component: "renderer",
+            repeatKey: "42",
             data: { rendererId: 42 },
           },
           {
             level: "Info",
             message: ["Renderer responsive"],
             component: "renderer",
+            repeatKey: "42",
             data: { rendererId: 42 },
           },
         ]);
       }),
+  );
+
+  it.effect("skips aborted loads and omits invalid or local URL details", () =>
+    Effect.gen(function* () {
+      const records: unknown[] = [];
+      const contents = Object.assign(new EventEmitter(), { id: 42 });
+      const logger = Logger.make((options) => {
+        records.push({
+          level: options.logLevel,
+          message: options.message,
+          ...options.fiber.getRef(References.CurrentLogAnnotations),
+        });
+      });
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          yield* installDesktopRendererObservability;
+          app.emit("web-contents-created", {}, contents);
+          for (const [code, description, url] of [
+            [-3, "ERR_ABORTED", "https://example.com/?token=private"],
+            [-2, "ERR_ABORTED", "https://example.com/?token=private"],
+            [-2, "ERR_FAILED", "invalid URL with private data"],
+            [
+              -6,
+              "ERR_FILE_NOT_FOUND",
+              "file:///private/local/game.html?secret",
+            ],
+          ] as const) {
+            contents.emit("did-fail-load", {}, code, description, url, true);
+          }
+          yield* Effect.yieldNow;
+        }).pipe(Effect.provide(Logger.layer([logger]))),
+      );
+      expect(records).toEqual([
+        {
+          level: "Warn",
+          message: ["Renderer load failed"],
+          component: "renderer",
+          repeatKey: "42:-2",
+          data: {
+            errorCode: -2,
+            errorDescription: "ERR_FAILED",
+            isMainFrame: true,
+            rendererId: 42,
+          },
+        },
+        {
+          level: "Warn",
+          message: ["Renderer load failed"],
+          component: "renderer",
+          repeatKey: "42:-6",
+          data: {
+            errorCode: -6,
+            errorDescription: "ERR_FILE_NOT_FOUND",
+            isMainFrame: true,
+            rendererId: 42,
+          },
+        },
+      ]);
+    }),
   );
 });
