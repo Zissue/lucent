@@ -2,7 +2,8 @@ import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it } from "@effect/vitest";
+import { afterEach, describe, expect, it, layer } from "@effect/vitest";
+import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as PlatformError from "effect/PlatformError";
@@ -128,4 +129,53 @@ describe("ScriptFileSystem", () => {
       );
     }),
   );
+
+  layer(NodeFileSystem.layer)((it) => {
+    it.effect(
+      "keeps script access inside its root and preserves files on rejected operations",
+      () =>
+        Effect.gen(function* () {
+          const root = yield* Effect.promise(makeFixture);
+          const fileSystem = yield* FileSystem.FileSystem;
+          const scriptRoot = join(root, "scripts");
+          const service = yield* makeScriptFileSystem(fileSystem, scriptRoot);
+          const session = yield* service.openSession(42);
+          yield* service.writeText(42, session, "nested/value.txt", "saved");
+          expect(yield* service.readText(42, session, "nested/value.txt")).toBe(
+            "saved",
+          );
+          expect(
+            yield* service.remove(42, session, "nested").pipe(Effect.flip),
+          ).toMatchObject({ reason: "directory-not-empty" });
+          expect(
+            yield* service
+              .readText(42, session, "../outside")
+              .pipe(Effect.flip),
+          ).toMatchObject({ reason: "invalid-path" });
+          yield* fileSystem.writeFileString(join(root, "outside"), "keep");
+          yield* fileSystem.symlink(
+            join(root, "outside"),
+            join(scriptRoot, "link"),
+          );
+          expect(
+            yield* service.readText(42, session, "link").pipe(Effect.flip),
+          ).toMatchObject({ reason: "invalid-path" });
+          yield* service.remove(42, session, "link");
+          expect(yield* fileSystem.readFileString(join(root, "outside"))).toBe(
+            "keep",
+          );
+          yield* service.closeSession(42, session);
+          expect(
+            yield* service
+              .writeText(42, session, "nested/value.txt", "lost")
+              .pipe(Effect.flip),
+          ).toMatchObject({ reason: "session-closed" });
+          expect(
+            yield* fileSystem.readFileString(
+              join(scriptRoot, "nested/value.txt"),
+            ),
+          ).toBe("saved");
+        }),
+    );
+  });
 });
