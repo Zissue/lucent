@@ -14,9 +14,9 @@ import * as SynchronizedRef from "effect/SynchronizedRef";
 import { DesktopEnvironment } from "../app/DesktopEnvironment";
 import { ElectronApp } from "../electron/ElectronApp";
 import { hashDirectory } from "./ScriptPackageFileSystem";
+import { discoverScriptCatalog } from "./ScriptCatalogDiscovery";
+import { inspectScriptPackageDirectory } from "./ScriptPackageInspection";
 import {
-  discoverScriptCatalog,
-  inspectScriptPackageDirectory,
   layer as scriptPackageCatalogLayer,
   ScriptPackageCatalog,
 } from "./ScriptPackageCatalog";

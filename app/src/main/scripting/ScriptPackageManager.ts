@@ -32,9 +32,9 @@ import {
   inspectScriptPackageDirectory,
   inspectManagedPackageFolder,
   integrityFor,
-  ScriptPackageCatalog,
-  type ScriptPackageCatalogReplacement,
-} from "./ScriptPackageCatalog";
+} from "./ScriptPackageInspection";
+import { ScriptPackageCatalog } from "./ScriptPackageCatalog";
+import type { ScriptPackageCatalogReplacement } from "./ScriptCatalogDiscovery";
 import {
   findLeftoverPackageCopies,
   SCRIPT_PACKAGE_BACKUP_PREFIX,
