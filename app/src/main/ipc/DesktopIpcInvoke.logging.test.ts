@@ -220,7 +220,7 @@ describe("IPC failure logging", () => {
     Effect.gen(function* () {
       const { envelope, records } = yield* invokeDescriptorWithLogs(
         FileSystemIpc.list,
-        { sessionId: "a".repeat(64), path: "missing" },
+        { path: "missing" },
         Effect.succeed({
           ok: false,
           error: { operation: "list", path: "missing", reason: "not-found" },

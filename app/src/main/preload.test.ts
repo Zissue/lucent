@@ -112,6 +112,75 @@ const loadBridge = async () => {
   return electron.bridge;
 };
 
+describe("preload filesystem bridge", () => {
+  it("passes paths and values through the filesystem IPC", async () => {
+    const bridge = await loadBridge();
+    if (bridge.view !== "game") throw new Error("Expected game bridge");
+    electron.invoke
+      .mockResolvedValueOnce({
+        ok: true,
+        value: { ok: true, value: undefined },
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: { ok: true, value: undefined },
+      })
+      .mockResolvedValueOnce({ ok: true, value: { ok: true, value: true } })
+      .mockResolvedValueOnce({ ok: true, value: { ok: true, value: "saved" } })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: { ok: true, value: { count: 3 } },
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: { ok: true, value: [{ name: "state.json", kind: "file" }] },
+      })
+      .mockResolvedValueOnce({ ok: true, value: { ok: true, value: [] } })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: { ok: true, value: undefined },
+      });
+
+    await bridge.fileSystem.writeText("note.txt", "saved");
+    await bridge.fileSystem.writeJson("state.json", { count: 3 });
+    expect(await bridge.fileSystem.exists("note.txt")).toEqual({
+      ok: true,
+      value: true,
+    });
+    expect(await bridge.fileSystem.readText("note.txt")).toEqual({
+      ok: true,
+      value: "saved",
+    });
+    expect(await bridge.fileSystem.readJson("state.json")).toEqual({
+      ok: true,
+      value: { count: 3 },
+    });
+    expect(await bridge.fileSystem.list()).toEqual({
+      ok: true,
+      value: [{ name: "state.json", kind: "file" }],
+    });
+    expect(await bridge.fileSystem.list("nested")).toEqual({
+      ok: true,
+      value: [],
+    });
+    await bridge.fileSystem.remove("note.txt");
+
+    expect(electron.invoke.mock.calls).toEqual([
+      ["lucent:filesystem:write-text", { path: "note.txt", contents: "saved" }],
+      [
+        "lucent:filesystem:write-json",
+        { path: "state.json", value: { count: 3 } },
+      ],
+      ["lucent:filesystem:exists", { path: "note.txt" }],
+      ["lucent:filesystem:read-text", { path: "note.txt" }],
+      ["lucent:filesystem:read-json", { path: "state.json" }],
+      ["lucent:filesystem:list", {}],
+      ["lucent:filesystem:list", { path: "nested" }],
+      ["lucent:filesystem:remove", { path: "note.txt" }],
+    ]);
+  });
+});
+
 describe("preload log bridge", () => {
   it("handles a failed game close without duplicating its main-process log", async () => {
     const consoleError = vi

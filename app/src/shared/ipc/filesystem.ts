@@ -6,17 +6,8 @@ import {
 } from "@lucent/core/filesystem";
 import { defineInvoke, type IpcSchema } from "./core";
 
-export const FileSystemSessionIdSchema = Schema.String.check(
-  Schema.isPattern(/^[0-9a-f]{64}$/),
-);
-
-const sessionPayload = Schema.Struct({
-  sessionId: FileSystemSessionIdSchema,
-});
-
 const pathPayload = Schema.Struct({
   path: Schema.String,
-  sessionId: FileSystemSessionIdSchema,
 });
 
 const resultSchema = <Value>(value: IpcSchema<Value>) =>
@@ -29,18 +20,6 @@ const resultSchema = <Value>(value: IpcSchema<Value>) =>
   ]);
 
 export const FileSystemIpc = {
-  openSession: defineInvoke({
-    channel: "lucent:filesystem:open-session",
-    name: "filesystem.openSession",
-    payload: Schema.Void,
-    result: FileSystemSessionIdSchema,
-  }),
-  closeSession: defineInvoke({
-    channel: "lucent:filesystem:close-session",
-    name: "filesystem.closeSession",
-    payload: sessionPayload,
-    result: Schema.Void,
-  }),
   exists: defineInvoke({
     channel: "lucent:filesystem:exists",
     name: "filesystem.exists",
@@ -52,7 +31,6 @@ export const FileSystemIpc = {
     name: "filesystem.list",
     payload: Schema.Struct({
       path: Schema.optionalKey(Schema.String),
-      sessionId: FileSystemSessionIdSchema,
     }),
     result: resultSchema(Schema.Array(FileSystemEntrySchema)),
   }),
@@ -79,7 +57,6 @@ export const FileSystemIpc = {
     name: "filesystem.writeJson",
     payload: Schema.Struct({
       path: Schema.String,
-      sessionId: FileSystemSessionIdSchema,
       value: Schema.Unknown,
     }),
     result: resultSchema(Schema.Void),
@@ -90,7 +67,6 @@ export const FileSystemIpc = {
     payload: Schema.Struct({
       contents: Schema.String,
       path: Schema.String,
-      sessionId: FileSystemSessionIdSchema,
     }),
     result: resultSchema(Schema.Void),
   }),
