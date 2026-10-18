@@ -184,7 +184,6 @@ const makeUpdatesHarness = (options: {
     const settings = testSettings(options.checkForUpdates);
     const settingsService = DesktopSettings.of({
       get: Effect.succeed(settings),
-      load: Effect.succeed(settings),
       onChanged: () => Effect.void,
       resetAppearance: Effect.succeed(settings),
       resetHotkeys: Effect.succeed(settings),

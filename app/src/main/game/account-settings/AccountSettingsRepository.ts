@@ -51,9 +51,6 @@ export interface AccountSettingsRepositoryShape {
   readonly get: (
     username: string,
   ) => Effect.Effect<AccountSettings, AccountSettingsError>;
-  readonly pathFor: (
-    username: string,
-  ) => Effect.Effect<string, AccountSettingsError>;
   readonly update: (
     username: string,
     patch: AccountSettingsPatch,
@@ -172,6 +169,6 @@ export const layer = Layer.effect(
       );
     });
 
-    return AccountSettingsRepository.of({ get, pathFor, update });
+    return AccountSettingsRepository.of({ get, update });
   }),
 );

@@ -53,7 +53,6 @@ export interface CombatProfilesShape {
     profileId: string,
   ) => Effect.Effect<CombatProfileLibrary, CombatProfilesError>;
   readonly get: Effect.Effect<CombatProfileLibrary, CombatProfilesError>;
-  readonly load: Effect.Effect<CombatProfileLibrary, CombatProfilesError>;
   readonly onChanged: (
     listener: Listener<CombatProfileLibrary>,
   ) => Effect.Effect<void, never, Scope.Scope>;
@@ -319,7 +318,6 @@ const makeCombatProfiles = Effect.gen(function* () {
 
   const {
     get,
-    reload: load,
     update,
     subscribe: onChanged,
   } = yield* makeCommittedState({
@@ -336,7 +334,6 @@ const makeCombatProfiles = Effect.gen(function* () {
   return CombatProfiles.of({
     deleteProfile,
     get,
-    load,
     onChanged,
     saveProfile,
   });

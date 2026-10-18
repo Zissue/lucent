@@ -76,7 +76,6 @@ export interface AccountsShape {
   readonly launch: (
     request: AccountLaunchRequest,
   ) => Effect.Effect<AccountLaunchResult, AccountsError>;
-  readonly load: Effect.Effect<AccountManagerState, AccountsError>;
   readonly onChanged: (
     listener: Listener<AccountManagerState>,
   ) => Effect.Effect<void, never, Scope.Scope>;
@@ -646,8 +645,6 @@ const makeAccounts = Effect.gen(function* () {
     ),
   );
 
-  const load: AccountsShape["load"] = repository.load.pipe(Effect.map(toState));
-
   const onChanged: AccountsShape["onChanged"] = stateChanges.subscribe;
 
   // Renderer recovery reloads the same game client. Remove only its launch
@@ -770,7 +767,6 @@ const makeAccounts = Effect.gen(function* () {
     getRecentlyClosed,
     getState,
     launch,
-    load,
     onChanged,
     reportSession,
     reopenGameWindow,

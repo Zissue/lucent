@@ -37,7 +37,6 @@ const wrapJsonError = (error: JsonFileError): AccountsError =>
 export interface AccountRepositoryShape {
   readonly current: () => AccountManagerStorage | null;
   readonly get: Effect.Effect<AccountManagerStorage, AccountsError>;
-  readonly load: Effect.Effect<AccountManagerStorage, AccountsError>;
   readonly path: string;
   readonly subscribe: (
     listener: Listener<AccountManagerStorage>,
@@ -107,8 +106,6 @@ export const layer = Layer.effect(
       load: document.load,
       write: document.save,
       equivalent: isDeepStrictEqual,
-      shouldPublishReload: (previous, next) =>
-        previous !== null && !isDeepStrictEqual(previous, next),
     });
     const update: AccountRepositoryShape["update"] = (modify) =>
       state.update((storage) =>
@@ -118,7 +115,6 @@ export const layer = Layer.effect(
     return AccountRepository.of({
       get: state.get,
       current: state.current,
-      load: state.reload,
       path,
       subscribe: state.subscribe,
       update,

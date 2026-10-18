@@ -67,7 +67,29 @@ describe("GameFollowers", () => {
             ? Ref.update(sent, (messages) => [...messages, { ids, payload }])
             : Effect.void,
       });
-      const { followers, game } = yield* makeFollowers({ ipc });
+      const game = yield* makeTestGameRenderer();
+      let closed: Effect.Effect<void, unknown> = Effect.die(
+        "Window observer was not registered.",
+      );
+      const followers = yield* makeGameFollowers.pipe(
+        Effect.provideService(DesktopIpc, ipc),
+        Effect.provideService(GameRendererRpc, game.rpc),
+        Effect.provideService(
+          DesktopWindows,
+          DesktopWindows.of({
+            ...game.windows,
+            observe: (filter, listener) => {
+              closed = listener({
+                type: "closed",
+                generation: 1,
+                kind: "game",
+                rendererId: TEST_GAME_RENDERER_ID,
+              });
+              return game.windows.observe(filter, listener);
+            },
+          }),
+        ),
+      );
       yield* game.ready;
 
       expect(yield* followers.getPlayers(42)).toEqual([]);
@@ -80,7 +102,7 @@ describe("GameFollowers", () => {
       expect(yield* followers.getPlayers(42)).toEqual(["Alice", "Bob"]);
       expect(yield* followers.getPlayers(43)).toEqual([]);
 
-      yield* followers.remove(42);
+      yield* closed.pipe(Effect.orDie);
       expect(yield* followers.getPlayers(42)).toEqual([]);
       expect(yield* Ref.get(sent)).toEqual([{ ids: [142], payload: [] }]);
     }),

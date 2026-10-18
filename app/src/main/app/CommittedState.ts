@@ -14,10 +14,6 @@ export const makeCommittedState = Effect.fnUntraced(function* <
   readonly load: (options: LoadOptions) => Effect.Effect<Value, E>;
   readonly write?: (value: Value) => Effect.Effect<Value, E>;
   readonly equivalent?: (previous: Value, next: Value) => boolean;
-  readonly shouldPublishReload?: (
-    previous: Value | null,
-    next: Value,
-  ) => boolean;
 }) {
   let current: Value | null = null;
   const lock = yield* Semaphore.make(1);
@@ -40,12 +36,9 @@ export const makeCommittedState = Effect.fnUntraced(function* <
 
   const reload = locked(
     Effect.gen(function* () {
-      const previous = current;
       const next = yield* options.load({ diagnostics: true });
       current = next;
-      if (options.shouldPublishReload?.(previous, next) ?? true) {
-        yield* listeners.publish(next);
-      }
+      yield* listeners.publish(next);
       return next;
     }),
   );

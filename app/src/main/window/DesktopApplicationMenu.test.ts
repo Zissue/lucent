@@ -99,7 +99,6 @@ describe("DesktopApplicationMenu logging", () => {
         }),
         Layer.succeed(DesktopSettings, {
           get: Effect.succeed(DEFAULT_APP_SETTINGS),
-          load: Effect.succeed(DEFAULT_APP_SETTINGS),
           onChanged: () => Effect.void,
           resetAppearance: Effect.succeed(DEFAULT_APP_SETTINGS),
           resetHotkeys: Effect.succeed(DEFAULT_APP_SETTINGS),

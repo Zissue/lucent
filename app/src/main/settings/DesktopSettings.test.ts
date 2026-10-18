@@ -69,7 +69,7 @@ describe("DesktopSettings", () => {
         Effect.provide(settingsLayer),
       );
 
-      yield* settings.load;
+      yield* settings.get;
       let emitted = 0;
       let lastThemeMode: string | null = null;
       const scope = yield* Scope.make();
@@ -128,7 +128,7 @@ describe("DesktopSettings", () => {
         Effect.provide(settingsLayer),
       );
 
-      yield* settings.load;
+      yield* settings.get;
       yield* settings.updatePreferences({ useGameTabs: true });
       const before = yield* Effect.promise(() =>
         readFile(join(env.appDataDir, "settings.json"), "utf8"),
@@ -317,7 +317,7 @@ describe("saved settings recovery", () => {
           ) + "\n";
         yield* Effect.promise(() => writeFile(path, source));
         const { records, logger } = captureLogs();
-        const loaded = yield* settings.load.pipe(
+        const loaded = yield* settings.get.pipe(
           Effect.provideService(Logger.CurrentLoggers, new Set([logger])),
         );
         expect(loaded.preferences).toEqual({
@@ -368,7 +368,7 @@ describe("saved settings recovery", () => {
       });
       yield* Effect.promise(() => writeFile(path, source));
       const { records, logger } = captureLogs();
-      const loaded = yield* settings.load.pipe(
+      const loaded = yield* settings.get.pipe(
         Effect.provideService(Logger.CurrentLoggers, new Set([logger])),
       );
       expect(loaded.preferences.launchMode).toBe("game");
@@ -495,7 +495,7 @@ describe("saved settings recovery", () => {
         const { settings, path } = yield* makeRecoverySettings();
         yield* Effect.promise(() => writeFile(path, source));
         const { records, logger } = captureLogs();
-        const loaded = yield* settings.load.pipe(
+        const loaded = yield* settings.get.pipe(
           Effect.provideService(Logger.CurrentLoggers, new Set([logger])),
         );
         expect(loaded.preferences.launchMode).toBe("game");
@@ -558,7 +558,7 @@ describe("saved settings recovery", () => {
       const { records, logger } = captureLogs();
       const results = yield* Effect.gen(function* () {
         try {
-          const loaded = yield* settings.load.pipe(Effect.result);
+          const loaded = yield* settings.get.pipe(Effect.result);
           const updated = yield* settings
             .updatePreferences({ checkForUpdates: true })
             .pipe(Effect.result);
@@ -580,7 +580,7 @@ describe("saved settings recovery", () => {
       }
       expect(yield* Effect.promise(() => readFile(path, "utf8"))).toBe(source);
       expect(records).toEqual([]);
-      const loaded = yield* settings.load;
+      const loaded = yield* settings.get;
       expect(loaded.preferences.useGameTabs).toBe(true);
       expect(loaded.preferences.launchMode).toBe("account-manager");
       expect(loaded.appearance.themeMode).toBe("light");
@@ -591,13 +591,14 @@ describe("saved settings recovery", () => {
     "loads missing and valid partial settings silently without writing",
     () =>
       Effect.gen(function* () {
-        const { settings, path } = yield* makeRecoverySettings();
+        const { settings: missingSettings } = yield* makeRecoverySettings();
         const { records, logger } = captureLogs();
         expect(
-          (yield* settings.load.pipe(
+          (yield* missingSettings.get.pipe(
             Effect.provideService(Logger.CurrentLoggers, new Set([logger])),
           )).appearance.themeMode,
         ).toBe("dark");
+        const { settings, path } = yield* makeRecoverySettings();
         yield* Effect.promise(() =>
           writeFile(
             path,
@@ -616,7 +617,7 @@ describe("saved settings recovery", () => {
             }),
           ),
         );
-        const loaded = yield* settings.load.pipe(
+        const loaded = yield* settings.get.pipe(
           Effect.provideService(Logger.CurrentLoggers, new Set([logger])),
         );
         expect(loaded.appearance.themes.dark.sansFont).toBe("Arial");
@@ -652,7 +653,7 @@ describe("saved settings recovery", () => {
           ),
         );
         const { records, logger } = captureLogs();
-        const loaded = yield* settings.load.pipe(
+        const loaded = yield* settings.get.pipe(
           Effect.provideService(Logger.CurrentLoggers, new Set([logger])),
         );
         expect(loaded.preferences.useGameTabs).toBe(true);
@@ -683,7 +684,7 @@ describe("settings change publication", () => {
     () =>
       Effect.gen(function* () {
         const { settings, path } = yield* makeRecoverySettings();
-        yield* settings.load;
+        yield* settings.get;
         const started = yield* Deferred.make<void>();
         const finish = yield* Deferred.make<void>();
         const publications: string[] = [];
@@ -744,7 +745,7 @@ it.effect("commits settings interrupted after the file rename", () =>
           ),
       }),
     );
-    yield* settings.load;
+    yield* settings.get;
     const received: string[] = [];
     yield* settings.onChanged((next) => {
       received.push(next.appearance.themeMode);
@@ -778,28 +779,7 @@ it.effect("commits settings interrupted after the file rename", () =>
     expect(persisted.appearance.themeMode).toBe("light");
     expect(persisted.preferences.checkForUpdates).toBe(true);
     expect(received).toEqual(["light", "light"]);
-    const reloaded = yield* settings.load;
-    expect(reloaded.appearance.themeMode).toBe("light");
-    expect(reloaded.preferences.checkForUpdates).toBe(true);
-    expect(received).toEqual(["light", "light"]);
     expect(records).toEqual([]);
-  }),
-);
-
-it.effect("reloads settings silently before and after an update", () =>
-  Effect.gen(function* () {
-    const { settings, path } = yield* makeRecoverySettings();
-    const themes: string[] = [];
-    yield* settings.onChanged((value) => {
-      themes.push(value.appearance.themeMode);
-    });
-    yield* settings.load;
-    yield* settings.updateAppearance({ themeMode: "light" });
-    yield* Effect.promise(() =>
-      writeFile(path, '{"appearance":{"themeMode":"system"}}'),
-    );
-    expect((yield* settings.load).appearance.themeMode).toBe("system");
-    expect(themes).toEqual(["light"]);
   }),
 );
 
@@ -815,7 +795,7 @@ it.effect(
       });
       yield* Effect.promise(() => writeFile(path, source));
       const { records, logger } = captureLogs();
-      const loaded = yield* settings.load.pipe(
+      const loaded = yield* settings.get.pipe(
         Effect.provideService(Logger.CurrentLoggers, new Set([logger])),
       );
       expect(loaded.preferences.useGameTabs).toBe(true);
