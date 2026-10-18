@@ -19,7 +19,7 @@ import { ElectronShell } from "../electron/ElectronShell";
 import {
   GitHubApiClient,
   type GitHubApiClientShape,
-} from "../github/GitHubApiClient";
+} from "../http/GitHubApiClient";
 import { firstHttpHeader } from "../http/DesktopHttpClient";
 import { FileSystem } from "effect/FileSystem";
 import { makeJsonFile } from "../filesystem/JsonFile";

@@ -19,7 +19,7 @@ import * as GameEnvironments from "../game/environment/GameEnvironments";
 import * as GameFollowers from "../game/follower/GameFollowers";
 import * as GamePackets from "../game/packets/GamePackets";
 import * as GameRendererRpc from "../game/rpc/GameRendererRpc";
-import * as GitHubApiClient from "../github/GitHubApiClient";
+import * as GitHubApiClient from "../http/GitHubApiClient";
 import * as DesktopHttpClient from "../http/DesktopHttpClient";
 import * as DesktopIpc from "../ipc/DesktopIpc";
 import * as DesktopIpcSenders from "../ipc/DesktopIpcSenders";

@@ -10,7 +10,7 @@ import {
   GitHubApiClient,
   GitHubApiClientError,
   GitHubApiErrorKind,
-} from "../github/GitHubApiClient";
+} from "../http/GitHubApiClient";
 import { firstHttpHeader } from "../http/DesktopHttpClient";
 import {
   parseGitHubRepositoryInput,

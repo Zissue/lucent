@@ -16,7 +16,7 @@ import {
   type DesktopHttpDownloadOptions,
   type DesktopHttpGetOptions,
   type DesktopHttpResponse,
-} from "../http/DesktopHttpClient";
+} from "./DesktopHttpClient";
 
 const API_VERSION = "2022-11-28";
 const RETRY_BASE_DELAY = "200 millis";
