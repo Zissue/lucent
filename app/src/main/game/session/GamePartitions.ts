@@ -1,6 +1,10 @@
-import { createHash, randomBytes } from "crypto";
-import { existsSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "fs";
-import { join } from "path";
+import { createHash, randomBytes } from "node:crypto";
+import { readdir } from "node:fs/promises";
+import { join } from "node:path";
+
+import * as Effect from "effect/Effect";
+import type * as FileSystem from "effect/FileSystem";
+import * as Predicate from "effect/Predicate";
 
 const PERSISTENT_PARTITION_PREFIX = "persist:";
 const DEFAULT_PARTITION_NAME = "lucent-game-default";
@@ -105,20 +109,23 @@ const partitionsDirectory = (sessionDataDir: string): string =>
   join(sessionDataDir, "Partitions");
 
 const isMissing = (cause: unknown): boolean =>
-  cause instanceof Error &&
-  "code" in cause &&
-  (cause as { readonly code?: unknown }).code === "ENOENT";
+  Predicate.isError(cause) &&
+  Predicate.hasProperty(cause, "code") &&
+  cause.code === "ENOENT";
 
-const directoryNames = (path: string): readonly string[] => {
-  try {
-    return readdirSync(path, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => entry.name);
-  } catch (cause) {
-    if (isMissing(cause)) return [];
-    throw cause;
-  }
-};
+const directoryNames = Effect.fnUntraced(function* (path: string) {
+  const entries = yield* Effect.tryPromise({
+    try: () => readdir(path, { withFileTypes: true }),
+    catch: (cause) => cause,
+  }).pipe(
+    Effect.catch((cause) =>
+      isMissing(cause) ? Effect.succeed([]) : Effect.fail(cause),
+    ),
+  );
+  return entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name);
+});
 
 const defaultProcessIsAlive = (processId: number): boolean => {
   try {
@@ -126,69 +133,75 @@ const defaultProcessIsAlive = (processId: number): boolean => {
     return true;
   } catch (cause) {
     return (
-      cause instanceof Error &&
-      "code" in cause &&
-      (cause as { readonly code?: unknown }).code === "EPERM"
+      Predicate.isError(cause) &&
+      Predicate.hasProperty(cause, "code") &&
+      cause.code === "EPERM"
     );
   }
 };
 
 /** Removes only profiles that cannot belong to a live game session. */
-export const cleanupStaleGamePartitionProfiles = (
+export const cleanupStaleGamePartitionProfiles = Effect.fnUntraced(function* (
   sessionDataDir: string,
+  fileSystem: FileSystem.FileSystem,
   options: {
     readonly isProcessAlive?: (processId: number) => boolean;
   } = {},
-): GamePartitionCleanupResult => {
+): Effect.fn.Return<GamePartitionCleanupResult, unknown> {
   const directory = partitionsDirectory(sessionDataDir);
   const isProcessAlive = options.isProcessAlive ?? defaultProcessIsAlive;
   const failedPaths: string[] = [];
   const removedPaths: string[] = [];
 
-  for (const name of directoryNames(directory)) {
+  for (const name of yield* directoryNames(directory)) {
     const path = join(directory, name);
     const temporaryMatch = TEMPORARY_PARTITION_PATTERN.exec(name);
     const removable =
       (MANAGED_PARTITION_PATTERN.test(name) &&
-        existsSync(join(path, RETIRED_PROFILE_MARKER))) ||
+        (yield* fileSystem
+          .exists(join(path, RETIRED_PROFILE_MARKER))
+          .pipe(Effect.orElseSucceed(() => false)))) ||
       (temporaryMatch !== null && !isProcessAlive(Number(temporaryMatch[1])));
     if (!removable) continue;
 
-    try {
-      rmSync(path, { recursive: true, force: true });
-      removedPaths.push(path);
-    } catch {
-      failedPaths.push(path);
-    }
+    const removed = yield* fileSystem
+      .remove(path, { recursive: true, force: true })
+      .pipe(Effect.match({ onFailure: () => false, onSuccess: () => true }));
+    if (removed) removedPaths.push(path);
+    else failedPaths.push(path);
   }
 
   return { failedPaths, removedPaths };
-};
+});
 
 export const activateManagedGamePartitionProfile = (
   profilePath: string,
-): void => {
-  const markerPath = join(profilePath, RETIRED_PROFILE_MARKER);
-  try {
-    unlinkSync(markerPath);
-  } catch (cause) {
-    if (!isMissing(cause)) throw cause;
-  }
-};
+  fileSystem: FileSystem.FileSystem,
+) =>
+  fileSystem
+    .remove(join(profilePath, RETIRED_PROFILE_MARKER))
+    .pipe(Effect.catchReason("PlatformError", "NotFound", () => Effect.void));
 
-export const retireManagedGamePartitionProfile = (
+export const retireManagedGamePartitionProfile = Effect.fnUntraced(function* (
   profilePath: string,
-): boolean => {
-  if (!existsSync(profilePath)) return false;
-  writeFileSync(join(profilePath, RETIRED_PROFILE_MARKER), "1\n", "utf8");
+  fileSystem: FileSystem.FileSystem,
+) {
+  const exists = yield* fileSystem
+    .exists(profilePath)
+    .pipe(Effect.orElseSucceed(() => false));
+  if (!exists) return false;
+  yield* fileSystem.writeFileString(
+    join(profilePath, RETIRED_PROFILE_MARKER),
+    "1\n",
+  );
   return true;
-};
+});
 
 /** Discovers inactive Lucent profiles so clearing data also covers unopened accounts. */
-export const listPersistentGamePartitions = (
+export const listPersistentGamePartitions = Effect.fnUntraced(function* (
   sessionDataDir: string,
-): readonly string[] =>
-  directoryNames(partitionsDirectory(sessionDataDir))
+) {
+  return (yield* directoryNames(partitionsDirectory(sessionDataDir)))
     .filter(
       (name) =>
         name === DEFAULT_PARTITION_NAME ||
@@ -196,3 +209,4 @@ export const listPersistentGamePartitions = (
         TEMPORARY_PARTITION_PATTERN.test(name),
     )
     .map((name) => `${PERSISTENT_PARTITION_PREFIX}${name}`);
+});

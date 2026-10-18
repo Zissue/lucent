@@ -4,9 +4,11 @@ import * as Context from "effect/Context";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as FiberSet from "effect/FiberSet";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
+import * as Semaphore from "effect/Semaphore";
 
 import { DesktopEnvironment } from "../../app/DesktopEnvironment";
 import {
@@ -81,17 +83,25 @@ export const layer = Layer.effect(
   GameSessions,
   Effect.gen(function* () {
     const env = yield* DesktopEnvironment;
+    const fileSystem = yield* FileSystem.FileSystem;
     const gameRequestHeaders = getGameRequestHeaders(env.platform);
     const gameUserAgent = getGameUserAgent(env.platform);
     const configuredSessions = new Set<Session>();
     const gameSessions = new Map<string, Session>();
     const runCleanup = yield* FiberSet.makeRuntime<never, void>();
     const gamePartitions = makeGamePartitionRegistry();
+    const partitionOperations = yield* Semaphore.make(1);
     let sessionCreatedHookInstalled = false;
 
-    yield* Effect.sync(() => {
-      cleanupStaleGamePartitionProfiles(app.getPath("sessionData"));
-    }).pipe(Effect.catchCause(() => Effect.void));
+    yield* Effect.gen(function* () {
+      const sessionDataDir = yield* Effect.sync(() =>
+        app.getPath("sessionData"),
+      );
+      yield* cleanupStaleGamePartitionProfiles(sessionDataDir, fileSystem);
+    }).pipe(
+      Effect.catchCause(() => Effect.void),
+      Effect.uninterruptible,
+    );
 
     const configureSession = (targetSession: Session): void => {
       if (configuredSessions.has(targetSession)) {
@@ -129,48 +139,77 @@ export const layer = Layer.effect(
           Effect.sync(() => gamePartitions.acquire(owner)),
           (partition) => Effect.sync(() => releaseGamePartition(partition)),
         );
-        return yield* Effect.try({
-          try: () => {
+        return yield* partitionOperations.withPermit(
+          Effect.gen(function* () {
             if (owner.kind === "managed-account") {
-              const profilePath = session.fromPartition(
-                managedGamePartition(owner.key),
-              ).storagePath;
+              const profilePath = yield* Effect.try({
+                try: () =>
+                  session.fromPartition(managedGamePartition(owner.key))
+                    .storagePath,
+                catch: (cause) => cause,
+              });
               if (profilePath !== null)
-                activateManagedGamePartitionProfile(profilePath);
+                yield* activateManagedGamePartitionProfile(
+                  profilePath,
+                  fileSystem,
+                );
             }
-            const target = session.fromPartition(partition);
-            configureSession(target);
-            gameSessions.set(partition, target);
-            return partition;
-          },
-          catch: (cause) =>
-            new ElectronGamePartitionError({ cause, partition }),
-        });
+            return yield* Effect.try({
+              try: () => {
+                const target = session.fromPartition(partition);
+                configureSession(target);
+                gameSessions.set(partition, target);
+                return partition;
+              },
+              catch: (cause) => cause,
+            });
+          }).pipe(
+            Effect.mapError(
+              (cause) => new ElectronGamePartitionError({ cause, partition }),
+            ),
+            Effect.uninterruptible,
+          ),
+        );
       });
 
     const retireManagedGameProfile: GameSessionsShape["retireManagedGameProfile"] =
       (key) => {
         const partition = managedGamePartition(key);
-        return Effect.try({
-          try: () => {
-            const profilePath = session.fromPartition(partition).storagePath;
+        return partitionOperations.withPermit(
+          Effect.gen(function* () {
+            const profilePath = yield* Effect.try({
+              try: () => session.fromPartition(partition).storagePath,
+              catch: (cause) => cause,
+            });
             if (profilePath !== null)
-              retireManagedGamePartitionProfile(profilePath);
-          },
-          catch: (cause) =>
-            new ElectronGamePartitionError({ cause, partition }),
-        }).pipe(Effect.asVoid);
+              yield* retireManagedGamePartitionProfile(profilePath, fileSystem);
+          }).pipe(
+            Effect.mapError(
+              (cause) => new ElectronGamePartitionError({ cause, partition }),
+            ),
+            Effect.uninterruptible,
+          ),
+        );
       };
 
     const clearAppData = Effect.gen(function* () {
+      const sessionDataDir = yield* Effect.try({
+        try: () => app.getPath("sessionData"),
+        catch: (cause) => new ElectronSessionDataClearError({ cause }),
+      });
+      const partitions = yield* listPersistentGamePartitions(
+        sessionDataDir,
+      ).pipe(
+        Effect.mapError(
+          (cause) => new ElectronSessionDataClearError({ cause }),
+        ),
+      );
       const targets = yield* Effect.try({
         try: () =>
           new Set([
             session.defaultSession,
             ...gameSessions.values(),
-            ...listPersistentGamePartitions(app.getPath("sessionData")).map(
-              (partition) => session.fromPartition(partition),
-            ),
+            ...partitions.map((partition) => session.fromPartition(partition)),
           ]),
         catch: (cause) => new ElectronSessionDataClearError({ cause }),
       });
