@@ -246,12 +246,6 @@ export const layer = Layer.effect(
         const { ref, repository, token } = yield* requestContext(input);
         const segments = input.subdirectory.split("/");
         const directoryName = segments[segments.length - 1];
-        if (directoryName === undefined || directoryName === "") {
-          return yield* new GitHubScriptPackageClientError({
-            kind: "invalid-request",
-            detail: "Enter a valid package directory.",
-          });
-        }
         const parentSegments = segments.slice(0, -1);
         const base = repositoryApiBase(repository);
 

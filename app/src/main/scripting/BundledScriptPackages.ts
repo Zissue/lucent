@@ -68,6 +68,7 @@ export const initializeBundledScriptPackages = Effect.gen(function* () {
     loaded.status === "missing"
       ? { version: 1, completed: [] }
       : yield* decodeSetupState(loaded.value);
+  let packagesChanged = false;
 
   const finish = Effect.fn("BundledScriptPackages.finish")(function* (
     name: string,
@@ -79,8 +80,6 @@ export const initializeBundledScriptPackages = Effect.gen(function* () {
     yield* jsonFile.write(historyPath, next);
     history = next;
   }, Effect.uninterruptible);
-  if (loaded.status === "missing") yield* jsonFile.write(historyPath, history);
-
   yield* Effect.tryPromise(() => fs.mkdir(packagesDir, { recursive: true }));
   const packagesStat = yield* Effect.tryPromise(() => fs.lstat(packagesDir));
   if (!packagesStat.isDirectory() || packagesStat.isSymbolicLink()) {
@@ -120,14 +119,7 @@ export const initializeBundledScriptPackages = Effect.gen(function* () {
           const snapshot = yield* Effect.tryPromise(() =>
             copyBundledScriptPackage(source, staged),
           );
-          const inspected = yield* Effect.tryPromise(() =>
-            inspectScriptPackageDirectory(staged),
-          );
-          if (inspected.manifest.name !== name) {
-            return yield* new BundledScriptPackageSetupError({
-              detail: "The bundled package changed while being copied.",
-            });
-          }
+          yield* Effect.tryPromise(() => inspectScriptPackageDirectory(staged));
           if (existing !== undefined) {
             const files = yield* Effect.tryPromise(() =>
               hashDirectory(existing.rootPath),
@@ -165,8 +157,10 @@ export const initializeBundledScriptPackages = Effect.gen(function* () {
             yield* Effect.tryPromise(() =>
               fs.rename(staged, packageDirectoryPath(packagesDir, directory)),
             );
+            packagesChanged = true;
           }
           yield* state.save(managed);
+          packagesChanged = true;
           yield* finish(name);
         }),
       (stagingRoot) =>
@@ -207,7 +201,7 @@ export const initializeBundledScriptPackages = Effect.gen(function* () {
       );
     }
   }
-  yield* catalog.refresh;
+  if (packagesChanged) yield* catalog.refresh;
 }).pipe(
   Effect.catch((cause) =>
     Effect.logWarning(

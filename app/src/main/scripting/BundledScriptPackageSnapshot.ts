@@ -83,9 +83,6 @@ export const copyBundledScriptPackage = async (
       );
     }
     const stat = await fs.lstat(file.absolutePath);
-    if (!stat.isFile()) {
-      throw new Error("Bundled packages must contain only regular files.");
-    }
     const executable = (stat.mode & 0o111) !== 0;
     const target = join(destination, file.relativePath);
     await fs.mkdir(dirname(target), { recursive: true });
@@ -99,11 +96,13 @@ export const copyBundledScriptPackage = async (
     let entries = tree;
     for (const part of parts) {
       const entry = entries.get(part);
-      if (entry?.kind === "file") throw new Error("Conflicting package paths.");
-      const directory = entry ?? {
-        kind: "directory" as const,
-        entries: new Map<string, GitEntry>(),
-      };
+      const directory =
+        entry?.kind === "directory"
+          ? entry
+          : {
+              kind: "directory" as const,
+              entries: new Map<string, GitEntry>(),
+            };
       entries.set(part, directory);
       entries = directory.entries;
     }

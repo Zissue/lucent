@@ -64,9 +64,8 @@ export const packageDirectoryPath = (
   packagesDir: string,
   directory: string,
 ): string => {
-  const decodedDirectory = decodePackageDirectory(directory);
   const root = resolve(packagesDir);
-  const path = resolve(root, decodedDirectory);
+  const path = resolve(root, directory);
   if (dirname(path) !== root) {
     throw new Error("Package folder escapes the package directory.");
   }
