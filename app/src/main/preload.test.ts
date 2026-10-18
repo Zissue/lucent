@@ -7,32 +7,80 @@ const electron = vi.hoisted(() => ({
   bridge: undefined as DesktopBridge | undefined,
   invoke: vi.fn(),
   page: new EventTarget(),
+  pageFunctions: new WeakSet<object>(),
   send: vi.fn(),
 }));
 
-vi.mock("electron", () => ({
-  contextBridge: {
-    executeInMainWorld: ({
-      func,
-      args,
-    }: {
-      func: (...args: unknown[]) => unknown;
-      args: unknown[];
-    }) => {
-      const preloadWindow = window;
-      vi.stubGlobal("window", electron.page);
-      try {
-        return runInThisContext(`(${func.toString()})`)(...args);
-      } finally {
-        vi.stubGlobal("window", preloadWindow);
-      }
+vi.mock("electron", () => {
+  const copyErrorArguments = (args: unknown[]): unknown[] =>
+    args.map((value) => {
+      if (!(value instanceof Error)) return value;
+      const error = new Error(value.message);
+      error.stack = `Error: ${value.message}`;
+      return error;
+    });
+
+  const rememberPageFunctions = (value: unknown): void => {
+    if (typeof value === "function") {
+      electron.pageFunctions.add(value);
+    } else if (value !== null && typeof value === "object") {
+      for (const entry of Object.values(value)) rememberPageFunctions(entry);
+    }
+  };
+
+  const exposeValue = (value: unknown): unknown => {
+    if (typeof value === "function") {
+      return electron.pageFunctions.has(value)
+        ? value
+        : (...args: unknown[]) => value(...copyErrorArguments(args));
+    }
+    if (Array.isArray(value)) return Object.freeze(value.map(exposeValue));
+    if (value !== null && typeof value === "object") {
+      return Object.freeze(
+        Object.fromEntries(
+          Object.entries(value).map(([key, entry]) => [
+            key,
+            exposeValue(entry),
+          ]),
+        ),
+      );
+    }
+    return value;
+  };
+
+  return {
+    contextBridge: {
+      executeInMainWorld: ({
+        func,
+        args,
+      }: {
+        func: (...args: unknown[]) => unknown;
+        args: unknown[];
+      }) => {
+        const preloadWindow = window;
+        vi.stubGlobal("window", electron.page);
+        try {
+          const result: unknown = runInThisContext(`(${func.toString()})`)(
+            ...args.map((value) =>
+              typeof value === "function"
+                ? (...callbackArgs: unknown[]) =>
+                    value(...copyErrorArguments(callbackArgs))
+                : value,
+            ),
+          );
+          rememberPageFunctions(result);
+          return result;
+        } finally {
+          vi.stubGlobal("window", preloadWindow);
+        }
+      },
+      exposeInMainWorld: (_name: string, bridge: DesktopBridge) => {
+        electron.bridge = exposeValue(bridge) as DesktopBridge;
+      },
     },
-    exposeInMainWorld: (_name: string, bridge: DesktopBridge) => {
-      electron.bridge = bridge;
-    },
-  },
-  ipcRenderer: { send: electron.send, on: vi.fn(), invoke: electron.invoke },
-}));
+    ipcRenderer: { send: electron.send, on: vi.fn(), invoke: electron.invoke },
+  };
+});
 
 const argv = process.argv;
 let events: EventTarget;
@@ -43,6 +91,7 @@ beforeEach(() => {
   electron.invoke.mockReset();
   electron.bridge = undefined;
   electron.page = new EventTarget();
+  electron.pageFunctions = new WeakSet();
   events = new EventTarget();
   vi.stubGlobal("window", events);
   vi.stubGlobal("navigation", new EventTarget());
@@ -93,7 +142,7 @@ describe("preload log bridge", () => {
     bridge.log.error("Failed", error);
     bridge.log.warn("Warning", "plain cause");
     bridge.log.info("Ready");
-    bridge.log.debug("Detail");
+    bridge.log.debug("Detail", undefined);
     expect(electron.send.mock.calls).toEqual([
       [
         "desktop:renderer-log:record",
@@ -133,6 +182,195 @@ describe("preload log bridge", () => {
           message: "Detail",
           component: "renderer",
           data: { view: "game" },
+        },
+      ],
+    ]);
+  });
+
+  it.each(["error", "warn", "info", "debug"] as const)(
+    "preserves page-world error names, stacks, and causes at the %s level",
+    async (level) => {
+      const bridge = await loadBridge();
+      const cause = new RangeError("request exhausted");
+      cause.stack =
+        "RangeError: request exhausted\n    at request (game.js:20:4)";
+      const error = new TypeError("load failed", { cause });
+      error.stack =
+        "TypeError: load failed\n    at load (game.js:12:3)\n    at mount (game.js:4:1)";
+
+      bridge.log[level]("Failed", error);
+
+      expect(electron.send.mock.calls).toEqual([
+        [
+          "desktop:renderer-log:record",
+          {
+            level,
+            message: "Failed",
+            component: "renderer",
+            data: { view: "game" },
+            repeatKey: "TypeError:at load (game.js:12:3)",
+            error: [
+              {
+                name: "TypeError",
+                message: "load failed",
+                stack:
+                  "TypeError: load failed\n    at load (game.js:12:3)\n    at mount (game.js:4:1)",
+                cause: {
+                  name: "RangeError",
+                  message: "request exhausted",
+                  stack:
+                    "RangeError: request exhausted\n    at request (game.js:20:4)",
+                },
+              },
+            ],
+          },
+        ],
+      ]);
+    },
+  );
+
+  it("keeps the root error and five causes from a longer page-world cause chain", async () => {
+    const bridge = await loadBridge();
+    let error: Error | undefined;
+    for (const message of [
+      "discarded",
+      "fifth",
+      "fourth",
+      "third",
+      "second",
+      "first",
+      "root",
+    ]) {
+      error = new Error(message, { cause: error });
+      error.stack = `Error: ${message}`;
+    }
+
+    bridge.log.error("Failed", error);
+
+    expect(electron.send.mock.calls).toEqual([
+      [
+        "desktop:renderer-log:record",
+        {
+          level: "error",
+          message: "Failed",
+          component: "renderer",
+          data: { view: "game" },
+          repeatKey: "Error:root",
+          error: [
+            {
+              name: "Error",
+              message: "root",
+              stack: "Error: root",
+              cause: {
+                name: "Error",
+                message: "first",
+                stack: "Error: first",
+                cause: {
+                  name: "Error",
+                  message: "second",
+                  stack: "Error: second",
+                  cause: {
+                    name: "Error",
+                    message: "third",
+                    stack: "Error: third",
+                    cause: {
+                      name: "Error",
+                      message: "fourth",
+                      stack: "Error: fourth",
+                      cause: {
+                        name: "Error",
+                        message: "fifth",
+                        stack: "Error: fifth",
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          ],
+        },
+      ],
+    ]);
+  });
+
+  it("bounds cyclic page-world causes to the root error and five causes", async () => {
+    const bridge = await loadBridge();
+    const error = new Error("cycle");
+    error.stack = "Error: cycle";
+    error.cause = error;
+
+    bridge.log.error("Failed", error);
+
+    expect(electron.send.mock.calls).toEqual([
+      [
+        "desktop:renderer-log:record",
+        {
+          level: "error",
+          message: "Failed",
+          component: "renderer",
+          data: { view: "game" },
+          repeatKey: "Error:cycle",
+          error: [
+            {
+              name: "Error",
+              message: "cycle",
+              stack: "Error: cycle",
+              cause: {
+                name: "Error",
+                message: "cycle",
+                stack: "Error: cycle",
+                cause: {
+                  name: "Error",
+                  message: "cycle",
+                  stack: "Error: cycle",
+                  cause: {
+                    name: "Error",
+                    message: "cycle",
+                    stack: "Error: cycle",
+                    cause: {
+                      name: "Error",
+                      message: "cycle",
+                      stack: "Error: cycle",
+                      cause: {
+                        name: "Error",
+                        message: "cycle",
+                        stack: "Error: cycle",
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          ],
+        },
+      ],
+    ]);
+  });
+
+  it("preserves non-Error page-world causes", async () => {
+    const bridge = await loadBridge();
+    const error = new TypeError("load failed", { cause: "request failed" });
+    error.stack = "TypeError: load failed\n    at load (game.js:12:3)";
+
+    bridge.log.warn("Failed", error);
+
+    expect(electron.send.mock.calls).toEqual([
+      [
+        "desktop:renderer-log:record",
+        {
+          level: "warn",
+          message: "Failed",
+          component: "renderer",
+          data: { view: "game" },
+          repeatKey: "TypeError:at load (game.js:12:3)",
+          error: [
+            {
+              name: "TypeError",
+              message: "load failed",
+              stack: "TypeError: load failed\n    at load (game.js:12:3)",
+              cause: { name: "NonError", message: "request failed" },
+            },
+          ],
         },
       ],
     ]);
@@ -201,7 +439,9 @@ describe("preload log bridge", () => {
       if (consoleObservability)
         process.argv.push("--lucent__gameConsoleObservability");
       const bridge = await loadBridge();
-      const error = new Error("bad view");
+      const cause = new RangeError("invalid state");
+      cause.stack = "cause stack";
+      const error = new Error("bad view", { cause });
       error.stack = "renderer stack";
       electron.page.dispatchEvent(
         Object.assign(new Event("error"), {
@@ -241,6 +481,11 @@ describe("preload log bridge", () => {
                 name: "Error",
                 message: "bad view",
                 stack: "renderer stack",
+                cause: {
+                  name: "RangeError",
+                  message: "invalid state",
+                  stack: "cause stack",
+                },
               },
             ],
           },
