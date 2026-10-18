@@ -286,10 +286,10 @@ describe("DesktopUpdates", () => {
         });
         const states = yield* Effect.gen(function* () {
           const updates = yield* DesktopUpdates;
-          return yield* Effect.all(
-            [updates.checkNow({ force }), updates.checkNow({ force })],
-            { concurrency: "unbounded" },
-          );
+          return yield* Effect.all([
+            updates.checkNow({ force }),
+            updates.checkNow({ force }),
+          ]);
         }).pipe(Effect.provide(Layer.merge(layer, capture.layer)));
 
         expect(states.map((state) => state.status)).toEqual(["error", "error"]);
@@ -463,17 +463,20 @@ describe("DesktopUpdates", () => {
 
   it.effect("interrupts all in-flight checks when its layer closes", () =>
     Effect.gen(function* () {
-      const { events, layer, secondStarted } = yield* makeHangingCheckHarness;
+      const { events, layer, started, secondStarted } =
+        yield* makeHangingCheckHarness;
 
       yield* Effect.gen(function* () {
         const updates = yield* DesktopUpdates;
         yield* updates
           .checkNow()
           .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Deferred.await(started);
         yield* updates
           .checkNow({ force: true })
           .pipe(Effect.forkChild({ startImmediately: true }));
         yield* Deferred.await(secondStarted);
+        yield* Effect.yieldNow;
       }).pipe(Effect.provide(layer));
       events.push("layer-closed");
 
@@ -503,6 +506,56 @@ describe("DesktopUpdates", () => {
       }
       expect(httpRequests).toHaveLength(0);
     }),
+  );
+
+  it.effect(
+    "keeps a newer available result after an older check times out",
+    () =>
+      Effect.gen(function* () {
+        const started = yield* Deferred.make<void>();
+        mockGitHubResponse({
+          body: JSON.stringify({
+            draft: false,
+            html_url: "https://github.com/toommyliu/lucent/releases/tag/v1.1.0",
+            prerelease: false,
+            tag_name: "v1.1.0",
+          }),
+        });
+        const { layer } = yield* makeUpdatesHarness({
+          checkForUpdates: true,
+          currentVersion: "1.0.0",
+          httpClient: {
+            ...httpClient,
+            get: (options) =>
+              Deferred.succeed(started, undefined).pipe(
+                Effect.flatMap((first) =>
+                  first ? Effect.never : httpClient.get(options),
+                ),
+              ),
+          },
+        });
+        const updates = yield* DesktopUpdates.pipe(
+          Effect.provide(yield* Layer.build(layer)),
+        );
+        const startup = yield* updates.checkNow().pipe(Effect.forkChild);
+        yield* Deferred.await(started);
+
+        expect(yield* updates.checkNow({ force: true })).toMatchObject({
+          status: "available",
+          currentVersion: "1.0.0",
+          latestVersion: "1.1.0",
+        });
+
+        yield* TestClock.adjust(30_000);
+        yield* Fiber.join(startup);
+
+        expect(yield* updates.getState).toMatchObject({
+          status: "available",
+          currentVersion: "1.0.0",
+          latestVersion: "1.1.0",
+        });
+        expect(yield* updates.openReleasePage).toBe(true);
+      }),
   );
 
   it.effect(
@@ -752,14 +805,14 @@ describe("DesktopUpdates", () => {
 
         expect(yield* updates.getState).toMatchObject({ status: "error" });
         expect(yield* Fiber.join(check)).toMatchObject({
-          status: "error",
-          message: "Update check timed out.",
+          status: "checking",
         });
         expect(yield* Fiber.join(overlappingCheck)).toMatchObject({
           status: "error",
+          message: "Update check timed out.",
         });
         expect(interrupted).toEqual([
-          "https://api.github.com/repos/toommyliu/lucent/releases?per_page=100&page=4",
+          "https://api.github.com/repos/toommyliu/lucent/releases?per_page=100&page=1",
           "https://api.github.com/repos/toommyliu/lucent/releases?per_page=100&page=4",
         ]);
         expect(
@@ -770,7 +823,7 @@ describe("DesktopUpdates", () => {
           ),
         ).toEqual(cache);
         yield* TestClock.adjust("1 minute");
-        expect(httpRequests).toHaveLength(8);
+        expect(httpRequests).toHaveLength(5);
 
         httpResponses.length = 0;
         delayMs = 0;

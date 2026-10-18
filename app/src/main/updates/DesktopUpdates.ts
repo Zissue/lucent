@@ -495,7 +495,10 @@ const makeDesktopUpdates = Effect.fnUntraced(function* (
     );
 
   const checkNow: DesktopUpdatesShape["checkNow"] = (checkOptions) =>
-    FiberSet.run(checks, runCheck(checkOptions?.force === true)).pipe(
+    FiberSet.clear(checks).pipe(
+      Effect.andThen(
+        FiberSet.run(checks, runCheck(checkOptions?.force === true)),
+      ),
       Effect.flatMap(Fiber.join),
       Effect.catchCauseIf(Cause.hasInterruptsOnly, () => getState),
     );
