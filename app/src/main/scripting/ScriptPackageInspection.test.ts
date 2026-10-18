@@ -6,6 +6,7 @@ import { afterEach, expect, it } from "@effect/vitest";
 import { vi } from "vitest";
 
 import { readScriptPackageManifest } from "./ScriptPackageInspection";
+import { discoverScriptCatalog } from "./ScriptCatalogDiscovery";
 
 const reads = vi.hoisted(() => ({ bytes: 0, largestChunk: 0 }));
 
@@ -49,6 +50,42 @@ afterEach(async () => {
       .splice(0)
       .map((path) => fs.rm(path, { recursive: true, force: true })),
   );
+});
+
+it("reads a manifest once when discovering an unmanaged package", async () => {
+  const root = await fs.mkdtemp(join(tmpdir(), "lucent-manifest-"));
+  directories.push(root);
+  const packagesDir = join(root, "packages");
+  const packageRoot = join(packagesDir, "tools-folder");
+  await fs.mkdir(packageRoot, { recursive: true });
+  const source = '{"name":"tools","lucent":{"version":"^1.0.0"}}';
+  await fs.writeFile(join(packageRoot, "package.json"), source);
+  await fs.writeFile(join(packageRoot, "index.js"), "");
+  reads.bytes = 0;
+  reads.largestChunk = 0;
+
+  const discovery = await discoverScriptCatalog({
+    currentVersion: "1.2.3",
+    packagesDir,
+    scriptsDir: join(root, "scripts"),
+  });
+
+  expect(discovery.catalog.packages).toEqual([
+    {
+      status: "valid",
+      compatibility: {
+        status: "compatible",
+        currentVersion: "1.2.3",
+        requiredVersion: "^1.0.0",
+      },
+      dependencyStatus: { status: "ready" },
+      integrity: "unmanaged",
+      name: "tools",
+      path: packageRoot,
+      update: { status: "unchecked" },
+    },
+  ]);
+  expect(reads.bytes).toBe(Buffer.byteLength(source));
 });
 
 it("bounds a manifest that grows after its no-follow size check", async () => {
