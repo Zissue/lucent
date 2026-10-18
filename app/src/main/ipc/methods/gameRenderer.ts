@@ -22,7 +22,7 @@ export const beginScriptExecution = makeDesktopIpcMethod({
   handler: Effect.fn("desktop.ipc.gameRenderer.beginScriptExecution")(
     function* (_payload, sender) {
       const recovery = yield* DesktopGameRendererRecovery;
-      return yield* recovery.beginScriptExecution(sender.lifetime);
+      yield* recovery.beginScriptExecution(sender.lifetime);
     },
   ),
 });
@@ -31,9 +31,9 @@ export const finishScriptExecution = makeDesktopIpcMethod({
   descriptor: GameRendererIpc.finishScriptExecution,
   allowedSenders: ["game"],
   handler: Effect.fn("desktop.ipc.gameRenderer.finishScriptExecution")(
-    function* (payload, sender) {
+    function* (_payload, sender) {
       const recovery = yield* DesktopGameRendererRecovery;
-      yield* recovery.finishScriptExecution(sender.lifetime, payload.token);
+      yield* recovery.finishScriptExecution(sender.lifetime);
     },
   ),
 });

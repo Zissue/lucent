@@ -4,7 +4,7 @@ import * as Effect from "effect/Effect";
 import { selectDesktopBridge } from "../../../../shared/desktopBridge";
 import { ScriptExecutionError } from "./ScriptRunnerErrors";
 
-const beginScriptExecution = (): Effect.Effect<number, ScriptExecutionError> =>
+const beginScriptExecution = (): Effect.Effect<void, ScriptExecutionError> =>
   Effect.tryPromise({
     try: () =>
       selectDesktopBridge(
@@ -18,13 +18,13 @@ const beginScriptExecution = (): Effect.Effect<number, ScriptExecutionError> =>
       }),
   });
 
-const finishScriptExecution = (token: number): Effect.Effect<void> =>
+const finishScriptExecution = (): Effect.Effect<void> =>
   Effect.tryPromise({
     try: () =>
       selectDesktopBridge(
         window.desktop,
         "game",
-      ).gameRenderer.finishScriptExecution(token),
+      ).gameRenderer.finishScriptExecution(),
     catch: (cause) => cause,
   }).pipe(
     Effect.catch((cause) =>
@@ -44,15 +44,14 @@ export const protectScriptExecution = <A, E, R>(
     finishScriptExecution,
   );
 
-/** Keeps recovery armed for a run after its asynchronous start call returns. */
 export const protectScriptExecutionUntil = (
   terminal: Effect.Effect<unknown, unknown>,
 ): Effect.Effect<void, ScriptExecutionError> =>
   Effect.uninterruptible(
     Effect.gen(function* () {
-      const token = yield* beginScriptExecution();
+      yield* beginScriptExecution();
       yield* terminal.pipe(
-        Effect.ensuring(finishScriptExecution(token)),
+        Effect.ensuring(finishScriptExecution()),
         Effect.forkDetach,
       );
     }),
