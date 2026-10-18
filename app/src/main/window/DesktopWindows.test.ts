@@ -1084,7 +1084,7 @@ describe("DesktopWindows document commits", () => {
   });
 
   it.effect(
-    "interrupts recovery when DesktopWindows commits the next document",
+    "rejects stale recovery when DesktopWindows commits the next document",
     () => {
       const harness = makeHarness();
       return Effect.gen(function* () {
@@ -1092,7 +1092,9 @@ describe("DesktopWindows document commits", () => {
         const id = yield* windows.open("game");
         const contents = harness.created.get(id)!.webContents;
         contents.emit("did-navigate");
-        const signals: AbortSignal[] = [];
+        const answer = yield* Deferred.make<number>();
+        const crash = vi.spyOn(contents, "forcefullyCrashRenderer");
+        const reload = vi.spyOn(contents, "reload");
         const recovery = makeDesktopGameRendererRecovery({
           allWebContents: () => [
             contents as unknown as RecoverableGameWebContents,
@@ -1102,11 +1104,7 @@ describe("DesktopWindows document commits", () => {
           observe: windows.observe,
           onWebContentsCreated: () => () => {},
           onBeforeQuit: () => () => {},
-          showRecoveryPrompt: () =>
-            Effect.promise((signal) => {
-              signals.push(signal);
-              return Promise.withResolvers<number>().promise;
-            }),
+          showRecoveryPrompt: () => Deferred.await(answer),
           showRendererRecoveryPrompt: () => Effect.succeed(1),
           suppressLaunchScript: () => Effect.void,
         });
@@ -1118,12 +1116,14 @@ describe("DesktopWindows document commits", () => {
         yield* recovery.beginScriptExecution(sender.lifetime);
         contents.emit("unresponsive");
         yield* Effect.yieldNow.pipe(Effect.repeat({ times: 4 }));
-        expect(signals.map((signal) => signal.aborted)).toEqual([false]);
         contents.emit("did-start-loading");
-        expect(signals.map((signal) => signal.aborted)).toEqual([false]);
+        expect(sender.lifetime.isCurrent()).toBe(true);
         contents.emit("did-navigate");
         yield* Effect.yieldNow.pipe(Effect.repeat({ times: 4 }));
-        expect(signals.map((signal) => signal.aborted)).toEqual([true]);
+        yield* Deferred.succeed(answer, 0);
+        yield* Effect.yieldNow.pipe(Effect.repeat({ times: 4 }));
+        expect(crash).toHaveBeenCalledTimes(0);
+        expect(reload).toHaveBeenCalledTimes(0);
         expect(sender.lifetime.isCurrent()).toBe(false);
         const next = (yield* windows.lifetime(id))!;
         expect(next.generation).toBe(2);

@@ -625,8 +625,8 @@ const bridges = {
     gameRenderer: {
       beginScriptExecution: () =>
         invoke(GameRendererIpc.beginScriptExecution, undefined),
-      finishScriptExecution: (token) =>
-        invoke(GameRendererIpc.finishScriptExecution, { token }),
+      finishScriptExecution: () =>
+        invoke(GameRendererIpc.finishScriptExecution, undefined),
       getGeneration: () => invoke(GameRendererIpc.getGeneration, undefined),
       ready: () => invoke(GameRendererIpc.ready, undefined),
     },

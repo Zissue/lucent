@@ -12,12 +12,12 @@ export const GameRendererIpc = {
     channel: `${namespace}:begin-script-execution`,
     name: "gameRenderer.beginScriptExecution",
     payload: Schema.Void,
-    result: Schema.Int,
+    result: Schema.Void,
   }),
   finishScriptExecution: defineInvoke({
     channel: `${namespace}:finish-script-execution`,
     name: "gameRenderer.finishScriptExecution",
-    payload: Schema.Struct({ token: Schema.Int }),
+    payload: Schema.Void,
     result: Schema.Void,
   }),
   getGeneration: defineInvoke({
