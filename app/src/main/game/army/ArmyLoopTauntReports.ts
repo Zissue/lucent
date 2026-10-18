@@ -62,10 +62,7 @@ const applyParticipantState = (
   now: number,
 ): RunMutation => {
   const current = inputRun.participants.get(participantId)!;
-  const cooldownMs =
-    report.cooldownMs !== null && Number.isFinite(report.cooldownMs)
-      ? Math.max(0, report.cooldownMs)
-      : 0;
+  const cooldownMs = report.cooldownMs ?? 0;
   const updatedParticipant: RunParticipant = {
     ...current,
     readiness: {
@@ -341,14 +338,11 @@ const applyCommandResult = (
   const participant = inputRun.participants.get(participantId)!;
   let run = inputRun;
   if (report.cooldownMs !== undefined && report.cooldownMs !== null) {
-    const cooldownMs = Number.isFinite(report.cooldownMs)
-      ? Math.max(0, report.cooldownMs)
-      : 0;
     run = setParticipant(run, {
       ...participant,
       readiness: {
         alive: participant.readiness?.alive ?? true,
-        readyAt: now + cooldownMs,
+        readyAt: now + report.cooldownMs,
         usable: participant.readiness?.usable ?? true,
       },
     });
@@ -372,7 +366,6 @@ const applyCommandResult = (
     }
     const assignment: AssignmentState = {
       ...current,
-      degraded: undefined,
       focusActive:
         current.strategy.type === "focus" ? true : current.focusActive,
       focusLossHandled:

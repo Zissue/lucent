@@ -12,7 +12,6 @@ import type {
 import {
   activateRun,
   attemptAssignment,
-  issueCommand,
   priorityDecision,
   reconcileTopology,
   refreshAllAssignments,
@@ -87,13 +86,6 @@ const validateRegistration = (
   const assignmentIds = assignments.map(
     (assignment) => assignment.assignmentId,
   );
-  if (
-    assignmentIds.some(
-      (assignmentId) => !Number.isSafeInteger(assignmentId) || assignmentId < 0,
-    )
-  ) {
-    return "Loop taunt assignment IDs must be non-negative integers";
-  }
   if (!uniqueNumbers(assignmentIds)) {
     return "Loop taunt assignment IDs must be unique";
   }
@@ -107,11 +99,7 @@ const validateRegistration = (
         return `Loop taunt assignment ${assignment.assignmentId} must contain unique players`;
       }
       for (const playerNumber of assignment.players) {
-        if (
-          !Number.isSafeInteger(playerNumber) ||
-          playerNumber < 1 ||
-          playerNumber > playerCount
-        ) {
+        if (playerNumber < 1 || playerNumber > playerCount) {
           return `Loop taunt assignment ${assignment.assignmentId} references player ${playerNumber} outside the Army roster`;
         }
         if (assignedPlayers.has(playerNumber)) {
@@ -211,7 +199,7 @@ export const runForPayload = (
   senderId: ArmyParticipantId,
 ): RunState | ArmyLoopTauntError => {
   const run = state.runs.get(payload.runId);
-  if (run === undefined || run.sessionId !== payload.sessionId) {
+  if (run === undefined) {
     return loopError(
       "inactive-run",
       "Loop taunt run is not active",
@@ -283,7 +271,6 @@ const onDegradedWarning = (
 ): readonly [MutationEffects, LoopTauntSlot] => {
   const run = state.runs.get(timer.runId);
   const assignment = run?.assignments.get(timer.assignmentId);
-  const degraded = assignment?.degraded;
   const unresolved =
     run === undefined
       ? false
@@ -292,20 +279,24 @@ const onDegradedWarning = (
     run === undefined ||
     run.status !== "active" ||
     assignment === undefined ||
-    degraded?.reason !== "target-consensus" ||
-    degraded.revision !== timer.revision ||
+    assignment.consensusWarningRevision !== timer.revision ||
     !unresolved
   ) {
     return [noEffects(), state];
   }
-  const [updated, command] = issueCommand(run, [...run.participants.keys()], {
-    assignmentId: timer.assignmentId,
-    code: "degraded",
-    level: "warning",
-    message: `Loop taunt target consensus is degraded for assignment ${timer.assignmentId}`,
-    type: "diagnostic",
-  });
-  return [{ ...noEffects(), commands: [command] }, storeRun(state, updated)];
+  return [
+    {
+      ...noEffects(),
+      warnings: [
+        {
+          assignmentId: timer.assignmentId,
+          code: "degraded",
+          runId: run.runId,
+        },
+      ],
+    },
+    state,
+  ];
 };
 
 const onRegistrationTimeout = (
@@ -338,7 +329,7 @@ const makeCollectingRun = (
       {
         active: false,
         assignmentId: assignment.assignmentId,
-        degradationRevision: 0,
+        consensusRevision: 0,
         focusActive: assignment.target.focusActive,
         focusLossHandled: false,
         lifeRevision: assignment.target.lifeRevision,
@@ -440,20 +431,6 @@ export const registerRun = (
       };
     }
   }
-  if (run.playerCount !== participant.playerCount) {
-    return {
-      effects: noEffects(),
-      result: Result.fail(
-        loopError(
-          "registration-mismatch",
-          "Loop taunt roster size changed during registration",
-          payload.sessionId,
-          run.runId,
-        ),
-      ),
-      slot,
-    };
-  }
   if (run.participants.has(participant.id)) {
     return {
       effects: noEffects(),
@@ -512,11 +489,7 @@ export const leaveRun = (
   now: number,
 ): LoopTauntStep<void> => {
   const run = slot.runs.get(payload.runId);
-  if (
-    run === undefined ||
-    run.sessionId !== payload.sessionId ||
-    !run.participants.has(senderId)
-  ) {
+  if (run === undefined || !run.participants.has(senderId)) {
     return { effects: noEffects(), result: Result.succeed(undefined), slot };
   }
   const participants = new Map(run.participants);
@@ -605,11 +578,6 @@ export const commandForPublication = (
     ) {
       return undefined;
     }
-  } else if (
-    command.type === "diagnostic" &&
-    run.assignments.get(command.assignmentId)?.degraded === undefined
-  ) {
-    return undefined;
   }
   return { ...event, participantIds };
 };

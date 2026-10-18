@@ -12,7 +12,6 @@ import {
   COMMAND_CONFIRMATION_TIMEOUT_MS,
   DEGRADED_AFTER_SWEEPS,
   DEGRADED_WARNING_MS,
-  type DegradedState,
   loopError,
   type LoopTauntSlot,
   mergeMutationEffects,
@@ -184,13 +183,12 @@ export const startTurn = (assignment: AssignmentState): AssignmentState => {
 const recoverAssignment = (assignment: AssignmentState): AssignmentState => {
   const turn = assignment.turn;
   if (turn === undefined) {
-    return { ...assignment, degraded: undefined };
+    return assignment;
   }
 
   const awaitingResult = turn.pending !== undefined;
   return {
     ...assignment,
-    degraded: undefined,
     turn: {
       ...turn,
       attempted: awaitingResult ? turn.attempted : new Set(),
@@ -255,10 +253,9 @@ export const attemptAssignment = (
       },
     };
     return {
+      ...effects,
       commands: [command],
-      readiness: [],
       run: setAssignment(commandRun, updatedAssignment),
-      terminals: [],
       timers: [
         {
           assignmentId,
@@ -296,10 +293,8 @@ export const attemptAssignment = (
       },
     };
     return {
-      commands: [],
-      readiness: [],
+      ...effects,
       run: setAssignment(inputRun, updatedAssignment),
-      terminals: [],
       timers: [
         {
           assignmentId,
@@ -320,7 +315,6 @@ export const attemptAssignment = (
   if (allSkipped) {
     const updatedAssignment: AssignmentState = {
       ...assignment,
-      degraded: undefined,
       turn: {
         ...turn,
         attempted: new Set(),
@@ -330,10 +324,8 @@ export const attemptAssignment = (
       },
     };
     return {
-      commands: [],
-      readiness: [],
+      ...effects,
       run: setAssignment(inputRun, updatedAssignment),
-      terminals: [],
       timers: [
         {
           assignmentId,
@@ -348,21 +340,8 @@ export const attemptAssignment = (
     };
   }
 
-  const enteringDegraded =
-    failedSweeps >= DEGRADED_AFTER_SWEEPS && assignment.degraded === undefined;
-  const degradationRevision = enteringDegraded
-    ? assignment.degradationRevision + 1
-    : assignment.degradationRevision;
-  const degraded: DegradedState | undefined = enteringDegraded
-    ? {
-        reason: "readiness",
-        revision: degradationRevision,
-      }
-    : assignment.degraded;
   const updatedAssignment: AssignmentState = {
     ...assignment,
-    degradationRevision,
-    degraded,
     turn: {
       ...turn,
       attempted: new Set(),
@@ -371,30 +350,11 @@ export const attemptAssignment = (
       pending: undefined,
     },
   };
-  let run = setAssignment(inputRun, updatedAssignment);
-  const commands: ArmyLoopTauntCommandEvent[] = [];
-
-  if (enteringDegraded) {
-    const issued = issueCommand(run, [...run.participants.keys()], {
-      assignmentId,
-      code: "degraded",
-      level: "warning",
-      message: `Loop taunt is degraded for assignment ${assignmentId}`,
-      type: "diagnostic",
-    });
-    run = issued[0];
-    commands.push(issued[1]);
-  }
-
-  const probeIds =
-    ring.length === 0
-      ? [...run.participants.keys()]
-      : ring.map((candidate) => candidate.id);
-  if (probeIds.length > 0) {
-    const issued = issueCommand(run, probeIds, { type: "probe" });
-    run = issued[0];
-    commands.push(issued[1]);
-  }
+  const run = setAssignment(inputRun, updatedAssignment);
+  const warnings: MutationEffects["warnings"] =
+    failedSweeps === DEGRADED_AFTER_SWEEPS
+      ? [{ assignmentId, code: "degraded", runId: run.runId }]
+      : [];
 
   const timers: ScheduledTimer[] = [
     {
@@ -407,7 +367,7 @@ export const attemptAssignment = (
       type: "retry",
     },
   ];
-  return { commands, readiness: [], run, terminals: [], timers };
+  return { ...effects, run, timers, warnings };
 };
 
 export const refreshAssignmentFromTargets = (
@@ -469,7 +429,9 @@ export const refreshAssignmentFromTargets = (
   const aliveChanged = alive !== (current.targetState === "alive");
   let assignment: AssignmentState = {
     ...current,
-    degraded: resetLife ? undefined : current.degraded,
+    consensusWarningRevision: resetLife
+      ? undefined
+      : current.consensusWarningRevision,
     focusActive,
     focusLossHandled:
       aliveChanged || resetLife ? false : current.focusLossHandled,
@@ -538,33 +500,26 @@ const reconcileTopology = (inputRun: RunState, now: number): RunMutation => {
     const ring = assignmentRing(run, assignment);
 
     if (unresolvedAssignmentIds.has(assignmentId)) {
-      const enteringDegraded =
-        assignment.degraded?.reason !== "target-consensus";
-      const degradationRevision = enteringDegraded
-        ? assignment.degradationRevision + 1
-        : assignment.degradationRevision;
+      const enteringDisagreement =
+        assignment.consensusWarningRevision === undefined;
+      const consensusRevision = enteringDisagreement
+        ? assignment.consensusRevision + 1
+        : assignment.consensusRevision;
       assignment = {
         ...assignment,
-        degradationRevision,
-        degraded: enteringDegraded
-          ? {
-              reason: "target-consensus",
-              revision: degradationRevision,
-            }
-          : assignment.degraded,
+        consensusRevision,
+        consensusWarningRevision: consensusRevision,
         turn: undefined,
       };
       run = setAssignment(run, assignment);
-      if (enteringDegraded) {
+      if (enteringDisagreement) {
         effects = mergeMutationEffects(effects, {
-          commands: [],
-          readiness: [],
-          terminals: [],
+          ...noEffects(),
           timers: [
             {
               assignmentId,
               delayMs: DEGRADED_WARNING_MS,
-              revision: degradationRevision,
+              revision: consensusRevision,
               runId: run.runId,
               sessionId: run.sessionId,
               type: "degraded-warning",
@@ -575,8 +530,8 @@ const reconcileTopology = (inputRun: RunState, now: number): RunMutation => {
       continue;
     }
 
-    if (assignment.degraded?.reason === "target-consensus") {
-      assignment = { ...assignment, degraded: undefined };
+    if (assignment.consensusWarningRevision !== undefined) {
+      assignment = { ...assignment, consensusWarningRevision: undefined };
     }
 
     if (
@@ -697,7 +652,7 @@ export const terminalize = (
   );
   const settlement = runGateSettlement(run, result);
   return {
-    commands: [],
+    ...noEffects(),
     readiness: [settlement.readiness],
     run: {
       ...run,
@@ -706,13 +661,12 @@ export const terminalize = (
       terminal: result,
     },
     terminals: [settlement.terminal],
-    timers: [],
   };
 };
 
 export const activateRun = (inputRun: RunState, now: number): RunMutation => {
-  let run = refreshAllAssignments({ ...inputRun, status: "active" });
-  let effects: MutationEffects = {
+  const run = refreshAllAssignments({ ...inputRun, status: "active" });
+  const effects: MutationEffects = {
     ...noEffects(),
     readiness: [
       {
@@ -723,18 +677,6 @@ export const activateRun = (inputRun: RunState, now: number): RunMutation => {
       },
     ],
   };
-
-  const participantIds = [...run.participants.keys()];
-  if (participantIds.length > 0) {
-    const issued = issueCommand(run, participantIds, { type: "probe" });
-    run = issued[0];
-    effects = mergeMutationEffects(effects, {
-      commands: [issued[1]],
-      readiness: [],
-      terminals: [],
-      timers: [],
-    });
-  }
 
   const reconciled = reconcileTopology(run, now);
   return {
