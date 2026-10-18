@@ -70,6 +70,7 @@ const boundReason = (reason: Cause.Reason<unknown>): Cause.Reason<unknown> => {
 
 export const desktopLogRecord = (
   options: Logger.Options<unknown>,
+  debug = false,
 ): DesktopLogRecord => {
   const {
     component = "effect",
@@ -104,7 +105,7 @@ export const desktopLogRecord = (
     ...(data === undefined ? {} : { data }),
     ...(Object.keys(annotations).length === 0 ? {} : { annotations }),
     ...(errors.length === 0 ? {} : { error: errors }),
-    ...(span === undefined
+    ...(!debug || span === undefined
       ? {}
       : { traceId: span.traceId, spanId: span.spanId }),
   };

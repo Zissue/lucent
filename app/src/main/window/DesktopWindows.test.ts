@@ -8,6 +8,8 @@ import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Latch from "effect/Latch";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
+import * as References from "effect/References";
 import {
   makeDesktopGameRendererRecovery,
   type RecoverableGameWebContents,
@@ -18,6 +20,7 @@ import {
   normalizeAppSettings,
 } from "@lucent/core/settings";
 import { DesktopWindowKindSchema } from "../../shared/ipc/windows";
+import { desktopLogRecord } from "../../shared/logRecord";
 import { layer as desktopEnvironmentLayer } from "../app/DesktopEnvironment";
 import { ElectronApp } from "../electron/ElectronApp";
 import { GameSessions } from "../game/session/GameSessions";
@@ -50,7 +53,7 @@ const singleInstanceKinds = DesktopWindowKindSchema.literals.filter(
   (kind) => getDesktopWindowDefinition(kind).singleInstance,
 );
 
-const makeWindow = (id: number) => {
+const makeWindow = (id: number, devToolsFailure?: Error) => {
   let visible = false;
   return Object.assign(new EventEmitter(), {
     id,
@@ -71,6 +74,9 @@ const makeWindow = (id: number) => {
     setTitle: () => {},
     webContents: Object.assign(new EventEmitter(), {
       id,
+      openDevTools: () => {
+        if (devToolsFailure !== undefined) throw devToolsFailure;
+      },
       focus: () => undefined,
       send: () => undefined,
       getZoomFactor: () => 1,
@@ -82,17 +88,28 @@ const makeWindow = (id: number) => {
   });
 };
 
-const makeHarness = (useGameTabs = false) => {
+const makeHarness = (
+  useGameTabs = false,
+  options: {
+    readonly debug?: boolean;
+    readonly devToolsFailure?: Error;
+    readonly openExternal?: Effect.Effect<boolean>;
+  } = {},
+) => {
   let settingsRead: Effect.Effect<void> = Effect.void;
   let nextLoad: Effect.Effect<void, ElectronWindowLoadError> | undefined;
   let nextRendererId = 101;
   const created = new Map<number, ReturnType<typeof makeWindow>>();
+  const openRequests = new Map<number, (url: string) => void>();
+  const records: unknown[] = [];
 
   const windowService = ElectronWindow.of({
-    create: () =>
+    create: (_options, onWindowOpenRequest) =>
       Effect.sync(() => {
-        const window = makeWindow(nextRendererId++);
+        const window = makeWindow(nextRendererId++, options.devToolsFailure);
         created.set(window.id, window);
+        if (onWindowOpenRequest !== undefined)
+          openRequests.set(window.id, onWindowOpenRequest);
         return window as unknown as ElectronWindowHandle;
       }),
     createHost: () =>
@@ -101,10 +118,12 @@ const makeHarness = (useGameTabs = false) => {
         created.set(window.id, window);
         return window as unknown as ElectronWindowHandle;
       }),
-    createView: () =>
+    createView: (_options, onWindowOpenRequest) =>
       Effect.sync(() => {
-        const window = makeWindow(nextRendererId++);
+        const window = makeWindow(nextRendererId++, options.devToolsFailure);
         created.set(window.id, window);
+        if (onWindowOpenRequest !== undefined)
+          openRequests.set(window.id, onWindowOpenRequest);
         let bounds = { x: 0, y: 0, width: 0, height: 0 };
         return {
           native: {},
@@ -130,6 +149,7 @@ const makeHarness = (useGameTabs = false) => {
     desktopEnvironmentLayer({
       appDataDir: "/tmp/lucent-app-data",
       assetsDir: "/tmp/lucent-assets",
+      debug: options.debug ?? false,
       isDev: true,
       platform: "darwin",
       workspaceDir: "/tmp/lucent-workspace",
@@ -173,7 +193,7 @@ const makeHarness = (useGameTabs = false) => {
     Layer.succeed(
       ElectronShell,
       ElectronShell.of({
-        openExternal: () => Effect.succeed(true),
+        openExternal: () => options.openExternal ?? Effect.succeed(true),
         openPath: () => Effect.succeed(true),
         showItemInFolder: () => Effect.void,
       }),
@@ -194,6 +214,8 @@ const makeHarness = (useGameTabs = false) => {
 
   return {
     created,
+    openRequests,
+    records,
     failNextLoadAfter: (gate: Effect.Effect<void>) => {
       nextLoad = gate.pipe(
         Effect.andThen(
@@ -211,7 +233,22 @@ const makeHarness = (useGameTabs = false) => {
       settingsRead = heldSettings.await;
       return heldSettings;
     }),
-    layer: desktopWindowsLayer.pipe(Layer.provide(dependencies)),
+    layer: desktopWindowsLayer.pipe(
+      Layer.provide(dependencies),
+      Layer.provideMerge(
+        Layer.mergeAll(
+          Logger.layer(
+            [
+              Logger.make((options) => {
+                records.push(desktopLogRecord(options));
+              }),
+            ],
+            { mergeWithExisting: false },
+          ),
+          Layer.succeed(References.MinimumLogLevel, "Debug"),
+        ),
+      ),
+    ),
   };
 };
 
@@ -233,6 +270,114 @@ const startOpen = (
   );
 
 describe("DesktopWindows.open", () => {
+  it.effect.each([false, true])(
+    "logs window opens at Debug with tabs %s",
+    (useGameTabs) => {
+      const harness = makeHarness(useGameTabs);
+      return Effect.gen(function* () {
+        const windows = yield* DesktopWindows;
+        yield* windows.open("game");
+        expect(harness.records).toEqual([
+          useGameTabs
+            ? {
+                at: "1970-01-01T00:00:00.000Z",
+                level: "debug",
+                component: "window",
+                message: "Multi-game window opened",
+                data: { hostRendererId: 103, id: 104 },
+              }
+            : {
+                at: "1970-01-01T00:00:00.000Z",
+                level: "debug",
+                component: "window",
+                message: "Desktop window opened",
+                data: { rendererId: 101, kind: "game" },
+              },
+        ]);
+      }).pipe(Effect.provide(harness.layer));
+    },
+  );
+
+  it.effect.each([false, true])(
+    "keeps DevTools failure details at Debug with tabs %s",
+    (useGameTabs) => {
+      const harness = makeHarness(useGameTabs, {
+        debug: true,
+        devToolsFailure: new Error("DevTools unavailable"),
+      });
+      return Effect.gen(function* () {
+        const windows = yield* DesktopWindows;
+        yield* windows.open("game");
+        expect(harness.records).toEqual([
+          {
+            at: "1970-01-01T00:00:00.000Z",
+            level: "debug",
+            component: "window",
+            message: useGameTabs
+              ? "Failed to open game view DevTools"
+              : "Failed to open DevTools",
+            data: useGameTabs
+              ? { rendererId: 104 }
+              : { rendererId: 101, kind: "game" },
+            error: [
+              {
+                name: "DesktopWindowError",
+                message: useGameTabs
+                  ? "Failed to open game view DevTools: 104"
+                  : "Failed to open DevTools for desktop window: 101",
+                stack: expect.any(String),
+                cause: {
+                  name: "Error",
+                  message: "DevTools unavailable",
+                  stack: expect.any(String),
+                },
+              },
+            ],
+          },
+          useGameTabs
+            ? {
+                at: "1970-01-01T00:00:00.000Z",
+                level: "debug",
+                component: "window",
+                message: "Multi-game window opened",
+                data: { hostRendererId: 103, id: 104 },
+              }
+            : {
+                at: "1970-01-01T00:00:00.000Z",
+                level: "debug",
+                component: "window",
+                message: "Desktop window opened",
+                data: { rendererId: 101, kind: "game" },
+              },
+        ]);
+      }).pipe(Effect.provide(harness.layer));
+    },
+  );
+
+  it.effect.each([false, true])(
+    "logs only the host after an external game URL fails with tabs %s",
+    (useGameTabs) => {
+      const harness = makeHarness(useGameTabs, {
+        openExternal: Effect.succeed(false),
+      });
+      return Effect.gen(function* () {
+        const windows = yield* DesktopWindows;
+        const rendererId = yield* windows.open("game");
+        harness.openRequests.get(rendererId)!(
+          "https://account.aq.com/private?token=secret#account",
+        );
+        yield* Effect.yieldNow.pipe(Effect.repeat({ times: 4 }));
+        expect(harness.records).toContainEqual({
+          at: "1970-01-01T00:00:00.000Z",
+          level: "warn",
+          component: "window",
+          message: "Failed to open game URL",
+          data: { host: "account.aq.com" },
+        });
+      }).pipe(Effect.provide(harness.layer));
+    },
+  );
+
   it.effect.each(singleInstanceKinds)(
     "opens one %s window for concurrent requests",
     (kind) => {
@@ -795,9 +940,6 @@ describe("DesktopWindows document commits", () => {
             }),
           showRendererRecoveryPrompt: () => Effect.succeed(1),
           suppressLaunchScript: () => Effect.void,
-          warn: () => Effect.void,
-          error: () => Effect.void,
-          info: () => Effect.void,
         });
         yield* recovery.install;
         const sender = yield* makeDesktopIpcSenders(windows).require(

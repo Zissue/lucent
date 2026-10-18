@@ -81,13 +81,6 @@ export interface DesktopGameRendererRecoveryDependencies {
     rendererId: number,
     message: string,
   ) => Effect.Effect<void, unknown>;
-  readonly warn: (message: string, data?: unknown) => Effect.Effect<void>;
-  readonly error: (
-    message: string,
-    cause: Cause.Cause<unknown>,
-    data?: unknown,
-  ) => Effect.Effect<void>;
-  readonly info: (message: string, data?: unknown) => Effect.Effect<void>;
 }
 
 export interface DesktopGameRendererRecoveryShape {
@@ -187,9 +180,13 @@ export const makeDesktopGameRendererRecovery = (
       const rendererId = target.id;
 
       if (!isExclusiveRendererProcess(target, dependencies.allWebContents)) {
-        yield* dependencies.warn(
+        yield* Effect.logWarning(
           "Refused to recover an unresponsive game renderer because its process is shared",
-          { rendererId },
+        ).pipe(
+          Effect.annotateLogs({
+            component: "game-renderer-recovery",
+            data: { rendererId },
+          }),
         );
         return;
       }
@@ -203,10 +200,14 @@ export const makeDesktopGameRendererRecovery = (
         .suppressLaunchScript(rendererId, RECOVERY_MESSAGE)
         .pipe(
           Effect.catch((cause) =>
-            dependencies.error(
+            Effect.logError(
               "Failed to suppress a script before renderer recovery",
               Cause.fail(cause),
-              { rendererId },
+            ).pipe(
+              Effect.annotateLogs({
+                component: "game-renderer-recovery",
+                data: { rendererId },
+              }),
             ),
           ),
         );
@@ -218,9 +219,12 @@ export const makeDesktopGameRendererRecovery = (
       // Electron documents this immediate reload sequence for recovering an
       // unresponsive renderer after the process has been forcefully ended.
       target.reload();
-      yield* dependencies.info("Recovered an unresponsive game renderer", {
-        rendererId,
-      });
+      yield* Effect.logInfo("Recovered an unresponsive game renderer").pipe(
+        Effect.annotateLogs({
+          component: "game-renderer-recovery",
+          data: { rendererId },
+        }),
+      );
     });
 
   const offerCrashRecovery = (
@@ -231,10 +235,12 @@ export const makeDesktopGameRendererRecovery = (
       const { target } = attempt;
       const rendererId = target.id;
 
-      yield* dependencies.warn("Game renderer crashed", {
-        reason: crash.reason,
-        rendererId,
-      });
+      yield* Effect.logWarning("Game renderer crashed").pipe(
+        Effect.annotateLogs({
+          component: "game-renderer-recovery",
+          data: { reason: crash.reason, rendererId },
+        }),
+      );
 
       const response = yield* dependencies.showRendererRecoveryPrompt(
         attempt.parentWindowId,
@@ -246,10 +252,14 @@ export const makeDesktopGameRendererRecovery = (
           .suppressLaunchScript(rendererId, RENDERER_RECOVERY_MESSAGE)
           .pipe(
             Effect.catch((cause) =>
-              dependencies.error(
+              Effect.logError(
                 "Failed to suppress a script before renderer crash recovery",
                 Cause.fail(cause),
-                { rendererId },
+              ).pipe(
+                Effect.annotateLogs({
+                  component: "game-renderer-recovery",
+                  data: { rendererId },
+                }),
               ),
             ),
           );
@@ -257,10 +267,12 @@ export const makeDesktopGameRendererRecovery = (
       }
       executions.delete(attempt.lifetime);
       target.reload();
-      yield* dependencies.info("Recovered a crashed game renderer", {
-        reason: crash.reason,
-        rendererId,
-      });
+      yield* Effect.logInfo("Recovered a crashed game renderer").pipe(
+        Effect.annotateLogs({
+          component: "game-renderer-recovery",
+          data: { reason: crash.reason, rendererId },
+        }),
+      );
     });
 
   const install = Effect.gen(function* () {
@@ -323,9 +335,14 @@ export const makeDesktopGameRendererRecovery = (
         Effect.catchCause((cause) =>
           Cause.hasInterrupts(cause)
             ? Effect.void
-            : dependencies.error("Failed to offer renderer recovery", cause, {
-                rendererId: target.id,
-              }),
+            : logFailure("Failed to offer renderer recovery", cause, {
+                failure: "error",
+              }).pipe(
+                Effect.annotateLogs({
+                  component: "game-renderer-recovery",
+                  data: { rendererId: target.id },
+                }),
+              ),
         ),
         Effect.ensuring(
           Effect.sync(() => {
@@ -496,27 +513,6 @@ const makeLiveDesktopGameRendererRecovery = Effect.gen(function* () {
         )
         .pipe(Effect.map((result) => result.response)),
     suppressLaunchScript: accounts.suppressGameWindowLaunchScript,
-    warn: (message, data) =>
-      Effect.logWarning(message).pipe(
-        Effect.annotateLogs({
-          component: "game-renderer-recovery",
-          data: data,
-        }),
-      ),
-    error: (message, cause, data) =>
-      logFailure(message, cause, { failure: "error" }).pipe(
-        Effect.annotateLogs({
-          component: "game-renderer-recovery",
-          data: data,
-        }),
-      ),
-    info: (message, data) =>
-      Effect.logInfo(message).pipe(
-        Effect.annotateLogs({
-          component: "game-renderer-recovery",
-          data: data,
-        }),
-      ),
   });
 });
 

@@ -70,7 +70,7 @@ const checkForUpdatesAtStartup = Effect.fn("checkForUpdatesAtStartup")(
     const updates = yield* DesktopUpdates;
     const windows = yield* DesktopWindows;
     const updateState = yield* updates.checkNow();
-    yield* Effect.logInfo("Startup update check completed").pipe(
+    yield* Effect.logDebug("Startup update check completed").pipe(
       Effect.annotateLogs({
         component: "updates",
         data: {

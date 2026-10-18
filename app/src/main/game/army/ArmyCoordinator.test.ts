@@ -9,6 +9,7 @@ import * as Result from "effect/Result";
 import * as TestClock from "effect/testing/TestClock";
 
 import type { ArmyConfigPayload } from "@lucent/core/army";
+import { desktopLogRecord } from "../../../shared/logRecord";
 import {
   ARMY_SYNC_TIMEOUT_MS,
   arriveAtStep,
@@ -42,6 +43,68 @@ const makeConfig = (players: readonly string[]): ArmyConfigPayload => ({
 });
 
 describe("ArmyCoordinator", () => {
+  it.effect.each(["application-quit", "participant-left"] as const)(
+    "logs normal %s session lifecycle at Debug",
+    (kind) => {
+      const records: unknown[] = [];
+      return Effect.gen(function* () {
+        const coordinator = yield* makeArmyCoordinator();
+        const session = yield* coordinator.join(
+          makeConfig(["Alice"]),
+          "Alice",
+          live(7),
+        );
+        yield* TestClock.adjust("5 seconds");
+        yield* coordinator.abortSession(session.sessionId, {
+          kind,
+          reason: "Finished",
+        });
+        expect(records).toEqual([
+          {
+            at: "1970-01-01T00:00:00.000Z",
+            level: "debug",
+            component: "army",
+            message: "Army session started",
+            data: {
+              configName: "test",
+              room: "1234",
+              roster: [{ playerName: "Alice", rendererId: 7 }],
+              sessionId: "0-0",
+            },
+          },
+          {
+            at: "1970-01-01T00:00:05.000Z",
+            level: "debug",
+            component: "army",
+            message: "Army session ended",
+            data: {
+              cause: { kind, reason: "Finished" },
+              configName: "test",
+              durationMs: 5000,
+              lastCompletedStep: null,
+              room: "1234",
+              roster: [{ playerName: "Alice", rendererId: 7 }],
+              sessionId: "0-0",
+              status: "active",
+            },
+          },
+        ]);
+      }).pipe(
+        Effect.provide(
+          Logger.layer(
+            [
+              Logger.make((options) => {
+                records.push(desktopLogRecord(options));
+              }),
+            ],
+            { mergeWithExisting: false },
+          ),
+        ),
+        Effect.provideService(References.MinimumLogLevel, "Debug"),
+      );
+    },
+  );
+
   it.effect(
     "rejects an unavailable participant without creating a session",
     () =>
@@ -199,7 +262,9 @@ describe("ArmyCoordinator", () => {
 
       expect(records).toContainEqual(
         expect.objectContaining({
-          level: "Warn",
+          level: "warn",
+          message: "Army session ended",
+          component: "army",
           data: expect.objectContaining({
             sessionId: alice.sessionId,
             cause: {
@@ -222,10 +287,7 @@ describe("ArmyCoordinator", () => {
       Effect.provide(
         Logger.layer([
           Logger.make((options) => {
-            records.push({
-              level: options.logLevel,
-              ...options.fiber.getRef(References.CurrentLogAnnotations),
-            });
+            records.push(desktopLogRecord(options));
           }),
         ]),
       ),
@@ -667,6 +729,7 @@ describe("army registration interruption", () => {
         }),
       ]);
     }).pipe(
+      Effect.provideService(References.MinimumLogLevel, "Debug"),
       Effect.provide(
         Logger.layer([
           Logger.make((options) => {

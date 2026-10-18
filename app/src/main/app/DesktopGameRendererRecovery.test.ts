@@ -2,11 +2,17 @@ import { EventEmitter } from "node:events";
 
 import { describe, expect, it } from "@effect/vitest";
 import { vi } from "vitest";
+import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
+import * as Logger from "effect/Logger";
 import * as Scope from "effect/Scope";
+import {
+  desktopLogRecord,
+  type DesktopLogRecord,
+} from "../../shared/logRecord";
 import { makeLifetime } from "../window/RendererLifetimeTesting";
 import { makeListenerRegistry } from "./ListenerRegistry";
 import type {
@@ -31,11 +37,15 @@ const makeHarness = (
   options: {
     readonly holdSuppression?: boolean;
     readonly holdPromptCleanup?: boolean;
+    readonly suppressionFailure?: Error;
+    readonly promptFailure?: Effect.Effect<never, unknown>;
   } = {},
 ) =>
   Effect.gen(function* () {
     const events = new EventEmitter();
     const timeline: string[] = [];
+    const records: DesktopLogRecord[] = [];
+    const causes: { name: string; message: string }[][] = [];
     const answers: ((response: number) => void)[] = [];
     const signals: AbortSignal[] = [];
     const suppressions: Deferred.Deferred<void>[] = [];
@@ -84,6 +94,7 @@ const makeHarness = (
     } as unknown as RecoverableGameWebContents;
 
     const prompt = (title: string) => () =>
+      options.promptFailure ??
       Effect.promise((signal) => {
         const answer = Promise.withResolvers<number>();
         timeline.push(`${title} prompt for generation ${generation}`);
@@ -125,25 +136,41 @@ const makeHarness = (
       suppressLaunchScript: () =>
         Effect.gen(function* () {
           timeline.push("suppress");
+          if (options.suppressionFailure !== undefined)
+            return yield* Effect.fail(options.suppressionFailure);
           if (options.holdSuppression !== true) return;
           const release = yield* Deferred.make<void>();
           suppressions.push(release);
           yield* Deferred.await(release);
         }),
-      warn: () => Effect.void,
-      error: (message) =>
-        Effect.sync(() => {
-          timeline.push(`error: ${message}`);
-        }),
-      info: () => Effect.void,
     });
 
     const installation = yield* Scope.fork(parentScope);
-    yield* recovery.install.pipe(Scope.provide(installation));
+    yield* recovery.install.pipe(
+      Scope.provide(installation),
+      Effect.provide(
+        Logger.layer(
+          [
+            Logger.make((options) => {
+              records.push(desktopLogRecord(options));
+              causes.push(
+                Cause.prettyErrors(options.cause).map((error) => ({
+                  name: error.name,
+                  message: error.message,
+                })),
+              );
+            }),
+          ],
+          { mergeWithExisting: false },
+        ),
+      ),
+    );
 
     return {
       closeInstallation: Scope.close(installation, Exit.void),
       timeline,
+      records,
+      causes,
       signals,
       releasePromptCleanup: Deferred.succeed(cleanupRelease, undefined).pipe(
         Effect.andThen(settle),
@@ -204,6 +231,138 @@ const makeHarness = (
   });
 
 describe("makeDesktopGameRendererRecovery", () => {
+  it.effect("logs the refusal to recover a shared renderer", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      yield* harness.startScript;
+      yield* harness.shareProcess(true);
+      yield* harness.hang;
+      expect(harness.records).toEqual([
+        {
+          at: "1970-01-01T00:00:00.000Z",
+          level: "warn",
+          component: "game-renderer-recovery",
+          message:
+            "Refused to recover an unresponsive game renderer because its process is shared",
+          data: { rendererId: 7 },
+        },
+      ]);
+    }),
+  );
+
+  it.effect("logs successful unresponsive recovery", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      yield* harness.startScript;
+      yield* harness.hang;
+      yield* harness.answer(0, RELOAD);
+      expect(harness.records).toEqual([
+        {
+          at: "1970-01-01T00:00:00.000Z",
+          level: "info",
+          component: "game-renderer-recovery",
+          message: "Recovered an unresponsive game renderer",
+          data: { rendererId: 7 },
+        },
+      ]);
+    }),
+  );
+
+  it.effect("logs a crash and its successful recovery", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      yield* harness.crash;
+      yield* harness.answer(0, RELOAD);
+      expect(harness.records).toEqual([
+        {
+          at: "1970-01-01T00:00:00.000Z",
+          level: "warn",
+          component: "game-renderer-recovery",
+          message: "Game renderer crashed",
+          data: { reason: "crashed", rendererId: 7 },
+        },
+        {
+          at: "1970-01-01T00:00:00.000Z",
+          level: "info",
+          component: "game-renderer-recovery",
+          message: "Recovered a crashed game renderer",
+          data: { reason: "crashed", rendererId: 7 },
+        },
+      ]);
+    }),
+  );
+
+  it.effect.each([false, true])(
+    "keeps a script suppression Cause during crash recovery %s",
+    (crashed) =>
+      Effect.gen(function* () {
+        const harness = yield* makeHarness({
+          suppressionFailure: new Error("suppression unavailable"),
+        });
+        yield* harness.startScript;
+        yield* crashed ? harness.crash : harness.hang;
+        yield* harness.answer(0, RELOAD);
+        expect(
+          harness.records.filter((record) => record.level === "error"),
+        ).toEqual([
+          {
+            at: "1970-01-01T00:00:00.000Z",
+            level: "error",
+            component: "game-renderer-recovery",
+            message: crashed
+              ? "Failed to suppress a script before renderer crash recovery"
+              : "Failed to suppress a script before renderer recovery",
+            data: { rendererId: 7 },
+            error: [
+              {
+                name: "Error",
+                message: "suppression unavailable",
+                stack: expect.any(String),
+              },
+            ],
+          },
+        ]);
+        expect(harness.causes).toEqual([
+          ...(crashed ? [[]] : []),
+          [{ name: "Error", message: "suppression unavailable" }],
+          [],
+        ]);
+      }),
+  );
+
+  it.effect.each([false, true])(
+    "keeps the Cause when offering recovery fails with a defect %s",
+    (defect) =>
+      Effect.gen(function* () {
+        const harness = yield* makeHarness({
+          promptFailure: (defect ? Effect.die : Effect.fail)(
+            new Error("dialog unavailable"),
+          ),
+        });
+        yield* harness.startScript;
+        yield* harness.hang;
+        expect(harness.records).toEqual([
+          {
+            at: "1970-01-01T00:00:00.000Z",
+            level: "error",
+            component: "game-renderer-recovery",
+            message: "Failed to offer renderer recovery",
+            data: { rendererId: 7 },
+            error: [
+              {
+                name: "Error",
+                message: "dialog unavailable",
+                stack: expect.any(String),
+              },
+            ],
+          },
+        ]);
+        expect(harness.causes).toEqual([
+          [{ name: "Error", message: "dialog unavailable" }],
+        ]);
+      }),
+  );
+
   it.effect(
     "does not crash a newer generation when an older unresponsive dialog is accepted",
     () =>
