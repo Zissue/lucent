@@ -444,10 +444,10 @@ export const makeScriptFileSystem = (
   });
 
   return ScriptFileSystem.of({
-    exists,
-    list,
-    readJson,
-    readText,
+    exists: (path) => mutations.withPermit(exists(path)),
+    list: (path) => mutations.withPermit(list(path)),
+    readJson: (path) => mutations.withPermit(readJson(path)),
+    readText: (path) => mutations.withPermit(readText(path)),
     remove: (path) => mutations.withPermit(remove(path)),
     writeJson: (path, value) => mutations.withPermit(writeJson(path, value)),
     writeText: (path, contents) =>

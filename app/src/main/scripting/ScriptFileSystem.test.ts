@@ -1,4 +1,10 @@
-import { promises as fs, lstatSync, renameSync, writeFileSync } from "node:fs";
+import {
+  promises as fs,
+  lstatSync,
+  readFileSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -128,6 +134,52 @@ describe("ScriptFileSystem", () => {
   );
 
   layer(NodeFileSystem.layer)((it) => {
+    it.effect("reads saved progress after an earlier pending write", () =>
+      Effect.gen(function* () {
+        const directory = yield* Effect.promise(makeFixture);
+        const fileSystem = yield* FileSystem.FileSystem;
+        yield* fileSystem.writeFileString(
+          join(directory, "state.json"),
+          '{"count":1}',
+        );
+        const renameStarted = yield* Deferred.make<void>();
+        const releaseRename = yield* Deferred.make<void>();
+        vi.spyOn(BoundedFileSystem, "lstat").mockImplementation((path) =>
+          Effect.sync(() => lstatSync(path)),
+        );
+        const service = makeScriptFileSystem(
+          FileSystem.FileSystem.of({
+            ...fileSystem,
+            rename: (from, to) =>
+              Effect.gen(function* () {
+                yield* Deferred.succeed(renameStarted, undefined);
+                yield* Deferred.await(releaseRename);
+                yield* fileSystem.rename(from, to);
+              }),
+            stream: (path) =>
+              Stream.fromEffect(Effect.sync(() => readFileSync(path))),
+          }),
+          directory,
+        );
+
+        const write = yield* service
+          .writeJson("state.json", { count: 3 })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(renameStarted);
+        const text = yield* service
+          .readText("state.json")
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        const json = yield* service
+          .readJson("state.json")
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Deferred.succeed(releaseRename, undefined);
+        yield* Fiber.join(write);
+
+        expect(yield* Fiber.join(text)).toBe('{\n  "count": 3\n}\n');
+        expect(yield* Fiber.join(json)).toEqual({ count: 3 });
+      }).pipe(Effect.provideService(PreventSchedulerYield, true)),
+    );
+
     it.effect("keeps the latest write when saves overlap on one path", () =>
       Effect.gen(function* () {
         const directory = yield* Effect.promise(makeFixture);
