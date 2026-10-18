@@ -1,7 +1,6 @@
 import * as Schema from "effect/Schema";
 
 import {
-  ArmyConfigPayloadSchema,
   ArmyLoopTauntCommandPayloadSchema,
   ArmyLoopTauntLeavePayloadSchema,
   ArmyLoopTauntRegisterPayloadSchema,
@@ -32,14 +31,6 @@ const ProgressResultSchema = Schema.Struct({
 });
 
 export const ArmyIpc = {
-  loadConfig: defineInvoke({
-    channel: `${namespace}:load-config`,
-    name: "army.loadConfig",
-    payload: Schema.Struct({
-      configName: Schema.String,
-    }),
-    result: ArmyConfigPayloadSchema,
-  }),
   start: defineInvoke({
     channel: `${namespace}:start`,
     name: "army.start",

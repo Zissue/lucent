@@ -31,7 +31,6 @@ import type {
   FileSystemFailure,
 } from "@lucent/core/filesystem";
 import type {
-  ArmyConfigPayload,
   ArmyFailPayload,
   ArmyLoopTauntCommandPayload,
   ArmyLoopTauntLeavePayload,
@@ -135,9 +134,7 @@ export interface DesktopSettingsManagementBridge extends DesktopSettingsBridge {
 }
 
 export interface DesktopUpdatesBridge {
-  readonly checkNow: (options?: {
-    readonly force?: boolean;
-  }) => Promise<UpdateCheckState>;
+  readonly checkNow: () => Promise<UpdateCheckState>;
   readonly getState: () => Promise<UpdateCheckState>;
   readonly onChanged: (
     listener: (state: UpdateCheckState) => void,
@@ -212,9 +209,6 @@ export interface DesktopCombatProfilesBridge {
 }
 
 export interface DesktopAccountsBridge {
-  readonly closeGameWindow: (
-    request: AccountGameWindowTargetRequest,
-  ) => Promise<AccountManagerState>;
   readonly closeGameWindows: (
     gameWindowIds: readonly number[],
   ) => Promise<AccountManagerState>;
@@ -224,7 +218,6 @@ export interface DesktopAccountsBridge {
   readonly createGroup: (
     draft: ManagedAccountGroupDraft,
   ) => Promise<AccountManagerState>;
-  readonly deleteAccount: (username: string) => Promise<AccountManagerState>;
   readonly deleteAccounts: (
     usernames: readonly string[],
   ) => Promise<AccountManagerState>;
@@ -456,7 +449,6 @@ export interface DesktopEnvironmentBridge {
 export interface DesktopArmyBridge {
   readonly fail: (payload: ArmyFailPayload) => Promise<void>;
   readonly leave: () => Promise<void>;
-  readonly loadConfig: (configName: string) => Promise<ArmyConfigPayload>;
   readonly loopTauntAwait: (
     payload: ArmyLoopTauntRunPayload,
   ) => Promise<ArmyLoopTauntTerminalResult>;
@@ -484,10 +476,6 @@ export interface DesktopArmyBridge {
 }
 
 export interface DesktopLogBridge {
-  readonly error: (message: string, error?: unknown) => void;
-  readonly warn: (message: string, error?: unknown) => void;
-  readonly info: (message: string, error?: unknown) => void;
-  readonly debug: (message: string, error?: unknown) => void;
   readonly write: (record: RendererLogRecord) => void;
 }
 

@@ -1698,7 +1698,7 @@ export function App(props: {
       getSettings={() => settings.get()}
       getUpdateState={() => updates.getState()}
       onAppearancePatch={(patch) => settings.updateAppearance(patch)}
-      onCheckForUpdates={() => updates.checkNow({ force: true })}
+      onCheckForUpdates={() => updates.checkNow()}
       onHotkeysPatch={(patch) => settings.updateHotkeys(patch)}
       onOpenReleasePage={() => updates.openReleasePage()}
       onPreferencesPatch={(patch) => settings.updatePreferences(patch)}

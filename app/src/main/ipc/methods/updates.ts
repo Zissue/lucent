@@ -18,9 +18,9 @@ export const getState = makeDesktopIpcMethod({
 export const checkNow = makeDesktopIpcMethod({
   descriptor: UpdatesIpc.checkNow,
   allowedSenders: updateSenders,
-  handler: Effect.fn("desktop.ipc.updates.checkNow")(function* (payload) {
+  handler: Effect.fn("desktop.ipc.updates.checkNow")(function* () {
     const updates = yield* DesktopUpdates;
-    return yield* updates.checkNow({ force: payload.force === true });
+    return yield* updates.checkNow({ force: true });
   }),
 });
 

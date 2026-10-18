@@ -380,6 +380,45 @@ describe("DesktopUpdates", () => {
   );
 
   it.effect(
+    "checks for updates through IPC when startup checks are disabled",
+    () =>
+      Effect.gen(function* () {
+        mockGitHubResponse({
+          body: JSON.stringify({
+            draft: false,
+            html_url: "https://github.com/toommyliu/lucent/releases/tag/v1.1.0",
+            prerelease: false,
+            tag_name: "v1.1.0",
+          }),
+        });
+        const { layer } = yield* makeUpdatesHarness({
+          checkForUpdates: false,
+          currentVersion: "1.0.0",
+        });
+        const context = yield* Layer.build(layer);
+        const invoke = createDesktopIpcInvokeHandler(
+          UpdatesIpcMethods.checkNow.descriptor,
+          (payload) =>
+            UpdatesIpcMethods.checkNow.handler(payload, {
+              rendererId: 1,
+              kind: "settings",
+              lifetime: makeLifetime(1),
+            }),
+          Effect.runPromiseWith(context),
+        );
+
+        const envelope = yield* Effect.promise(() =>
+          invoke(undefined, undefined),
+        );
+
+        expect(envelope).toMatchObject({
+          ok: true,
+          value: { status: "available", latestVersion: "1.1.0" },
+        });
+      }),
+  );
+
+  it.effect(
     "answers an IPC check without an error when shutdown cancels it",
     () =>
       Effect.gen(function* () {
@@ -398,7 +437,7 @@ describe("DesktopUpdates", () => {
             (payload) => UpdatesIpcMethods.checkNow.handler(payload, sender),
             Effect.runPromiseWith(context),
           );
-          const pending = invoke(undefined, { force: true });
+          const pending = invoke(undefined, undefined);
           yield* Deferred.await(started);
           const state = yield* (yield* DesktopUpdates).getState;
           return { pending, state };

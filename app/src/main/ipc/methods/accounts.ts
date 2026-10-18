@@ -92,15 +92,6 @@ export const updateAccount = makeDesktopIpcMethod({
   }),
 });
 
-export const deleteAccount = makeDesktopIpcMethod({
-  descriptor: AccountsIpc.deleteAccount,
-  allowedSenders: accountManagerSenders,
-  handler: Effect.fn("desktop.ipc.accounts.deleteAccount")(function* (payload) {
-    const accounts = yield* Accounts;
-    return yield* accounts.deleteAccount(payload.username);
-  }),
-});
-
 export const deleteAccounts = makeDesktopIpcMethod({
   descriptor: AccountsIpc.deleteAccounts,
   allowedSenders: accountManagerSenders,
@@ -159,17 +150,6 @@ export const focusGameWindow = makeDesktopIpcMethod({
   ),
 });
 
-export const closeGameWindow = makeDesktopIpcMethod({
-  descriptor: AccountsIpc.closeGameWindow,
-  allowedSenders: accountManagerSenders,
-  handler: Effect.fn("desktop.ipc.accounts.closeGameWindow")(
-    function* (request) {
-      const accounts = yield* Accounts;
-      return yield* accounts.closeGameWindow(request.gameWindowId);
-    },
-  ),
-});
-
 export const closeGameWindows = makeDesktopIpcMethod({
   descriptor: AccountsIpc.closeGameWindows,
   allowedSenders: accountManagerSenders,
@@ -201,14 +181,12 @@ export const methods = [
   prepareGameLoadRecovery,
   createAccount,
   updateAccount,
-  deleteAccount,
   deleteAccounts,
   createGroup,
   updateGroup,
   deleteGroup,
   launch,
   focusGameWindow,
-  closeGameWindow,
   closeGameWindows,
   reportSession,
 ] as const;

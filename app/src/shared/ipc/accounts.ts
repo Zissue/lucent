@@ -70,14 +70,6 @@ export const AccountsIpc = {
     }),
     result: AccountManagerStateSchema,
   }),
-  deleteAccount: defineInvoke({
-    channel: `${namespace}:delete-account`,
-    name: "accounts.deleteAccount",
-    payload: Schema.Struct({
-      username: Schema.String,
-    }),
-    result: AccountManagerStateSchema,
-  }),
   deleteAccounts: defineInvoke({
     channel: `${namespace}:delete-accounts`,
     name: "accounts.deleteAccounts",
@@ -118,12 +110,6 @@ export const AccountsIpc = {
   focusGameWindow: defineInvoke({
     channel: `${namespace}:focus-game-window`,
     name: "accounts.focusGameWindow",
-    payload: AccountGameWindowTargetRequestSchema,
-    result: AccountManagerStateSchema,
-  }),
-  closeGameWindow: defineInvoke({
-    channel: `${namespace}:close-game-window`,
-    name: "accounts.closeGameWindow",
     payload: AccountGameWindowTargetRequestSchema,
     result: AccountManagerStateSchema,
   }),

@@ -323,7 +323,7 @@ describe("Accounts", () => {
           yield* Fiber.interrupt(running);
           expect(connections).toEqual(["online"]);
           yield* accounts.reportSession(gameWindowId, report);
-          yield* accounts.closeGameWindow(gameWindowId);
+          yield* accounts.closeGameWindows([gameWindowId]);
           expect(connections).toEqual(["online", "missing"]);
         }).pipe(Effect.provide(layer));
       }),
@@ -467,7 +467,7 @@ describe("Accounts", () => {
             server: "Artix",
             script: { name: "farm.js", path: "/scripts/farm.js" },
           });
-          yield* accounts.closeGameWindow(original.gameWindowId);
+          yield* accounts.closeGameWindows([original.gameWindowId]);
           const wrongWindow = yield* Effect.flip(
             accounts.reopenGameWindow({
               id: original.gameWindowId,
@@ -538,7 +538,7 @@ describe("Accounts", () => {
           password: "secret",
         });
         const original = yield* accounts.launch({ username: "Alice" });
-        yield* accounts.closeGameWindow(original.gameWindowId);
+        yield* accounts.closeGameWindows([original.gameWindowId]);
         failOpen = true;
         yield* Effect.flip(
           accounts.reopenGameWindow({
@@ -586,7 +586,7 @@ describe("Accounts", () => {
             password: "secret",
           });
           const original = yield* accounts.launch({ username: "Alice" });
-          yield* accounts.closeGameWindow(original.gameWindowId);
+          yield* accounts.closeGameWindows([original.gameWindowId]);
           pause = true;
           const request = {
             id: original.gameWindowId,
@@ -627,8 +627,8 @@ describe("Accounts", () => {
           password: "secret",
         });
         const original = yield* accounts.launch({ username: "Alice" });
-        yield* accounts.closeGameWindow(original.gameWindowId);
-        yield* accounts.deleteAccount("Alice");
+        yield* accounts.closeGameWindows([original.gameWindowId]);
+        yield* accounts.deleteAccounts(["Alice"]);
         const reopened = yield* accounts.reopenGameWindow({
           id: original.gameWindowId,
           gameWindowGroupId: 1,
@@ -773,7 +773,7 @@ describe("Accounts", () => {
         script: { name: "farm.js", state: "running" },
       });
 
-      const closed = yield* accounts.closeGameWindow(launch.gameWindowId);
+      const closed = yield* accounts.closeGameWindows([launch.gameWindowId]);
       expect(closed.sessions).toEqual([]);
       expect(yield* accounts.getGameLaunch(launch.gameWindowId)).toBeNull();
     }),
@@ -895,7 +895,9 @@ describe("account profile retirement logging", () => {
           ]);
           expect(records[0]?.data).toEqual({ count: 2 });
           fail = false;
-          expect((yield* accounts.deleteAccount("Cara")).accounts).toEqual([]);
+          expect((yield* accounts.deleteAccounts(["Cara"])).accounts).toEqual(
+            [],
+          );
           expect(records).toHaveLength(1);
         }).pipe(
           Effect.provide(layer),
@@ -938,7 +940,7 @@ it.effect("keeps missing game profiles silent after account removal", () =>
     yield* Effect.gen(function* () {
       const accounts = yield* Accounts;
       yield* accounts.createAccount({ username: "Alice", password: "secret" });
-      expect((yield* accounts.deleteAccount("Alice")).accounts).toEqual([]);
+      expect((yield* accounts.deleteAccounts(["Alice"])).accounts).toEqual([]);
       expect(records).toEqual([]);
     }).pipe(
       Effect.provide(layer),

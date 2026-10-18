@@ -43,7 +43,6 @@ const makeBridge = (overrides: Partial<DesktopArmyBridge> = {}) => {
   const bridge: DesktopArmyBridge = {
     fail: async () => undefined,
     leave: async () => undefined,
-    loadConfig: async () => makeSession(),
     loopTauntAwait: async () => ({ status: "completed" }),
     loopTauntLeave: async () => undefined,
     loopTauntRegister: async () => ({ runId: "loop-1" }),
