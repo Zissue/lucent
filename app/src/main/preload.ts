@@ -379,8 +379,6 @@ const scriptingBridge: DesktopScriptingBridge = {
     invoke(ScriptingIpc.getInputValues, definition),
   installPackage: (input) => invoke(ScriptingIpc.installPackage, input),
   listCredentials: () => invoke(ScriptingIpc.listCredentials, undefined),
-  listPackageLeftovers: () =>
-    invoke(ScriptingIpc.listPackageLeftovers, undefined),
   loadReference: (reference) => invoke(ScriptingIpc.loadReference, reference),
   onCatalogChanged: (listener) =>
     subscribe(ScriptingIpc.catalogChanged, listener),

@@ -1,4 +1,3 @@
-import { promises as fs } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 
 import * as Cause from "effect/Cause";
@@ -7,7 +6,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { FileSystem } from "effect/FileSystem";
-import { isPlatformError, type PlatformError } from "effect/PlatformError";
+import { isPlatformError } from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
@@ -15,7 +14,6 @@ import type {
   ScriptCatalogOverview,
   ScriptPackageMutationResult,
   ScriptPackageIntegrity,
-  ScriptPackageLeftoverCopy,
   ScriptPackageRevision,
 } from "@lucent/core/scriptPackages";
 import { ScriptPackageDirectorySchema } from "@lucent/core/scriptPackages";
@@ -40,11 +38,6 @@ import {
 } from "./ScriptPackageInspection";
 import { ScriptPackageCatalog } from "./ScriptPackageCatalog";
 import type { ScriptPackageCatalogReplacement } from "./ScriptCatalogDiscovery";
-import {
-  findLeftoverPackageCopies,
-  SCRIPT_PACKAGE_BACKUP_PREFIX,
-  SCRIPT_PACKAGE_REMOVE_PREFIX,
-} from "./ScriptPackageLeftovers";
 import { hashDirectory, isPathInside } from "./ScriptPackageFileSystem";
 import { copyBundledScriptPackage } from "./BundledScriptPackageSnapshot";
 import {
@@ -71,7 +64,6 @@ const packageManagerOperationSchema = Schema.Literals([
   "check-update",
   "extract",
   "install",
-  "list-leftovers",
   "remove",
   "replace",
   "restore",
@@ -93,10 +85,6 @@ export class ScriptPackageManagerError extends Schema.TaggedError<ScriptPackageM
 }
 
 export interface ScriptPackageManagerShape {
-  readonly listLeftovers: Effect.Effect<
-    readonly ScriptPackageLeftoverCopy[],
-    ScriptPackageManagerError
-  >;
   readonly checkUpdate: (input: {
     readonly packageName: string;
   }) => Effect.Effect<ScriptCatalogOverview, ScriptPackageManagerError>;
@@ -407,37 +395,40 @@ export const layer = Layer.effect(
               ),
             ),
           );
-          yield* state.save(managed).pipe(
-            Effect.catch((cause) =>
-              movePath(destination, staging).pipe(
-                Effect.matchEffect({
-                  onFailure: (undoCause) =>
-                    Effect.fail(
-                      managerError(
-                        "replace",
-                        `Failed to save package installation state. The new package was left at ${destination}.`,
-                        { cause, undoCause: nativeCause(undoCause) },
-                      ),
+          yield* state
+            .save(managed)
+            .pipe(
+              Effect.catch((cause) =>
+                movePath(destination, staging).pipe(
+                  Effect.ignore,
+                  Effect.andThen(
+                    managerError(
+                      "replace",
+                      `Failed to save package installation state. Check ${destination}.`,
+                      cause,
                     ),
-                  onSuccess: () =>
-                    Effect.fail(
-                      managerError(
-                        "replace",
-                        "Failed to save package installation state.",
-                        cause,
-                      ),
-                    ),
-                }),
+                  ),
+                ),
               ),
-            ),
-          );
+            );
           return yield* publish;
         }
 
+        if (
+          expected !== undefined &&
+          (yield* inspectIntegrity(destination, expected)) !== "verified"
+        ) {
+          yield* refreshPackageIntegrity(
+            expected.name,
+            destination,
+            "modified",
+          ).pipe(Effect.mapError(mapCatalogError));
+          return localModifications(expected.name);
+        }
         const backupRoot = yield* fileSystem
           .makeTempDirectory({
             directory: env.workspaceDir,
-            prefix: SCRIPT_PACKAGE_BACKUP_PREFIX,
+            prefix: ".lucent-package-backup-",
           })
           .pipe(
             Effect.mapError((cause) =>
@@ -451,95 +442,64 @@ export const layer = Layer.effect(
         const backup = join(backupRoot, basename(destination));
         const discardBackup = fileSystem
           .remove(backupRoot, { recursive: true, force: true })
-          .pipe(Effect.ignore);
-        const removeEmptyBackup = Effect.tryPromise(() =>
-          fs.rmdir(backupRoot),
-        ).pipe(Effect.ignore);
-        const failReplacement = Effect.fnUntraced(function* (
-          cause: unknown,
-          restoredDetail: string,
-          unrestoredDetail = restoredDetail,
-        ): Effect.fn.Return<never, ScriptPackageManagerError> {
-          const backupExists = yield* Effect.tryPromise(() =>
-            pathExists(backup),
-          ).pipe(Effect.orElseSucceed(() => true));
-          if (!backupExists) yield* removeEmptyBackup;
-          return yield* managerError(
-            "replace",
-            backupExists
-              ? `${unrestoredDetail} The previous package is saved at ${backup}.`
-              : restoredDetail,
-            cause,
-          );
-        });
-        const rollBack = (
-          undo: Effect.Effect<void, PlatformError>,
-          cause: unknown,
-          restoredDetail: string,
-          unrestoredDetail: string,
-        ) =>
-          undo.pipe(
-            Effect.match({
-              onFailure: (restoreCause) => ({
-                cause: nativeCause(cause),
-                restoreCause: nativeCause(restoreCause),
-              }),
-              onSuccess: () => cause,
-            }),
-            Effect.flatMap((failureCause) =>
-              failReplacement(failureCause, restoredDetail, unrestoredDetail),
-            ),
-          );
-
-        yield* movePath(destination, backup).pipe(
-          Effect.catch((cause) =>
-            failReplacement(cause, "Failed to replace the package directory."),
-          ),
-        );
-        if (
-          expected !== undefined &&
-          (yield* inspectIntegrity(backup, expected)) !== "verified"
-        ) {
-          yield* movePath(backup, destination).pipe(
-            Effect.catch((cause) =>
-              failReplacement(
-                cause,
-                "Failed to restore the locally modified package.",
-              ),
-            ),
-          );
-          yield* removeEmptyBackup;
-          yield* refreshPackageIntegrity(
-            expected.name,
-            destination,
-            "modified",
-          ).pipe(Effect.mapError(mapCatalogError));
-          return localModifications(expected.name);
-        }
-        yield* movePath(staging, destination).pipe(
-          Effect.catch((cause) =>
-            rollBack(
-              movePath(backup, destination),
-              cause,
-              "Failed to replace the package directory; the previous package was restored.",
-              "Failed to replace the package directory and could not restore the previous package.",
-            ),
-          ),
-        );
-        yield* state
-          .save(managed)
           .pipe(
             Effect.catch((cause) =>
-              rollBack(
-                movePath(destination, staging).pipe(
-                  Effect.andThen(movePath(backup, destination)),
-                ),
-                cause,
-                "Failed to save package installation state.",
-                "Package state failed and the previous package could not be restored.",
+              Effect.logWarning(
+                "Failed to delete the package backup",
+                Cause.fail(cause),
+              ).pipe(
+                Effect.annotateLogs({
+                  component: "script-packages",
+                  data: { path: backupRoot },
+                }),
               ),
             ),
           );
+        yield* movePath(destination, backup).pipe(
+          Effect.catch((cause) =>
+            discardBackup.pipe(
+              Effect.andThen(
+                managerError(
+                  "replace",
+                  `Failed to move the previous package. Check ${destination}.`,
+                  cause,
+                ),
+              ),
+            ),
+          ),
+        );
+        yield* movePath(staging, destination).pipe(
+          Effect.andThen(
+            state
+              .save(managed)
+              .pipe(
+                Effect.tapError(() =>
+                  fileSystem
+                    .remove(destination, { recursive: true, force: true })
+                    .pipe(Effect.ignore),
+                ),
+              ),
+          ),
+          Effect.catch(
+            Effect.fnUntraced(function* (cause) {
+              yield* movePath(backup, destination).pipe(
+                Effect.mapError(() =>
+                  managerError(
+                    "replace",
+                    `Failed to replace the package. The previous package remains at ${backup}. Check ${destination}.`,
+                    cause,
+                  ),
+                ),
+              );
+              yield* discardBackup;
+              return yield* managerError(
+                "replace",
+                `Failed to replace the package. The previous package was restored at ${destination}.`,
+                cause,
+              );
+            }),
+          ),
+        );
         yield* discardBackup;
         return yield* publish;
       },
@@ -1173,82 +1133,10 @@ export const layer = Layer.effect(
             return localModifications(input.packageName);
           }
           return yield* Effect.gen(function* () {
-            const temporaryRoot = yield* fileSystem
-              .makeTempDirectory({
-                directory: env.workspaceDir,
-                prefix: SCRIPT_PACKAGE_REMOVE_PREFIX,
-              })
-              .pipe(
-                Effect.mapError((cause) =>
-                  managerError(
-                    "remove",
-                    "Failed to create removal staging.",
-                    cause,
-                  ),
-                ),
-              );
-            const removedPath = join(temporaryRoot, basename(root));
-            const removeEmptyStaging = Effect.tryPromise(() =>
-              fs.rmdir(temporaryRoot),
-            ).pipe(Effect.ignore);
-            const failRemoval = Effect.fnUntraced(function* (
-              cause: unknown,
-              restoredDetail: string,
-              unrestoredDetail = restoredDetail,
-            ): Effect.fn.Return<never, ScriptPackageManagerError> {
-              const location = yield* Effect.tryPromise(() =>
-                pathExists(removedPath),
-              ).pipe(
-                Effect.match({
-                  onFailure: () => "unknown" as const,
-                  onSuccess: (exists) =>
-                    exists ? ("present" as const) : ("absent" as const),
-                }),
-              );
-              if (location === "absent") yield* removeEmptyStaging;
-              return yield* managerError(
-                "remove",
-                location === "unknown"
-                  ? `Failed to remove the package. Its location could not be checked. Check ${root} and ${removedPath}.`
-                  : location === "present"
-                    ? `${unrestoredDetail} The package is saved at ${removedPath}.`
-                    : restoredDetail,
-                cause,
-              );
-            });
-            yield* fileSystem.rename(root, removedPath).pipe(
-              Effect.mapError((cause) =>
-                managerError(
-                  "remove",
-                  "Failed to stage the package for removal.",
-                  cause,
-                ),
-              ),
-              Effect.catch((cause) =>
-                failRemoval(cause, "Failed to stage the package for removal."),
-              ),
-            );
             if (
               input.confirmModified !== true &&
-              (yield* inspectIntegrity(removedPath, managed)) !== "verified"
+              (yield* inspectIntegrity(root, managed)) !== "verified"
             ) {
-              yield* fileSystem.rename(removedPath, root).pipe(
-                Effect.mapError((cause) =>
-                  managerError(
-                    "remove",
-                    "Failed to restore the locally modified package.",
-                    cause,
-                  ),
-                ),
-                Effect.catch((cause) =>
-                  failRemoval(
-                    cause,
-                    "The locally modified package was restored.",
-                    "Failed to restore the locally modified package.",
-                  ),
-                ),
-              );
-              yield* removeEmptyStaging;
               yield* refreshPackageIntegrity(
                 input.packageName,
                 root,
@@ -1256,52 +1144,27 @@ export const layer = Layer.effect(
               ).pipe(Effect.mapError(mapCatalogError));
               return localModifications(input.packageName);
             }
-            yield* state.remove(input.packageName).pipe(
-              Effect.mapError((cause) =>
-                managerError(
-                  "remove",
-                  "Failed to update package state.",
-                  cause,
-                ),
-              ),
-              Effect.catch((error) =>
-                fileSystem.rename(removedPath, root).pipe(
-                  Effect.match({
-                    onFailure: (restoreCause) => ({
-                      cause: error,
-                      restoreCause: nativeCause(restoreCause),
-                    }),
-                    onSuccess: () => error,
-                  }),
-                  Effect.flatMap((cause) =>
-                    failRemoval(
-                      cause,
-                      "Failed to update package state. The package was restored.",
-                      "Package state failed and the package could not be restored.",
-                    ),
+            yield* state
+              .remove(input.packageName)
+              .pipe(
+                Effect.mapError((cause) =>
+                  managerError(
+                    "remove",
+                    "Failed to update package state.",
+                    cause,
                   ),
                 ),
-              ),
-            );
-            yield* fileSystem.remove(temporaryRoot, { recursive: true }).pipe(
-              Effect.mapError((cause) =>
-                managerError(
-                  "remove",
-                  "Failed to clean removal staging.",
-                  cause,
-                ),
-              ),
-              Effect.catch((cause) =>
-                Effect.logWarning(
-                  "Failed to clean package removal folder",
-                  Cause.fail(cause),
-                ).pipe(
-                  Effect.annotateLogs({
-                    component: "script-packages",
-                    repeatKey: temporaryRoot,
-                    data: { path: temporaryRoot },
-                  }),
-                ),
+              );
+            yield* fileSystem.remove(root, { recursive: true }).pipe(
+              Effect.catch(
+                Effect.fnUntraced(function* (cause) {
+                  yield* catalog.refresh.pipe(Effect.ignore);
+                  return yield* managerError(
+                    "remove",
+                    `Failed to delete the package folder at ${root}. It is now unmanaged.`,
+                    cause,
+                  );
+                }),
               ),
             );
             const nextCatalog = yield* catalog
@@ -1410,17 +1273,6 @@ export const layer = Layer.effect(
 
     return ScriptPackageManager.of({
       checkUpdate,
-      listLeftovers: mutationGate.withPermits(1)(
-        Effect.tryPromise({
-          try: () => findLeftoverPackageCopies(env.workspaceDir),
-          catch: (cause) =>
-            managerError(
-              "list-leftovers",
-              "Failed to find saved package folders.",
-              cause,
-            ),
-        }),
-      ),
       install: (input) => withScriptPackageInspectionFailures(install(input)),
       remove: (input) => withScriptPackageInspectionFailures(remove(input)),
       restore: (input) => withScriptPackageInspectionFailures(restore(input)),
