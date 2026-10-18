@@ -178,9 +178,13 @@ const moduleFromAnalysis = (
   source: analysis.file.source,
 });
 
-export const layer = Layer.effect(
-  ScriptSourceRegistry,
-  Effect.gen(function* () {
+export const makeScriptSourceRegistry = Effect.fn("makeScriptSourceRegistry")(
+  function* (
+    limits = {
+      maxBytes: SCRIPT_SOURCE_CACHE_MAX_BYTES,
+      maxEntries: SCRIPT_SOURCE_CACHE_MAX_ENTRIES,
+    },
+  ) {
     const catalog = yield* ScriptPackageCatalog;
     const scriptFiles = yield* ScriptFiles;
     const sourceCache = new Map<string, CachedSource>();
@@ -257,13 +261,14 @@ export const layer = Layer.effect(
         module: moduleFromAnalysis(target, analysis),
         requirements: target.format === "commonjs" ? analysis.requirements : [],
       };
-      if (cached !== undefined) sourceCacheBytes -= cached.bytes;
+      const previous = sourceCache.get(target.absolutePath);
+      if (previous !== undefined) sourceCacheBytes -= previous.bytes;
       sourceCache.delete(target.absolutePath);
       sourceCache.set(target.absolutePath, next);
       sourceCacheBytes += next.bytes;
       while (
-        sourceCacheBytes > SCRIPT_SOURCE_CACHE_MAX_BYTES ||
-        sourceCache.size > SCRIPT_SOURCE_CACHE_MAX_ENTRIES
+        sourceCacheBytes > limits.maxBytes ||
+        sourceCache.size > limits.maxEntries
       ) {
         const oldestPath = sourceCache.keys().next().value;
         if (oldestPath === undefined) break;
@@ -672,5 +677,10 @@ export const layer = Layer.effect(
       resolvePath,
       resolveReference,
     });
-  }),
+  },
+);
+
+export const layer = Layer.effect(
+  ScriptSourceRegistry,
+  makeScriptSourceRegistry(),
 );
