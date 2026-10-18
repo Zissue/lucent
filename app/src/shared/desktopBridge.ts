@@ -289,35 +289,22 @@ export type DesktopFileSystemResult<A> =
   | { readonly error: FileSystemFailure; readonly ok: false };
 
 export interface DesktopFileSystemBridge {
-  readonly closeSession: (sessionId: string) => Promise<void>;
-  readonly exists: (
-    sessionId: string,
-    path: string,
-  ) => Promise<DesktopFileSystemResult<boolean>>;
+  readonly exists: (path: string) => Promise<DesktopFileSystemResult<boolean>>;
   readonly list: (
-    sessionId: string,
     path?: string,
   ) => Promise<DesktopFileSystemResult<readonly FileSystemEntry[]>>;
-  readonly openSession: () => Promise<string>;
   readonly readJson: (
-    sessionId: string,
     path: string,
   ) => Promise<DesktopFileSystemResult<unknown | undefined>>;
   readonly readText: (
-    sessionId: string,
     path: string,
   ) => Promise<DesktopFileSystemResult<string | undefined>>;
-  readonly remove: (
-    sessionId: string,
-    path: string,
-  ) => Promise<DesktopFileSystemResult<void>>;
+  readonly remove: (path: string) => Promise<DesktopFileSystemResult<void>>;
   readonly writeJson: (
-    sessionId: string,
     path: string,
     value: unknown,
   ) => Promise<DesktopFileSystemResult<void>>;
   readonly writeText: (
-    sessionId: string,
     path: string,
     contents: string,
   ) => Promise<DesktopFileSystemResult<void>>;

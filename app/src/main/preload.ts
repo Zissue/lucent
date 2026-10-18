@@ -415,26 +415,15 @@ const gameConsoleObservabilityBridge: DesktopGameConsoleObservabilityBridge = {
 };
 
 const fileSystemBridge: DesktopFileSystemBridge = {
-  closeSession: (sessionId) =>
-    invoke(FileSystemIpc.closeSession, { sessionId }),
-  exists: (sessionId, path) =>
-    invoke(FileSystemIpc.exists, { path, sessionId }),
-  list: (sessionId, path) =>
-    invoke(FileSystemIpc.list, {
-      ...(path === undefined ? {} : { path }),
-      sessionId,
-    }),
-  openSession: () => invoke(FileSystemIpc.openSession, undefined),
-  readJson: (sessionId, path) =>
-    invoke(FileSystemIpc.readJson, { path, sessionId }),
-  readText: (sessionId, path) =>
-    invoke(FileSystemIpc.readText, { path, sessionId }),
-  remove: (sessionId, path) =>
-    invoke(FileSystemIpc.remove, { path, sessionId }),
-  writeJson: (sessionId, path, value) =>
-    invoke(FileSystemIpc.writeJson, { path, sessionId, value }),
-  writeText: (sessionId, path, contents) =>
-    invoke(FileSystemIpc.writeText, { contents, path, sessionId }),
+  exists: (path) => invoke(FileSystemIpc.exists, { path }),
+  list: (path) =>
+    invoke(FileSystemIpc.list, path === undefined ? {} : { path }),
+  readJson: (path) => invoke(FileSystemIpc.readJson, { path }),
+  readText: (path) => invoke(FileSystemIpc.readText, { path }),
+  remove: (path) => invoke(FileSystemIpc.remove, { path }),
+  writeJson: (path, value) => invoke(FileSystemIpc.writeJson, { path, value }),
+  writeText: (path, contents) =>
+    invoke(FileSystemIpc.writeText, { contents, path }),
 };
 
 const windowsBridge: DesktopWindowsBridge = {
