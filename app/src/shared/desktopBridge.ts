@@ -68,7 +68,6 @@ import type {
   ScriptCatalogPage,
   ScriptCatalogPageRequest,
   ScriptPackageInstallRequest,
-  ScriptPackageLeftoverCopy,
   ScriptPackageMutationResult,
   ScriptPackageRemoveRequest,
   ScriptPackageRestoreRequest,
@@ -168,9 +167,6 @@ export interface DesktopScriptingBridge {
     request: ScriptPackageInstallRequest,
   ) => Promise<ScriptPackageMutationResult>;
   readonly listCredentials: () => Promise<readonly GitHubCredentialSummary[]>;
-  readonly listPackageLeftovers: () => Promise<
-    readonly ScriptPackageLeftoverCopy[]
-  >;
   readonly loadReference: (reference: ScriptReference) => Promise<ScriptFile>;
   readonly openFile: () => Promise<ScriptOpenFileResult>;
   readonly openPath: (path: string) => Promise<boolean>;

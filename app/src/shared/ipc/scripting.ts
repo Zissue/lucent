@@ -16,7 +16,6 @@ import {
   ScriptCatalogPageRequestSchema,
   ScriptCatalogPageSchema,
   ScriptPackageInstallRequestSchema,
-  ScriptPackageLeftoverCopySchema,
   ScriptPackageMutationResultSchema,
   ScriptPackageRemoveRequestSchema,
   ScriptPackageRestoreRequestSchema,
@@ -52,12 +51,6 @@ export const ScriptingIpc = {
     name: "scripting.refreshCatalog",
     payload: Schema.Void,
     result: ScriptCatalogOverviewSchema,
-  }),
-  listPackageLeftovers: defineInvoke({
-    channel: `${namespace}:list-package-leftovers`,
-    name: "scripting.listPackageLeftovers",
-    payload: Schema.Void,
-    result: Schema.Array(ScriptPackageLeftoverCopySchema),
   }),
   listCredentials: defineInvoke({
     channel: `${namespace}:list-github-credentials`,

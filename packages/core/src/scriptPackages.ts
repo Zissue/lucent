@@ -457,11 +457,3 @@ export const ScriptPackageMutationResultSchema = Schema.Union([
 
 export type ScriptPackageMutationResult =
   typeof ScriptPackageMutationResultSchema.Type;
-
-export const ScriptPackageLeftoverCopySchema = Schema.Struct({
-  path: Schema.String,
-  packageName: Schema.optionalKey(Schema.String),
-});
-
-export type ScriptPackageLeftoverCopy =
-  typeof ScriptPackageLeftoverCopySchema.Type;
