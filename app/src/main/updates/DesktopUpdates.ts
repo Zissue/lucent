@@ -11,6 +11,7 @@ import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
+import * as Semaphore from "effect/Semaphore";
 import { gt, prerelease, valid } from "semver";
 
 import { UpdateReleaseInfo, type UpdateCheckState } from "../../shared/updates";
@@ -322,6 +323,7 @@ const makeDesktopUpdates = Effect.fnUntraced(function* (
   const cacheLoadedRef = yield* Ref.make(false);
   const stateChanges = makeListenerRegistry<UpdateCheckState>();
   const checks = yield* FiberSet.make<UpdateCheckState>();
+  const checkStarts = yield* Semaphore.make(1);
 
   const setState = (state: UpdateCheckState): Effect.Effect<void> =>
     Ref.set(stateRef, state).pipe(
@@ -499,6 +501,7 @@ const makeDesktopUpdates = Effect.fnUntraced(function* (
       Effect.andThen(
         FiberSet.run(checks, runCheck(checkOptions?.force === true)),
       ),
+      Semaphore.withPermit(checkStarts),
       Effect.flatMap(Fiber.join),
       Effect.catchCauseIf(Cause.hasInterruptsOnly, () => getState),
     );

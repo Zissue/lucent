@@ -10,6 +10,7 @@ import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
+import * as FiberSet from "effect/FiberSet";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as References from "effect/References";
@@ -41,6 +42,10 @@ vi.mock("electron", () => ({
   shell: {
     openExternal: vi.fn(),
   },
+}));
+
+vi.mock("effect/FiberSet", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("effect/FiberSet")>()),
 }));
 
 const httpRequests: DesktopHttpGetOptions[] = [];
@@ -506,6 +511,75 @@ describe("DesktopUpdates", () => {
       }
       expect(httpRequests).toHaveLength(0);
     }),
+  );
+
+  it.effect(
+    "keeps the newer result when replacement checks start concurrently",
+    () =>
+      Effect.gen(function* () {
+        const startGate = yield* Deferred.make<void>();
+        const responseGate = yield* Deferred.make<void>();
+        for (const tagName of ["v1.0.0", "v1.1.0"]) {
+          mockGitHubResponse({
+            body: JSON.stringify({
+              draft: false,
+              html_url: `https://github.com/toommyliu/lucent/releases/tag/${tagName}`,
+              prerelease: false,
+              tag_name: tagName,
+            }),
+          });
+        }
+        const { layer } = yield* makeUpdatesHarness({
+          checkForUpdates: true,
+          currentVersion: "1.0.0",
+          httpClient: {
+            ...httpClient,
+            get: (options) =>
+              httpClient
+                .get(options)
+                .pipe(
+                  Effect.tap(() =>
+                    httpRequests.length === 1
+                      ? Deferred.await(responseGate)
+                      : Effect.void,
+                  ),
+                ),
+          },
+        });
+        const updates = yield* DesktopUpdates.pipe(
+          Effect.provide(yield* Layer.build(layer)),
+        );
+        yield* updates.shouldPromptForAvailableRelease("1.0.0");
+
+        const clear = FiberSet.clear;
+        const clearSpy = vi
+          .spyOn(FiberSet, "clear")
+          .mockImplementation((checks) =>
+            clear(checks).pipe(Effect.andThen(Deferred.await(startGate))),
+          );
+        yield* Effect.gen(function* () {
+          const older = yield* updates
+            .checkNow({ force: true })
+            .pipe(Effect.forkChild({ startImmediately: true }));
+          const newer = yield* updates
+            .checkNow({ force: true })
+            .pipe(Effect.forkChild({ startImmediately: true }));
+          yield* Deferred.succeed(startGate, undefined);
+
+          expect(yield* Fiber.join(newer)).toMatchObject({
+            status: "available",
+            latestVersion: "1.1.0",
+          });
+          yield* Deferred.succeed(responseGate, undefined);
+          yield* Fiber.join(older);
+
+          expect(yield* updates.getState).toMatchObject({
+            status: "available",
+            currentVersion: "1.0.0",
+            latestVersion: "1.1.0",
+          });
+        }).pipe(Effect.ensuring(Effect.sync(() => clearSpy.mockRestore())));
+      }),
   );
 
   it.effect(
