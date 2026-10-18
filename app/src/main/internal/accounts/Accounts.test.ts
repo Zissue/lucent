@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -7,6 +7,8 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as SynchronizedRef from "effect/SynchronizedRef";
+import { vi } from "vitest";
 
 import type { AccountLaunchWindowTarget } from "@lucent/core/accounts";
 import { DesktopEnvironment } from "../../app/DesktopEnvironment";
@@ -21,9 +23,14 @@ import { AccountsError } from "./AccountsError";
 import { AccountServers } from "./AccountServers";
 import * as AccountSessions from "./AccountSessions";
 
+vi.mock("effect/SynchronizedRef", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("effect/SynchronizedRef")>()),
+}));
+
 const tempDirs = new Set<string>();
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(
     [...tempDirs].map((path) => rm(path, { force: true, recursive: true })),
   );
@@ -31,6 +38,7 @@ afterEach(async () => {
 });
 
 interface HarnessOptions {
+  readonly beforeSetName?: () => Effect.Effect<void, unknown>;
   readonly beforeOpen?: () => Effect.Effect<void, unknown>;
   readonly onManagedProfileKey?: (key: string | undefined) => void;
   readonly onRetireProfile?: (key: string) => void;
@@ -132,7 +140,11 @@ const makeHarness = (harnessOptions: HarnessOptions = {}) =>
       retireProfile: (key) =>
         Effect.sync(() => harnessOptions.onRetireProfile?.(key)),
       setName: (gameWindowId, name) =>
-        Effect.sync(() => harnessOptions.onSetName?.(gameWindowId, name)),
+        (harnessOptions.beforeSetName?.() ?? Effect.void).pipe(
+          Effect.andThen(
+            Effect.sync(() => harnessOptions.onSetName?.(gameWindowId, name)),
+          ),
+        ),
     });
     const servers = AccountServers.of({
       get: Effect.succeed({ refreshAvailableAt: 0, servers: [] }),
@@ -157,6 +169,336 @@ const makeHarness = (harnessOptions: HarnessOptions = {}) =>
   });
 
 describe("Accounts", () => {
+  it.effect("records window sessions when account storage cannot load", () =>
+    Effect.gen(function* () {
+      const layer = yield* makeHarness();
+      return yield* Effect.gen(function* () {
+        const accounts = yield* Accounts;
+        const gameWindows = yield* AccountGameWindows;
+        const repository = yield* AccountRepository.AccountRepository;
+        const sessions = yield* AccountSessions.AccountSessions;
+        const connections: string[][] = [];
+        yield* accounts.onChanged((state) => {
+          connections.push(
+            state.sessions.map((session) => session.connection.state),
+          );
+        });
+        yield* Effect.promise(() => writeFile(repository.path, "{"));
+
+        const gameWindowId = yield* gameWindows
+          .open()
+          .pipe(Effect.orElseSucceed(() => -1));
+
+        expect(sessions.snapshot()).toMatchObject([
+          {
+            gameWindowGroupId: 1,
+            gameWindowId: 1,
+            rendererGeneration: 1,
+            connection: { state: "offline" },
+          },
+        ]);
+        expect(gameWindowId).toBe(1);
+        expect(connections).toEqual([]);
+        expect(yield* Effect.flip(accounts.getState)).toBeInstanceOf(
+          AccountsError,
+        );
+
+        yield* Effect.promise(() =>
+          writeFile(repository.path, '{"accounts":[],"groups":{}}'),
+        );
+        yield* accounts.reportSession(gameWindowId, {
+          rendererGeneration: 1,
+          revision: 1,
+          runtime: {
+            connection: { state: "online", username: "Alice" },
+            login: { state: "idle" },
+            script: { state: "idle" },
+          },
+        });
+
+        expect((yield* accounts.getState).sessions).toMatchObject([
+          {
+            gameWindowId: 1,
+            connection: { state: "online", username: "Alice" },
+          },
+        ]);
+        expect(connections).toEqual([["online"]]);
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
+  it.effect("publishes a committed mutation once even when interrupted", () =>
+    Effect.gen(function* () {
+      const committed = yield* Deferred.make<void>();
+      const hold = yield* Deferred.make<void>();
+      let armed = false;
+      const modifyEffect = SynchronizedRef.modifyEffect;
+      vi.spyOn(SynchronizedRef, "modifyEffect").mockImplementation(
+        (ref, change) =>
+          modifyEffect(ref, change).pipe(
+            Effect.tap((saved) => {
+              if (
+                !armed ||
+                typeof saved !== "object" ||
+                saved === null ||
+                !("accounts" in saved) ||
+                !("groups" in saved) ||
+                "sessions" in saved
+              )
+                return Effect.void;
+              armed = false;
+              return Deferred.succeed(committed, undefined).pipe(
+                Effect.andThen(Deferred.await(hold)),
+              );
+            }),
+          ),
+      );
+      const layer = yield* makeHarness();
+      return yield* Effect.gen(function* () {
+        const accounts = yield* Accounts;
+        yield* accounts.load;
+        const names: string[][] = [];
+        yield* accounts.onChanged((state) =>
+          accounts.getState.pipe(
+            Effect.tap((current) =>
+              Effect.sync(() => {
+                expect(current).toEqual(state);
+                names.push(state.accounts.map((account) => account.username));
+              }),
+            ),
+          ),
+        );
+        yield* accounts.createAccount({
+          username: "Before",
+          password: "secret",
+        });
+        armed = true;
+        const running = yield* accounts
+          .createAccount({ username: "Committed", password: "secret" })
+          .pipe(Effect.forkScoped);
+        yield* Deferred.await(committed);
+        expect(
+          (yield* accounts.getState).accounts.map(
+            (account) => account.username,
+          ),
+        ).toEqual(["Before", "Committed"]);
+        yield* Fiber.interrupt(running);
+        expect(names).toEqual([["Before"], ["Before", "Committed"]]);
+        yield* Effect.flip(
+          accounts.createAccount({ username: "Committed", password: "secret" }),
+        );
+        yield* accounts.createAccount({
+          username: "After",
+          password: "secret",
+        });
+        expect(names).toEqual([
+          ["Before"],
+          ["Before", "Committed"],
+          ["Before", "Committed", "After"],
+        ]);
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
+  it.effect.each(["first", "overlapping"] as const)(
+    "publishes a committed %s session report once even when interrupted",
+    (operation) =>
+      Effect.gen(function* () {
+        const renamed = yield* Deferred.make<void>();
+        const hold = yield* Deferred.make<void>();
+        const layer = yield* makeHarness({
+          beforeSetName: () =>
+            Deferred.succeed(renamed, undefined).pipe(
+              Effect.andThen(Deferred.await(hold)),
+            ),
+        });
+        return yield* Effect.gen(function* () {
+          const accounts = yield* Accounts;
+          const sessions = yield* AccountSessions.AccountSessions;
+          const gameWindowId = 42;
+          sessions.openWindow(gameWindowId, 1, 1);
+          const connections: string[] = [];
+          yield* accounts.onChanged((state) => {
+            connections.push(state.sessions[0]?.connection.state ?? "missing");
+          });
+          const report = {
+            rendererGeneration: 1,
+            revision: 1,
+            runtime: {
+              connection: { state: "online", username: "Alice" },
+              login: { state: "idle" },
+              script: { state: "idle" },
+            },
+          } as const;
+          const running = yield* accounts
+            .reportSession(gameWindowId, report)
+            .pipe(Effect.forkScoped);
+          yield* Deferred.await(renamed);
+          expect((yield* accounts.getState).sessions[0]?.connection).toEqual({
+            state: "online",
+            username: "Alice",
+          });
+          if (operation === "overlapping") {
+            yield* Effect.flip(
+              accounts.createAccount({ username: "", password: "secret" }),
+            );
+          }
+          yield* Fiber.interrupt(running);
+          expect(connections).toEqual(["online"]);
+          yield* accounts.reportSession(gameWindowId, report);
+          yield* accounts.closeGameWindow(gameWindowId);
+          expect(connections).toEqual(["online", "missing"]);
+        }).pipe(Effect.provide(layer));
+      }),
+  );
+
+  it.effect(
+    "keeps sessions responsive and queued writes cancellable during a write",
+    () =>
+      Effect.gen(function* () {
+        const started = yield* Deferred.make<void>();
+        const queued = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const layer = yield* makeHarness();
+        return yield* Effect.gen(function* () {
+          const accounts = yield* Accounts;
+          const repository = yield* AccountRepository.AccountRepository;
+          const sessions = yield* AccountSessions.AccountSessions;
+          const names: string[][] = [];
+          const connections: string[][] = [];
+          yield* accounts.onChanged((state) => {
+            names.push(state.accounts.map((account) => account.username));
+            connections.push(
+              state.sessions.map((session) => session.connection.state),
+            );
+          });
+          yield* accounts.createAccount({
+            username: "Before",
+            password: "secret",
+          });
+          const active = yield* repository
+            .update((storage) =>
+              Deferred.succeed(started, undefined).pipe(
+                Effect.andThen(Deferred.await(release)),
+                Effect.as(storage),
+              ),
+            )
+            .pipe(Effect.forkScoped);
+          yield* Deferred.await(started);
+          const waiting = yield* Deferred.succeed(queued, undefined).pipe(
+            Effect.andThen(
+              accounts.createAccount({
+                username: "Cancelled",
+                password: "secret",
+              }),
+            ),
+            Effect.forkScoped,
+          );
+          yield* Deferred.await(queued);
+          yield* Effect.yieldNow;
+          yield* Fiber.interrupt(waiting);
+          expect(names).toEqual([["Before"]]);
+          sessions.openWindow(42, 1, 1);
+          yield* accounts.reportSession(42, {
+            rendererGeneration: 1,
+            revision: 1,
+            runtime: {
+              connection: { state: "online", username: "Before" },
+              login: { state: "idle" },
+              script: { state: "idle" },
+            },
+          });
+          expect(connections).toEqual([[], ["online"]]);
+          yield* Deferred.succeed(release, undefined);
+          yield* Fiber.join(active);
+          yield* accounts.createAccount({
+            username: "After",
+            password: "secret",
+          });
+          expect(names).toEqual([["Before"], ["Before"], ["Before", "After"]]);
+          expect(connections).toEqual([[], ["online"], ["online"]]);
+          expect(
+            (yield* accounts.getState).accounts.map(
+              (account) => account.username,
+            ),
+          ).toEqual(["Before", "After"]);
+        }).pipe(Effect.provide(layer));
+      }),
+  );
+
+  it.effect("publishes nothing for unchanged storage or ignored sessions", () =>
+    Effect.gen(function* () {
+      const layer = yield* makeHarness();
+      const accounts = yield* Accounts.pipe(Effect.provide(layer));
+      const names: string[][] = [];
+      yield* accounts.onChanged((state) => {
+        names.push(state.accounts.map((account) => account.username));
+      });
+      yield* accounts.load;
+      yield* accounts.deleteAccounts([]);
+      yield* Effect.flip(
+        accounts.createAccount({ username: "", password: "secret" }),
+      );
+      expect(names).toEqual([]);
+      yield* accounts.createAccount({ username: "Alice", password: "secret" });
+      yield* accounts.updateAccount("Alice", {});
+      yield* accounts.deleteAccounts([]);
+      yield* accounts.load;
+      yield* accounts.reportSession(42, {
+        rendererGeneration: 1,
+        revision: 1,
+        runtime: {
+          connection: { state: "offline" },
+          login: { state: "idle" },
+          script: { state: "idle" },
+        },
+      });
+      yield* Effect.flip(
+        accounts.createAccount({ username: "Alice", password: "secret" }),
+      );
+      expect(names).toEqual([["Alice"]]);
+      const storagePath = (yield* accounts.getState).storagePath;
+      yield* Effect.promise(() =>
+        writeFile(
+          storagePath,
+          '{"accounts":[{"label":"Bob","username":"Bob","password":"secret"}],"groups":{}}',
+        ),
+      );
+      yield* accounts.load;
+      yield* accounts.load;
+      expect(names).toEqual([["Alice"], ["Bob"]]);
+    }),
+  );
+
+  it.effect("allows a listener to commit a successive mutation", () =>
+    Effect.gen(function* () {
+      const layer = yield* makeHarness();
+      const accounts = yield* Accounts.pipe(Effect.provide(layer));
+      const names: string[][] = [];
+      yield* accounts.onChanged((state) =>
+        Effect.gen(function* () {
+          names.push(state.accounts.map((account) => account.username));
+          if (names.length === 1) {
+            yield* accounts.createAccount({
+              username: "Bob",
+              password: "secret",
+            });
+          }
+        }),
+      );
+      const laterNames: string[][] = [];
+      yield* accounts.onChanged((state) => {
+        laterNames.push(state.accounts.map((account) => account.username));
+      });
+      yield* accounts.createAccount({ username: "Alice", password: "secret" });
+      expect(laterNames).toEqual([["Alice", "Bob"]]);
+      expect(names).toEqual([["Alice"], ["Alice", "Bob"]]);
+      expect(
+        (yield* accounts.getState).accounts.map((account) => account.username),
+      ).toEqual(["Alice", "Bob"]);
+    }),
+  );
+
   it.effect(
     "reopens with current credentials and the original server, with scripts stopped",
     () =>

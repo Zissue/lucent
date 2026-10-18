@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { join } from "path";
 
 import * as Context from "effect/Context";
@@ -25,7 +26,13 @@ const wrapJsonError = (error: JsonFileError): AccountsError =>
     cause: error,
   });
 
+interface VersionedStorage {
+  readonly storage: AccountManagerStorage;
+  readonly revision: number;
+}
+
 export interface AccountRepositoryShape {
+  readonly getWithRevision: Effect.Effect<VersionedStorage | null>;
   readonly get: Effect.Effect<AccountManagerStorage, AccountsError>;
   readonly load: Effect.Effect<AccountManagerStorage, AccountsError>;
   readonly path: string;
@@ -47,8 +54,9 @@ export const layer = Layer.effect(
     const env = yield* DesktopEnvironment;
     const jsonFile = makeJsonFile(yield* FileSystem);
     const path = join(env.appDataDir, ACCOUNT_MANAGER_STORAGE_FILE);
-    const storageRef =
-      yield* SynchronizedRef.make<AccountManagerStorage | null>(null);
+    const storageRef = yield* SynchronizedRef.make<VersionedStorage | null>(
+      null,
+    );
 
     const readStorageFromFile = Effect.gen(function* () {
       const result = yield* jsonFile
@@ -64,34 +72,52 @@ export const layer = Layer.effect(
       return storage;
     });
 
-    const write = (storage: AccountManagerStorage) => {
-      const normalized = serializeAccountManagerStorage(storage);
-      return jsonFile
-        .write(path, normalized)
-        .pipe(Effect.mapError(wrapJsonError), Effect.as(normalized));
-    };
-
+    const getWithRevision = SynchronizedRef.get(storageRef);
     const get = SynchronizedRef.modifyEffect(storageRef, (current) =>
-      (current === null ? readStorageFromFile : Effect.succeed(current)).pipe(
-        Effect.map((storage) => [storage, storage] as const),
-      ),
+      Effect.gen(function* () {
+        const next = current ?? {
+          storage: yield* readStorageFromFile,
+          revision: 0,
+        };
+        return [next.storage, next] as const;
+      }),
     );
-    const load = SynchronizedRef.modifyEffect(storageRef, () =>
-      readStorageFromFile.pipe(
-        Effect.map((storage) => [storage, storage] as const),
-      ),
+    const load = SynchronizedRef.modifyEffect(storageRef, (current) =>
+      Effect.gen(function* () {
+        const storage = yield* readStorageFromFile;
+        const next =
+          current !== null && isDeepStrictEqual(current.storage, storage)
+            ? current
+            : {
+                storage,
+                revision: current === null ? 0 : current.revision + 1,
+              };
+        return [next.storage, next] as const;
+      }),
     );
     const update: AccountRepositoryShape["update"] = (modify) =>
       SynchronizedRef.modifyEffect(storageRef, (current) =>
-        (current === null ? readStorageFromFile : Effect.succeed(current)).pipe(
-          Effect.flatMap(modify),
-          Effect.flatMap(write),
-          Effect.map((saved) => [saved, saved] as const),
-        ),
+        Effect.gen(function* () {
+          const previous = current ?? {
+            storage: yield* readStorageFromFile,
+            revision: 0,
+          };
+          const storage = serializeAccountManagerStorage(
+            yield* modify(previous.storage),
+          );
+          if (isDeepStrictEqual(previous.storage, storage))
+            return [previous.storage, previous] as const;
+          yield* jsonFile
+            .write(path, storage)
+            .pipe(Effect.mapError(wrapJsonError));
+          const next = { storage, revision: previous.revision + 1 };
+          return [storage, next] as const;
+        }),
       );
 
     return AccountRepository.of({
       get,
+      getWithRevision,
       load,
       path,
       update,
