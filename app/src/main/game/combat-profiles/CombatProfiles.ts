@@ -1,5 +1,6 @@
 import { join } from "path";
 
+import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -86,6 +87,166 @@ const validationError = (
 const defaultLibrary = (): CombatProfileLibrary =>
   cloneCombatProfileLibrary(DEFAULT_COMBAT_PROFILE_LIBRARY);
 
+type IgnoredCombatProfileData = Partial<
+  Record<
+    | "profiles"
+    | "steps"
+    | "conditions"
+    | "classNames"
+    | "messageTriggers"
+    | "fields",
+    number
+  >
+>;
+
+const isSavedRecord = Schema.is(Schema.Record(Schema.String, Schema.Unknown));
+const isSavedArray = Schema.is(Schema.Array(Schema.Unknown));
+const isSavedString = Schema.is(Schema.String);
+const isSavedInteger = Schema.is(Schema.Int);
+
+const inspectCombatProfiles = (
+  source: Record<string, unknown>,
+): IgnoredCombatProfileData => {
+  const ignored: IgnoredCombatProfileData = {};
+  const add = (kind: keyof IgnoredCombatProfileData) => {
+    ignored[kind] = (ignored[kind] ?? 0) + 1;
+  };
+  const inspectFields = (
+    raw: Record<string, unknown>,
+    normalized: Readonly<Record<string, unknown>>,
+    fields: readonly string[],
+  ) => {
+    for (const key of fields) {
+      if (!Object.hasOwn(raw, key)) continue;
+      const original = raw[key];
+      const value = normalized[key];
+      if (
+        value === undefined &&
+        ((["priority", "resetSkillIndexOnTargetDeath"].includes(key) &&
+          original === false) ||
+          (["waitMs", "cooldownMs"].includes(key) && original === 0))
+      )
+        continue;
+      const comparable =
+        ["id", "label", "consumable", "auraName", "messageIncludes"].includes(
+          key,
+        ) && isSavedString(original)
+          ? original.trim()
+          : original;
+      if (comparable !== value) add("fields");
+    }
+  };
+  const inspectEntries = <A>(
+    raw: unknown,
+    kind: keyof IgnoredCombatProfileData,
+    normalize: (entry: unknown) => A | undefined,
+    inspect: (entry: unknown, normalized: A) => void = () => {},
+  ) => {
+    if (raw === undefined) return;
+    if (!isSavedArray(raw)) {
+      add(kind);
+      return;
+    }
+    for (const entry of raw) {
+      const normalized = normalize(entry);
+      if (normalized === undefined) add(kind);
+      else inspect(entry, normalized);
+    }
+  };
+  const version = source["version"];
+  if (version !== undefined && (!isSavedInteger(version) || version < 0))
+    add("fields");
+  const ids = new Set<string>();
+  inspectEntries(
+    source["profiles"],
+    "profiles",
+    (raw) => {
+      if (
+        !isSavedRecord(raw) ||
+        !isSavedString(raw["id"]) ||
+        raw["id"].trim() === ""
+      )
+        return undefined;
+      return normalizeCombatProfile(raw);
+    },
+    (raw, profile) => {
+      if (!isSavedRecord(raw)) return;
+      if (ids.has(profile.id)) add("fields");
+      ids.add(profile.id);
+      inspectFields(raw, profile, [
+        "id",
+        "label",
+        "consumable",
+        "delayMs",
+        "cooldownMode",
+        "resetSkillIndexOnTargetDeath",
+      ]);
+      inspectEntries(
+        raw["classNames"],
+        "classNames",
+        (entry) =>
+          normalizeCombatProfile({ id: "inspection", classNames: [entry] })
+            .classNames?.[0],
+        (entry, normalized) => {
+          if (isSavedString(entry) && entry.trim() !== normalized)
+            add("fields");
+        },
+      );
+      inspectEntries(
+        raw["messageTriggers"],
+        "messageTriggers",
+        (entry) =>
+          normalizeCombatProfile({ id: "inspection", messageTriggers: [entry] })
+            .messageTriggers?.[0],
+        (entry, trigger) => {
+          if (isSavedRecord(entry))
+            inspectFields(entry, trigger, [
+              "messageIncludes",
+              "skill",
+              "source",
+              "cooldownMs",
+            ]);
+        },
+      );
+      inspectEntries(
+        raw["steps"],
+        "steps",
+        (entry) =>
+          normalizeCombatProfile({ id: "inspection", steps: [entry] }).steps[0],
+        (entry, step) => {
+          if (!isSavedRecord(entry)) return;
+          inspectFields(entry, step, [
+            "skill",
+            "priority",
+            "cooldownMode",
+            "waitMs",
+          ]);
+          inspectEntries(
+            entry["conditions"],
+            "conditions",
+            (condition) =>
+              normalizeCombatProfile({
+                id: "inspection",
+                steps: [{ skill: 0, conditions: [condition] }],
+              }).steps[0]?.conditions[0],
+            (condition, normalized) => {
+              if (isSavedRecord(condition))
+                inspectFields(condition, normalized, [
+                  "type",
+                  "op",
+                  "value",
+                  "unit",
+                  "auraName",
+                ]);
+            },
+          );
+        },
+      );
+    },
+  );
+  return ignored;
+};
+
 const saveProfileToLibrary = (
   current: CombatProfileLibrary,
   profile: CombatProfile,
@@ -145,10 +306,31 @@ const makeCombatProfiles = Effect.gen(function* () {
   }>({ value: null, publicationRevision: 0 });
   const libraryChanges = makeListenerRegistry<CombatProfileLibrary>();
 
-  const readLibraryFromFile = Effect.gen(function* () {
-    const result = yield* jsonFile
-      .read(path)
-      .pipe(Effect.mapError(wrapDataError));
+  const readLibraryFromFile = Effect.fnUntraced(function* (
+    diagnostics: boolean,
+  ) {
+    const unreadable = (error?: JsonFileError) =>
+      diagnostics
+        ? Effect.logWarning(
+            "Saved combat profiles could not be read; using defaults until the next save",
+            ...(error === undefined ? [] : [Cause.fail(error)]),
+          ).pipe(
+            Effect.annotateLogs({
+              component: "combat-profiles",
+              data: { path, ignored: { file: 1 } },
+            }),
+            Effect.map(defaultLibrary),
+          )
+        : Effect.succeed(defaultLibrary());
+    const result = yield* jsonFile.read(path).pipe(
+      Effect.catch((error) =>
+        error.operation === "parse"
+          ? Effect.succeed({ status: "invalid" as const, error })
+          : Effect.fail(error),
+      ),
+      Effect.mapError(wrapDataError),
+    );
+    if (result.status === "invalid") return yield* unreadable(result.error);
     if (result.status === "missing") {
       const defaults = defaultLibrary();
       yield* jsonFile
@@ -157,6 +339,7 @@ const makeCombatProfiles = Effect.gen(function* () {
       return defaults;
     }
 
+    if (!isSavedRecord(result.value)) return yield* unreadable();
     const library = yield* Effect.try({
       try: () => normalizeCombatProfileLibrary(result.value),
       catch: (cause) =>
@@ -169,6 +352,26 @@ const makeCombatProfiles = Effect.gen(function* () {
           cause,
         }),
     });
+    if (
+      result.value["profiles"] !== undefined &&
+      !isSavedArray(result.value["profiles"])
+    ) {
+      return yield* unreadable();
+    }
+    const ignored = inspectCombatProfiles(result.value);
+    if (Object.keys(ignored).length > 0) {
+      if (diagnostics) {
+        yield* Effect.logWarning(
+          "Saved combat profiles had invalid entries; ignoring them until the next save",
+        ).pipe(
+          Effect.annotateLogs({
+            component: "combat-profiles",
+            data: { path, ignored },
+          }),
+        );
+      }
+      return library;
+    }
     yield* jsonFile
       .write(path, serializeCombatProfileLibrary(library))
       .pipe(Effect.mapError(wrapDataError));
@@ -193,7 +396,7 @@ const makeCombatProfiles = Effect.gen(function* () {
   );
   const get = SynchronizedRef.modifyEffect(libraryRef, (current) =>
     (current.value === null
-      ? readLibraryFromFile
+      ? readLibraryFromFile(true)
       : Effect.succeed(current.value)
     ).pipe(
       Effect.map(
@@ -202,7 +405,7 @@ const makeCombatProfiles = Effect.gen(function* () {
     ),
   );
   const load = SynchronizedRef.modifyEffect(libraryRef, (current) =>
-    readLibraryFromFile.pipe(
+    readLibraryFromFile(true).pipe(
       Effect.map(
         (library) =>
           [
@@ -222,7 +425,7 @@ const makeCombatProfiles = Effect.gen(function* () {
   ) =>
     SynchronizedRef.modifyEffect(libraryRef, (current) =>
       (current.value === null
-        ? readLibraryFromFile
+        ? readLibraryFromFile(false)
         : Effect.succeed(current.value)
       ).pipe(
         Effect.flatMap(modify),

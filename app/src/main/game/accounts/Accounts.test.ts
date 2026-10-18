@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -6,12 +6,15 @@ import { afterEach, describe, expect, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import { FileSystem } from "effect/FileSystem";
 import * as Logger from "effect/Logger";
+import * as PlatformError from "effect/PlatformError";
 import {
   desktopLogRecord,
   type DesktopLogRecord,
 } from "../../../shared/logRecord";
 import * as Layer from "effect/Layer";
+import * as Stream from "effect/Stream";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 import { vi } from "vitest";
 
@@ -44,6 +47,7 @@ afterEach(async () => {
 });
 
 interface HarnessOptions {
+  readonly wrapFileSystem?: (fs: FileSystem) => FileSystem;
   readonly beforeSetName?: () => Effect.Effect<void, unknown>;
   readonly beforeOpen?: () => Effect.Effect<void, unknown>;
   readonly onManagedProfileKey?: (key: string | undefined) => void;
@@ -167,7 +171,13 @@ const makeHarness = (harnessOptions: HarnessOptions = {}) =>
         Layer.provide(
           Layer.mergeAll(
             Layer.succeed(DesktopEnvironment, env),
-            desktopFileSystemLayer,
+            Layer.effect(
+              FileSystem,
+              Effect.map(
+                FileSystem,
+                harnessOptions.wrapFileSystem ?? ((fs) => fs),
+              ),
+            ).pipe(Layer.provide(desktopFileSystemLayer)),
           ),
         ),
       ),
@@ -182,7 +192,24 @@ const makeHarness = (harnessOptions: HarnessOptions = {}) =>
 describe("Accounts", () => {
   it.effect("records window sessions when account storage cannot load", () =>
     Effect.gen(function* () {
-      const layer = yield* makeHarness();
+      let unreadablePath: string | undefined;
+      const layer = yield* makeHarness({
+        wrapFileSystem: (fileSystem) =>
+          FileSystem.of({
+            ...fileSystem,
+            stream: (path, options) =>
+              path === unreadablePath
+                ? Stream.fail(
+                    PlatformError.systemError({
+                      _tag: "PermissionDenied",
+                      module: "FileSystem",
+                      method: "stream",
+                      pathOrDescriptor: path,
+                    }),
+                  )
+                : fileSystem.stream(path, options),
+          }),
+      });
       return yield* Effect.gen(function* () {
         const accounts = yield* Accounts;
         const gameWindows = yield* AccountGameWindows;
@@ -194,29 +221,44 @@ describe("Accounts", () => {
             state.sessions.map((session) => session.connection.state),
           );
         });
-        yield* Effect.promise(() => writeFile(repository.path, "{"));
+        const source =
+          '{"accounts":[{"label":"Hero","username":"Hero","password":"secret"}],"groups":{}}';
+        yield* Effect.promise(() => writeFile(repository.path, source));
+        unreadablePath = repository.path;
+        let gameWindowId = -1;
+        try {
+          gameWindowId = yield* gameWindows
+            .open()
+            .pipe(Effect.orElseSucceed(() => -1));
 
-        const gameWindowId = yield* gameWindows
-          .open()
-          .pipe(Effect.orElseSucceed(() => -1));
+          expect(sessions.snapshot()).toMatchObject([
+            {
+              gameWindowGroupId: 1,
+              gameWindowId: 1,
+              rendererGeneration: 1,
+              connection: { state: "offline" },
+            },
+          ]);
+          expect(gameWindowId).toBe(1);
+          expect(connections).toEqual([]);
+          expect(yield* Effect.flip(accounts.getState)).toBeInstanceOf(
+            AccountsError,
+          );
 
-        expect(sessions.snapshot()).toMatchObject([
-          {
-            gameWindowGroupId: 1,
-            gameWindowId: 1,
-            rendererGeneration: 1,
-            connection: { state: "offline" },
-          },
-        ]);
-        expect(gameWindowId).toBe(1);
-        expect(connections).toEqual([]);
-        expect(yield* Effect.flip(accounts.getState)).toBeInstanceOf(
-          AccountsError,
-        );
-
-        yield* Effect.promise(() =>
-          writeFile(repository.path, '{"accounts":[],"groups":{}}'),
-        );
+          expect(
+            yield* accounts
+              .createAccount({ username: "New", password: "new" })
+              .pipe(Effect.flip),
+          ).toMatchObject({
+            _tag: "AccountsError",
+            operation: "read",
+          });
+        } finally {
+          unreadablePath = undefined;
+        }
+        expect(
+          yield* Effect.promise(() => readFile(repository.path, "utf8")),
+        ).toBe(source);
         yield* accounts.reportSession(gameWindowId, {
           rendererGeneration: 1,
           revision: 1,

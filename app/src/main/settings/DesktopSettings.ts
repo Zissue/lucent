@@ -1,5 +1,6 @@
 import { join } from "path";
 
+import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -34,6 +35,7 @@ import { DesktopEnvironment } from "../app/DesktopEnvironment";
 import { makeListenerRegistry, type Listener } from "../app/ListenerRegistry";
 import { FileSystem } from "effect/FileSystem";
 import { type JsonFileError, makeJsonFile } from "../filesystem/JsonFile";
+import * as SettingsDiagnostics from "./DesktopSettingsDiagnostics";
 
 const settingsOperationSchema = Schema.Literals([
   "mkdir",
@@ -236,14 +238,58 @@ const makeDesktopSettings = Effect.gen(function* () {
   const settingsRef = yield* SynchronizedRef.make<AppSettings | null>(null);
   const settingsChanges = makeListenerRegistry<AppSettings>();
 
-  const readSettingsFromFile = Effect.gen(function* () {
-    const result = yield* jsonFile
-      .read(settingsPath)
-      .pipe(Effect.mapError(wrapDataError));
+  const readSettingsFromFile = Effect.fnUntraced(function* (
+    diagnostics: boolean,
+  ) {
+    const result = yield* jsonFile.read(settingsPath).pipe(
+      Effect.catch((error) =>
+        error.operation === "parse"
+          ? Effect.succeed({ status: "malformed" as const, error })
+          : Effect.fail(error),
+      ),
+      Effect.mapError(wrapDataError),
+    );
+    if (
+      result.status === "malformed" ||
+      (result.status === "ok" &&
+        !SettingsDiagnostics.isSettingsRecord(result.value))
+    ) {
+      if (diagnostics) {
+        yield* Effect.logWarning(
+          "Saved settings could not be read; using defaults until the next save",
+          ...(result.status === "malformed" ? [Cause.fail(result.error)] : []),
+        ).pipe(
+          Effect.annotateLogs({
+            component: "settings",
+            data: { path: settingsPath, ignored: { file: 1 } },
+          }),
+        );
+      }
+      return DEFAULT_APP_SETTINGS;
+    }
     const settings =
       result.status === "missing"
         ? DEFAULT_APP_SETTINGS
         : normalizeAppSettings(result.value);
+    if (result.status === "ok") {
+      const reset = SettingsDiagnostics.settingsResetFields(
+        result.value,
+        settings,
+      );
+      if (reset.length > 0) {
+        if (diagnostics) {
+          yield* Effect.logWarning(
+            "Saved settings had invalid entries; ignoring them until the next save",
+          ).pipe(
+            Effect.annotateLogs({
+              component: "settings",
+              data: { path: settingsPath, reset },
+            }),
+          );
+        }
+        return settings;
+      }
+    }
     yield* jsonFile
       .write(settingsPath, serializeAppSettings(settings))
       .pipe(Effect.mapError(wrapDataError));
@@ -260,12 +306,13 @@ const makeDesktopSettings = Effect.gen(function* () {
   };
 
   const get = SynchronizedRef.modifyEffect(settingsRef, (current) =>
-    (current === null ? readSettingsFromFile : Effect.succeed(current)).pipe(
-      Effect.map((settings) => [settings, settings] as const),
-    ),
+    (current === null
+      ? readSettingsFromFile(true)
+      : Effect.succeed(current)
+    ).pipe(Effect.map((settings) => [settings, settings] as const)),
   );
   const load = SynchronizedRef.modifyEffect(settingsRef, () =>
-    readSettingsFromFile.pipe(
+    readSettingsFromFile(true).pipe(
       Effect.map((settings) => [settings, settings] as const),
     ),
   );
@@ -275,7 +322,10 @@ const makeDesktopSettings = Effect.gen(function* () {
     ) => Effect.Effect<AppSettings, DesktopSettingsError>,
   ) =>
     SynchronizedRef.modifyEffect(settingsRef, (current) =>
-      (current === null ? readSettingsFromFile : Effect.succeed(current)).pipe(
+      (current === null
+        ? readSettingsFromFile(false)
+        : Effect.succeed(current)
+      ).pipe(
         Effect.flatMap(modify),
         Effect.flatMap(writeSettingsFile),
         Effect.map((saved) => [saved, saved] as const),
