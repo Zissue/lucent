@@ -26,7 +26,6 @@ import {
   ArmyLoopTauntError,
   type ArmyParticipantId,
   type AssignmentState,
-  DEGRADED_TIMEOUT_MS,
   loopError,
   type LoopTauntSlot,
   type LoopTauntStep,
@@ -294,7 +293,6 @@ const onDegradedWarning = (
     run.status !== "active" ||
     assignment === undefined ||
     degraded?.reason !== "target-consensus" ||
-    degraded.activeSince === undefined ||
     degraded.revision !== timer.revision ||
     !unresolved
   ) {
@@ -308,59 +306,6 @@ const onDegradedWarning = (
     type: "diagnostic",
   });
   return [{ ...noEffects(), commands: [command] }, storeRun(state, updated)];
-};
-
-const onDegradedTimeout = (
-  state: LoopTauntSlot,
-  timer: Extract<ScheduledTimer, { readonly type: "degraded-timeout" }>,
-  now: number,
-): readonly [MutationEffects, LoopTauntSlot] => {
-  const run = state.runs.get(timer.runId);
-  const assignment = run?.assignments.get(timer.assignmentId);
-  const degraded = assignment?.degraded;
-  const stillRequired =
-    assignment !== undefined &&
-    degraded !== undefined &&
-    (degraded.reason === "target-consensus"
-      ? run !== undefined &&
-        priorityDecision(run).unresolvedAssignmentIds.has(timer.assignmentId)
-      : assignment.active);
-  if (
-    run === undefined ||
-    run.status !== "active" ||
-    assignment === undefined ||
-    !stillRequired ||
-    degraded?.activeSince === undefined ||
-    degraded.revision !== timer.revision
-  ) {
-    return [noEffects(), state];
-  }
-  const elapsed =
-    degraded.accumulatedMs + Math.max(0, now - degraded.activeSince);
-  if (elapsed < DEGRADED_TIMEOUT_MS) {
-    return [
-      {
-        commands: [],
-        readiness: [],
-        terminals: [],
-        timers: [
-          {
-            assignmentId: timer.assignmentId,
-            delayMs: DEGRADED_TIMEOUT_MS - elapsed,
-            revision: timer.revision,
-            runId: timer.runId,
-            sessionId: timer.sessionId,
-            type: "degraded-timeout",
-          },
-        ],
-      },
-      state,
-    ];
-  }
-  // Sustained degradation stops this background capability without failing
-  // the shared Army session or its script.
-  const mutation = terminalize(run, { status: "completed" });
-  return [mutation, storeRun(state, mutation.run)];
 };
 
 const onRegistrationTimeout = (
@@ -628,9 +573,6 @@ export const onTimer = (
       break;
     case "retry":
       transition = onRetry(slot, timer, now);
-      break;
-    case "degraded-timeout":
-      transition = onDegradedTimeout(slot, timer, now);
       break;
     case "degraded-warning":
       transition = onDegradedWarning(slot, timer);

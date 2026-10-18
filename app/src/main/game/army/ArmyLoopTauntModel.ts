@@ -21,7 +21,6 @@ export interface ArmyAuthenticatedParticipant {
 
 export const COMMAND_CONFIRMATION_TIMEOUT_MS = 7_000;
 export const DEGRADED_AFTER_SWEEPS = 3;
-export const DEGRADED_TIMEOUT_MS = 30_000;
 export const DEGRADED_WARNING_MS = 3_000;
 export const MESSAGE_DEDUPE_MS = 500;
 export const REGISTRATION_TIMEOUT_MS = 30_000;
@@ -82,8 +81,6 @@ interface TurnState {
 }
 
 export interface DegradedState {
-  readonly accumulatedMs: number;
-  readonly activeSince?: number | undefined;
   readonly reason: "readiness" | "target-consensus";
   readonly revision: number;
 }
@@ -167,13 +164,6 @@ export type ScheduledTimer = { readonly sessionId: string } & (
       readonly runId: string;
       readonly turnId: number;
       readonly type: "retry";
-    }
-  | {
-      readonly assignmentId: number;
-      readonly delayMs: number;
-      readonly revision: number;
-      readonly runId: string;
-      readonly type: "degraded-timeout";
     }
   | {
       readonly assignmentId: number;

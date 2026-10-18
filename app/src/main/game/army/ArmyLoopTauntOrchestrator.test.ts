@@ -1364,7 +1364,7 @@ describe("ArmyLoopTauntOrchestrator", () => {
   );
 
   it.effect(
-    "reports sustained target disagreement and stops Loop Taunt nonfatally",
+    "keeps sustained target disagreement active and warns exactly once",
     () =>
       Effect.gen(function* () {
         const harness = yield* makeHarness(["Alice", "Bob"]);
@@ -1405,13 +1405,75 @@ describe("ArmyLoopTauntOrchestrator", () => {
         yield* advance("1 millis");
         expect(diagnosticEvents(harness.events)).toHaveLength(1);
 
-        yield* advance("26999 millis");
+        yield* advance("60 seconds");
         expect(waiting.pollUnsafe()).toBeUndefined();
+        expect(diagnosticEvents(harness.events)).toHaveLength(1);
+      }),
+  );
+
+  it.effect(
+    "keeps probing degraded readiness every second until the session ends",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* makeHarness(["Alice", "Bob"]);
+        const { runId } = yield* registerAll(
+          harness,
+          makeRegistration(harness.sessionId, [
+            assignment({
+              target: {
+                focusActive: false,
+                lifeRevision: 0,
+                monsterMapId: 42,
+                state: "alive",
+              },
+            }),
+          ]),
+        );
+        const waiting = yield* harness.orchestrator
+          .await({ runId, sessionId: harness.sessionId }, harness.ids[0]!)
+          .pipe(Effect.forkScoped);
+
+        yield* advance("60 seconds");
+        expect(waiting.pollUnsafe()).toBeUndefined();
+        expect(diagnosticEvents(harness.events)).toHaveLength(1);
+        expect(
+          diagnosticEvents(harness.events)[0]?.command.command,
+        ).toMatchObject({
+          assignmentId: 7,
+          code: "degraded",
+          level: "warning",
+          type: "diagnostic",
+        });
+
+        const eventCount = harness.events.length;
+        yield* advance("999 millis");
+        expect(harness.events.slice(eventCount)).toEqual([]);
 
         yield* advance("1 millis");
-        expect(yield* Fiber.join(waiting)).toEqual({
-          status: "completed",
+        expect(
+          harness.events
+            .slice(eventCount)
+            .map((event) => event.command.command),
+        ).toEqual([{ type: "probe" }]);
+
+        yield* advance("1 second");
+        expect(
+          harness.events
+            .slice(eventCount)
+            .map((event) => event.command.command),
+        ).toEqual([{ type: "probe" }, { type: "probe" }]);
+        expect(diagnosticEvents(harness.events)).toHaveLength(1);
+
+        yield* harness.coordinator.abortSession(harness.sessionId, {
+          kind: "requested",
+          reason: "Session ended",
         });
+        expect(yield* Fiber.join(waiting)).toEqual({
+          reason: "Session ended",
+          status: "failed",
+        });
+        yield* advance("2 seconds");
+        expect(harness.events).toHaveLength(eventCount + 2);
       }),
   );
 
