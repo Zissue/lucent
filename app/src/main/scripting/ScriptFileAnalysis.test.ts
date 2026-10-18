@@ -4,8 +4,11 @@ import { join } from "node:path";
 
 import { afterEach, expect, it } from "@effect/vitest";
 import { vi } from "vitest";
+import * as Cause from "effect/Cause";
+import * as Effect from "effect/Effect";
 
 import { processScriptFile } from "./ScriptFileAnalysis";
+import * as ScriptSourceParser from "./ScriptSourceParser";
 
 const directories: string[] = [];
 
@@ -83,3 +86,66 @@ it("does not retry permission failures", async () => {
   });
   expect(checks).toBe(1);
 });
+
+it("keeps read failures in the failure channel of the reported cause", async () => {
+  const root = await fs.mkdtemp(join(tmpdir(), "lucent-analysis-"));
+  directories.push(root);
+  const path = join(root, "unreadable.js");
+  vi.spyOn(fs, "stat").mockRejectedValue(new Error("Read failed"));
+
+  const result = await processScriptFile(path);
+  expect(result).toMatchObject({
+    status: "failed",
+    path,
+    message: "Read failed",
+  });
+  if (result.status !== "failed" || result.failureCause === undefined)
+    throw new Error("Missing read failure cause");
+  expect(Cause.hasDies(result.failureCause)).toBe(false);
+  expect(Cause.squash(result.failureCause)).toEqual(new Error("Read failed"));
+});
+
+it("reports source validation failures without an unexpected failure cause", async () => {
+  const root = await fs.mkdtemp(join(tmpdir(), "lucent-analysis-"));
+  directories.push(root);
+  const path = join(root, "invalid.js");
+  await fs.writeFile(path, "module.exports = function* (");
+
+  const result = await processScriptFile(path);
+  expect(result).toMatchObject({
+    status: "failed",
+    path,
+    message: "Script source could not be parsed.",
+  });
+  expect(result).not.toHaveProperty("failureCause");
+});
+
+it.each(["defect", "interrupt"] as const)(
+  "retains an analyzer %s in the reported cause",
+  async (kind) => {
+    const root = await fs.mkdtemp(join(tmpdir(), "lucent-analysis-"));
+    directories.push(root);
+    const path = join(root, "value.js");
+    await fs.writeFile(path, "exports.value = 1;");
+    vi.spyOn(ScriptSourceParser, "analyzeScriptSource").mockReturnValue(
+      kind === "defect"
+        ? Effect.die(new Error("Analyzer defect"))
+        : Effect.interrupt,
+    );
+
+    const result = await processScriptFile(path);
+    expect(result.status).toBe("failed");
+    if (result.status !== "failed" || result.failureCause === undefined)
+      throw new Error("Missing analyzer failure cause");
+    expect(Cause.hasDies(result.failureCause)).toBe(kind === "defect");
+    expect(Cause.hasInterruptsOnly(result.failureCause)).toBe(
+      kind === "interrupt",
+    );
+    if (kind === "defect") {
+      expect(result.message).toBe("Analyzer defect");
+      expect(Cause.squash(result.failureCause)).toEqual(
+        new Error("Analyzer defect"),
+      );
+    }
+  },
+);

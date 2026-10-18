@@ -2,12 +2,11 @@ import * as NodeWorkerRunner from "@effect/platform-node/NodeWorkerRunner";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { RpcServer } from "effect/rpc";
-import { processScriptFile } from "./ScriptFileAnalysis";
+import { analyzeScriptFile } from "./ScriptFileAnalysis";
 import { ScriptFileWorkerRpcs } from "./ScriptFileWorkerProtocol";
 
 const handlers = ScriptFileWorkerRpcs.toLayer({
-  ResolveScriptFile: ({ path }) =>
-    Effect.promise(() => processScriptFile(path)),
+  ResolveScriptFile: ({ path }) => analyzeScriptFile(path),
 });
 
 RpcServer.layer(ScriptFileWorkerRpcs, { concurrency: 1 }).pipe(

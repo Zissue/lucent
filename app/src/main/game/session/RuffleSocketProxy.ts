@@ -7,6 +7,7 @@ import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as FiberSet from "effect/FiberSet";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
@@ -95,8 +96,7 @@ const relay = (
 };
 
 const startRelay = Effect.gen(function* () {
-  const context = yield* Effect.context<never>();
-  const runFork = Effect.runForkWith(context);
+  const runFork = yield* FiberSet.makeRuntime();
   const token = randomBytes(32).toString("hex");
   const connections = new Set<Socket>();
   let closing = false;

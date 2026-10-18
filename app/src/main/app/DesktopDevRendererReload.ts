@@ -4,6 +4,7 @@ import { watchFile, unwatchFile, type Stats } from "fs";
 import { electronRendererRegistry } from "../electron/ElectronRendererRegistry";
 
 import * as Effect from "effect/Effect";
+import * as FiberSet from "effect/FiberSet";
 
 export type RendererReloadContentTarget = Pick<
   WebContents,
@@ -44,15 +45,14 @@ export const installDesktopDevRendererReload = Effect.gen(function* () {
     return;
   }
 
-  const context = yield* Effect.context<never>();
-  const runPromise = Effect.runPromiseWith(context);
+  const runFork = yield* FiberSet.makeRuntime();
   const listener = (current: Stats, previous: Stats): void => {
     if (shouldIgnoreReloadFileChange(current, previous)) {
       return;
     }
 
     const rendererCount = reloadOpenRendererContents();
-    void runPromise(
+    runFork(
       Effect.logDebug("Renderer reload requested").pipe(
         Effect.annotateLogs({
           component: "dev",
@@ -62,7 +62,7 @@ export const installDesktopDevRendererReload = Effect.gen(function* () {
           },
         }),
       ),
-    ).catch(() => undefined);
+    );
   };
 
   yield* Effect.sync(() => {

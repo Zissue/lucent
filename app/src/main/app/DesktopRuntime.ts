@@ -40,8 +40,6 @@ export const installDesktopNativeAppearanceSync = (
     const settingsService = yield* DesktopSettings;
     const theme = yield* ElectronTheme;
     const windows = yield* DesktopWindows;
-    const context = yield* Effect.context<never>();
-    const runPromise = Effect.runPromiseWith(context);
 
     const applyNativeAppearance = (settings: AppSettings) =>
       Effect.gen(function* () {
@@ -58,9 +56,9 @@ export const installDesktopNativeAppearanceSync = (
       );
 
     yield* applyNativeAppearance(initialSettings);
-    const unsubscribe = yield* settingsService.onChanged((settings) => {
-      void runPromise(applyNativeAppearance(settings)).catch(() => undefined);
-    });
+    const unsubscribe = yield* settingsService.onChanged((settings) =>
+      applyNativeAppearance(settings).pipe(Effect.ignoreCause),
+    );
     yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
   });
 

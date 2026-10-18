@@ -3,10 +3,15 @@ import { app } from "electron";
 import { describe, expect, it } from "@effect/vitest";
 import { vi } from "vitest";
 import * as Effect from "effect/Effect";
+import * as Deferred from "effect/Deferred";
 import * as Logger from "effect/Logger";
 import * as References from "effect/References";
 
 import { installDesktopRendererObservability } from "./DesktopRendererObservability";
+
+vi.mock("effect/Effect", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("effect/Effect")>()),
+}));
 
 vi.mock("electron", async () => {
   const { EventEmitter } = await import("node:events");
@@ -14,6 +19,49 @@ vi.mock("electron", async () => {
 });
 
 describe("DesktopRendererObservability", () => {
+  it.effect("interrupts in-flight callback logging when its scope closes", () =>
+    Effect.gen(function* () {
+      const started = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const events: string[] = [];
+      const log = vi.spyOn(Effect, "logError").mockReturnValue(
+        Effect.gen(function* () {
+          events.push("started");
+          yield* Deferred.succeed(started, undefined);
+          yield* Deferred.await(release);
+        }).pipe(
+          Effect.onInterrupt(() =>
+            Effect.sync(() => {
+              events.push("interrupted");
+            }),
+          ),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            yield* installDesktopRendererObservability;
+            app.emit(
+              "child-process-gone",
+              {},
+              {
+                type: "GPU",
+                reason: "crashed",
+                exitCode: 1,
+              },
+            );
+            yield* Deferred.await(started);
+            yield* Effect.yieldNow;
+          }),
+        );
+        expect(events).toEqual(["started", "interrupted"]);
+      }).pipe(
+        Effect.ensuring(Deferred.succeed(release, undefined)),
+        Effect.ensuring(Effect.sync(() => log.mockRestore())),
+      );
+    }),
+  );
+
   it.effect(
     "logs renderer and process events through the captured context",
     () =>

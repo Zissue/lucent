@@ -17,7 +17,7 @@ import * as References from "effect/References";
 import type * as Scope from "effect/Scope";
 import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
 
-import { normalizeAppSettings } from "@lucent/core/settings";
+import { normalizeAppSettings, type AppSettings } from "@lucent/core/settings";
 import {
   desktopLogRecord,
   type DesktopLogRecord,
@@ -33,7 +33,7 @@ import {
   ElectronDialogMessageBoxError,
 } from "../electron/ElectronDialog";
 import { ElectronShell } from "../electron/ElectronShell";
-import { ElectronTheme } from "../electron/ElectronTheme";
+import { ElectronTheme, ElectronThemeError } from "../electron/ElectronTheme";
 import { GitHubCredentials } from "../scripting/GitHubCredentials";
 import * as AccountSessions from "../game/accounts/AccountSessions";
 import { AccountSettingsRepository } from "../game/account-settings/AccountSettingsRepository";
@@ -62,7 +62,11 @@ import { DesktopApplicationMenu } from "../window/DesktopApplicationMenu";
 import { DesktopWindows } from "../window/DesktopWindows";
 import { DesktopEnvironment } from "./DesktopEnvironment";
 import { DesktopGameRendererRecovery } from "./DesktopGameRendererRecovery";
-import { makeDesktopRuntime } from "./DesktopRuntime";
+import {
+  installDesktopNativeAppearanceSync,
+  makeDesktopRuntime,
+} from "./DesktopRuntime";
+import { makeListenerRegistry } from "./ListenerRegistry";
 import {
   DesktopObservability,
   layer as desktopObservabilityLayer,
@@ -71,6 +75,134 @@ import {
 vi.mock("electron", async () => {
   const { EventEmitter } = await import("node:events");
   return { app: new EventEmitter(), ipcMain: new EventEmitter() };
+});
+
+describe("desktop native appearance sync", () => {
+  it.effect.each(["typed", "defect"] as const)(
+    "isolates %s appearance failures without adding listener errors",
+    (kind) =>
+      Effect.gen(function* () {
+        const changes = makeListenerRegistry<AppSettings>();
+        const received: string[] = [];
+        const records: unknown[] = [];
+        const initial = normalizeAppSettings({
+          appearance: { themeMode: "light" },
+        });
+        const changed = normalizeAppSettings({
+          appearance: { themeMode: "dark" },
+        });
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            yield* installDesktopNativeAppearanceSync(initial);
+            yield* changes.subscribe((settings) => {
+              received.push(settings.appearance.themeMode);
+            });
+            yield* changes.publish(changed);
+            yield* Effect.promise(() => yieldToEventLoop());
+          }).pipe(
+            Effect.provide(
+              Layer.mergeAll(
+                Layer.mock(DesktopSettings, { onChanged: changes.subscribe }),
+                Layer.mock(ElectronTheme, {
+                  setThemeMode: (mode) =>
+                    mode === "light"
+                      ? Effect.void
+                      : kind === "typed"
+                        ? Effect.fail(
+                            new ElectronThemeError({
+                              cause: new Error("Native appearance failed"),
+                              themeMode: mode,
+                            }),
+                          )
+                        : Effect.die(new Error("Native appearance defect")),
+                  shouldUseDarkColors: Effect.succeed(false),
+                }),
+                Layer.mock(DesktopWindows, {
+                  setBackgroundColor: () => Effect.void,
+                }),
+                Logger.layer([
+                  Logger.make((options) => {
+                    records.push({
+                      level: options.logLevel,
+                      message: options.message,
+                    });
+                  }),
+                ]),
+              ),
+            ),
+          ),
+        );
+        expect(received).toEqual(["dark"]);
+        expect(records).toEqual(
+          kind === "typed"
+            ? [
+                {
+                  level: "Warn",
+                  message: ["Failed to update Electron native appearance"],
+                },
+              ]
+            : [],
+        );
+      }),
+  );
+
+  it.effect("awaits native appearance through listener publication", () =>
+    Effect.gen(function* () {
+      const changes = makeListenerRegistry<AppSettings>();
+      const started = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const events: string[] = [];
+      const initial = normalizeAppSettings({
+        appearance: { themeMode: "light" },
+      });
+      const changed = normalizeAppSettings({
+        appearance: { themeMode: "dark" },
+      });
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          yield* installDesktopNativeAppearanceSync(initial);
+          yield* changes.subscribe(() => {
+            events.push("listener");
+          });
+          const publication = yield* changes
+            .publish(changed)
+            .pipe(Effect.forkScoped);
+          yield* Deferred.await(started);
+          yield* Effect.yieldNow;
+          expect(events).toEqual(["appearance started"]);
+          yield* Deferred.succeed(release, undefined);
+          yield* Fiber.join(publication);
+          expect(events).toEqual([
+            "appearance started",
+            "appearance finished",
+            "listener",
+          ]);
+        }).pipe(
+          Effect.ensuring(Deferred.succeed(release, undefined)),
+          Effect.provide(
+            Layer.mergeAll(
+              Layer.mock(DesktopSettings, { onChanged: changes.subscribe }),
+              Layer.mock(ElectronTheme, {
+                setThemeMode: (mode) =>
+                  mode === "light"
+                    ? Effect.void
+                    : Effect.gen(function* () {
+                        events.push("appearance started");
+                        yield* Deferred.succeed(started, undefined);
+                        yield* Deferred.await(release);
+                        events.push("appearance finished");
+                      }),
+                shouldUseDarkColors: Effect.succeed(false),
+              }),
+              Layer.mock(DesktopWindows, {
+                setBackgroundColor: () => Effect.void,
+              }),
+            ),
+          ),
+        ),
+      );
+    }),
+  );
 });
 
 const availableUpdate: UpdateCheckState = {
