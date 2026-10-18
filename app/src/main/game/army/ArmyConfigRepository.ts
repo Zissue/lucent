@@ -1,8 +1,8 @@
-import { promises as fs } from "fs";
 import { join } from "path";
 
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import { FileSystem } from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import { parse } from "yaml";
@@ -60,19 +60,11 @@ const error = (
     ...(path === undefined ? {} : { path }),
   });
 
-const readText = (
-  configName: string,
-  path: string,
-): Effect.Effect<string, ArmyConfigRepositoryError> =>
-  Effect.tryPromise({
-    try: () => fs.readFile(path, "utf8"),
-    catch: (cause) => error("read", configName, cause, path),
-  });
-
 export const layer = Layer.effect(
   ArmyConfigRepository,
   Effect.gen(function* () {
     const env = yield* DesktopEnvironment;
+    const fileSystem = yield* FileSystem;
     const armyDir = join(env.workspaceDir, "army");
 
     const read: ArmyConfigRepositoryShape["read"] = (configNameInput) =>
@@ -82,7 +74,18 @@ export const layer = Layer.effect(
           catch: (cause) => error("validate", configNameInput, cause),
         });
         const path = join(armyDir, `${configName}.yaml`);
-        const source = yield* readText(configName, path);
+        const source = yield* fileSystem.readFile(path).pipe(
+          Effect.map((bytes) =>
+            Buffer.from(
+              bytes.buffer,
+              bytes.byteOffset,
+              bytes.byteLength,
+            ).toString("utf8"),
+          ),
+          Effect.mapError((cause) =>
+            error("read", configName, cause.reason.cause ?? cause, path),
+          ),
+        );
         const raw = yield* Effect.try({
           try: () => parse(source) as unknown,
           catch: (cause) => error("parse", configName, cause, path),

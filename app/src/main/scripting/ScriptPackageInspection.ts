@@ -5,6 +5,9 @@ import * as Schema from "effect/Schema";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import { FileSystem } from "effect/FileSystem";
+import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
 import { satisfies, valid, validRange } from "semver";
 
 import type {
@@ -31,6 +34,7 @@ import {
 } from "./ScriptLimits";
 import type { ManagedScriptPackage } from "./ScriptPackageState";
 import { logFailure } from "../../shared/logFailure";
+import { readFileBounded } from "../filesystem/BoundedFileSystem";
 
 export interface ScriptPackageInspectionFailure {
   readonly packageName: string;
@@ -176,7 +180,28 @@ export const readScriptPackageManifest = async (
     );
   }
 
-  const record = parseManifestJson(await fs.readFile(path, "utf8"));
+  const read = await Effect.runPromiseExit(
+    Effect.flatMap(FileSystem, (fileSystem) =>
+      readFileBounded(fileSystem, path, SCRIPT_PACKAGE_MANIFEST_MAX_BYTES).pipe(
+        Effect.mapError((cause) =>
+          cause._tag === "FileSystemLimitError"
+            ? new Error(
+                `package.json exceeds the ${formatBytes(SCRIPT_PACKAGE_MANIFEST_MAX_BYTES)} limit.`,
+              )
+            : (cause.reason.cause ?? cause),
+        ),
+      ),
+    ).pipe(Effect.provide(NodeFileSystem.layer)),
+  );
+  if (Exit.isFailure(read)) {
+    throw Cause.squash(read.cause);
+  }
+  const bytes = read.value;
+  const record = parseManifestJson(
+    Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString(
+      "utf8",
+    ),
+  );
   const lucentVersion = optionalString(record.lucent?.version);
   const description = optionalString(record.description);
   const type = optionalString(record.type);

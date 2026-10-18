@@ -1,4 +1,3 @@
-import { promises as fs } from "fs";
 import { cpus, totalmem } from "os";
 import { basename, join } from "path";
 
@@ -11,6 +10,7 @@ import * as Scope from "effect/Scope";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
+import { FileSystem } from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
@@ -46,6 +46,7 @@ import {
   type ChromiumTraceRotationReason,
 } from "./ChromiumPerformanceRecordingModel";
 import { DesktopEnvironment } from "../DesktopEnvironment";
+import { makeAtomicFile } from "../../filesystem/AtomicFile";
 import { makeListenerRegistry } from "../ListenerRegistry";
 
 const PERFORMANCE_RECORDINGS_DIRECTORY_NAME = "chromium-performance-recordings";
@@ -290,44 +291,6 @@ const errorMessage = (cause: unknown): string =>
     ? cause.message
     : String(cause);
 
-const writeJsonArtifact = (
-  filePath: string,
-  value: unknown,
-): Effect.Effect<void, ChromiumPerformanceArtifactError> =>
-  Effect.tryPromise({
-    try: async () => {
-      const temporaryPath = `${filePath}.tmp`;
-      await fs.writeFile(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, {
-        encoding: "utf8",
-        flag: "w",
-      });
-      await fs.rename(temporaryPath, filePath);
-    },
-    catch: (cause) => new ChromiumPerformanceArtifactError({ cause, filePath }),
-  });
-
-const createRecordingDirectory = (
-  rootPath: string,
-  sessionPath: string,
-): Effect.Effect<void, ChromiumPerformanceArtifactError> =>
-  Effect.tryPromise({
-    try: async () => {
-      await fs.mkdir(rootPath, { recursive: true });
-      await fs.mkdir(sessionPath, { recursive: false });
-    },
-    catch: (cause) =>
-      new ChromiumPerformanceArtifactError({ cause, filePath: sessionPath }),
-  });
-
-const createDirectory = (
-  path: string,
-): Effect.Effect<void, ChromiumPerformanceArtifactError> =>
-  Effect.tryPromise({
-    try: () => fs.mkdir(path, { recursive: true }).then(() => undefined),
-    catch: (cause) =>
-      new ChromiumPerformanceArtifactError({ cause, filePath: path }),
-  });
-
 const sessionDirectoryName = (startedAt: string): string =>
   `lucent-chromium-recording-${chromiumRecordingTimestamp(startedAt)}-${process.pid}`;
 
@@ -335,6 +298,55 @@ const makeDesktopChromiumPerformanceRecording = Effect.gen(function* () {
   const chromium = yield* ElectronChromiumPerformance;
   const electronApp = yield* ElectronApp;
   const env = yield* DesktopEnvironment;
+  const fileSystem = yield* FileSystem;
+  const atomicFile = makeAtomicFile(fileSystem);
+
+  const writeJsonArtifact = (filePath: string, value: unknown) =>
+    Effect.try({
+      try: () => `${JSON.stringify(value, null, 2)}\n`,
+      catch: (cause) =>
+        new ChromiumPerformanceArtifactError({ cause, filePath }),
+    }).pipe(
+      Effect.flatMap((contents) =>
+        atomicFile.writeToExistingParent(filePath, contents).pipe(
+          Effect.mapError(
+            (cause) =>
+              new ChromiumPerformanceArtifactError({
+                cause: cause.reason.cause ?? cause,
+                filePath,
+              }),
+          ),
+        ),
+      ),
+    );
+
+  const createRecordingDirectory = Effect.fnUntraced(
+    function* (rootPath: string, sessionPath: string) {
+      yield* fileSystem.makeDirectory(rootPath, { recursive: true });
+      yield* fileSystem.makeDirectory(sessionPath, { recursive: false });
+    },
+    (effect, _rootPath, sessionPath) =>
+      effect.pipe(
+        Effect.mapError(
+          (cause) =>
+            new ChromiumPerformanceArtifactError({
+              cause: cause.reason.cause ?? cause,
+              filePath: sessionPath,
+            }),
+        ),
+      ),
+  );
+
+  const createDirectory = (path: string) =>
+    fileSystem.makeDirectory(path, { recursive: true }).pipe(
+      Effect.mapError(
+        (cause) =>
+          new ChromiumPerformanceArtifactError({
+            cause: cause.reason.cause ?? cause,
+            filePath: path,
+          }),
+      ),
+    );
   const windows = yield* DesktopWindows;
   const operationGate = yield* Semaphore.make(1);
   const stateChanges =

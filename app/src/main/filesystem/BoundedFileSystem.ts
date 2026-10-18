@@ -15,6 +15,11 @@ export class FileSystemLimitError extends Schema.TaggedError<FileSystemLimitErro
   },
 ) {}
 
+export class FileChangedWhileReading extends Schema.TaggedError<FileChangedWhileReading>()(
+  "FileChangedWhileReading",
+  { path: Schema.String },
+) {}
+
 export const readFileBounded = Effect.fn("readFileBounded")(function* (
   fileSystem: FileSystem,
   path: string,

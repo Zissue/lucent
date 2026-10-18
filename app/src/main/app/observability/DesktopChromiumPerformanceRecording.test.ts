@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
 import * as TestClock from "effect/testing/TestClock";
 
 import { ElectronApp } from "../../electron/ElectronApp";
@@ -17,8 +18,12 @@ import { DesktopWindows } from "../../window/DesktopWindows";
 import { layer as environmentLayer } from "../DesktopEnvironment";
 import {
   DesktopChromiumPerformanceRecording,
-  layer as chromiumLayer,
+  layer as chromiumRecordingLayer,
 } from "./DesktopChromiumPerformanceRecording";
+
+const chromiumLayer = chromiumRecordingLayer.pipe(
+  Layer.provide(NodeFileSystem.layer),
+);
 
 const fixture = Effect.acquireRelease(
   Effect.promise(() => mkdtemp(join(tmpdir(), "lucent-recordings-"))),

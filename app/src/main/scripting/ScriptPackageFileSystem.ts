@@ -1,6 +1,18 @@
 import { createHash } from "crypto";
-import { createReadStream, promises as fs } from "fs";
-import { relative, resolve, sep } from "path";
+import { promises as fs } from "node:fs";
+import { relative, resolve, sep } from "node:path";
+
+import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
+import * as Cause from "effect/Cause";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import { FileSystem } from "effect/FileSystem";
+import * as Schedule from "effect/Schedule";
+
+import {
+  FileChangedWhileReading,
+  readFileBounded,
+} from "../filesystem/BoundedFileSystem";
 
 import {
   formatBytes,
@@ -50,44 +62,57 @@ export const isPathInside = (root: string, candidate: string): boolean => {
 const fingerprint = (stat: Awaited<ReturnType<typeof fs.stat>>): string =>
   [stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(":");
 
-const assertSize = (path: string, size: number, maxBytes: number): void => {
-  if (size > maxBytes) {
-    throw new Error(
-      `File exceeds the ${formatBytes(maxBytes)} limit: ${path}.`,
-    );
+const readStableFileEffect = Effect.fnUntraced(function* (
+  path: string,
+  maxBytes: number,
+) {
+  const fileSystem = yield* FileSystem;
+  const before = yield* Effect.tryPromise({
+    try: () => fs.stat(path),
+    catch: (cause) => cause,
+  });
+  if (!before.isFile())
+    return yield* Effect.fail(new Error(`Expected a regular file: ${path}.`));
+  const sizeError = () =>
+    new Error(`File exceeds the ${formatBytes(maxBytes)} limit: ${path}.`);
+  if (before.size > maxBytes) return yield* Effect.fail(sizeError());
+  const contents = yield* readFileBounded(fileSystem, path, maxBytes).pipe(
+    Effect.mapError((cause) =>
+      cause._tag === "FileSystemLimitError"
+        ? sizeError()
+        : (cause.reason.cause ?? cause),
+    ),
+  );
+  const after = yield* Effect.tryPromise({
+    try: () => fs.stat(path),
+    catch: (cause) => cause,
+  });
+  if (fingerprint(before) !== fingerprint(after)) {
+    return yield* new FileChangedWhileReading({ path });
   }
-};
+  return Buffer.from(contents.buffer, contents.byteOffset, contents.byteLength);
+});
 
 export const readStableFile = async (
   path: string,
   maxBytes = SCRIPT_FILE_MAX_BYTES,
 ): Promise<Buffer> => {
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const before = await fs.stat(path);
-    if (!before.isFile()) throw new Error(`Expected a regular file: ${path}.`);
-    assertSize(path, before.size, maxBytes);
-
-    const stream = createReadStream(path, { highWaterMark: 64 * 1024 });
-    const chunks: Buffer[] = [];
-    let bytes = 0;
-    try {
-      for await (const chunk of stream) {
-        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-        bytes += buffer.byteLength;
-        assertSize(path, bytes, maxBytes);
-        chunks.push(buffer);
-      }
-    } finally {
-      stream.destroy();
-    }
-
-    const after = await fs.stat(path);
-    if (fingerprint(before) === fingerprint(after)) {
-      return Buffer.concat(chunks, bytes);
-    }
-  }
-
-  throw new Error(`File changed while it was being read: ${path}.`);
+  const exit = await Effect.runPromiseExit(
+    readStableFileEffect(path, maxBytes).pipe(
+      Effect.retry({
+        schedule: Schedule.recurs(2),
+        while: (cause) => cause instanceof FileChangedWhileReading,
+      }),
+      Effect.mapError((cause) =>
+        cause instanceof FileChangedWhileReading
+          ? new Error(`File changed while it was being read: ${path}.`)
+          : cause,
+      ),
+      Effect.provide(NodeFileSystem.layer),
+    ),
+  );
+  if (Exit.isFailure(exit)) throw Cause.squash(exit.cause);
+  return exit.value;
 };
 
 export const regularFileFingerprint = async (path: string): Promise<string> => {

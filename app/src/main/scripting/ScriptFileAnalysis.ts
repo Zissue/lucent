@@ -1,10 +1,18 @@
 import { createHash } from "crypto";
-import { createReadStream, promises as fs } from "fs";
+import { promises as fs } from "node:fs";
 import { basename } from "path";
 
 import * as Effect from "effect/Effect";
 import * as Cause from "effect/Cause";
 import * as Exit from "effect/Exit";
+import * as Schedule from "effect/Schedule";
+import { FileSystem } from "effect/FileSystem";
+import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
+
+import {
+  FileChangedWhileReading,
+  readFileBounded,
+} from "../filesystem/BoundedFileSystem";
 
 import {
   formatBytes,
@@ -70,70 +78,64 @@ const fingerprint = (stat: Awaited<ReturnType<typeof fs.stat>>): string =>
 
 class ScriptFileValidationError extends Error {}
 
-const assertFileSize = (path: string, size: number): void => {
-  if (size > SCRIPT_FILE_MAX_BYTES) {
-    throw new ScriptFileValidationError(
-      `Script file exceeds the ${formatBytes(SCRIPT_FILE_MAX_BYTES)} limit: ${path}.`,
+const readStableFile = Effect.fnUntraced(
+  function* (path: string) {
+    const fileSystem = yield* FileSystem;
+    const stat = Effect.tryPromise({
+      try: () => fs.stat(path),
+      catch: (cause) => cause,
+    });
+    const before = yield* stat.pipe(
+      Effect.catch((cause) =>
+        isMissingError(cause) ? Effect.succeed(undefined) : Effect.fail(cause),
+      ),
     );
-  }
-};
-
-const readBoundedFile = async (path: string): Promise<Buffer> => {
-  const stream = createReadStream(path, { highWaterMark: 64 * 1024 });
-  const chunks: Buffer[] = [];
-  let size = 0;
-
-  try {
-    for await (const chunk of stream) {
-      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      size += buffer.byteLength;
-      assertFileSize(path, size);
-      chunks.push(buffer);
-    }
-  } finally {
-    stream.destroy();
-  }
-
-  return Buffer.concat(chunks, size);
-};
-
-const readStableFile = async (
-  path: string,
-): Promise<
-  | { readonly contents: Buffer; readonly fingerprint: string }
-  | { readonly missing: true }
-> => {
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    let before: Awaited<ReturnType<typeof fs.stat>>;
-    try {
-      before = await fs.stat(path);
-    } catch (error) {
-      if (isMissingError(error)) return { missing: true };
-      throw error;
-    }
-
-    assertFileSize(path, before.size);
-    const contents = await readBoundedFile(path);
-    assertFileSize(path, contents.byteLength);
-
-    let after: Awaited<ReturnType<typeof fs.stat>>;
-    try {
-      after = await fs.stat(path);
-    } catch (error) {
-      if (isMissingError(error)) continue;
-      throw error;
-    }
-
+    if (before === undefined) return { missing: true } as const;
+    const sizeError = () =>
+      new ScriptFileValidationError(
+        `Script file exceeds the ${formatBytes(SCRIPT_FILE_MAX_BYTES)} limit: ${path}.`,
+      );
+    if (before.size > SCRIPT_FILE_MAX_BYTES)
+      return yield* Effect.fail(sizeError());
+    const bytes = yield* readFileBounded(
+      fileSystem,
+      path,
+      SCRIPT_FILE_MAX_BYTES,
+    ).pipe(
+      Effect.mapError((cause) =>
+        cause._tag === "FileSystemLimitError"
+          ? sizeError()
+          : (cause.reason.cause ?? cause),
+      ),
+    );
+    const after = yield* stat.pipe(
+      Effect.catch((cause) =>
+        isMissingError(cause)
+          ? Effect.fail(new FileChangedWhileReading({ path }))
+          : Effect.fail(cause),
+      ),
+    );
     const afterFingerprint = fingerprint(after);
-    if (fingerprint(before) === afterFingerprint) {
-      return { contents, fingerprint: afterFingerprint };
+    if (fingerprint(before) !== afterFingerprint) {
+      return yield* new FileChangedWhileReading({ path });
     }
-  }
-
-  throw new ScriptFileValidationError(
-    `Script file changed while it was being read: ${path}.`,
-  );
-};
+    return {
+      contents: Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength),
+      fingerprint: afterFingerprint,
+    };
+  },
+  Effect.retry({
+    schedule: Schedule.recurs(1),
+    while: (cause) => cause instanceof FileChangedWhileReading,
+  }),
+  Effect.mapError((cause) =>
+    cause instanceof FileChangedWhileReading
+      ? new ScriptFileValidationError(
+          `Script file changed while it was being read: ${cause.path}.`,
+        )
+      : cause,
+  ),
+);
 
 const analyzeSource = (source: string, path: string) =>
   Effect.runPromiseExit(analyzeScriptSource(source, path)).then((exit) => {
@@ -177,9 +179,13 @@ const cachedAnalysis = async (
 export const processScriptFile = async (
   path: string,
 ): Promise<ScriptFileAnalysisResolution> => {
-  let stable: Awaited<ReturnType<typeof readStableFile>>;
+  let stable: Effect.Success<ReturnType<typeof readStableFile>>;
   try {
-    stable = await readStableFile(path);
+    const exit = await Effect.runPromiseExit(
+      readStableFile(path).pipe(Effect.provide(NodeFileSystem.layer)),
+    );
+    if (Exit.isFailure(exit)) throw Cause.squash(exit.cause);
+    stable = exit.value;
   } catch (error) {
     return isMissingError(error)
       ? { status: "missing", path }
