@@ -180,48 +180,47 @@ export const makeDesktopIpc = (
       rendererIds.map((rendererId) => contents.fromId(rendererId)),
     );
 
-  const handle = <E, R>(
+  const handle = Effect.fnUntraced(function* <E, R>(
     method: DesktopIpcMethodRegistration<E, R>,
-  ): Effect.Effect<
+  ): Effect.fn.Return<
     void,
     DesktopIpcRegistrationError,
     DesktopIpcSenders | R | Scope.Scope
-  > =>
-    Effect.gen(function* () {
-      const senders = yield* DesktopIpcSenders;
-      const context = yield* Effect.context<R>();
-      const runPromise = Effect.runPromiseWith(context);
-      const { descriptor } = method;
+  > {
+    const senders = yield* DesktopIpcSenders;
+    const context = yield* Effect.context<R>();
+    const runPromise = Effect.runPromiseWith(context);
+    const { descriptor } = method;
 
-      const handler = createDesktopIpcInvokeHandler(
-        descriptor,
-        (payload, event: IpcMainInvokeEvent) =>
-          senders
-            .require(event, method.allowedSenders)
-            .pipe(Effect.flatMap((sender) => method.invoke(payload, sender))),
-        runPromise,
-      );
+    const handler = createDesktopIpcInvokeHandler(
+      descriptor,
+      (payload, event: IpcMainInvokeEvent) =>
+        senders
+          .require(event, method.allowedSenders)
+          .pipe(Effect.flatMap((sender) => method.invoke(payload, sender))),
+      runPromise,
+    );
 
-      yield* Effect.acquireRelease(
+    yield* Effect.acquireRelease(
+      Effect.try({
+        try: () => main.handle(descriptor.channel, handler),
+        catch: (cause) =>
+          new DesktopIpcRegistrationError({
+            channel: descriptor.channel,
+            cause,
+          }),
+      }),
+      () =>
         Effect.try({
-          try: () => main.handle(descriptor.channel, handler),
+          try: () => main.removeHandler(descriptor.channel),
           catch: (cause) =>
-            new DesktopIpcRegistrationError({
+            new DesktopIpcUnregistrationError({
               channel: descriptor.channel,
               cause,
             }),
-        }),
-        () =>
-          Effect.try({
-            try: () => main.removeHandler(descriptor.channel),
-            catch: (cause) =>
-              new DesktopIpcUnregistrationError({
-                channel: descriptor.channel,
-                cause,
-              }),
-          }).pipe(Effect.orDie),
-      );
-    });
+        }).pipe(Effect.orDie),
+    );
+  });
 
   return DesktopIpc.of({
     handle,

@@ -43,7 +43,7 @@ export class DesktopIpcSenders extends Context.Service<
 export const makeDesktopIpcSenders = (
   windows: Pick<DesktopWindows["Service"], "identify">,
 ): DesktopIpcSenders["Service"] => {
-  const requireSender = Effect.fn("DesktopIpcSenders.require")(function* (
+  const requireSender = Effect.fnUntraced(function* (
     event: { readonly sender: Pick<WebContents, "id"> },
     allowedKinds: DesktopIpcSenderKinds,
   ) {

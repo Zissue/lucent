@@ -250,10 +250,8 @@ export const layer = Layer.effect(
       };
     });
 
-    const resolveCommit: GitHubScriptPackageClientShape["resolveCommit"] = (
-      input,
-    ) =>
-      Effect.gen(function* () {
+    const resolveCommit: GitHubScriptPackageClientShape["resolveCommit"] =
+      Effect.fnUntraced(function* (input) {
         const { ref, repository, token } = yield* requestContext(input);
         const key = JSON.stringify({
           credentialId: input.credentialId ?? null,
@@ -339,145 +337,142 @@ export const layer = Layer.effect(
       });
 
     const resolveDirectory: GitHubScriptPackageClientShape["resolveDirectory"] =
-      (input) =>
-        Effect.gen(function* () {
-          const { ref, repository, token } = yield* requestContext(input);
-          const segments = input.subdirectory.split("/");
-          const directoryName = segments[segments.length - 1];
-          if (directoryName === undefined || directoryName === "") {
-            return yield* new GitHubScriptPackageClientError({
-              kind: "invalid-request",
-              detail: "Enter a valid package directory.",
-            });
-          }
-          const parentSegments = segments.slice(0, -1);
-          const base = repositoryApiBase(repository);
+      Effect.fnUntraced(function* (input) {
+        const { ref, repository, token } = yield* requestContext(input);
+        const segments = input.subdirectory.split("/");
+        const directoryName = segments[segments.length - 1];
+        if (directoryName === undefined || directoryName === "") {
+          return yield* new GitHubScriptPackageClientError({
+            kind: "invalid-request",
+            detail: "Enter a valid package directory.",
+          });
+        }
+        const parentSegments = segments.slice(0, -1);
+        const base = repositoryApiBase(repository);
 
-          return yield* queue
-            .enqueue(
-              Effect.gen(function* () {
-                const contentsPath = encodedRepositoryPath(parentSegments);
-                const contentsUrl = new URL(
-                  contentsPath === ""
-                    ? `${base}/contents`
-                    : `${base}/contents/${contentsPath}`,
+        return yield* queue
+          .enqueue(
+            Effect.gen(function* () {
+              const contentsPath = encodedRepositoryPath(parentSegments);
+              const contentsUrl = new URL(
+                contentsPath === ""
+                  ? `${base}/contents`
+                  : `${base}/contents/${contentsPath}`,
+              );
+              contentsUrl.searchParams.set("ref", ref);
+              const contentsResponse = yield* api.get({
+                attempts: MAX_METADATA_ATTEMPTS,
+                ...(input.credentialId === undefined
+                  ? {}
+                  : { credentialId: input.credentialId }),
+                maxBytes: SCRIPT_PACKAGE_METADATA_MAX_BYTES,
+                timeoutMs: REQUEST_TIMEOUT_MS,
+                ...(token === undefined ? {} : { token }),
+                url: contentsUrl,
+              });
+              const contents = yield* Effect.try({
+                try: () =>
+                  decodeContentsPayload(
+                    JSON.parse(contentsResponse.body.toString("utf8")),
+                  ),
+                catch: (cause) =>
+                  unexpectedPayloadError(
+                    "GitHub returned an invalid directory listing.",
+                    cause,
+                  ),
+              });
+
+              if (contents.length < CONTENTS_DIRECTORY_LIMIT) {
+                const entry = contents.find(
+                  (candidate) =>
+                    candidate.name === directoryName &&
+                    candidate.path === input.subdirectory,
                 );
-                contentsUrl.searchParams.set("ref", ref);
-                const contentsResponse = yield* api.get({
-                  attempts: MAX_METADATA_ATTEMPTS,
-                  ...(input.credentialId === undefined
-                    ? {}
-                    : { credentialId: input.credentialId }),
-                  maxBytes: SCRIPT_PACKAGE_METADATA_MAX_BYTES,
-                  timeoutMs: REQUEST_TIMEOUT_MS,
-                  ...(token === undefined ? {} : { token }),
-                  url: contentsUrl,
-                });
-                const contents = yield* Effect.try({
-                  try: () =>
-                    decodeContentsPayload(
-                      JSON.parse(contentsResponse.body.toString("utf8")),
-                    ),
-                  catch: (cause) =>
-                    unexpectedPayloadError(
-                      "GitHub returned an invalid directory listing.",
-                      cause,
-                    ),
-                });
+                if (entry === undefined) {
+                  return yield* new GitHubScriptPackageClientError({
+                    kind: "not-found",
+                    detail: `GitHub couldn't find package directory ${JSON.stringify(input.subdirectory)}.`,
+                  });
+                }
+                if (entry.type !== "dir") {
+                  return yield* new GitHubScriptPackageClientError({
+                    kind: "invalid-request",
+                    detail: `GitHub path ${JSON.stringify(input.subdirectory)} is not a directory.`,
+                  });
+                }
+                return { tree: entry.sha };
+              }
 
-                if (contents.length < CONTENTS_DIRECTORY_LIMIT) {
-                  const entry = contents.find(
-                    (candidate) =>
-                      candidate.name === directoryName &&
-                      candidate.path === input.subdirectory,
-                  );
-                  if (entry === undefined) {
+              const getTree = Effect.fn("GitHubScriptPackageClient.getTree")(
+                function* (tree: string) {
+                  const response = yield* api.get({
+                    attempts: MAX_METADATA_ATTEMPTS,
+                    ...(input.credentialId === undefined
+                      ? {}
+                      : { credentialId: input.credentialId }),
+                    maxBytes: SCRIPT_PACKAGE_METADATA_MAX_BYTES,
+                    timeoutMs: REQUEST_TIMEOUT_MS,
+                    ...(token === undefined ? {} : { token }),
+                    url: new URL(
+                      `${base}/git/trees/${encodeURIComponent(tree)}`,
+                    ),
+                  });
+                  const payload = yield* Effect.try({
+                    try: () =>
+                      decodeTreePayload(
+                        JSON.parse(response.body.toString("utf8")),
+                      ),
+                    catch: (cause) =>
+                      unexpectedPayloadError(
+                        "GitHub returned an invalid Git tree.",
+                        cause,
+                      ),
+                  });
+                  if (payload.truncated) {
                     return yield* new GitHubScriptPackageClientError({
-                      kind: "not-found",
-                      detail: `GitHub couldn't find package directory ${JSON.stringify(input.subdirectory)}.`,
+                      kind: "response-too-large",
+                      detail: "GitHub returned an incomplete Git tree.",
                     });
                   }
-                  if (entry.type !== "dir") {
-                    return yield* new GitHubScriptPackageClientError({
-                      kind: "invalid-request",
-                      detail: `GitHub path ${JSON.stringify(input.subdirectory)} is not a directory.`,
-                    });
-                  }
+                  return payload;
+                },
+              );
+
+              let tree = yield* getTree(ref);
+              for (let index = 0; index < segments.length; index += 1) {
+                const segment = segments[index];
+                const entry = tree.tree.find(
+                  (candidate) => candidate.path === segment,
+                );
+                if (entry === undefined) {
+                  return yield* new GitHubScriptPackageClientError({
+                    kind: "not-found",
+                    detail: `GitHub couldn't find package directory ${JSON.stringify(input.subdirectory)}.`,
+                  });
+                }
+                if (entry.type !== "tree") {
+                  return yield* new GitHubScriptPackageClientError({
+                    kind: "invalid-request",
+                    detail: `GitHub path ${JSON.stringify(input.subdirectory)} is not a directory.`,
+                  });
+                }
+                if (index === segments.length - 1) {
                   return { tree: entry.sha };
                 }
+                tree = yield* getTree(entry.sha);
+              }
 
-                const getTree = Effect.fn("GitHubScriptPackageClient.getTree")(
-                  function* (tree: string) {
-                    const response = yield* api.get({
-                      attempts: MAX_METADATA_ATTEMPTS,
-                      ...(input.credentialId === undefined
-                        ? {}
-                        : { credentialId: input.credentialId }),
-                      maxBytes: SCRIPT_PACKAGE_METADATA_MAX_BYTES,
-                      timeoutMs: REQUEST_TIMEOUT_MS,
-                      ...(token === undefined ? {} : { token }),
-                      url: new URL(
-                        `${base}/git/trees/${encodeURIComponent(tree)}`,
-                      ),
-                    });
-                    const payload = yield* Effect.try({
-                      try: () =>
-                        decodeTreePayload(
-                          JSON.parse(response.body.toString("utf8")),
-                        ),
-                      catch: (cause) =>
-                        unexpectedPayloadError(
-                          "GitHub returned an invalid Git tree.",
-                          cause,
-                        ),
-                    });
-                    if (payload.truncated) {
-                      return yield* new GitHubScriptPackageClientError({
-                        kind: "response-too-large",
-                        detail: "GitHub returned an incomplete Git tree.",
-                      });
-                    }
-                    return payload;
-                  },
-                );
+              return yield* new GitHubScriptPackageClientError({
+                kind: "unexpected-response",
+                detail: "GitHub returned an incomplete package directory.",
+              });
+            }),
+          )
+          .pipe(Effect.mapError(clientError));
+      });
 
-                let tree = yield* getTree(ref);
-                for (let index = 0; index < segments.length; index += 1) {
-                  const segment = segments[index];
-                  const entry = tree.tree.find(
-                    (candidate) => candidate.path === segment,
-                  );
-                  if (entry === undefined) {
-                    return yield* new GitHubScriptPackageClientError({
-                      kind: "not-found",
-                      detail: `GitHub couldn't find package directory ${JSON.stringify(input.subdirectory)}.`,
-                    });
-                  }
-                  if (entry.type !== "tree") {
-                    return yield* new GitHubScriptPackageClientError({
-                      kind: "invalid-request",
-                      detail: `GitHub path ${JSON.stringify(input.subdirectory)} is not a directory.`,
-                    });
-                  }
-                  if (index === segments.length - 1) {
-                    return { tree: entry.sha };
-                  }
-                  tree = yield* getTree(entry.sha);
-                }
-
-                return yield* new GitHubScriptPackageClientError({
-                  kind: "unexpected-response",
-                  detail: "GitHub returned an incomplete package directory.",
-                });
-              }),
-            )
-            .pipe(Effect.mapError(clientError));
-        });
-
-    const downloadArchive: GitHubScriptPackageClientShape["downloadArchive"] = (
-      input,
-    ) =>
-      Effect.gen(function* () {
+    const downloadArchive: GitHubScriptPackageClientShape["downloadArchive"] =
+      Effect.fnUntraced(function* (input) {
         const { ref, repository, token } = yield* requestContext(input);
         return yield* queue
           .enqueue(

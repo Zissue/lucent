@@ -277,29 +277,28 @@ const parseSource = (
       }),
   });
 
-export const analyzeScriptSource = (
+export const analyzeScriptSource = Effect.fnUntraced(function* (
   source: string,
   fallbackId: string,
-): Effect.Effect<ScriptSourceAnalysis, ScriptInputsExtractorError> =>
-  Effect.gen(function* () {
-    const program = yield* parseSource(source);
-    const requirements = findLiteralRequirements(program);
-    const expression = findInputsExpression(program);
-    if (Option.isNone(expression)) {
-      return { inputs: null, requirements };
-    }
+): Effect.fn.Return<ScriptSourceAnalysis, ScriptInputsExtractorError> {
+  const program = yield* parseSource(source);
+  const requirements = findLiteralRequirements(program);
+  const expression = findInputsExpression(program);
+  if (Option.isNone(expression)) {
+    return { inputs: null, requirements };
+  }
 
-    const value = yield* Effect.try({
-      try: () => evaluateStaticExpression(expression.value),
-      catch: (cause) =>
-        cause instanceof ScriptInputsExtractorError
-          ? cause
-          : staticError(
-              "Script inputs could not be statically evaluated.",
-              cause,
-            ),
-    });
-
-    const inputs = yield* normalizeDefinition(value, fallbackId);
-    return { inputs, requirements };
+  const value = yield* Effect.try({
+    try: () => evaluateStaticExpression(expression.value),
+    catch: (cause) =>
+      cause instanceof ScriptInputsExtractorError
+        ? cause
+        : staticError(
+            "Script inputs could not be statically evaluated.",
+            cause,
+          ),
   });
+
+  const inputs = yield* normalizeDefinition(value, fallbackId);
+  return { inputs, requirements };
+});
