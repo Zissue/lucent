@@ -11,4 +11,4 @@ sidebar:
 type SkillSlot = 0 | 1 | 2 | 3 | 4 | 5
 ```
 
-<p class="source-reference">Defined in <a class="source-reference__link" href="https://github.com/toommyliu/lucent/blob/main/packages/core/src/combatProfiles.ts#L28" aria-label="Open source: packages/core/src/combatProfiles.ts:28" title="packages/core/src/combatProfiles.ts:28" target="_blank" rel="noreferrer"><code class="source-reference__path">combatProfiles.ts:28</code></a></p>
+<p class="source-reference">Defined in <a class="source-reference__link" href="https://github.com/toommyliu/lucent/blob/main/packages/core/src/combatProfiles.ts#L31" aria-label="Open source: packages/core/src/combatProfiles.ts:31" title="packages/core/src/combatProfiles.ts:31" target="_blank" rel="noreferrer"><code class="source-reference__path">combatProfiles.ts:31</code></a></p>

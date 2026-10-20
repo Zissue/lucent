@@ -16,4 +16,4 @@ type CombatProfileMessageTrigger = {
 }
 ```
 
-<p class="source-reference">Defined in <a class="source-reference__link" href="https://github.com/toommyliu/lucent/blob/main/packages/core/src/combatProfiles.ts#L97" aria-label="Open source: packages/core/src/combatProfiles.ts:97" title="packages/core/src/combatProfiles.ts:97" target="_blank" rel="noreferrer"><code class="source-reference__path">combatProfiles.ts:97</code></a></p>
+<p class="source-reference">Defined in <a class="source-reference__link" href="https://github.com/toommyliu/lucent/blob/main/packages/core/src/combatProfiles.ts#L100" aria-label="Open source: packages/core/src/combatProfiles.ts:100" title="packages/core/src/combatProfiles.ts:100" target="_blank" rel="noreferrer"><code class="source-reference__path">combatProfiles.ts:100</code></a></p>

@@ -29,4 +29,4 @@ type CombatProfileStepDefinition = Partial<{
 }
 ```
 
-<p class="source-reference">Defined in <a class="source-reference__link" href="https://github.com/toommyliu/lucent/blob/main/packages/core/src/combatProfiles.ts#L121" aria-label="Open source: packages/core/src/combatProfiles.ts:121" title="packages/core/src/combatProfiles.ts:121" target="_blank" rel="noreferrer"><code class="source-reference__path">combatProfiles.ts:121</code></a></p>
+<p class="source-reference">Defined in <a class="source-reference__link" href="https://github.com/toommyliu/lucent/blob/main/packages/core/src/combatProfiles.ts#L124" aria-label="Open source: packages/core/src/combatProfiles.ts:124" title="packages/core/src/combatProfiles.ts:124" target="_blank" rel="noreferrer"><code class="source-reference__path">combatProfiles.ts:124</code></a></p>
