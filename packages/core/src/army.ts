@@ -1,6 +1,11 @@
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
+import {
+  MAXIMUM_ROOM_NUMBER,
+  MINIMUM_ROOM_NUMBER,
+  RoomNumberSchema,
+} from "./accountSettings";
 import { NonNegativeInt } from "./baseSchemas";
 
 export type ArmyConfigRaw = Record<string, unknown>;
@@ -31,7 +36,7 @@ export interface ArmySetConfig {
 export interface ArmyConfigCore {
   readonly items: Readonly<Record<string, string>>;
   readonly players: readonly string[];
-  readonly room: string;
+  readonly room: number;
   readonly sets: Readonly<Record<string, ArmySetConfig>>;
 }
 
@@ -230,7 +235,7 @@ const ArmyConfigPayloadFields = {
   items: Schema.Record(Schema.String, Schema.String),
   players: Schema.Array(Schema.String),
   raw: ArmyConfigRawSchema,
-  room: Schema.String,
+  room: RoomNumberSchema,
   sets: Schema.Record(Schema.String, ArmySetConfigSchema),
 } as const;
 
@@ -418,6 +423,21 @@ const stringAt = (value: unknown, message: string): string => {
   return normalized;
 };
 
+const decodeRoomNumber = Schema.decodeUnknownOption(RoomNumberSchema);
+
+const roomAt = (value: unknown): number => {
+  const text = stringAt(value, "Army config must define room");
+  const room = /^\d+$/u.test(text)
+    ? decodeRoomNumber(Number(text))
+    : Option.none();
+  if (Option.isNone(room)) {
+    throw new Error(
+      `Army config room must be a whole number from ${MINIMUM_ROOM_NUMBER} to ${MAXIMUM_ROOM_NUMBER}`,
+    );
+  }
+  return room.value;
+};
+
 const optionalStringAt = (
   value: unknown,
   message: string,
@@ -572,7 +592,7 @@ export const parseArmyConfigCore = (value: unknown): ArmyConfigCore => {
   return {
     items: parseItems(raw["items"]),
     players,
-    room: stringAt(raw["room"], "Army config must define room"),
+    room: roomAt(raw["room"]),
     sets: parseSets(raw["sets"], players.length),
   };
 };
