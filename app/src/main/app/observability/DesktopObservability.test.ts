@@ -2,9 +2,9 @@ import { vi } from "vitest";
 import { ipcMain } from "electron";
 import { RendererLogIpc } from "../../../shared/ipc/rendererLog";
 import * as Cause from "effect/Cause";
-import { promises as fs } from "fs";
-import { tmpdir } from "os";
-import { join } from "path";
+import { promises as fs } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "@effect/vitest";
 import * as Context from "effect/Context";
@@ -81,6 +81,89 @@ afterEach(async () => {
 });
 
 describe("DesktopObservability", () => {
+  it.effect(
+    "writes monotonic uptime after finalizer logs and repeat tails",
+    () =>
+      Effect.gen(function* () {
+        const root = yield* Effect.promise(makeFixture);
+        yield* Effect.gen(function* () {
+          const observability = yield* DesktopObservability;
+          yield* Effect.addFinalizer(() =>
+            Effect.logInfo("Cleanup completed").pipe(
+              Effect.andThen(Effect.logInfo("Cleanup completed")),
+            ),
+          );
+          yield* TestClock.adjust(1_234);
+          yield* observability.setSessionStop("SIGINT");
+        }).pipe(Effect.scoped, Effect.provide(makeLayer(root, false)));
+        expect(
+          yield* Effect.promise(() =>
+            readRecords(join(root, "logs", "lucent.log")),
+          ),
+        ).toEqual([
+          {
+            at: "1970-01-01T00:00:01.234Z",
+            level: "info",
+            component: "effect",
+            message: "Cleanup completed",
+          },
+          {
+            at: "1970-01-01T00:00:01.234Z",
+            level: "info",
+            component: "effect",
+            message: "Cleanup completed",
+            suppressed: 1,
+            lastAt: "1970-01-01T00:00:01.234Z",
+          },
+          {
+            at: "1970-01-01T00:00:01.234Z",
+            level: "info",
+            component: "lifecycle",
+            message: "Lucent desktop runtime stopped",
+            data: { source: "SIGINT", uptimeMs: 1234, outcome: "clean" },
+          },
+        ]);
+      }),
+  );
+
+  it.effect.each([false, true])(
+    "writes failure spans only with debug logging %s",
+    (debug) =>
+      Effect.gen(function* () {
+        const root = yield* Effect.promise(makeFixture);
+        yield* Effect.logError(
+          "Recovery failed",
+          Cause.fail(new Error("broken")),
+        ).pipe(
+          Effect.annotateLogs({
+            component: "recovery",
+            data: { rendererId: 7 },
+          }),
+          Effect.withSpan("recovery"),
+          Effect.provide(makeLayer(root, debug)),
+        );
+        expect(
+          yield* Effect.promise(() =>
+            readRecords(join(root, "logs", "lucent.log")),
+          ),
+        ).toEqual([
+          {
+            at: "1970-01-01T00:00:00.000Z",
+            level: "error",
+            component: "recovery",
+            message: "Recovery failed",
+            data: { rendererId: 7 },
+            error: [
+              { name: "Error", message: "broken", stack: expect.any(String) },
+            ],
+            ...(debug
+              ? { traceId: expect.any(String), spanId: expect.any(String) }
+              : {}),
+          },
+        ]);
+      }),
+  );
+
   it.effect("bounds renderer records before passing them to the writer", () =>
     Effect.gen(function* () {
       const root = yield* Effect.promise(makeFixture);
@@ -738,8 +821,6 @@ describe("DesktopObservability", () => {
             error: [
               { name: "Error", message: "offline", stack: expect.any(String) },
             ],
-            traceId: expect.any(String),
-            spanId: expect.any(String),
           },
         ]);
         yield* TestClock.adjust("50 seconds");
@@ -755,8 +836,6 @@ describe("DesktopObservability", () => {
             error: [
               { name: "Error", message: "offline", stack: expect.any(String) },
             ],
-            traceId: expect.any(String),
-            spanId: expect.any(String),
           },
           {
             at: "1970-01-01T00:01:00.000Z",
@@ -1244,7 +1323,7 @@ describe("DesktopObservability", () => {
                 ),
               );
           }),
-        ).pipe(Layer.provideMerge(makeLayer(root, false)));
+        ).pipe(Layer.provideMerge(makeLayer(root, true)));
 
         yield* Effect.gen(function* () {
           const callback = yield* Callback;

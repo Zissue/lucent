@@ -5,7 +5,7 @@ import * as Exit from "effect/Exit";
 import { FileSystem } from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
-import { HttpClient } from "effect/http";
+import { HttpClient, HttpClientError } from "effect/http";
 import type { HttpClientResponse } from "effect/http/HttpClientResponse";
 import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
 import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient";
@@ -18,7 +18,7 @@ export {
 } from "./DesktopHttpError";
 
 const DEFAULT_TIMEOUT_MS = 20_000;
-const DEFAULT_ERROR_RESPONSE_MAX_BYTES = 1024 * 1024;
+const ERROR_RESPONSE_MAX_BYTES = 1024 * 1024;
 
 export interface DesktopHttpResponse {
   readonly body: Buffer;
@@ -31,7 +31,6 @@ export interface DesktopHttpResponse {
 export interface DesktopHttpGetOptions {
   readonly headers?: Readonly<Record<string, string>>;
   readonly maxBytes?: number;
-  readonly maxRedirects?: number;
   readonly timeoutMs?: number;
   readonly url: URL;
 }
@@ -39,11 +38,11 @@ export interface DesktopHttpGetOptions {
 export interface DesktopHttpRequestOptions extends DesktopHttpGetOptions {
   readonly method?: string;
   readonly body?: Uint8Array;
+  readonly maxRedirects?: number;
   readonly redirect?: "follow" | "manual" | "error";
 }
 
 export interface DesktopHttpDownloadOptions {
-  readonly errorResponseMaxBytes?: number;
   readonly headers?: Readonly<Record<string, string>>;
   readonly maxBytes: number;
   readonly maxRedirects?: number;
@@ -86,7 +85,7 @@ const boundedBody = (
   url: URL,
 ) =>
   Stream.suspend(() => {
-    let bytes = 0;
+    if (maxBytes === undefined) return response.stream;
     const tooLarge = () =>
       clientError(
         "response-too-large",
@@ -96,18 +95,15 @@ const boundedBody = (
     const contentLength = Number(response.headers["content-length"]);
     if (
       response.request.method !== "HEAD" &&
-      maxBytes !== undefined &&
       Number.isSafeInteger(contentLength) &&
       contentLength > maxBytes
     )
       return Stream.fail(tooLarge());
     return response.stream.pipe(
-      Stream.mapEffect((chunk) => {
-        bytes += chunk.byteLength;
-        return maxBytes !== undefined && bytes > maxBytes
-          ? Effect.fail(tooLarge())
-          : Effect.succeed(chunk);
-      }),
+      Stream.limitBytes<
+        HttpClientError.HttpClientError | DesktopHttpClientError,
+        never
+      >(BigInt(maxBytes), () => Stream.fail(tooLarge())),
     );
   });
 
@@ -142,17 +138,23 @@ const readResponse = (
     ),
   );
 
-const normalizeError = (cause: unknown, url: URL): DesktopHttpClientError =>
-  cause instanceof DesktopHttpClientError
-    ? cause
-    : clientError(
-        "request-failed",
-        cause instanceof Error && cause.message.trim() !== ""
-          ? cause.message
-          : "HTTP request failed.",
-        url,
-        cause,
-      );
+const normalizeError = (cause: unknown, url: URL): DesktopHttpClientError => {
+  if (cause instanceof DesktopHttpClientError) return cause;
+  if (
+    HttpClientError.isHttpClientError(cause) &&
+    cause.reason.cause instanceof DesktopHttpClientError &&
+    cause.reason.cause.kind === "timeout"
+  )
+    return cause.reason.cause;
+  return clientError(
+    "request-failed",
+    cause instanceof Error && cause.message.trim() !== ""
+      ? cause.message
+      : "HTTP request failed.",
+    url,
+    cause,
+  );
+};
 
 export const makeDesktopHttpClient = Effect.gen(function* () {
   const client = yield* HttpClient.HttpClient;
@@ -208,7 +210,7 @@ export const makeDesktopHttpClient = Effect.gen(function* () {
           url: input.url,
           headers: input.headers ?? {},
           method: "GET",
-          maxRedirects: input.maxRedirects ?? 0,
+          maxRedirects: 0,
           httpsOnly: true,
           socketTimeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
         },
@@ -228,11 +230,7 @@ export const makeDesktopHttpClient = Effect.gen(function* () {
         (response, url) =>
           response.status >= 200 && response.status < 300
             ? downloadBody(response, input, url)
-            : readResponse(
-                response,
-                input.errorResponseMaxBytes ?? DEFAULT_ERROR_RESPONSE_MAX_BYTES,
-                url,
-              ),
+            : readResponse(response, ERROR_RESPONSE_MAX_BYTES, url),
       ).pipe(Effect.mapError((cause) => normalizeError(cause, input.url))),
   });
 });

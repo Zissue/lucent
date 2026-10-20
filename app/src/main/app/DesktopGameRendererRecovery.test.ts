@@ -1,14 +1,21 @@
 import { EventEmitter } from "node:events";
+import { app } from "electron";
 
 import { describe, expect, it } from "@effect/vitest";
 import { vi } from "vitest";
+import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
-import * as Fiber from "effect/Fiber";
+import * as Logger from "effect/Logger";
 import * as Scope from "effect/Scope";
+import {
+  desktopLogRecord,
+  type DesktopLogRecord,
+} from "../../shared/logRecord";
 import { makeLifetime } from "../window/RendererLifetimeTesting";
 import { makeListenerRegistry } from "./ListenerRegistry";
+import { installDesktopRendererObservability } from "./observability/DesktopRendererObservability";
 import type {
   DesktopWindows,
   DesktopRendererEvent,
@@ -19,7 +26,10 @@ import {
   type RecoverableGameWebContents,
 } from "./DesktopGameRendererRecovery";
 
-vi.mock("electron", () => ({ app: {}, webContents: {} }));
+vi.mock("electron", async () => {
+  const { EventEmitter } = await import("node:events");
+  return { app: new EventEmitter(), webContents: {} };
+});
 
 const RENDERER_ID = 7;
 const RELOAD = 0;
@@ -30,24 +40,24 @@ const settle = Effect.yieldNow.pipe(Effect.repeat({ times: 4 }));
 const makeHarness = (
   options: {
     readonly holdSuppression?: boolean;
-    readonly holdPromptCleanup?: boolean;
+    readonly promptFailure?: Effect.Effect<never, unknown>;
+    readonly observeRenderer?: boolean;
   } = {},
 ) =>
   Effect.gen(function* () {
     const events = new EventEmitter();
     const timeline: string[] = [];
+    const records: DesktopLogRecord[] = [];
+    const causes: { name: string; message: string }[][] = [];
     const answers: ((response: number) => void)[] = [];
-    const signals: AbortSignal[] = [];
+    const promptSignals: AbortSignal[] = [];
     const suppressions: Deferred.Deferred<void>[] = [];
-    const cleanupRelease = yield* Deferred.make<void>();
     let generation = 1;
     const parentScope = yield* Effect.scope;
     const lifecycle = makeListenerRegistry<DesktopRendererEvent>();
     let current = makeLifetime(RENDERER_ID, 1, Scope.forkUnsafe(parentScope));
     const observe: DesktopWindows["Service"]["observe"] = (_filter, listener) =>
-      Effect.acquireRelease(lifecycle.subscribe(listener), (unsubscribe) =>
-        Effect.sync(unsubscribe),
-      ).pipe(Effect.asVoid);
+      lifecycle.subscribe(listener);
     const commit = Effect.gen(function* () {
       const old = current;
       generation += 1;
@@ -64,6 +74,8 @@ const makeHarness = (
       );
     });
     let processShared = false;
+    let destroyed = false;
+    let isQuitting = false;
 
     const contents = Object.assign(events, {
       id: RENDERER_ID,
@@ -71,7 +83,7 @@ const makeHarness = (
         timeline.push(`crash generation ${generation}`);
       },
       getOSProcessId: () => 4242,
-      isDestroyed: () => false,
+      isDestroyed: () => destroyed,
       reload: () => {
         timeline.push(`reload generation ${generation}`);
       },
@@ -84,22 +96,17 @@ const makeHarness = (
     } as unknown as RecoverableGameWebContents;
 
     const prompt = (title: string) => () =>
+      options.promptFailure ??
       Effect.promise((signal) => {
         const answer = Promise.withResolvers<number>();
         timeline.push(`${title} prompt for generation ${generation}`);
         answers.push(answer.resolve);
-        signals.push(signal);
+        promptSignals.push(signal);
         signal.addEventListener("abort", () => answer.resolve(DECLINE), {
           once: true,
         });
         return answer.promise;
-      }).pipe(
-        Effect.ensuring(
-          options.holdPromptCleanup === true
-            ? Deferred.await(cleanupRelease)
-            : Effect.void,
-        ),
-      );
+      });
 
     const recovery = makeDesktopGameRendererRecovery({
       allWebContents: () => (processShared ? [contents, sharer] : [contents]),
@@ -111,15 +118,14 @@ const makeHarness = (
                 kind: "game" as const,
                 windowId: 3,
                 ownerId: undefined,
-                generation,
+                lifetime: current,
                 ready: true,
               }
             : undefined,
         ),
-      lifetime: () => Effect.sync(() => current),
       observe,
       onWebContentsCreated: () => () => undefined,
-      onBeforeQuit: () => () => undefined,
+      isQuitting: () => isQuitting,
       showRecoveryPrompt: prompt("unresponsive"),
       showRendererRecoveryPrompt: prompt("crash"),
       suppressLaunchScript: () =>
@@ -130,34 +136,38 @@ const makeHarness = (
           suppressions.push(release);
           yield* Deferred.await(release);
         }),
-      warn: () => Effect.void,
-      error: (message) =>
-        Effect.sync(() => {
-          timeline.push(`error: ${message}`);
-        }),
-      info: () => Effect.void,
     });
 
     const installation = yield* Scope.fork(parentScope);
-    yield* recovery.install.pipe(Scope.provide(installation));
+    yield* Effect.gen(function* () {
+      if (options.observeRenderer) yield* installDesktopRendererObservability;
+      yield* recovery.install;
+    }).pipe(
+      Scope.provide(installation),
+      Effect.provide(
+        Logger.layer(
+          [
+            Logger.make((options) => {
+              records.push(desktopLogRecord(options));
+              causes.push(
+                Cause.prettyErrors(options.cause).map((error) => ({
+                  name: error.name,
+                  message: error.message,
+                })),
+              );
+            }),
+          ],
+          { mergeWithExisting: false },
+        ),
+      ),
+    );
 
     return {
       closeInstallation: Scope.close(installation, Exit.void),
       timeline,
-      signals,
-      releasePromptCleanup: Deferred.succeed(cleanupRelease, undefined).pipe(
-        Effect.andThen(settle),
-      ),
-      commitBeforeLifecycleDelivery: Effect.gen(function* () {
-        const old = current;
-        generation += 1;
-        current = makeLifetime(
-          RENDERER_ID,
-          generation,
-          Scope.forkUnsafe(parentScope),
-        );
-        yield* Scope.close(old.scope, Exit.void);
-      }),
+      promptSignals,
+      records,
+      causes,
       answer: (index: number, response: number) =>
         Effect.sync(() => answers[index]!(response)).pipe(
           Effect.andThen(settle),
@@ -167,11 +177,42 @@ const makeHarness = (
           Effect.andThen(settle),
         ),
       startScript: Effect.suspend(() => recovery.beginScriptExecution(current)),
+      finishScript: Effect.suspend(() =>
+        recovery.finishScriptExecution(current),
+      ),
+      responsive: Effect.sync(() => {
+        events.emit("responsive");
+      }),
+      destroy: Effect.sync(() => {
+        destroyed = true;
+        events.emit("destroyed");
+      }),
+      close: Effect.gen(function* () {
+        yield* Scope.close(current.scope, Exit.void);
+        yield* lifecycle.publish(
+          {
+            type: "closed",
+            rendererId: RENDERER_ID,
+            kind: "game",
+            generation,
+          },
+          "unbounded",
+        );
+      }),
+      quit: Effect.sync(() => {
+        isQuitting = true;
+      }),
       hang: Effect.sync(() => {
         events.emit("responsive");
         events.emit("unresponsive");
       }).pipe(Effect.andThen(settle)),
       crash: Effect.gen(function* () {
+        if (options.observeRenderer) {
+          app.emit("render-process-gone", {}, contents, {
+            reason: "crashed",
+            exitCode: 1,
+          });
+        }
         const cleanup = Scope.closeUnsafe(current.scope, Exit.void);
         if (cleanup !== undefined)
           yield* cleanup.pipe(
@@ -204,6 +245,101 @@ const makeHarness = (
   });
 
 describe("makeDesktopGameRendererRecovery", () => {
+  it.effect("logs the refusal to recover a shared renderer", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      yield* harness.startScript;
+      yield* harness.shareProcess(true);
+      yield* harness.hang;
+      expect(harness.records).toEqual([
+        {
+          at: "1970-01-01T00:00:00.000Z",
+          level: "warn",
+          component: "game-renderer-recovery",
+          message:
+            "Refused to recover an unresponsive game renderer because its process is shared",
+          data: { rendererId: 7 },
+        },
+      ]);
+    }),
+  );
+
+  it.effect("logs successful unresponsive recovery", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      yield* harness.startScript;
+      yield* harness.hang;
+      yield* harness.answer(0, RELOAD);
+      expect(harness.records).toEqual([
+        {
+          at: "1970-01-01T00:00:00.000Z",
+          level: "info",
+          component: "game-renderer-recovery",
+          message: "Recovered an unresponsive game renderer",
+          data: { rendererId: 7 },
+        },
+      ]);
+    }),
+  );
+
+  it.effect("logs one crash occurrence and its successful recovery", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({ observeRenderer: true });
+      yield* harness.crash;
+      yield* harness.answer(0, RELOAD);
+      expect(harness.records).toEqual([
+        {
+          at: "1970-01-01T00:00:00.000Z",
+          level: "error",
+          component: "renderer",
+          message: "Renderer process gone",
+          repeatKey: "7:crashed",
+          data: { reason: "crashed", rendererId: 7, exitCode: 1 },
+        },
+        {
+          at: "1970-01-01T00:00:00.000Z",
+          level: "info",
+          component: "game-renderer-recovery",
+          message: "Recovered a crashed game renderer",
+          data: { reason: "crashed", rendererId: 7 },
+        },
+      ]);
+    }),
+  );
+
+  it.effect.each([false, true])(
+    "keeps the Cause when offering recovery fails with a defect %s",
+    (defect) =>
+      Effect.gen(function* () {
+        const harness = yield* makeHarness({
+          promptFailure: (defect ? Effect.die : Effect.fail)(
+            new Error("dialog unavailable"),
+          ),
+        });
+        yield* harness.startScript;
+        yield* harness.hang;
+        expect(harness.records).toEqual([
+          {
+            at: "1970-01-01T00:00:00.000Z",
+            level: "error",
+            component: "game-renderer-recovery",
+            message: "Failed to offer renderer recovery",
+            data: { rendererId: 7 },
+            error: [
+              {
+                name: "Error",
+                message: "dialog unavailable",
+                stack: expect.any(String),
+              },
+            ],
+          },
+        ]);
+        expect(harness.causes).toEqual([
+          [{ name: "Error", message: "dialog unavailable" }],
+        ]);
+      }),
+  );
+
   it.effect(
     "does not crash a newer generation when an older unresponsive dialog is accepted",
     () =>
@@ -215,6 +351,10 @@ describe("makeDesktopGameRendererRecovery", () => {
         yield* harness.startScript;
         yield* harness.hang;
 
+        expect(harness.promptSignals.map((signal) => signal.aborted)).toEqual([
+          true,
+          false,
+        ]);
         yield* harness.answer(0, RELOAD);
 
         expect(harness.timeline).toEqual([
@@ -274,6 +414,10 @@ describe("makeDesktopGameRendererRecovery", () => {
         yield* harness.navigate;
         yield* harness.crash;
 
+        expect(harness.promptSignals.map((signal) => signal.aborted)).toEqual([
+          true,
+          false,
+        ]);
         yield* harness.answer(0, RELOAD);
 
         expect(harness.timeline).toEqual([
@@ -362,6 +506,8 @@ describe("makeDesktopGameRendererRecovery", () => {
         yield* harness.hang;
         yield* harness.navigateWhileLoading;
 
+        yield* settle;
+        expect(harness.promptSignals[0]!.aborted).toBe(true);
         yield* harness.answer(0, RELOAD);
 
         expect(harness.timeline).toEqual([
@@ -418,6 +564,7 @@ describe("makeDesktopGameRendererRecovery", () => {
       yield* harness.hang;
       yield* harness.navigateSameDocument;
       yield* harness.hang;
+      expect(harness.promptSignals[0]!.aborted).toBe(false);
       expect(harness.timeline).toEqual([
         "unresponsive prompt for generation 1",
       ]);
@@ -429,6 +576,31 @@ describe("makeDesktopGameRendererRecovery", () => {
         "reload generation 1",
       ]);
     }),
+  );
+
+  it.effect(
+    "does not suppress or crash a renderer whose process became shared while its prompt was open",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        yield* harness.startScript;
+        yield* harness.hang;
+        yield* harness.shareProcess(true);
+        yield* harness.answer(0, RELOAD);
+        expect(harness.timeline).toEqual([
+          "unresponsive prompt for generation 1",
+        ]);
+        yield* harness.shareProcess(false);
+        yield* harness.hang;
+        yield* harness.answer(1, RELOAD);
+        expect(harness.timeline).toEqual([
+          "unresponsive prompt for generation 1",
+          "unresponsive prompt for generation 1",
+          "suppress",
+          "crash generation 1",
+          "reload generation 1",
+        ]);
+      }),
   );
 
   it.effect(
@@ -464,26 +636,29 @@ describe("makeDesktopGameRendererRecovery", () => {
       }),
   );
 
-  it.effect(
-    "interrupts an open unresponsive dialog before offering crash recovery",
-    () =>
+  it.effect.each([DECLINE, RELOAD])(
+    "offers crash recovery when the open hang dialog answers %s",
+    (answer) =>
       Effect.gen(function* () {
         const harness = yield* makeHarness();
         yield* harness.startScript;
         yield* harness.hang;
         yield* harness.crash;
-
-        expect(harness.signals[0]?.aborted).toBe(true);
-
-        yield* harness.answer(0, DECLINE);
-
+        expect(harness.promptSignals.map((signal) => signal.aborted)).toEqual([
+          true,
+          false,
+        ]);
         expect(harness.timeline).toEqual([
           "unresponsive prompt for generation 1",
           "crash prompt for generation 1",
         ]);
-
+        yield* harness.answer(0, answer);
+        yield* harness.crash;
+        expect(harness.timeline).toEqual([
+          "unresponsive prompt for generation 1",
+          "crash prompt for generation 1",
+        ]);
         yield* harness.answer(1, RELOAD);
-
         expect(harness.timeline).toEqual([
           "unresponsive prompt for generation 1",
           "crash prompt for generation 1",
@@ -491,6 +666,21 @@ describe("makeDesktopGameRendererRecovery", () => {
           "reload generation 1",
         ]);
       }),
+  );
+
+  it.effect("does not reload a closed renderer after crash suppression", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({ holdSuppression: true });
+      yield* harness.startScript;
+      yield* harness.crash;
+      yield* harness.answer(0, RELOAD);
+      yield* harness.destroy;
+      yield* harness.releaseSuppression(0);
+      expect(harness.timeline).toEqual([
+        "crash prompt for generation 1",
+        "suppress",
+      ]);
+    }),
   );
 
   it.effect(
@@ -502,6 +692,10 @@ describe("makeDesktopGameRendererRecovery", () => {
         yield* harness.navigateWhileLoading;
         yield* harness.crash;
 
+        expect(harness.promptSignals.map((signal) => signal.aborted)).toEqual([
+          true,
+          false,
+        ]);
         yield* harness.answer(0, DECLINE);
         yield* harness.answer(1, RELOAD);
 
@@ -523,6 +717,10 @@ describe("makeDesktopGameRendererRecovery", () => {
         yield* harness.startScript;
         yield* harness.crash;
 
+        expect(harness.promptSignals.map((signal) => signal.aborted)).toEqual([
+          true,
+          false,
+        ]);
         yield* harness.answer(1, RELOAD);
 
         expect(harness.timeline).toEqual([
@@ -550,6 +748,7 @@ describe("makeDesktopGameRendererRecovery", () => {
           "unresponsive prompt for generation 1",
           "crash prompt for generation 1",
         ]);
+        yield* harness.answer(1, RELOAD);
 
         yield* harness.crash;
 
@@ -591,115 +790,121 @@ describe("makeDesktopGameRendererRecovery", () => {
         yield* harness.answer(0, DECLINE);
       }),
   );
+  it.effect("counts overlapping script executions until both finish", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      yield* harness.startScript;
+      yield* harness.startScript;
+      yield* harness.finishScript;
+      yield* harness.hang;
+      expect(harness.timeline).toEqual([
+        "unresponsive prompt for generation 1",
+      ]);
+      yield* harness.answer(0, DECLINE);
+      yield* harness.finishScript;
+      yield* harness.hang;
+      expect(harness.timeline).toEqual([
+        "unresponsive prompt for generation 1",
+      ]);
+    }),
+  );
+
+  it.effect("keeps one prompt open for repeated hangs", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      yield* harness.startScript;
+      yield* harness.hang;
+      yield* harness.hang;
+      expect(harness.timeline).toEqual([
+        "unresponsive prompt for generation 1",
+      ]);
+      yield* harness.answer(0, DECLINE);
+      yield* harness.hang;
+      expect(harness.timeline).toEqual([
+        "unresponsive prompt for generation 1",
+        "unresponsive prompt for generation 1",
+      ]);
+      yield* harness.answer(1, DECLINE);
+    }),
+  );
 
   it.effect(
-    "aborts an open prompt when its document commits a replacement",
+    "honors Reload after the renderer responds and its script finishes",
     () =>
       Effect.gen(function* () {
         const harness = yield* makeHarness();
         yield* harness.startScript;
         yield* harness.hang;
-        expect(harness.signals[0]?.aborted).toBe(false);
-        yield* harness.commitBeforeLifecycleDelivery;
-        yield* settle;
-        expect(harness.signals[0]?.aborted).toBe(true);
+        yield* harness.responsive;
+        yield* harness.finishScript;
         yield* harness.answer(0, RELOAD);
         expect(harness.timeline).toEqual([
           "unresponsive prompt for generation 1",
-        ]);
-      }),
-  );
-
-  it.effect(
-    "keeps one new attempt while an old crash prompt is still cleaning up",
-    () =>
-      Effect.gen(function* () {
-        const harness = yield* makeHarness({ holdPromptCleanup: true });
-        yield* harness.crash;
-        yield* harness.commitBeforeLifecycleDelivery;
-        yield* harness.startScript;
-        yield* harness.hang;
-        yield* harness.hang;
-        yield* harness.releasePromptCleanup;
-        expect(harness.timeline).toEqual([
-          "crash prompt for generation 1",
-          "unresponsive prompt for generation 2",
-        ]);
-        yield* harness.answer(1, RELOAD);
-        expect(harness.timeline).toEqual([
-          "crash prompt for generation 1",
-          "unresponsive prompt for generation 2",
           "suppress",
-          "crash generation 2",
-          "reload generation 2",
-        ]);
-      }),
-  );
-
-  it.effect("aborts a crash prompt on the next commit", () =>
-    Effect.gen(function* () {
-      const harness = yield* makeHarness();
-      yield* harness.crash;
-      expect(harness.signals[0]?.aborted).toBe(false);
-      yield* harness.navigateWhileLoading;
-      yield* settle;
-      expect(harness.signals[0]?.aborted).toBe(true);
-      yield* harness.answer(0, RELOAD);
-      expect(harness.timeline).toEqual(["crash prompt for generation 1"]);
-    }),
-  );
-
-  it.effect(
-    "offers crash recovery while the interrupted hang prompt finishes cleanup",
-    () =>
-      Effect.gen(function* () {
-        const harness = yield* makeHarness({ holdPromptCleanup: true });
-        yield* harness.startScript;
-        yield* harness.hang;
-        yield* harness.crash;
-        expect(harness.signals[0]?.aborted).toBe(true);
-        const offered = [...harness.timeline];
-        yield* harness.releasePromptCleanup;
-        expect(offered).toEqual([
-          "unresponsive prompt for generation 1",
-          "crash prompt for generation 1",
-        ]);
-        yield* harness.answer(1, RELOAD);
-        expect(harness.timeline).toEqual([
-          "unresponsive prompt for generation 1",
-          "crash prompt for generation 1",
-          "suppress",
+          "crash generation 1",
           "reload generation 1",
         ]);
       }),
   );
 
-  it.effect(
-    "waits for prompt cleanup already interrupted by a crash during shutdown",
-    () =>
+  it.effect.each(["destroy", "quit", "closeInstallation"] as const)(
+    "does not recover a renderer after %s",
+    (action) =>
       Effect.gen(function* () {
-        const harness = yield* makeHarness({ holdPromptCleanup: true });
+        const harness = yield* makeHarness();
         yield* harness.startScript;
         yield* harness.hang;
-        yield* harness.crash;
-        let closed = false;
-        const closing = yield* harness.closeInstallation.pipe(
-          Effect.tap(() =>
-            Effect.sync(() => {
-              closed = true;
-            }),
-          ),
-          Effect.forkChild({ startImmediately: true }),
-        );
-        yield* settle;
-        expect(closed).toBe(false);
-        expect(harness.signals.map((signal) => signal.aborted)).toEqual([
-          true,
-          true,
+        yield* harness[action];
+        yield* harness.answer(0, RELOAD);
+        yield* harness.hang;
+        expect(harness.timeline).toEqual([
+          "unresponsive prompt for generation 1",
         ]);
-        yield* harness.releasePromptCleanup;
-        yield* Fiber.join(closing);
-        expect(closed).toBe(true);
       }),
+  );
+
+  it.effect.each(["hang", "crash"] as const)(
+    "does not recover a renderer after installation closes during %s suppression",
+    (prompt) =>
+      Effect.gen(function* () {
+        const harness = yield* makeHarness({ holdSuppression: true });
+        yield* harness.startScript;
+        yield* harness[prompt];
+        yield* harness.answer(0, RELOAD);
+        yield* harness.closeInstallation;
+        yield* harness.releaseSuppression(0);
+
+        expect(harness.timeline).toEqual([
+          prompt === "hang"
+            ? "unresponsive prompt for generation 1"
+            : "crash prompt for generation 1",
+          "suppress",
+        ]);
+      }),
+  );
+
+  it.effect.each([
+    { prompt: "hang", action: "close" },
+    { prompt: "crash", action: "close" },
+    { prompt: "hang", action: "destroy" },
+    { prompt: "crash", action: "destroy" },
+  ] as const)("dismisses the $prompt dialog on $action", ({ prompt, action }) =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      yield* harness.startScript;
+      yield* harness[prompt];
+      expect(harness.promptSignals[0]!.aborted).toBe(false);
+
+      yield* harness[action];
+      yield* settle;
+
+      expect(harness.promptSignals[0]!.aborted).toBe(true);
+      yield* harness.answer(0, RELOAD);
+      expect(harness.timeline).toEqual(
+        prompt === "hang"
+          ? ["unresponsive prompt for generation 1"]
+          : ["crash prompt for generation 1"],
+      );
+    }),
   );
 });

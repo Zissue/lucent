@@ -1,3 +1,12 @@
+import { ipcRenderer, type IpcRendererEvent } from "electron";
+import * as Cause from "effect/Cause";
+import * as Effect from "effect/Effect";
+import * as Logger from "effect/Logger";
+import * as References from "effect/References";
+import { logFailure } from "../shared/logFailure";
+import { desktopLogJsonSafe, desktopLogRecord } from "../shared/logRecord";
+import { RendererLogIpc } from "../shared/ipc/rendererLog";
+
 import type {
   IpcEventDescriptor,
   IpcInvokeDescriptor,
@@ -12,30 +21,16 @@ export type IpcInvokeTransport = (
 export type IpcEventTransport = {
   readonly on: (
     channel: string,
-    listener: (rawPayload: unknown) => void,
+    listener: (event: IpcRendererEvent, rawPayload: unknown) => void,
   ) => void;
   readonly removeListener: (
     channel: string,
-    listener: (rawPayload: unknown) => void,
+    listener: (event: IpcRendererEvent, rawPayload: unknown) => void,
   ) => void;
 };
 
 export class DesktopBridgeError extends Error {
-  readonly code: string;
-  readonly channel?: string;
-
-  constructor(error: {
-    readonly channel?: string;
-    readonly code: string;
-    readonly message: string;
-  }) {
-    super(error.message);
-    this.name = "DesktopBridgeError";
-    this.code = error.code;
-    if (error.channel !== undefined) {
-      this.channel = error.channel;
-    }
-  }
+  override name = "DesktopBridgeError";
 }
 
 export const createInvoke =
@@ -47,10 +42,24 @@ export const createInvoke =
     const encodedPayload = descriptor.encodePayload(payload);
     const envelope = await transport(descriptor.channel, encodedPayload);
     if (!envelope.ok) {
-      throw new DesktopBridgeError(envelope.error);
+      throw new DesktopBridgeError(envelope.message);
     }
-    return descriptor.decodeResult(envelope.value);
+    return envelope.value as Result;
   };
+
+export const writeRendererLog = (record: unknown): void => {
+  try {
+    ipcRenderer.send(RendererLogIpc.record.channel, desktopLogJsonSafe(record));
+  } catch {}
+};
+
+const eventFailureLogger = Logger.make((options) => {
+  try {
+    const { level, message, component, data, repeatKey, error } =
+      desktopLogRecord(options);
+    writeRendererLog({ level, message, component, data, repeatKey, error });
+  } catch {}
+});
 
 export const createSubscribe =
   (transport: IpcEventTransport) =>
@@ -58,11 +67,31 @@ export const createSubscribe =
     descriptor: IpcEventDescriptor<Payload>,
     listener: (payload: Payload) => void,
   ): (() => void) => {
-    const subscription = (rawPayload: unknown): void => {
+    let failed = false;
+    const subscription = (
+      _event: IpcRendererEvent,
+      rawPayload: unknown,
+    ): void => {
       try {
-        listener(descriptor.decodePayload(rawPayload));
-      } catch (cause) {
-        console.error(`Failed to decode ${descriptor.name} event`, cause);
+        listener(rawPayload as Payload);
+        failed = false;
+      } catch {
+        if (failed) return;
+        failed = true;
+        const cause = Cause.die(new Error("IPC event callback failed"));
+        Effect.runSync(
+          logFailure("Renderer event handler failed", cause).pipe(
+            Effect.annotateLogs({
+              component: "preload",
+              data: { channel: descriptor.channel },
+              repeatKey: descriptor.channel,
+            }),
+            Effect.provideService(
+              References.CurrentLoggers,
+              new Set([eventFailureLogger]),
+            ),
+          ),
+        );
       }
     };
 

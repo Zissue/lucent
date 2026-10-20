@@ -1,5 +1,5 @@
-import { randomBytes } from "crypto";
-import { join } from "path";
+import { randomBytes } from "node:crypto";
+import { join } from "node:path";
 
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -31,9 +31,6 @@ const GitHubCredentialsFileSchema = Schema.Struct({
   credentials: Schema.Array(GitHubCredentialSchema),
 });
 
-const decodeGitHubCredential = Schema.decodeUnknownOption(
-  GitHubCredentialSchema,
-);
 const decodeCredentialsFile = Schema.decodeUnknownOption(
   GitHubCredentialsFileSchema,
 );
@@ -90,10 +87,6 @@ const summary = (credential: GitHubCredential): GitHubCredentialSummary => ({
   label: credential.label,
 });
 
-const cloneCredential = (credential: GitHubCredential): GitHubCredential => ({
-  ...credential,
-});
-
 const credentialsFromUnknown = (value: unknown): CredentialLoadState => {
   const decoded = decodeCredentialsFile(value);
   if (Option.isNone(decoded)) {
@@ -110,7 +103,7 @@ const credentialsFromUnknown = (value: unknown): CredentialLoadState => {
     credentials: new Map(
       decoded.value.credentials.map((credential) => [
         credential.id,
-        cloneCredential(credential),
+        credential,
       ]),
     ),
   };
@@ -155,9 +148,9 @@ export const layer = Layer.effect(
           credentialsPath,
           {
             version: 1,
-            credentials: [...credentials.values()]
-              .map(cloneCredential)
-              .sort((left, right) => left.label.localeCompare(right.label)),
+            credentials: [...credentials.values()].sort((left, right) =>
+              left.label.localeCompare(right.label),
+            ),
           },
           { mode: 0o600 },
         )
@@ -225,7 +218,6 @@ export const layer = Layer.effect(
             label: input.label.trim(),
             token: input.token.trim(),
           };
-          decodeGitHubCredential(credential);
           const next = new Map(current);
           next.set(id, credential);
           return [next, summary(credential)] as const;

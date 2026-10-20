@@ -5,11 +5,11 @@ import * as Layer from "effect/Layer";
 import { makeLifetime } from "../../window/RendererLifetimeTesting";
 import type { GameViewHostState } from "../../../shared/gameViews";
 import { ElectronDialog } from "../../electron/ElectronDialog";
-import { Accounts } from "../../internal/accounts/Accounts";
+import { Accounts } from "../../game/accounts/Accounts";
 import {
   AccountSessions,
   layer as sessionsLayer,
-} from "../../internal/accounts/AccountSessions";
+} from "../../game/accounts/AccountSessions";
 import {
   DesktopWindowError,
   DesktopWindows,
@@ -78,7 +78,7 @@ describe("game view lifecycle IPC", () => {
               kind: rendererId === 100 ? "game-host" : "game",
               windowId: 1,
               ownerId: undefined,
-              generation: 1,
+              lifetime: makeLifetime(rendererId),
               ready: false,
             }),
           closeGameView: (_hostId, id) =>
@@ -170,7 +170,7 @@ describe("game view lifecycle IPC", () => {
                 kind: rendererId === 100 ? "game-host" : "game",
                 windowId: 1,
                 ownerId: undefined,
-                generation: 1,
+                lifetime: makeLifetime(rendererId),
                 ready: false,
               }),
           }),
@@ -191,7 +191,7 @@ describe("game view lifecycle IPC", () => {
         const state = yield* reopen
           .handler({ id: 9 }, sender)
           .pipe(Effect.provide(dependencies));
-        expect(state.sessions).toHaveLength(7);
+        expect(state).toHaveProperty("sessions.length", 7);
         expect(reopened).toEqual([
           {
             id: 9,

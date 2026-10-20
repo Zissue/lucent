@@ -13,7 +13,6 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FiberSet from "effect/FiberSet";
 import * as Layer from "effect/Layer";
-import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 
 import type { ThemeMode } from "@lucent/core/settings";
@@ -24,7 +23,7 @@ import {
 import { DesktopEnvironment } from "../app/DesktopEnvironment";
 import { DesktopLifecycle } from "../app/DesktopLifecycle";
 import { logFailure } from "../../shared/logFailure";
-import { ElectronSession } from "../electron/ElectronSession";
+import { GameSessions } from "../game/session/GameSessions";
 import { ElectronApp } from "../electron/ElectronApp";
 import { ElectronDialog } from "../electron/ElectronDialog";
 import { ElectronShell } from "../electron/ElectronShell";
@@ -51,17 +50,6 @@ const themeModes: readonly {
   { label: "System", mode: "system" },
 ];
 
-class DesktopAppDataClearError extends Schema.TaggedError<DesktopAppDataClearError>()(
-  "DesktopAppDataClearError",
-  {
-    cause: Schema.Defect(),
-  },
-) {
-  override get message(): string {
-    return "Failed to clear app data.";
-  }
-}
-
 const reloadContents = (target: WebContents, bypassCache: boolean): void => {
   if (target.isDestroyed()) {
     return;
@@ -77,7 +65,7 @@ const reloadContents = (target: WebContents, bypassCache: boolean): void => {
 const makeDesktopApplicationMenu = Effect.gen(function* () {
   const electronApp = yield* ElectronApp;
   const lifecycle = yield* DesktopLifecycle;
-  const electronSession = yield* ElectronSession;
+  const gameSessions = yield* GameSessions;
   const chromiumPerformanceRecording =
     yield* DesktopChromiumPerformanceRecording;
   const dialog = yield* ElectronDialog;
@@ -100,7 +88,9 @@ const makeDesktopApplicationMenu = Effect.gen(function* () {
     );
 
   const logMenuFailure = (operation: string, cause: Cause.Cause<unknown>) =>
-    logFailure("Application menu action failed", cause).pipe(
+    logFailure("Application menu action failed", cause, {
+      failure: "warning",
+    }).pipe(
       Effect.annotateLogs({
         component: "menu",
         data: {
@@ -200,35 +190,36 @@ const makeDesktopApplicationMenu = Effect.gen(function* () {
     Effect.gen(function* () {
       const copy = {
         save: {
-          title: "Chromium Recording Not Saved",
-          message:
-            "Unable to finish saving the Chromium performance recording.",
+          title: "Performance Trace Not Saved",
+          message: "Unable to finish saving the performance trace.",
         },
         snapshot: {
           title: "Heap Snapshot Not Saved",
           message: "Unable to save the heap snapshot.",
         },
         start: {
-          title: "Chromium Recording Not Started",
-          message: "Unable to start the Chromium performance recording.",
+          title: "Performance Trace Not Started",
+          message: "Unable to start the performance trace.",
         },
       } as const;
-      yield* Effect.logError(
-        "Chromium performance recording action failed",
-        Cause.fail(cause),
-      ).pipe(
-        Effect.annotateLogs({
-          component: "chromium-performance-recording",
-          data: { operation, message: copy[operation].message },
-        }),
-      );
+      if (operation !== "save") {
+        yield* Effect.logError(
+          "Performance trace action failed",
+          Cause.fail(cause),
+        ).pipe(
+          Effect.annotateLogs({
+            component: "chromium-performance-recording",
+            data: { operation, message: copy[operation].message },
+          }),
+        );
+      }
       yield* dialog.showMessageBox({
         type: "warning",
         title: copy[operation].title,
         message: copy[operation].message,
         detail:
           operation === "snapshot"
-            ? "The performance recording is still running. Check the logs and try again."
+            ? "The performance trace is still running. Check the logs and try again."
             : "Check the logs and try again.",
         buttons: ["Close"],
         defaultId: 0,
@@ -263,7 +254,7 @@ const makeDesktopApplicationMenu = Effect.gen(function* () {
               title: "Heap Snapshot Incomplete",
               message: `Saved ${savedSnapshotCount} of ${result.snapshotCount} heap snapshots.`,
               detail:
-                "The Chromium performance recording is still running. Check the logs for details.",
+                "The performance trace is still running. Check the logs for details.",
               buttons: ["Close"],
               defaultId: 0,
               cancelId: 0,
@@ -293,10 +284,6 @@ const makeDesktopApplicationMenu = Effect.gen(function* () {
       ),
     );
   };
-
-  const clearAppData = electronSession.clearAppData.pipe(
-    Effect.mapError((cause) => new DesktopAppDataClearError({ cause })),
-  );
 
   const showDataClearResult = (result: "succeeded" | "failed") =>
     Effect.gen(function* () {
@@ -328,7 +315,7 @@ const makeDesktopApplicationMenu = Effect.gen(function* () {
 
   const clearData = (): void => {
     run(
-      clearAppData.pipe(
+      gameSessions.clearAppData.pipe(
         Effect.flatMap(() => showDataClearResult("succeeded")),
         Effect.catch((cause) =>
           Effect.logError("Failed to clear app data", Cause.fail(cause))
@@ -367,7 +354,7 @@ const makeDesktopApplicationMenu = Effect.gen(function* () {
       case "idle":
         return [
           {
-            label: "Start Chromium Performance Recording",
+            label: "Start Performance Trace",
             click: startChromiumPerformanceRecording,
           },
         ];
@@ -378,7 +365,7 @@ const makeDesktopApplicationMenu = Effect.gen(function* () {
             click: captureChromiumHeapSnapshot,
           },
           {
-            label: "Stop and Save Chromium Recording",
+            label: "Stop and Save Performance Trace",
             click: stopChromiumPerformanceRecording,
           },
         ];
@@ -389,14 +376,14 @@ const makeDesktopApplicationMenu = Effect.gen(function* () {
             enabled: false,
           },
           {
-            label: "Stop and Save Chromium Recording",
+            label: "Stop and Save Performance Trace",
             enabled: false,
           },
         ];
       case "saving":
         return [
           {
-            label: "Saving Chromium Recording…",
+            label: "Saving Performance Trace…",
             enabled: false,
           },
         ];
@@ -564,28 +551,21 @@ const makeDesktopApplicationMenu = Effect.gen(function* () {
       if (!isDarwin) {
         yield* windows.observe({ kind: "about" }, (event) =>
           event.type === "created"
-            ? removeRendererWindowMenu(event.rendererId).pipe(
-                Effect.catch(() => Effect.void),
-              )
+            ? removeRendererWindowMenu(event.rendererId)
             : Effect.void,
         );
       }
       yield* rebuild;
-      const unsubscribe = yield* settings.onChanged(() => {
+      yield* settings.onChanged(() => {
         run(rebuild.pipe(catchMenuFailure("rebuild")));
       });
-      yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
-      const unsubscribeChromiumPerformanceRecording =
-        yield* chromiumPerformanceRecording.onChanged(() => {
-          run(
-            rebuild.pipe(
-              catchMenuFailure("rebuild-chromium-performance-recording"),
-            ),
-          );
-        });
-      yield* Effect.addFinalizer(() =>
-        Effect.sync(unsubscribeChromiumPerformanceRecording),
-      );
+      yield* chromiumPerformanceRecording.onChanged(() => {
+        run(
+          rebuild.pipe(
+            catchMenuFailure("rebuild-chromium-performance-recording"),
+          ),
+        );
+      });
     },
   );
 

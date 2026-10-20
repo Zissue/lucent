@@ -1077,17 +1077,13 @@ export const layer = Layer.effect(
             setOptions(update).pipe(Effect.map((result) => result.options)),
           source: { sourceName: statusName(file) },
         });
-        const fileSystem = yield* makeScriptFileSystemApi(
-          fileSystemBridge,
-          scriptScope,
-        );
         const http = yield* makeScriptHttpApi(httpBridge, scriptScope);
         const modules = makeScriptBuiltinModules({
           autoRelogin,
           autoZone,
           bridge,
           failCause: (cause) => failActiveCause(starting.id, cause),
-          fileSystem,
+          fileSystem: makeScriptFileSystemApi(fileSystemBridge, scriptScope),
           http,
           roomPolicy: SubscriptionRef.get(optionsRef).pipe(
             Effect.map((options) => snapshotRoomPolicy(options.roomPolicy)),

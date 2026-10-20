@@ -1,11 +1,11 @@
 import * as Effect from "effect/Effect";
 
 import { CombatProfilesIpc } from "../../../shared/ipc";
-import { CombatProfiles } from "../../internal/combat-profiles/CombatProfiles";
+import { CombatProfiles } from "../../game/combat-profiles/CombatProfiles";
 import { DesktopIpc, makeDesktopIpcMethod } from "../DesktopIpc";
 
 const combatProfileReaders = ["combat-profiles", "follower", "game"] as const;
-const combatProfileWriters = ["combat-profiles", "game"] as const;
+const combatProfileWriters = ["combat-profiles"] as const;
 
 export const getState = makeDesktopIpcMethod({
   descriptor: CombatProfilesIpc.getState,
@@ -46,10 +46,7 @@ export const installEventForwarding = Effect.fn(
   const combatProfiles = yield* CombatProfiles;
   const ipc = yield* DesktopIpc;
 
-  yield* Effect.acquireRelease(
-    combatProfiles.onChanged((library) =>
-      ipc.sendToAll(CombatProfilesIpc.changed, library),
-    ),
-    (unsubscribe) => Effect.sync(unsubscribe),
+  yield* combatProfiles.onChanged((library) =>
+    ipc.sendToAll(CombatProfilesIpc.changed, library),
   );
 });

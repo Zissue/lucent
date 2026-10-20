@@ -2803,25 +2803,6 @@ body[data-inert] .game-topnav__menu-portal .select__positioner {
   overflow: hidden;
 }
 
-.game-scripts-dialog__package-leftovers {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  list-style: none;
-  margin: 0.5rem 0 0;
-  max-block-size: 8rem;
-  overflow: auto;
-  padding: 0;
-}
-
-.game-scripts-dialog__package-leftovers > li {
-  align-items: center;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  justify-content: space-between;
-}
-
 .game-scripts-dialog__package-notice .alert__title {
   align-items: center;
   display: flex;

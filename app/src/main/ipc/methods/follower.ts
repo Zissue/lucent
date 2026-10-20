@@ -1,11 +1,14 @@
 import {
   normalizeFollowerConfig,
+  normalizeFollowerState,
   type FollowerState,
 } from "@lucent/core/follower";
+import * as Cause from "effect/Cause";
+import { logGameRendererRequestFailure } from "../../game/rpc/GameRendererRequestFailure";
 import * as Effect from "effect/Effect";
 
 import { FollowerIpc } from "../../../shared/ipc";
-import { GameFollowers } from "../../internal/follower/GameFollowers";
+import { GameFollowers } from "../../game/follower/GameFollowers";
 import { DesktopWindows } from "../../window/DesktopWindows";
 import { DesktopIpc, makeDesktopIpcMethod } from "../DesktopIpc";
 import {
@@ -84,13 +87,22 @@ export const getState = makeDesktopIpcMethod({
   handler: Effect.fn("desktop.ipc.follower.getState")(
     function* (_payload, sender) {
       const followers = yield* GameFollowers;
+      const windows = yield* DesktopWindows;
       const gameRendererId = yield* resolveGameRendererId(sender);
       return yield* followers.fetchState(gameRendererId).pipe(
         Effect.tap((state) =>
           notifyChanged(gameRendererId, state, sender.rendererId),
         ),
-        Effect.catchTag("GameFollowerRequestError", () =>
-          followers.get(gameRendererId),
+        Effect.catchTag("GameRendererUnavailableError", (error) =>
+          Effect.gen(function* () {
+            yield* logGameRendererRequestFailure(
+              windows,
+              gameRendererId,
+              "FollowerGetState",
+              Cause.fail(error),
+            );
+            return yield* followers.get(gameRendererId);
+          }),
         ),
       );
     },
@@ -143,7 +155,10 @@ export const publishState = makeDesktopIpcMethod({
   handler: Effect.fn("desktop.ipc.follower.publishState")(
     function* (incoming, sender) {
       const followers = yield* GameFollowers;
-      const state = yield* followers.set(sender.rendererId, incoming);
+      const state = yield* followers.set(
+        sender.rendererId,
+        normalizeFollowerState(incoming),
+      );
       yield* notifyChanged(sender.rendererId, state);
     },
   ),

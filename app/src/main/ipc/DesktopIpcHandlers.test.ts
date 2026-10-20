@@ -27,7 +27,7 @@ const isInvokeDescriptor = (
     | IpcInvokeDescriptor<unknown, unknown>
     | { readonly channel: string },
 ): descriptor is IpcInvokeDescriptor<unknown, unknown> =>
-  "result" in descriptor;
+  "decodePayloadEffect" in descriptor;
 
 const expectedDescriptors = [
   ...Object.values(WindowsIpc),

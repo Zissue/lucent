@@ -1,19 +1,112 @@
-import { promises as fs } from "fs";
-import { tmpdir } from "os";
-import { join } from "path";
+import { promises as fs } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "@effect/vitest";
+import { vi } from "vitest";
 
-import { listRegularFilePaths } from "./ScriptPackageFileSystem";
+import {
+  listRegularFilePaths,
+  readStableFile,
+} from "./ScriptPackageFileSystem";
 
 const directories: string[] = [];
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(
     directories
       .splice(0)
       .map((path) => fs.rm(path, { recursive: true, force: true })),
   );
+});
+
+describe("readStableFile", () => {
+  it("retries changed files up to three attempts", async () => {
+    const root = await fs.mkdtemp(join(tmpdir(), "lucent-stable-file-"));
+    directories.push(root);
+    const path = join(root, "value.js");
+    await fs.writeFile(path, "initial");
+    const stat = fs.stat;
+    let checks = 0;
+    vi.spyOn(fs, "stat").mockImplementation(async (...args) => {
+      checks += 1;
+      if (checks === 2) await fs.writeFile(path, "second");
+      if (checks === 4) await fs.writeFile(path, "third");
+      return stat(...args);
+    });
+
+    expect((await readStableFile(path, 16)).toString("utf8")).toBe("third");
+    expect(checks).toBe(6);
+  });
+
+  it("fails after three changed reads without a fourth attempt", async () => {
+    const root = await fs.mkdtemp(join(tmpdir(), "lucent-stable-file-"));
+    directories.push(root);
+    const path = join(root, "value.js");
+    await fs.writeFile(path, "initial");
+    const stat = fs.stat;
+    let checks = 0;
+    vi.spyOn(fs, "stat").mockImplementation(async (...args) => {
+      checks += 1;
+      if (checks % 2 === 0) await fs.appendFile(path, "!");
+      return stat(...args);
+    });
+
+    await expect(readStableFile(path, 16)).rejects.toThrow(
+      `File changed while it was being read: ${path}.`,
+    );
+    expect(await fs.readFile(path, "utf8")).toBe("initial!!!");
+    expect(checks).toBe(6);
+  });
+
+  it("does not retry a file that exceeds the bound while being read", async () => {
+    const root = await fs.mkdtemp(join(tmpdir(), "lucent-stable-file-"));
+    directories.push(root);
+    const path = join(root, "value.js");
+    await fs.writeFile(path, "1234");
+    const stat = fs.stat;
+    let checks = 0;
+    vi.spyOn(fs, "stat").mockImplementation(async (...args) => {
+      checks += 1;
+      const info = await stat(...args);
+      await fs.appendFile(path, "56789");
+      return info;
+    });
+
+    await expect(readStableFile(path, 8)).rejects.toThrow(
+      `File exceeds the 8 bytes limit: ${path}.`,
+    );
+    expect(await fs.readFile(path, "utf8")).toBe("123456789");
+    expect(checks).toBe(1);
+  });
+
+  it("rejects directories before reading", async () => {
+    const root = await fs.mkdtemp(join(tmpdir(), "lucent-stable-file-"));
+    directories.push(root);
+    await expect(readStableFile(root, 16)).rejects.toThrow(
+      `Expected a regular file: ${root}.`,
+    );
+  });
+
+  it("does not retry when the file disappears after reading", async () => {
+    const root = await fs.mkdtemp(join(tmpdir(), "lucent-stable-file-"));
+    directories.push(root);
+    const path = join(root, "value.js");
+    await fs.writeFile(path, "initial");
+    const stat = fs.stat;
+    let checks = 0;
+    vi.spyOn(fs, "stat").mockImplementation(async (...args) => {
+      checks += 1;
+      if (checks === 2) {
+        throw Object.assign(new Error("File disappeared"), { code: "ENOENT" });
+      }
+      return stat(...args);
+    });
+
+    await expect(readStableFile(path, 16)).rejects.toThrow("File disappeared");
+    expect(checks).toBe(2);
+  });
 });
 
 describe("listRegularFilePaths", () => {

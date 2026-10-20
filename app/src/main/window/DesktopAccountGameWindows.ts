@@ -2,11 +2,11 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import type { AccountLaunchWindowTarget } from "@lucent/core/accounts";
-import { ElectronSession } from "../electron/ElectronSession";
+import { GameSessions } from "../game/session/GameSessions";
 import {
   AccountGameWindows,
   type AccountGameWindowEvent,
-} from "../internal/accounts/AccountGameWindows";
+} from "../game/accounts/AccountGameWindows";
 import {
   type DesktopGameHostTarget,
   DesktopWindows,
@@ -26,7 +26,7 @@ export const layer = Layer.effect(
   AccountGameWindows,
   Effect.gen(function* () {
     const windows = yield* DesktopWindows;
-    const electronSession = yield* ElectronSession;
+    const gameSessions = yield* GameSessions;
 
     const toAccountGameWindowEvent = Effect.fn(
       "DesktopAccountGameWindows.toAccountGameWindowEvent",
@@ -51,7 +51,7 @@ export const layer = Layer.effect(
     ) =>
       Effect.map(
         requireRenderer(windows, gameWindowId),
-        (info) => info.generation,
+        (info) => info.lifetime.generation,
       );
 
     const getGroupId: AccountGameWindows["Service"]["getGroupId"] = (
@@ -107,7 +107,7 @@ export const layer = Layer.effect(
       windows.revealRenderer(gameWindowId);
 
     const retireProfile: AccountGameWindows["Service"]["retireProfile"] =
-      electronSession.retireManagedGameProfile;
+      gameSessions.retireManagedGameProfile;
 
     const setName: AccountGameWindows["Service"]["setName"] = (
       gameWindowId,

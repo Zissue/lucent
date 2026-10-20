@@ -5,6 +5,7 @@ import { makeAtomicFile } from "./AtomicFile";
 import type { FileSystem } from "effect/FileSystem";
 import type { PlatformError } from "effect/PlatformError";
 import { FileSystemLimitError, readFileBounded } from "./BoundedFileSystem";
+import { parseLocalJson } from "./parseLocalJson";
 
 /** JSON state files are intentionally bounded to protect the main process. */
 export const JSON_FILE_MAX_BYTES = 8 * 1024 * 1024;
@@ -83,7 +84,7 @@ export const makeJsonFile = (fileSystem: FileSystem) => {
       try: () =>
         ({
           status: "ok",
-          value: JSON.parse(Buffer.from(bytes).toString("utf8")) as unknown,
+          value: parseLocalJson(Buffer.from(bytes).toString("utf8")),
         }) as const,
       catch: (cause) => makeError(path, "parse", cause),
     });

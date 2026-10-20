@@ -119,12 +119,12 @@ const fromDesktop = <A>(fallback: string, promise: () => Promise<A>) =>
 
 const normalizePlayerKey = (name: string): string => name.trim().toLowerCase();
 
-const withArmyRoom = (map: string, room: string): string => {
+const withArmyRoom = (map: string, room: number): string => {
   const target = map.trim();
   if (target === "" || /-\d+$/.test(target)) {
     return target;
   }
-  return `${target}-${room.trim()}`;
+  return `${target}-${room}`;
 };
 
 const causeMessage = (cause: Cause.Cause<unknown>): string => {

@@ -1,7 +1,8 @@
 import * as Effect from "effect/Effect";
 
 import { AccountsIpc } from "../../../shared/ipc";
-import { Accounts } from "../../internal/accounts/Accounts";
+import { Accounts } from "../../game/accounts/Accounts";
+import { AccountServers } from "../../game/accounts/AccountServers";
 import { DesktopWindows } from "../../window/DesktopWindows";
 import { DesktopIpc, makeDesktopIpcMethod } from "../DesktopIpc";
 
@@ -23,8 +24,8 @@ export const getServers = makeDesktopIpcMethod({
   descriptor: AccountsIpc.getServers,
   allowedSenders: accountManagerSenders,
   handler: Effect.fn("desktop.ipc.accounts.getServers")(function* () {
-    const accounts = yield* Accounts;
-    return yield* accounts.getServers;
+    const servers = yield* AccountServers;
+    return yield* servers.get;
   }),
 });
 
@@ -32,8 +33,8 @@ export const getServerPings = makeDesktopIpcMethod({
   descriptor: AccountsIpc.getServerPings,
   allowedSenders: accountManagerSenders,
   handler: Effect.fn("desktop.ipc.accounts.getServerPings")(function* () {
-    const accounts = yield* Accounts;
-    return yield* accounts.getServerPings;
+    const servers = yield* AccountServers;
+    return yield* servers.getPings;
   }),
 });
 
@@ -41,8 +42,8 @@ export const refreshServers = makeDesktopIpcMethod({
   descriptor: AccountsIpc.refreshServers,
   allowedSenders: accountManagerSenders,
   handler: Effect.fn("desktop.ipc.accounts.refreshServers")(function* () {
-    const accounts = yield* Accounts;
-    return yield* accounts.refreshServers;
+    const servers = yield* AccountServers;
+    return yield* servers.refresh;
   }),
 });
 
@@ -89,15 +90,6 @@ export const updateAccount = makeDesktopIpcMethod({
   handler: Effect.fn("desktop.ipc.accounts.updateAccount")(function* (payload) {
     const accounts = yield* Accounts;
     return yield* accounts.updateAccount(payload.username, payload.patch);
-  }),
-});
-
-export const deleteAccount = makeDesktopIpcMethod({
-  descriptor: AccountsIpc.deleteAccount,
-  allowedSenders: accountManagerSenders,
-  handler: Effect.fn("desktop.ipc.accounts.deleteAccount")(function* (payload) {
-    const accounts = yield* Accounts;
-    return yield* accounts.deleteAccount(payload.username);
   }),
 });
 
@@ -159,17 +151,6 @@ export const focusGameWindow = makeDesktopIpcMethod({
   ),
 });
 
-export const closeGameWindow = makeDesktopIpcMethod({
-  descriptor: AccountsIpc.closeGameWindow,
-  allowedSenders: accountManagerSenders,
-  handler: Effect.fn("desktop.ipc.accounts.closeGameWindow")(
-    function* (request) {
-      const accounts = yield* Accounts;
-      return yield* accounts.closeGameWindow(request.gameWindowId);
-    },
-  ),
-});
-
 export const closeGameWindows = makeDesktopIpcMethod({
   descriptor: AccountsIpc.closeGameWindows,
   allowedSenders: accountManagerSenders,
@@ -201,14 +182,12 @@ export const methods = [
   prepareGameLoadRecovery,
   createAccount,
   updateAccount,
-  deleteAccount,
   deleteAccounts,
   createGroup,
   updateGroup,
   deleteGroup,
   launch,
   focusGameWindow,
-  closeGameWindow,
   closeGameWindows,
   reportSession,
 ] as const;
@@ -220,13 +199,10 @@ export const installEventForwarding = Effect.fn(
   const ipc = yield* DesktopIpc;
   const windows = yield* DesktopWindows;
 
-  yield* Effect.acquireRelease(
-    accounts.onChanged((state) =>
-      Effect.gen(function* () {
-        const rendererIds = yield* windows.getRendererIds("account-manager");
-        yield* ipc.sendToRendererIds(rendererIds, AccountsIpc.changed, state);
-      }),
-    ),
-    (unsubscribe) => Effect.sync(unsubscribe),
+  yield* accounts.onChanged((state) =>
+    Effect.gen(function* () {
+      const rendererIds = yield* windows.getRendererIds("account-manager");
+      yield* ipc.sendToRendererIds(rendererIds, AccountsIpc.changed, state);
+    }),
   );
 });

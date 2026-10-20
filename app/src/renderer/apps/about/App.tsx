@@ -353,9 +353,7 @@ export function App() {
     <AboutView
       infoState={infoState}
       onCheckForUpdates={() =>
-        desktop.updates
-          .checkNow({ force: true })
-          .then((state) => setUpdateState(state))
+        desktop.updates.checkNow().then((state) => setUpdateState(state))
       }
       onCopyText={(text) => navigator.clipboard.writeText(text)}
       onOpenFolder={(folder) => desktop.about.openFolder(folder)}

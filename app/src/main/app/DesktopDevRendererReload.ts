@@ -1,10 +1,30 @@
-import { watchFile, unwatchFile, type Stats } from "fs";
+import type { WebContents } from "electron";
+import { watchFile, unwatchFile, type Stats } from "node:fs";
 
 import { electronRendererRegistry } from "../electron/ElectronRendererRegistry";
 
 import * as Effect from "effect/Effect";
+import * as FiberSet from "effect/FiberSet";
 
-import { reloadUsableRendererContents } from "./DesktopDevRendererReloadContents";
+export type RendererReloadContentTarget = Pick<
+  WebContents,
+  "isDestroyed" | "reloadIgnoringCache"
+>;
+
+export const reloadUsableRendererContents = (
+  contents: Iterable<RendererReloadContentTarget>,
+): number => {
+  let reloadCount = 0;
+  for (const renderer of contents) {
+    if (renderer.isDestroyed()) {
+      continue;
+    }
+
+    renderer.reloadIgnoringCache();
+    reloadCount += 1;
+  }
+  return reloadCount;
+};
 
 const RELOAD_WATCH_INTERVAL_MS = 100;
 
@@ -25,15 +45,14 @@ export const installDesktopDevRendererReload = Effect.gen(function* () {
     return;
   }
 
-  const context = yield* Effect.context<never>();
-  const runPromise = Effect.runPromiseWith(context);
+  const runFork = yield* FiberSet.makeRuntime();
   const listener = (current: Stats, previous: Stats): void => {
     if (shouldIgnoreReloadFileChange(current, previous)) {
       return;
     }
 
     const rendererCount = reloadOpenRendererContents();
-    void runPromise(
+    runFork(
       Effect.logDebug("Renderer reload requested").pipe(
         Effect.annotateLogs({
           component: "dev",
@@ -43,7 +62,7 @@ export const installDesktopDevRendererReload = Effect.gen(function* () {
           },
         }),
       ),
-    ).catch(() => undefined);
+    );
   };
 
   yield* Effect.sync(() => {

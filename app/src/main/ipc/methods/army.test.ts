@@ -11,18 +11,17 @@ import { makeLifetime } from "../../window/RendererLifetimeTesting";
 import type { ArmyConfigPayload } from "@lucent/core/army";
 import { ArmyIpc } from "../../../shared/ipc";
 import { makeListenerRegistry } from "../../app/ListenerRegistry";
-import { ArmyConfigRepository } from "../../internal/army/ArmyConfigRepository";
+import { ArmyConfigRepository } from "../../game/army/ArmyConfigRepository";
 import {
   ArmyCoordinator,
   layer as armyCoordinatorLayer,
-} from "../../internal/army/ArmyCoordinator";
-import { ArmyLoopTauntOrchestrator } from "../../internal/army/ArmyLoopTauntOrchestrator";
+} from "../../game/army/ArmyCoordinator";
+import { ArmyLoopTauntOrchestrator } from "../../game/army/ArmyLoopTauntOrchestrator";
 import {
   DesktopWindows,
   type DesktopRendererEvent,
 } from "../../window/DesktopWindows";
 import { DesktopIpc, makeDesktopIpc, type DesktopIpcMain } from "../DesktopIpc";
-import { DesktopIpcSenders, makeDesktopIpcSenders } from "../DesktopIpcSenders";
 import { installLifecycle, start } from "./army";
 
 const rendererId = 7;
@@ -32,7 +31,7 @@ const soloConfig: ArmyConfigPayload = {
   items: {},
   players: ["Alice"],
   raw: { players: ["Alice"], room: "1234" },
-  room: "1234",
+  room: 1234,
   sets: {},
 };
 
@@ -49,28 +48,16 @@ const makeGameWindows = () => {
             kind: "game",
             windowId: id,
             ownerId: undefined,
-            generation: lifetime.generation,
+            lifetime,
             ready: true,
           };
     });
-  const lifetime: DesktopWindows["Service"]["lifetime"] = (id) =>
-    Effect.sync(() => lifetimes.get(id));
-  const identify: DesktopWindows["Service"]["identify"] = (id) =>
-    Effect.sync(() => {
-      const lifetime = lifetimes.get(id);
-      return lifetime === undefined
-        ? undefined
-        : { rendererId: id, kind: "game", lifetime };
-    });
   const observe: DesktopWindows["Service"]["observe"] = (filter, listener) =>
-    Effect.acquireRelease(
-      events.subscribe((event) =>
-        filter.kind === undefined || filter.kind === event.kind
-          ? listener(event)
-          : Effect.void,
-      ),
-      (unsubscribe) => Effect.sync(unsubscribe),
-    ).pipe(Effect.asVoid);
+    events.subscribe((event) =>
+      filter.kind === undefined || filter.kind === event.kind
+        ? listener(event)
+        : Effect.void,
+    );
   const end = (lifecycle: "closed" | "reloaded" | "crashed") =>
     Effect.gen(function* () {
       const current = lifetimes.get(rendererId)!;
@@ -107,7 +94,7 @@ const makeGameWindows = () => {
         );
       }
     });
-  return { describe, end, identify, lifetime, observe };
+  return { describe, end, observe };
 };
 
 const runStartIpc = <A, E>(
@@ -149,14 +136,11 @@ const runStartIpc = <A, E>(
         Layer.succeed(DesktopIpc, ipc),
         Layer.mock(DesktopWindows, {
           describe: windows.describe,
-          lifetime: windows.lifetime,
-          identify: windows.identify,
           observe: windows.observe,
         }),
-        Layer.succeed(DesktopIpcSenders, makeDesktopIpcSenders(windows)),
         Layer.succeed(ArmyConfigRepository, { read }),
         Layer.mock(ArmyLoopTauntOrchestrator, {
-          onCommand: () => Effect.succeed(() => {}),
+          onCommand: () => Effect.void,
         }),
       ),
     ),
@@ -193,11 +177,7 @@ describe("army start IPC", () => {
               ).toEqual([]);
               expect(envelope).toEqual({
                 ok: false,
-                error: {
-                  channel: "desktop:army:start",
-                  code: "IPC_HANDLER_FAILED",
-                  message: "Army window is no longer available",
-                },
+                message: "Army window is no longer available",
               });
             }),
           );
@@ -236,11 +216,7 @@ describe("army start IPC", () => {
 
           expect(yield* Fiber.join(reply)).toEqual({
             ok: false,
-            error: {
-              channel: "desktop:army:start",
-              code: "IPC_HANDLER_FAILED",
-              message: "Army window closed",
-            },
+            message: "Army window closed",
           });
           expect(yield* coordinator.getSessions()).toEqual([]);
         }),

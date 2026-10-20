@@ -273,7 +273,10 @@ export const makeFollower = Effect.fnUntraced(function* (
   const getState = () =>
     SubscriptionRef.get(state).pipe(Effect.map(publicState));
 
-  const changes = SubscriptionRef.changes(state).pipe(Stream.map(publicState));
+  const changes = SubscriptionRef.changes(state).pipe(
+    Stream.map(publicState),
+    Stream.changes,
+  );
 
   const updateForRun = (
     runId: number,

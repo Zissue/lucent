@@ -22,7 +22,7 @@ import type {
   EnvironmentAutomationCapability,
   EnvironmentState,
 } from "@lucent/core/environment";
-import type { DesktopEnvironmentBridge } from "../../../shared/desktopBridge";
+import type { DesktopBridgeByView } from "../../../shared/desktopBridge";
 import { useInlineEdit } from "./useInlineEdit";
 
 export type EnvironmentUpdate = (
@@ -33,7 +33,7 @@ export const errorMessage = (cause: unknown, fallback: string): string =>
   cause instanceof Error && cause.message.length > 0 ? cause.message : fallback;
 
 export interface EnvironmentSectionProps {
-  readonly environment: DesktopEnvironmentBridge;
+  readonly environment: DesktopBridgeByView["environment"]["environment"];
   readonly setError: Dispatch<SetStateAction<string>>;
   readonly state: EnvironmentState;
   readonly update: EnvironmentUpdate;

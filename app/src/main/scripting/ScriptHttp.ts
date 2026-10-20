@@ -1,11 +1,13 @@
-import { randomBytes } from "crypto";
+import { randomBytes } from "node:crypto";
 
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 
 import {
   HttpError,
@@ -14,6 +16,7 @@ import {
   type HttpResult,
   type HttpErrorReason,
 } from "../../shared/http";
+import { logFailure } from "../../shared/logFailure";
 import {
   DesktopHttpClient,
   type DesktopHttpClientShape,
@@ -33,8 +36,8 @@ const errorReasons: Record<DesktopHttpClientError["kind"], HttpErrorReason> = {
   "request-failed": "request",
   "response-too-large": "too-large",
   timeout: "timeout",
-  aborted: "aborted",
 };
+const decodeUrl = Schema.decodeUnknownEffect(Schema.URLFromString);
 
 /** Owns HTTP operations by renderer and script run, including renderer loss. */
 export const makeScriptHttp = (
@@ -115,17 +118,18 @@ export const makeScriptHttp = (
           return Effect.succeed(session);
         }),
         () =>
-          Effect.try({
-            try: () => new URL(payload.url),
-            catch: (cause) =>
-              new HttpError({
-                reason: "request",
-                detail: "Invalid HTTP request URL.",
-                url: payload.url,
-                cause,
-              }),
-          }).pipe(
-            Effect.flatMap((url) =>
+          decodeUrl(payload.url).pipe(
+            Effect.mapError(
+              (cause) =>
+                new HttpError({
+                  reason: "request",
+                  detail: "Invalid HTTP request URL.",
+                  url: payload.url,
+                  cause,
+                }),
+            ),
+            Effect.zip(Clock.currentTimeMillis),
+            Effect.flatMap(([url, now]) =>
               http
                 .request({
                   url,
@@ -137,7 +141,7 @@ export const makeScriptHttp = (
                     : {
                         timeoutMs: Math.min(
                           2_147_483_647,
-                          Math.max(0, payload.deadline - Date.now()),
+                          Math.max(0, payload.deadline - now),
                         ),
                       }),
                   redirect: payload.redirect,
@@ -189,6 +193,20 @@ export const makeScriptHttp = (
       // Keep the IPC handler alive so cancellation can return a typed result.
       Effect.forkChild({ startImmediately: true }),
       Effect.flatMap(Fiber.await),
+      Effect.tap((exit) =>
+        Exit.isFailure(exit) && Cause.hasDies(exit.cause)
+          ? logFailure(
+              "Script HTTP request failed unexpectedly",
+              exit.cause,
+            ).pipe(
+              Effect.annotateLogs({
+                component: "script-http",
+                data: { rendererId, requestId: payload.requestId },
+                repeatKey: `${rendererId}:${payload.requestId}`,
+              }),
+            )
+          : Effect.void,
+      ),
       Effect.map((exit): HttpResult => {
         if (Exit.isSuccess(exit)) return exit.value;
         const cause = exit.cause;

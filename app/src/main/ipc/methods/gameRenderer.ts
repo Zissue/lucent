@@ -2,7 +2,7 @@ import * as Effect from "effect/Effect";
 
 import { GameRendererIpc } from "../../../shared/ipc";
 import { DesktopGameRendererRecovery } from "../../app/DesktopGameRendererRecovery";
-import { DesktopWindows, requireRenderer } from "../../window/DesktopWindows";
+import { DesktopWindows } from "../../window/DesktopWindows";
 import { makeDesktopIpcMethod } from "../DesktopIpc";
 
 export const ready = makeDesktopIpcMethod({
@@ -22,7 +22,7 @@ export const beginScriptExecution = makeDesktopIpcMethod({
   handler: Effect.fn("desktop.ipc.gameRenderer.beginScriptExecution")(
     function* (_payload, sender) {
       const recovery = yield* DesktopGameRendererRecovery;
-      return yield* recovery.beginScriptExecution(sender.lifetime);
+      yield* recovery.beginScriptExecution(sender.lifetime);
     },
   ),
 });
@@ -31,9 +31,9 @@ export const finishScriptExecution = makeDesktopIpcMethod({
   descriptor: GameRendererIpc.finishScriptExecution,
   allowedSenders: ["game"],
   handler: Effect.fn("desktop.ipc.gameRenderer.finishScriptExecution")(
-    function* (payload, sender) {
+    function* (_payload, sender) {
       const recovery = yield* DesktopGameRendererRecovery;
-      yield* recovery.finishScriptExecution(sender.lifetime, payload.token);
+      yield* recovery.finishScriptExecution(sender.lifetime);
     },
   ),
 });
@@ -41,12 +41,7 @@ export const finishScriptExecution = makeDesktopIpcMethod({
 export const getGeneration = makeDesktopIpcMethod({
   descriptor: GameRendererIpc.getGeneration,
   allowedSenders: ["game"],
-  handler: Effect.fn("desktop.ipc.gameRenderer.getGeneration")(
-    function* (_payload, sender) {
-      const windows = yield* DesktopWindows;
-      return (yield* requireRenderer(windows, sender.rendererId)).generation;
-    },
-  ),
+  handler: (_payload, sender) => Effect.succeed(sender.lifetime.generation),
 });
 
 export const methods = [

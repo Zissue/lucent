@@ -171,8 +171,6 @@ export type AccountGameServerPing = typeof AccountGameServerPingSchema.Type;
 
 export const AccountGameServerPingsResultSchema = Schema.Struct({
   pings: Schema.Array(AccountGameServerPingSchema),
-  measuredAt: Schema.Number,
-  expiresAt: Schema.Number,
 });
 
 export type AccountGameServerPingsResult =

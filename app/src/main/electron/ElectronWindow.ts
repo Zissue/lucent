@@ -15,12 +15,23 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 
-export {
-  isElectronWindowUsable,
-  type ElectronWindowUsabilityTarget,
-} from "./windowUsability";
-import { isElectronWindowUsable } from "./windowUsability";
 import { electronRendererRegistry } from "./ElectronRendererRegistry";
+
+export interface ElectronWindowUsabilityTarget {
+  readonly isDestroyed: () => boolean;
+  readonly webContents?: {
+    readonly isDestroyed: () => boolean;
+  };
+}
+
+export const isElectronWindowUsable = <
+  Window extends ElectronWindowUsabilityTarget,
+>(
+  window: Window | undefined,
+): window is Window =>
+  window !== undefined &&
+  !window.isDestroyed() &&
+  window.webContents?.isDestroyed() !== true;
 
 export interface ElectronGameViewHandle {
   readonly native: WebContentsView;
@@ -59,7 +70,6 @@ export interface ElectronNativeWindowHandle {
   readonly removeListener: BaseWindow["removeListener"];
   readonly restore: () => void;
   readonly setBackgroundColor: (backgroundColor: string) => void;
-  readonly setMenuBarVisibility: (visible: boolean) => void;
   readonly setTitle: (title: string) => void;
   readonly show: () => void;
 }

@@ -1,16 +1,17 @@
 import type { WebContents } from "electron";
-import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
 import type { DesktopRendererKind } from "../window/DesktopWindowCatalog";
 import {
   DesktopWindows,
-  type DesktopRendererIdentity,
+  type DesktopRendererInfo,
 } from "../window/DesktopWindows";
 
-export type DesktopIpcSender = DesktopRendererIdentity;
+export type DesktopIpcSender = Pick<
+  DesktopRendererInfo,
+  "rendererId" | "kind" | "lifetime"
+>;
 
 export type DesktopIpcSenderKinds = readonly [
   DesktopRendererKind,
@@ -28,48 +29,20 @@ export class DesktopIpcSenderError extends Schema.TaggedError<DesktopIpcSenderEr
   }
 }
 
-export interface DesktopIpcSendersShape {
-  readonly require: (
-    event: { readonly sender: Pick<WebContents, "id"> },
-    allowedKinds: DesktopIpcSenderKinds,
-  ) => Effect.Effect<DesktopIpcSender, DesktopIpcSenderError>;
-}
+export const requireSender = Effect.fnUntraced(function* (
+  windows: Pick<DesktopWindows["Service"], "describe">,
+  event: { readonly sender: Pick<WebContents, "id"> },
+  allowedKinds: DesktopIpcSenderKinds,
+) {
+  const info = yield* windows.describe(event.sender.id);
+  if (info === undefined || !allowedKinds.includes(info.kind)) {
+    return yield* new DesktopIpcSenderError({
+      detail: `IPC sender must be one of: ${allowedKinds.join(", ")}`,
+    });
+  }
 
-export class DesktopIpcSenders extends Context.Service<
-  DesktopIpcSenders,
-  DesktopIpcSendersShape
->()("lucent/desktop/ipc/DesktopIpcSenders") {}
-
-export const makeDesktopIpcSenders = (
-  windows: Pick<DesktopWindows["Service"], "identify">,
-): DesktopIpcSenders["Service"] => {
-  const requireSender = Effect.fn("DesktopIpcSenders.require")(function* (
-    event: { readonly sender: Pick<WebContents, "id"> },
-    allowedKinds: DesktopIpcSenderKinds,
-  ) {
-    const rendererId = event.sender.id;
-    const identity = yield* windows.identify(rendererId);
-    if (identity === undefined || !allowedKinds.includes(identity.kind)) {
-      return yield* new DesktopIpcSenderError({
-        detail: `IPC sender must be one of: ${allowedKinds.join(", ")}`,
-      });
-    }
-
-    return identity;
-  });
-
-  return DesktopIpcSenders.of({
-    require: requireSender,
-  });
-};
-
-export const layer = Layer.effect(
-  DesktopIpcSenders,
-  Effect.gen(function* () {
-    const windows = yield* DesktopWindows;
-    return makeDesktopIpcSenders(windows);
-  }),
-);
+  return info;
+});
 
 export const resolveGameRendererId = Effect.fn(
   "DesktopIpcSenders.resolveGameRendererId",

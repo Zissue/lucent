@@ -89,7 +89,7 @@ export function App({
   const checkForUpdates = (): void => {
     setChecking(true);
     void desktop.updates
-      .checkNow({ force: true })
+      .checkNow()
       .then(setUpdateState)
       .catch((cause: unknown) => {
         console.error("Failed to check for updates:", cause);

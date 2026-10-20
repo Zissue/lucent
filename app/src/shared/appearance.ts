@@ -1,6 +1,3 @@
-import * as Option from "effect/Option";
-import * as Schema from "effect/Schema";
-
 import {
   getTextSizeTokens,
   pickOnAccentColor,
@@ -12,29 +9,8 @@ import {
   type ThemeRgb,
   type ThemeVariant,
 } from "@lucent/core/settings";
-import type { DesktopBridgeView } from "./desktopBridge";
-import { readArgumentValue } from "./rendererBootstrapArguments";
 
 export * from "@lucent/core/appearance";
-
-export const DESKTOP_VIEW_ARGUMENT = "--lucent__view";
-
-const DesktopBridgeViewSchema = Schema.Literals([
-  "about",
-  "account-manager",
-  "combat-profiles",
-  "environment",
-  "follower",
-  "game",
-  "game-group-controls",
-  "game-host",
-  "loader-grabber",
-  "packets",
-  "settings",
-]);
-const decodeDesktopBridgeView = Schema.decodeUnknownOption(
-  DesktopBridgeViewSchema,
-);
 
 const legacyThemeTokens: Record<ThemeVariant, Record<string, ThemeRgb>> = {
   light: {
@@ -104,17 +80,6 @@ const radiusBaseRem = {
 
 type RadiusTokenName = keyof typeof radiusBaseRem;
 type TextSizeTokenName = keyof ReturnType<typeof getTextSizeTokens>;
-
-export const serializeDesktopViewArgument = (view: DesktopBridgeView): string =>
-  `${DESKTOP_VIEW_ARGUMENT}=${view}`;
-
-export const readDesktopViewArgument = (
-  argv: readonly string[],
-): DesktopBridgeView | null => {
-  const value = readArgumentValue(argv, DESKTOP_VIEW_ARGUMENT);
-  const decoded = decodeDesktopBridgeView(value);
-  return Option.isSome(decoded) ? decoded.value : null;
-};
 
 const applyRounding = (
   style: CSSStyleDeclaration,
