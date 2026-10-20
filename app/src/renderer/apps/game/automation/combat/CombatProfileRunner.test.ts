@@ -104,7 +104,7 @@ const makeHarness = (options?: {
           preparations.push(preparedProfile);
           return {
             release: Effect.void,
-            warnings: options?.preflightWarnings ?? [],
+            warnings: Effect.succeed(options?.preflightWarnings ?? []),
           };
         }),
       target: {
@@ -422,7 +422,7 @@ describe("CombatProfileRunner", () => {
           targetPriority: [],
         });
 
-        expect(runner.warnings).toEqual([
+        expect(yield* runner.warnings).toEqual([
           "This profile is for Lord of Order, but Legion Revenant is equipped.",
           "Skill 5 will use whichever consumable is available.",
         ]);

@@ -7,6 +7,7 @@ import { parseMonsterMapId } from "@lucent/game";
 import type { MonsterQuery } from "@lucent/game";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Equal from "effect/Equal";
 import * as FiberMap from "effect/FiberMap";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
@@ -122,18 +123,16 @@ export const makeAutoAttack = Effect.fnUntraced(function* (
           profile,
           targetPriority: priorities,
         });
-        if (runner.warnings.length > 0) {
-          yield* SubscriptionRef.update(state, (current) =>
-            current.runId === runId
-              ? { ...current, warnings: runner.warnings }
-              : current,
-          );
-        }
-
         while (true) {
           const current = yield* SubscriptionRef.get(state);
           if (!current.enabled || current.runId !== runId) {
             return;
+          }
+          const warnings = yield* runner.warnings;
+          if (!Equal.equals(current.warnings, warnings)) {
+            yield* SubscriptionRef.update(state, (latest) =>
+              latest.runId === runId ? { ...latest, warnings } : latest,
+            );
           }
 
           const result = yield* runner.runCycle();

@@ -22,21 +22,23 @@ export const getCombatProfileClassWarning = Effect.fn(
     return undefined;
   }
 
-  const classItem = (yield* deps.inventory.getAll()).find(
-    (item) => item.classItem && item.equipped,
-  );
-  const equipped = [
-    classItem?.name ?? "",
-    yield* deps.player.getClassName(),
-  ].filter((name) => name !== "");
-  if (
-    equipped.length === 0 ||
-    classNames.some((expected) =>
-      equipped.some((name) => sameClass(expected, name)),
-    )
-  ) {
+  const matches = (name: string) =>
+    classNames.some((expected) => sameClass(expected, name));
+
+  const itemName =
+    (yield* deps.inventory.getAll()).find(
+      (item) => item.classItem && item.equipped,
+    )?.name ?? "";
+  if (matches(itemName)) {
+    return undefined;
+  }
+  const className = yield* deps.player.getClassName();
+  if (matches(className)) {
     return undefined;
   }
 
-  return `This profile is for ${classList.format(classNames)}, but ${equipped[0]} is equipped.`;
+  const equipped = itemName || className;
+  return equipped === ""
+    ? undefined
+    : `This profile is for ${classList.format(classNames)}, but ${equipped} is equipped.`;
 });

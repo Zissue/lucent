@@ -191,16 +191,17 @@ export const makeCombat = (
 
   const prepareCombatProfile = Effect.fn("Combat.prepareCombatProfile")(
     function* (profile: CombatProfile) {
-      const classWarning = yield* getCombatProfileClassWarning(
-        { inventory, player },
-        profile,
-      );
       const { warning, ...prepared } =
         yield* prepareCombatProfileConsumable(profile);
       return {
         ...prepared,
-        warnings: [classWarning, warning].filter(
-          (message) => message !== undefined,
+        warnings: getCombatProfileClassWarning(
+          { inventory, player },
+          profile,
+        ).pipe(
+          Effect.map((classWarning): readonly string[] =>
+            [classWarning, warning].filter((message) => message !== undefined),
+          ),
         ),
       };
     },
@@ -517,7 +518,7 @@ export const makeCombat = (
           targetPriority: [...(options?.targetPriority ?? []), selector],
         },
       );
-      for (const warning of session.warnings) {
+      for (const warning of yield* session.warnings) {
         yield* Effect.logWarning("Combat profile session degraded").pipe(
           Effect.annotateLogs({
             component: "combat",

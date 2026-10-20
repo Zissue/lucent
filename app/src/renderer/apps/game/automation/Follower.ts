@@ -15,6 +15,7 @@ import type { Player as GamePlayer } from "@lucent/game";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Equal from "effect/Equal";
 import * as FiberMap from "effect/FiberMap";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
@@ -828,14 +829,14 @@ export const makeFollower = Effect.fnUntraced(function* (
               targetPriority: config.attackPriority,
             })
           : undefined;
-        if (runner !== undefined && runner.warnings.length > 0) {
-          yield* setWarnings(runId, runner.warnings);
-        }
-
         while (true) {
           const current = yield* SubscriptionRef.get(state);
           if (!current.enabled || current.runId !== runId) {
             return;
+          }
+          const warnings = runner === undefined ? [] : yield* runner.warnings;
+          if (!Equal.equals(current.warnings, warnings)) {
+            yield* setWarnings(runId, warnings);
           }
           const outcome = yield* Effect.raceFirst(
             runCycle(runId, config, runner).pipe(
