@@ -121,7 +121,7 @@ describe("GameFollowers", () => {
               profileLabel: " Profile ",
               lastError: "  ",
               stoppedReason: " Stopped ",
-              warning: " Warning ",
+              warnings: [" Warning "],
             }),
         },
       });
@@ -136,7 +136,7 @@ describe("GameFollowers", () => {
         profileId: "profile",
         profileLabel: "Profile",
         stoppedReason: "Stopped",
-        warning: "Warning",
+        warnings: ["Warning"],
       };
       expect(yield* followers.fetchState(TEST_GAME_RENDERER_ID)).toEqual(
         expected,

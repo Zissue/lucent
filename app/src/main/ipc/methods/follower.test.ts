@@ -26,7 +26,7 @@ it.effect("normalizes optional text before publishing follower state", () =>
       ...createIdleFollowerState(),
       targetName: "target",
       lastError: "  ",
-      warning: " Warning ",
+      warnings: [" Warning ", "  "],
     });
     yield* publishState
       .handler(incoming, {
@@ -63,7 +63,7 @@ it.effect("normalizes optional text before publishing follower state", () =>
           targetName: "target",
           phase: "idle",
           attemptsRemaining: 3,
-          warning: "Warning",
+          warnings: ["Warning"],
         },
       },
     ]);

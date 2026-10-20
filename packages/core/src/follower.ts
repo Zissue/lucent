@@ -71,7 +71,7 @@ export const FollowerStateSchema = Schema.Struct({
   ),
   lastError: Schema.optionalKey(Schema.String),
   stoppedReason: Schema.optionalKey(Schema.String),
-  warning: Schema.optionalKey(Schema.String),
+  warnings: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 export type FollowerState = typeof FollowerStateSchema.Type;
 
@@ -224,7 +224,10 @@ export const normalizeFollowerState = (value: unknown): FollowerState => {
   const profileLabel = optionalText(candidate["profileLabel"]);
   const lastError = optionalText(candidate["lastError"]);
   const stoppedReason = optionalText(candidate["stoppedReason"]);
-  const warning = optionalText(candidate["warning"]);
+  const rawWarnings = candidate["warnings"];
+  const warnings = Array.isArray(rawWarnings)
+    ? rawWarnings.flatMap((warning) => optionalText(warning) ?? [])
+    : [];
 
   return {
     enabled: candidate["enabled"] === true,
@@ -236,6 +239,6 @@ export const normalizeFollowerState = (value: unknown): FollowerState => {
     attemptsRemaining,
     ...(lastError === undefined ? {} : { lastError }),
     ...(stoppedReason === undefined ? {} : { stoppedReason }),
-    ...(warning === undefined ? {} : { warning }),
+    ...(warnings.length === 0 ? {} : { warnings }),
   };
 };
