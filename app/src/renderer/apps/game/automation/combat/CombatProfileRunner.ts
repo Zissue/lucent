@@ -55,7 +55,7 @@ export const makeCombatProfileRunner = Effect.fn("makeCombatProfileRunner")(
             handler(event.monsterMapId),
           ),
         prepare: (profile) =>
-          api.combat.prepareCombatProfileConsumable(profile).pipe(
+          api.combat.prepareCombatProfile(profile).pipe(
             Effect.map((prepared) => ({
               dependencies: makeCombatProfileRuntimeDeps(
                 api.combat,
@@ -64,9 +64,7 @@ export const makeCombatProfileRunner = Effect.fn("makeCombatProfileRunner")(
                 prepared.skill5ItemId,
               ),
               release: prepared.release,
-              ...(prepared.warning === undefined
-                ? {}
-                : { warning: prepared.warning }),
+              warnings: prepared.warnings,
             })),
           ),
       },
@@ -85,10 +83,7 @@ export const makeCombatProfileRunner = Effect.fn("makeCombatProfileRunner")(
       return yield* session.runCycle(cycleOptions);
     });
 
-    return {
-      runCycle,
-      ...(session.warning === undefined ? {} : { warning: session.warning }),
-    };
+    return { runCycle, warnings: session.warnings };
   },
 );
 

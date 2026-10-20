@@ -74,7 +74,7 @@ const makeHarness = (options?: {
   readonly getTarget?: ApiService["combat"]["target"]["get"];
   readonly isAttackBlocked?: (monsterMapId: number) => boolean;
   readonly monsters?: readonly LiveMonster[];
-  readonly preflightWarning?: string;
+  readonly preflightWarnings?: readonly string[];
   readonly useSkill?: (skill: number) => Effect.Effect<boolean>;
 }) => {
   const attacks: number[] = [];
@@ -99,15 +99,13 @@ const makeHarness = (options?: {
       getConsumableSkillItem: () => Effect.succeed(null),
       isAttackBlocked: (monsterMapId: number) =>
         Effect.succeed(options?.isAttackBlocked?.(monsterMapId) ?? false),
-      prepareCombatProfileConsumable: (preparedProfile: CombatProfile) =>
+      prepareCombatProfile: (preparedProfile: CombatProfile) =>
         Effect.sync(() => {
           preparations.push(preparedProfile);
-          return options?.preflightWarning === undefined
-            ? { release: Effect.void }
-            : {
-                release: Effect.void,
-                warning: options.preflightWarning,
-              };
+          return {
+            release: Effect.void,
+            warnings: options?.preflightWarnings ?? [],
+          };
         }),
       target: {
         auras: { get: () => Effect.succeed(null) },
@@ -411,8 +409,10 @@ describe("CombatProfileRunner", () => {
     () =>
       Effect.gen(function* () {
         const harness = makeHarness({
-          preflightWarning:
+          preflightWarnings: [
+            "This profile is for Lord of Order, but Legion Revenant is equipped.",
             "Skill 5 will use whichever consumable is available.",
+          ],
         });
         const runner = yield* makeCombatProfileRunner(harness.api, {
           profile: {
@@ -422,9 +422,10 @@ describe("CombatProfileRunner", () => {
           targetPriority: [],
         });
 
-        expect(runner.warning).toBe(
+        expect(runner.warnings).toEqual([
+          "This profile is for Lord of Order, but Legion Revenant is equipped.",
           "Skill 5 will use whichever consumable is available.",
-        );
+        ]);
         expect(yield* runner.runCycle()).toEqual({
           cast: true,
           delayMs: profile.delayMs,

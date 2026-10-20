@@ -72,10 +72,10 @@ describe("AutoAttack", () => {
           cancelAutoAttack: () =>
             Ref.update(cancellations, (count) => count + 1),
           cancelTarget: () => Ref.update(cancellations, (count) => count + 1),
-          prepareCombatProfileConsumable: () =>
+          prepareCombatProfile: () =>
             Effect.succeed({
               release: Effect.void,
-              warning: "Skill 5 will use whichever consumable is available.",
+              warnings: ["Skill 5 will use whichever consumable is available."],
             }),
           useSkill: (skill: number) =>
             Effect.gen(function* () {
@@ -110,7 +110,7 @@ describe("AutoAttack", () => {
       yield* Deferred.await(oldCastStarted);
       expect(yield* autoAttack.getState()).toMatchObject({
         enabled: true,
-        warning: "Skill 5 will use whichever consumable is available.",
+        warnings: ["Skill 5 will use whichever consumable is available."],
       });
       yield* autoAttack.enable({ library, profileId: second.id });
       yield* Deferred.succeed(releaseOldCast, undefined);
@@ -141,8 +141,8 @@ describe("AutoAttack", () => {
           cancelAutoAttack: () =>
             Ref.update(cancellations, (count) => count + 1),
           cancelTarget: () => Ref.update(cancellations, (count) => count + 1),
-          prepareCombatProfileConsumable: () =>
-            Effect.succeed({ release: Effect.void }),
+          prepareCombatProfile: () =>
+            Effect.succeed({ release: Effect.void, warnings: [] }),
           useSkill: () => Effect.succeed(true),
         },
         () => Effect.succeed(() => undefined),
@@ -184,8 +184,8 @@ describe("AutoAttack", () => {
             cancelAutoAttack: () =>
               Ref.update(cancellations, (count) => count + 1),
             cancelTarget: () => Ref.update(cancellations, (count) => count + 1),
-            prepareCombatProfileConsumable: () =>
-              Effect.succeed({ release: Effect.void }),
+            prepareCombatProfile: () =>
+              Effect.succeed({ release: Effect.void, warnings: [] }),
             useSkill: (skill: number) =>
               skill === 1
                 ? Deferred.succeed(cycleStarted, undefined).pipe(
