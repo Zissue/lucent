@@ -79,7 +79,7 @@ export interface CombatProfileSessionCycleOptions {
 export interface CombatProfileSessionPreparation {
   readonly dependencies: CombatProfileRuntimeDeps;
   readonly release: Effect.Effect<void>;
-  readonly warnings: readonly string[];
+  readonly warnings: Effect.Effect<readonly string[]>;
 }
 
 export interface CombatProfileSessionDependencies {
@@ -215,7 +215,7 @@ export const makeCombatProfileSession = Effect.fn("makeCombatProfileSession")(
     ) {
       return {
         runCycle: () => Effect.succeed(idleCycle),
-        warnings: [],
+        warnings: Effect.succeed([]),
       };
     }
     const cursor = yield* makeCombatProfileCursor();

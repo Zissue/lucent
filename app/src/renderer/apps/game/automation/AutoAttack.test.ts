@@ -75,7 +75,9 @@ describe("AutoAttack", () => {
           prepareCombatProfile: () =>
             Effect.succeed({
               release: Effect.void,
-              warnings: ["Skill 5 will use whichever consumable is available."],
+              warnings: Effect.succeed([
+                "Skill 5 will use whichever consumable is available.",
+              ]),
             }),
           useSkill: (skill: number) =>
             Effect.gen(function* () {
@@ -127,6 +129,42 @@ describe("AutoAttack", () => {
     }),
   );
 
+  it.effect("clears a class warning after the right class is equipped", () =>
+    Effect.gen(function* () {
+      const mismatch =
+        "This profile is for Lord of Order, but Legion Revenant is equipped.";
+      const warnings = yield* Ref.make<readonly string[]>([mismatch]);
+      const fibers = yield* FiberMap.make<string>();
+      const api = apiWith(
+        {
+          attack: () => Effect.succeed(true),
+          cancelAutoAttack: () => Effect.void,
+          cancelTarget: () => Effect.void,
+          prepareCombatProfile: () =>
+            Effect.succeed({
+              release: Effect.void,
+              warnings: Ref.get(warnings),
+            }),
+          useSkill: () => Effect.succeed(true),
+        },
+        () => Effect.succeed(() => undefined),
+      );
+      const autoAttack = yield* makeAutoAttack(api, fibers);
+      const profile = DEFAULT_COMBAT_PROFILE_LIBRARY.profiles[0]!;
+
+      yield* autoAttack.enable({
+        library: DEFAULT_COMBAT_PROFILE_LIBRARY,
+        profileId: profile.id,
+      });
+      yield* TestClock.adjust("1 second");
+      expect((yield* autoAttack.getState()).warnings).toEqual([mismatch]);
+
+      yield* Ref.set(warnings, []);
+      yield* TestClock.adjust("1 second");
+      expect((yield* autoAttack.getState()).warnings).toEqual([]);
+    }),
+  );
+
   it.effect("disables auto attack after a combat failure", () =>
     Effect.gen(function* () {
       const attackStarted = yield* Deferred.make<void>();
@@ -142,7 +180,10 @@ describe("AutoAttack", () => {
             Ref.update(cancellations, (count) => count + 1),
           cancelTarget: () => Ref.update(cancellations, (count) => count + 1),
           prepareCombatProfile: () =>
-            Effect.succeed({ release: Effect.void, warnings: [] }),
+            Effect.succeed({
+              release: Effect.void,
+              warnings: Effect.succeed([]),
+            }),
           useSkill: () => Effect.succeed(true),
         },
         () => Effect.succeed(() => undefined),
@@ -185,7 +226,10 @@ describe("AutoAttack", () => {
               Ref.update(cancellations, (count) => count + 1),
             cancelTarget: () => Ref.update(cancellations, (count) => count + 1),
             prepareCombatProfile: () =>
-              Effect.succeed({ release: Effect.void, warnings: [] }),
+              Effect.succeed({
+                release: Effect.void,
+                warnings: Effect.succeed([]),
+              }),
             useSkill: (skill: number) =>
               skill === 1
                 ? Deferred.succeed(cycleStarted, undefined).pipe(
