@@ -127,8 +127,26 @@ export const ConsumableWarning: Story = {
       players: ["PartyLead", "LucentHealer", "LoopTaunt", "DamageDealer"],
       state: {
         ...followingState,
-        warning:
-          "Lucent could not equip Potent Honor Potion while you were in combat. Skill 5 will use whichever consumable is available.",
+        warnings: [
+          "Could not equip Potent Honor Potion while you were in combat. Skill 5 will use whichever consumable is equipped.",
+        ],
+      },
+    },
+  },
+};
+
+export const ClassAndConsumableWarnings: Story = {
+  args: {
+    fixture: {
+      config,
+      library,
+      players: ["PartyLead", "LucentHealer", "LoopTaunt", "DamageDealer"],
+      state: {
+        ...followingState,
+        warnings: [
+          "This profile is for Lord of Order, but Legion Revenant is equipped.",
+          "Could not equip Potent Honor Potion while you were in combat. Skill 5 will use whichever consumable is equipped.",
+        ],
       },
     },
   },

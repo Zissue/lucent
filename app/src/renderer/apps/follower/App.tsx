@@ -152,8 +152,9 @@ export function FollowerView(props: FollowerViewProps): JSX.Element {
   );
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal(props.fixture.error ?? "");
-  const [dismissedIssue, setDismissedIssue] = createSignal(false);
-  let previousIssueKey = "";
+  const [dismissedIssues, setDismissedIssues] = createSignal<
+    ReadonlySet<string>
+  >(new Set());
   let configurationEffectReady = false;
   let configurationRevision = 0;
   let disposed = false;
@@ -215,14 +216,15 @@ export function FollowerView(props: FollowerViewProps): JSX.Element {
     const messages = [error(), ...followerMessages].filter(Boolean);
     return [...new Set(messages)].join(" - ");
   });
-  const issueMessage = createMemo(
-    () => errorIssueMessage() || state().warning || "",
-  );
+  const issueMessages = createMemo((): readonly string[] => {
+    const error = errorIssueMessage();
+    return error === "" ? (state().warnings ?? []) : [error];
+  });
   const issueVariant = createMemo(() =>
     errorIssueMessage() === "" ? "warning" : "error",
   );
-  const showIssue = createMemo(
-    () => issueMessage() !== "" && !dismissedIssue(),
+  const visibleIssues = createMemo(() =>
+    issueMessages().filter((issue) => !dismissedIssues().has(issue)),
   );
 
   const readConfiguration = (): FollowerStartPayload => ({
@@ -267,11 +269,11 @@ export function FollowerView(props: FollowerViewProps): JSX.Element {
   });
 
   createEffect(() => {
-    const key = issueMessage();
-    if (key !== previousIssueKey) {
-      previousIssueKey = key;
-      setDismissedIssue(false);
-    }
+    const current = new Set(issueMessages());
+    setDismissedIssues(
+      (dismissed) =>
+        new Set([...dismissed].filter((issue) => current.has(issue))),
+    );
   });
 
   const selectProfile = (profileId: string): void => {
@@ -300,9 +302,6 @@ export function FollowerView(props: FollowerViewProps): JSX.Element {
       nextState.running ||
       (nextState.phase === "idle" && nextState.lastError === undefined)
     ) {
-      if (nextState.warning === undefined) {
-        setDismissedIssue(false);
-      }
       setError("");
     }
   };
@@ -360,7 +359,7 @@ export function FollowerView(props: FollowerViewProps): JSX.Element {
 
     setBusy(true);
     setError("");
-    setDismissedIssue(false);
+    setDismissedIssues(new Set<string>());
     try {
       const nextState = await (props.callbacks?.start?.({
         ...readConfiguration(),
@@ -732,24 +731,30 @@ export function FollowerView(props: FollowerViewProps): JSX.Element {
           aria-label="Follower controls"
         >
           <section class="follower-shell">
-            <Show when={showIssue()}>
-              <Alert class="follower-issue" variant={issueVariant()}>
-                <AlertDescription class="follower-issue__message">
-                  <Icon icon="circle_alert" aria-hidden="true" />
-                  <span>{issueMessage()}</span>
-                </AlertDescription>
-                <AlertAction>
-                  <IconButton
-                    aria-label="Dismiss follower status"
-                    size="icon-sm"
-                    variant="ghost"
-                    onClick={() => setDismissedIssue(true)}
-                  >
-                    <Icon icon="x" class="button__icon" />
-                  </IconButton>
-                </AlertAction>
-              </Alert>
-            </Show>
+            <For each={visibleIssues()}>
+              {(issue) => (
+                <Alert class="follower-issue" variant={issueVariant()}>
+                  <AlertDescription class="follower-issue__message">
+                    <Icon icon="circle_alert" aria-hidden="true" />
+                    <span>{issue}</span>
+                  </AlertDescription>
+                  <AlertAction>
+                    <IconButton
+                      aria-label="Dismiss follower status"
+                      size="icon-sm"
+                      variant="ghost"
+                      onClick={() =>
+                        setDismissedIssues(
+                          (dismissed) => new Set([...dismissed, issue]),
+                        )
+                      }
+                    >
+                      <Icon icon="x" class="button__icon" />
+                    </IconButton>
+                  </AlertAction>
+                </Alert>
+              )}
+            </For>
 
             <section
               class="follower-layout follower-layout--focus"
