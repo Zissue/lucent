@@ -28,7 +28,7 @@ const makeSession = (
   players: ["Alice"],
   raw: { players: ["Alice"], room: "1234", sets },
   role: "leader",
-  room: "1234",
+  room: 1234,
   sessionId: "session-1",
   sets,
 });

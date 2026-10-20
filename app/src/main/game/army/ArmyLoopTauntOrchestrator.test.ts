@@ -31,7 +31,7 @@ const makeConfig = (players: readonly string[]): ArmyConfigPayload => ({
   items: {},
   players,
   raw: { players, room: "1234" },
-  room: "1234",
+  room: 1234,
   sets: {},
 });
 

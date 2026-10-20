@@ -32,7 +32,7 @@ const makeConfig = (players: readonly string[]): ArmyConfigPayload => ({
   items: {},
   players,
   raw: { players, room: "1234" },
-  room: "1234",
+  room: 1234,
   sets: {},
 });
 
@@ -61,7 +61,7 @@ describe("ArmyCoordinator", () => {
             message: "Army session started",
             data: {
               configName: "test",
-              room: "1234",
+              room: 1234,
               roster: [{ playerName: "Alice", rendererId: 7 }],
               sessionId: "0-0",
             },
@@ -76,7 +76,7 @@ describe("ArmyCoordinator", () => {
               configName: "test",
               durationMs: 5000,
               lastCompletedStep: null,
-              room: "1234",
+              room: 1234,
               roster: [{ playerName: "Alice", rendererId: 7 }],
               sessionId: "0-0",
               status: "active",

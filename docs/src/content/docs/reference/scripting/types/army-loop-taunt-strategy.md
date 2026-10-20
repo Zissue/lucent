@@ -24,4 +24,4 @@ type ArmyLoopTauntStrategy =
     }
 ```
 
-<p class="source-reference">Defined in <a class="source-reference__link" href="https://github.com/toommyliu/lucent/blob/main/packages/core/src/army.ts#L83" aria-label="Open source: packages/core/src/army.ts:83" title="packages/core/src/army.ts:83" target="_blank" rel="noreferrer"><code class="source-reference__path">army.ts:83</code></a></p>
+<p class="source-reference">Defined in <a class="source-reference__link" href="https://github.com/toommyliu/lucent/blob/main/packages/core/src/army.ts#L88" aria-label="Open source: packages/core/src/army.ts:88" title="packages/core/src/army.ts:88" target="_blank" rel="noreferrer"><code class="source-reference__path">army.ts:88</code></a></p>

@@ -36,7 +36,7 @@ const config: ArmyConfigPayload = {
   items: {},
   players: ["Alice", "Bob"],
   raw: {},
-  room: "1",
+  room: 1,
   sets: {},
 };
 

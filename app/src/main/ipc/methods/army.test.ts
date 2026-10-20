@@ -31,7 +31,7 @@ const soloConfig: ArmyConfigPayload = {
   items: {},
   players: ["Alice"],
   raw: { players: ["Alice"], room: "1234" },
-  room: "1234",
+  room: 1234,
   sets: {},
 };
 
