@@ -24,6 +24,8 @@
     "@lucent/game": "workspace:*",
     "@lucent/ui": "workspace:*",
     "@lucent/ui-react": "workspace:*",
+    "@tanstack/react-hotkeys": "^0.10.0",
+    "@tanstack/react-virtual": "3.13.24",
     "@tanstack/solid-hotkeys": "^0.10.0",
     "@tanstack/solid-virtual": "3.13.24",
     "acorn": "8.16.0",

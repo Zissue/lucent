@@ -174,6 +174,7 @@ const rendererViews = [
     startsPending: true,
   }),
   createRendererView("combat-profiles", "Combat Profiles", {
+    framework: "react",
     startsPending: true,
   }),
   createRendererView("environment", "Environment", {

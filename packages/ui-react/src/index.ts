@@ -215,6 +215,7 @@ export {
 } from "./components/kbd/Kbd";
 export { Label, type LabelProps } from "./components/label/Label";
 export {
+  createMenuHandle,
   Menu,
   MenuCheckboxItem,
   MenuContent,

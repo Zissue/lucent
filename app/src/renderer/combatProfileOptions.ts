@@ -1,6 +1,6 @@
 import type { CombatProfile } from "@lucent/core/combatProfiles";
 
-type ProfileSummary = Pick<CombatProfile, "id" | "label" | "classNames">;
+export type ProfileSummary = Pick<CombatProfile, "id" | "label" | "classNames">;
 
 export interface CombatProfileOption extends ProfileSummary {
   readonly classNames: readonly string[];

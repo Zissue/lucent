@@ -11,11 +11,14 @@ export const DEFAULT_COMBAT_PROFILE_DELAY_MS = 150;
 const MAX_DELAY_MS = 60_000;
 const MAX_WAIT_MS = 60_000;
 const MAX_ID_LENGTH = 80;
-const MAX_LABEL_LENGTH = 80;
-const MAX_CLASS_NAME_LENGTH = 80;
-const MAX_CONSUMABLE_NAME_LENGTH = 80;
-const MAX_AURA_NAME_LENGTH = 80;
-const MAX_MESSAGE_TRIGGER_TEXT_LENGTH = 160;
+
+export const COMBAT_PROFILE_TEXT_LIMITS = {
+  auraName: 80,
+  className: 80,
+  consumable: 80,
+  label: 80,
+  messageTrigger: 160,
+} as const;
 
 // Core omits browser and Node globals from its types.
 // Both supported runtimes provide structuredClone.
@@ -295,7 +298,10 @@ const normalizeCondition = (
     return undefined;
   }
 
-  const auraName = trimString(record["auraName"], MAX_AURA_NAME_LENGTH);
+  const auraName = trimString(
+    record["auraName"],
+    COMBAT_PROFILE_TEXT_LIMITS.auraName,
+  );
   return auraName === undefined
     ? undefined
     : {
@@ -345,7 +351,7 @@ const normalizeMessageTrigger = (
 
   const messageIncludes = trimString(
     record["messageIncludes"],
-    MAX_MESSAGE_TRIGGER_TEXT_LENGTH,
+    COMBAT_PROFILE_TEXT_LIMITS.messageTrigger,
   );
   const skill = clampInt(record["skill"], Number.NaN, 0, 5);
   const skillSlot = fromOption(decodeSkillSlot, skill);
@@ -378,13 +384,14 @@ const normalizeProfile = (
     return undefined;
   }
 
-  const label = trimString(record["label"], MAX_LABEL_LENGTH) ?? "Profile";
+  const label =
+    trimString(record["label"], COMBAT_PROFILE_TEXT_LIMITS.label) ?? "Profile";
   const classNames = normalizeArray(record["classNames"], (className) =>
-    trimString(className, MAX_CLASS_NAME_LENGTH),
+    trimString(className, COMBAT_PROFILE_TEXT_LIMITS.className),
   );
   const consumable = trimString(
     record["consumable"],
-    MAX_CONSUMABLE_NAME_LENGTH,
+    COMBAT_PROFILE_TEXT_LIMITS.consumable,
   );
   const messageTriggers = normalizeArray(
     record["messageTriggers"],
@@ -480,21 +487,40 @@ export const findCombatProfileById = (
 ): CombatProfile | undefined =>
   library.profiles.find((profile) => profile.id === profileId);
 
+const WORD_BREAK_WINDOW = 12;
+
+const withLabelSuffix = (label: string, suffix: string): string => {
+  const room = COMBAT_PROFILE_TEXT_LIMITS.label - suffix.length;
+  if (label.length <= room) {
+    return `${label}${suffix}`;
+  }
+
+  const cut = truncateUtf16(label, room);
+  const wordStart = cut.lastIndexOf(" ");
+  const base =
+    label.charAt(cut.length) === " " ||
+    wordStart <= 0 ||
+    cut.length - wordStart > WORD_BREAK_WINDOW
+      ? cut
+      : cut.slice(0, wordStart);
+  return `${base.trimEnd()}${suffix}`;
+};
+
 const getDuplicateCombatProfileLabel = (
   label: string,
   profiles: readonly CombatProfile[],
 ): string => {
   const labels = new Set(profiles.map((profile) => profile.label));
-  const copyLabel = `${label} Copy`;
+  const copyLabel = withLabelSuffix(label, " Copy");
   if (!labels.has(copyLabel)) {
     return copyLabel;
   }
 
   let index = 2;
-  while (labels.has(`${copyLabel} ${index}`)) {
+  while (labels.has(withLabelSuffix(label, ` Copy ${index}`))) {
     index += 1;
   }
-  return `${copyLabel} ${index}`;
+  return withLabelSuffix(label, ` Copy ${index}`);
 };
 
 export const duplicateCombatProfile = (

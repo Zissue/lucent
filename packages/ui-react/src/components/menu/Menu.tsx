@@ -11,6 +11,8 @@ export type MenuProps = BaseMenu.Root.Props;
 export const MenuTrigger = BaseMenu.Trigger;
 export type MenuTriggerProps = BaseMenu.Trigger.Props;
 
+export const createMenuHandle = BaseMenu.createHandle;
+
 export const MenuSubmenu = BaseMenu.SubmenuRoot;
 export type MenuSubmenuProps = BaseMenu.SubmenuRoot.Props;
 
