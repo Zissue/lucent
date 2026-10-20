@@ -7,6 +7,7 @@ import { parseMonsterMapId } from "@lucent/game";
 import type { MonsterQuery } from "@lucent/game";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Equal from "effect/Equal";
 import * as FiberMap from "effect/FiberMap";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
@@ -28,7 +29,7 @@ export interface AutoAttackState {
   readonly profileId?: string;
   readonly profileLabel?: string;
   readonly running: boolean;
-  readonly warning?: string;
+  readonly warnings: readonly string[];
 }
 
 interface State {
@@ -36,7 +37,7 @@ interface State {
   readonly lastError: string | undefined;
   readonly profile: CombatProfile | undefined;
   readonly runId: number;
-  readonly warning: string | undefined;
+  readonly warnings: readonly string[];
 }
 
 const key = "auto-attack";
@@ -61,7 +62,7 @@ const publicState = (state: State, running: boolean): AutoAttackState => ({
   ...(state.profile === undefined
     ? {}
     : { profileId: state.profile.id, profileLabel: state.profile.label }),
-  ...(state.warning === undefined ? {} : { warning: state.warning }),
+  warnings: state.warnings,
 });
 
 export const makeAutoAttack = Effect.fnUntraced(function* (
@@ -73,7 +74,7 @@ export const makeAutoAttack = Effect.fnUntraced(function* (
     lastError: undefined,
     profile: undefined,
     runId: 0,
-    warning: undefined,
+    warnings: [],
   });
   const wakeups = yield* Queue.sliding<void>(1);
   const getState = () =>
@@ -100,7 +101,7 @@ export const makeAutoAttack = Effect.fnUntraced(function* (
               enabled: false,
               lastError,
               profile: undefined,
-              warning: undefined,
+              warnings: [],
             },
           ]
         : [false, current],
@@ -122,18 +123,16 @@ export const makeAutoAttack = Effect.fnUntraced(function* (
           profile,
           targetPriority: priorities,
         });
-        if (runner.warning !== undefined) {
-          yield* SubscriptionRef.update(state, (current) =>
-            current.runId === runId
-              ? { ...current, warning: runner.warning }
-              : current,
-          );
-        }
-
         while (true) {
           const current = yield* SubscriptionRef.get(state);
           if (!current.enabled || current.runId !== runId) {
             return;
+          }
+          const warnings = yield* runner.warnings;
+          if (!Equal.equals(current.warnings, warnings)) {
+            yield* SubscriptionRef.update(state, (latest) =>
+              latest.runId === runId ? { ...latest, warnings } : latest,
+            );
           }
 
           const result = yield* runner.runCycle();
@@ -171,7 +170,7 @@ export const makeAutoAttack = Effect.fnUntraced(function* (
           lastError: undefined,
           profile: undefined,
           runId: current.runId + 1,
-          warning: undefined,
+          warnings: [],
         })),
       ),
       Effect.andThen(getState()),
@@ -191,7 +190,7 @@ export const makeAutoAttack = Effect.fnUntraced(function* (
               lastError: undefined,
               profile,
               runId: nextRunId,
-              warning: undefined,
+              warnings: [],
             },
           ];
         },

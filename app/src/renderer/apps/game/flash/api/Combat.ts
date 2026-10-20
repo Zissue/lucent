@@ -2,6 +2,7 @@ import { orderMonstersByPriority, toMonsterSelector } from "@lucent/game";
 import type { ItemQuery, LiveMonster, MonsterQuery } from "@lucent/game";
 import {
   normalizeCombatProfile,
+  type CombatProfile,
   type CombatProfileDefinition,
   type SkillSlot,
 } from "@lucent/core/combatProfiles";
@@ -28,6 +29,7 @@ import { packetData } from "../contract/Packet";
 import { decodeCombatActionAcknowledgements } from "../contract/payload/Combat";
 import type { Store } from "../state/Store";
 import type { AntiCounter } from "./internal/AntiCounter";
+import { getCombatProfileClassWarning } from "./internal/CombatProfileClass";
 import { makeCombatProfileConsumables } from "./internal/CombatProfileConsumables";
 import {
   readCombatTarget,
@@ -186,6 +188,24 @@ export const makeCombat = (
     inventory,
     player,
   }).prepare;
+
+  const prepareCombatProfile = Effect.fn("Combat.prepareCombatProfile")(
+    function* (profile: CombatProfile) {
+      const { warning, ...prepared } =
+        yield* prepareCombatProfileConsumable(profile);
+      return {
+        ...prepared,
+        warnings: getCombatProfileClassWarning(
+          { inventory, player },
+          profile,
+        ).pipe(
+          Effect.map((classWarning): readonly string[] =>
+            [classWarning, warning].filter((message) => message !== undefined),
+          ),
+        ),
+      };
+    },
+  );
 
   const getSkillCooldownRemainingMs = (skill: SkillSlot) =>
     bridge.invoke("combat.getSkillCooldownRemaining", [skill], WireInt).pipe(
@@ -474,8 +494,7 @@ export const makeCombat = (
             ),
           prepare: (sessionProfile) =>
             Effect.gen(function* () {
-              const prepared =
-                yield* prepareCombatProfileConsumable(sessionProfile);
+              const prepared = yield* prepareCombatProfile(sessionProfile);
               return {
                 dependencies: makeCombatProfileRuntimeDeps(
                   {
@@ -489,9 +508,7 @@ export const makeCombat = (
                   prepared.skill5ItemId,
                 ),
                 release: prepared.release,
-                ...(prepared.warning === undefined
-                  ? {}
-                  : { warning: prepared.warning }),
+                warnings: prepared.warnings,
               };
             }),
         },
@@ -501,11 +518,8 @@ export const makeCombat = (
           targetPriority: [...(options?.targetPriority ?? []), selector],
         },
       );
-      if (session.warning !== undefined) {
-        yield* Effect.logWarning({
-          message: session.warning,
-          profile: profile.label,
-        });
+      for (const warning of yield* session.warnings) {
+        yield* Effect.logWarning({ message: warning, profile: profile.label });
       }
       return session;
     });
@@ -719,7 +733,7 @@ export const makeCombat = (
     kill,
     killForItem,
     killForTempItem,
-    prepareCombatProfileConsumable,
+    prepareCombatProfile,
     target,
     useSkill,
   };

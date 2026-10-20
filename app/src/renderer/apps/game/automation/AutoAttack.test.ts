@@ -72,10 +72,12 @@ describe("AutoAttack", () => {
           cancelAutoAttack: () =>
             Ref.update(cancellations, (count) => count + 1),
           cancelTarget: () => Ref.update(cancellations, (count) => count + 1),
-          prepareCombatProfileConsumable: () =>
+          prepareCombatProfile: () =>
             Effect.succeed({
               release: Effect.void,
-              warning: "Skill 5 will use whichever consumable is available.",
+              warnings: Effect.succeed([
+                "Skill 5 will use whichever consumable is available.",
+              ]),
             }),
           useSkill: (skill: number) =>
             Effect.gen(function* () {
@@ -110,7 +112,7 @@ describe("AutoAttack", () => {
       yield* Deferred.await(oldCastStarted);
       expect(yield* autoAttack.getState()).toMatchObject({
         enabled: true,
-        warning: "Skill 5 will use whichever consumable is available.",
+        warnings: ["Skill 5 will use whichever consumable is available."],
       });
       yield* autoAttack.enable({ library, profileId: second.id });
       yield* Deferred.succeed(releaseOldCast, undefined);
@@ -124,6 +126,42 @@ describe("AutoAttack", () => {
       expect(yield* Ref.get(casts)).toEqual(disabledCasts);
       expect(yield* Ref.get(cancellations)).toBeGreaterThanOrEqual(2);
       expect((yield* autoAttack.getState()).running).toBe(false);
+    }),
+  );
+
+  it.effect("clears a class warning after the right class is equipped", () =>
+    Effect.gen(function* () {
+      const mismatch =
+        "This profile is for Lord of Order, but Legion Revenant is equipped.";
+      const warnings = yield* Ref.make<readonly string[]>([mismatch]);
+      const fibers = yield* FiberMap.make<string>();
+      const api = apiWith(
+        {
+          attack: () => Effect.succeed(true),
+          cancelAutoAttack: () => Effect.void,
+          cancelTarget: () => Effect.void,
+          prepareCombatProfile: () =>
+            Effect.succeed({
+              release: Effect.void,
+              warnings: Ref.get(warnings),
+            }),
+          useSkill: () => Effect.succeed(true),
+        },
+        () => Effect.succeed(() => undefined),
+      );
+      const autoAttack = yield* makeAutoAttack(api, fibers);
+      const profile = DEFAULT_COMBAT_PROFILE_LIBRARY.profiles[0]!;
+
+      yield* autoAttack.enable({
+        library: DEFAULT_COMBAT_PROFILE_LIBRARY,
+        profileId: profile.id,
+      });
+      yield* TestClock.adjust("1 second");
+      expect((yield* autoAttack.getState()).warnings).toEqual([mismatch]);
+
+      yield* Ref.set(warnings, []);
+      yield* TestClock.adjust("1 second");
+      expect((yield* autoAttack.getState()).warnings).toEqual([]);
     }),
   );
 
@@ -141,8 +179,11 @@ describe("AutoAttack", () => {
           cancelAutoAttack: () =>
             Ref.update(cancellations, (count) => count + 1),
           cancelTarget: () => Ref.update(cancellations, (count) => count + 1),
-          prepareCombatProfileConsumable: () =>
-            Effect.succeed({ release: Effect.void }),
+          prepareCombatProfile: () =>
+            Effect.succeed({
+              release: Effect.void,
+              warnings: Effect.succeed([]),
+            }),
           useSkill: () => Effect.succeed(true),
         },
         () => Effect.succeed(() => undefined),
@@ -184,8 +225,11 @@ describe("AutoAttack", () => {
             cancelAutoAttack: () =>
               Ref.update(cancellations, (count) => count + 1),
             cancelTarget: () => Ref.update(cancellations, (count) => count + 1),
-            prepareCombatProfileConsumable: () =>
-              Effect.succeed({ release: Effect.void }),
+            prepareCombatProfile: () =>
+              Effect.succeed({
+                release: Effect.void,
+                warnings: Effect.succeed([]),
+              }),
             useSkill: (skill: number) =>
               skill === 1
                 ? Deferred.succeed(cycleStarted, undefined).pipe(

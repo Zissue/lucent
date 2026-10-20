@@ -15,6 +15,7 @@ import type { Player as GamePlayer } from "@lucent/game";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Equal from "effect/Equal";
 import * as FiberMap from "effect/FiberMap";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
@@ -77,7 +78,7 @@ interface RuntimeState {
   readonly runId: number;
   readonly running: boolean;
   readonly stoppedReason: string | undefined;
-  readonly warning: string | undefined;
+  readonly warnings: readonly string[];
 }
 
 interface Position {
@@ -132,7 +133,7 @@ const publicState = (state: RuntimeState): FollowerState => ({
   ...(state.stoppedReason === undefined
     ? {}
     : { stoppedReason: state.stoppedReason }),
-  ...(state.warning === undefined ? {} : { warning: state.warning }),
+  ...(state.warnings.length === 0 ? {} : { warnings: state.warnings }),
 });
 
 const sameText = (left: string, right: string): boolean =>
@@ -237,7 +238,7 @@ const makeInitialState = (): RuntimeState => ({
   runId: 0,
   running: false,
   stoppedReason: undefined,
-  warning: undefined,
+  warnings: [],
 });
 
 export const makeFollower = Effect.fnUntraced(function* (
@@ -298,8 +299,8 @@ export const makeFollower = Effect.fnUntraced(function* (
   const setLastError = (runId: number, lastError: string | undefined) =>
     updateForRun(runId, (current) => ({ ...current, lastError }));
 
-  const setWarning = (runId: number, warning: string | undefined) =>
-    updateForRun(runId, (current) => ({ ...current, warning }));
+  const setWarnings = (runId: number, warnings: readonly string[]) =>
+    updateForRun(runId, (current) => ({ ...current, warnings }));
 
   const getSelf = () => api.players.getMe();
   const getTarget = (config: FollowerConfig) =>
@@ -717,7 +718,7 @@ export const makeFollower = Effect.fnUntraced(function* (
       lastError: error,
       phase: "stopped",
       stoppedReason: reason,
-      warning: undefined,
+      warnings: [],
     }));
 
   const runCombat = (runId: number, runner: CombatProfileRunner) =>
@@ -838,14 +839,14 @@ export const makeFollower = Effect.fnUntraced(function* (
               targetPriority: config.attackPriority,
             })
           : undefined;
-        if (runner?.warning !== undefined) {
-          yield* setWarning(runId, runner.warning);
-        }
-
         while (true) {
           const current = yield* SubscriptionRef.get(state);
           if (!current.enabled || current.runId !== runId) {
             return;
+          }
+          const warnings = runner === undefined ? [] : yield* runner.warnings;
+          if (!Equal.equals(current.warnings, warnings)) {
+            yield* setWarnings(runId, warnings);
           }
           const outcome = yield* Effect.raceFirst(
             runCycle(runId, config, runner).pipe(
@@ -901,7 +902,7 @@ export const makeFollower = Effect.fnUntraced(function* (
           lastError: undefined,
           profile: undefined,
           stoppedReason: undefined,
-          warning: undefined,
+          warnings: [],
         });
         return yield* getState();
       }),
@@ -923,7 +924,7 @@ export const makeFollower = Effect.fnUntraced(function* (
             runId,
             running: false,
             stoppedReason: "Target not found",
-            warning: undefined,
+            warnings: [],
           });
           yield* FiberMap.remove(fibers, fiberKey);
           yield* resetRunState;
@@ -946,7 +947,7 @@ export const makeFollower = Effect.fnUntraced(function* (
           runId,
           running: true,
           stoppedReason: undefined,
-          warning: undefined,
+          warnings: [],
         });
         yield* FiberMap.run(fibers, fiberKey, loop(runId, profile, config));
         return yield* getState();
@@ -966,7 +967,7 @@ export const makeFollower = Effect.fnUntraced(function* (
           runId: current.runId + 1,
           running: false,
           stoppedReason: reason,
-          warning: undefined,
+          warnings: [],
         });
         yield* FiberMap.remove(fibers, fiberKey);
         yield* resetRunState;
@@ -999,7 +1000,7 @@ export const makeFollower = Effect.fnUntraced(function* (
           phase: "stopped",
           running: false,
           stoppedReason: "Target not found",
-          warning: undefined,
+          warnings: [],
         });
         return yield* getState();
       }

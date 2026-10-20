@@ -1298,7 +1298,9 @@ export function App(props: {
   const [autoAttackEnabled, setAutoAttackEnabled] = createSignal(false);
   const [autoAttackProfileLabel, setAutoAttackProfileLabel] = createSignal("");
   const [autoAttackLastError, setAutoAttackLastError] = createSignal("");
-  const [autoAttackWarning, setAutoAttackWarning] = createSignal("");
+  const [autoAttackWarnings, setAutoAttackWarnings] = createSignal<
+    readonly string[]
+  >([]);
   const [autoAttackTargetPriority, setAutoAttackTargetPriority] =
     createSignal("");
   const [autoZoneMap, setAutoZoneMap] = createSignal<
@@ -2286,7 +2288,7 @@ export function App(props: {
       state.profileLabel ?? autoAttackConfiguredProfileLabel(),
     );
     setAutoAttackLastError(state.lastError ?? "");
-    setAutoAttackWarning(state.warning ?? "");
+    setAutoAttackWarnings(state.warnings);
   };
 
   const refreshAutoAttackState = (): void => {
@@ -4935,7 +4937,7 @@ export function App(props: {
           autoAttackProfileLabel={autoAttackProfileLabel}
           autoAttackConfiguredProfileLabel={autoAttackConfiguredProfileLabel}
           autoAttackLastError={autoAttackLastError}
-          autoAttackWarning={autoAttackWarning}
+          autoAttackWarnings={autoAttackWarnings}
           autoAttackTargetPriority={autoAttackTargetPriority}
           setAutoAttackTargetPriority={setAutoAttackTargetPriority}
           combatProfiles={() => combatProfileLibrary().profiles}
