@@ -475,6 +475,10 @@ export interface DesktopArmyBridge {
 }
 
 export interface DesktopLogBridge {
+  readonly error: (message: string, error?: unknown) => void;
+  readonly warn: (message: string, error?: unknown) => void;
+  readonly info: (message: string, error?: unknown) => void;
+  readonly debug: (message: string, error?: unknown) => void;
   readonly write: (record: RendererLogRecord) => void;
 }
 
