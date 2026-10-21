@@ -760,7 +760,7 @@ function ProfileBrowser({
       data-edge={direction === "up" ? "top" : "bottom"}
       style={
         direction === "up"
-          ? { top: stickyHeight + JUMP_INSET_PX }
+          ? { top: (grouped ? rowHeights.label : 0) + JUMP_INSET_PX }
           : { bottom: JUMP_INSET_PX }
       }
     >
