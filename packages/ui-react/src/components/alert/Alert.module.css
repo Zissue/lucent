@@ -95,11 +95,18 @@
 
   .actions {
     display: flex;
-    grid-row: 1 / span 2;
+    grid-row: 1;
     grid-column: 3;
     align-items: center;
-    align-self: center;
+    align-self: start;
     gap: calc(var(--spacing) * 2);
+    height: var(--alert-line-height);
     margin-inline-start: calc(var(--spacing) * 3);
+  }
+
+  .root:has(> .title + .description) > .actions {
+    grid-row: 1 / span 2;
+    align-self: center;
+    height: auto;
   }
 }

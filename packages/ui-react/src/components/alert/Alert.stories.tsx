@@ -1,7 +1,8 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { Sparkles, Wifi } from "lucide-react";
+import { Sparkles, Wifi, X } from "lucide-react";
 import { fn } from "storybook/test";
 import { Button } from "../button/Button";
+import { IconButton } from "../icon-button/IconButton";
 import {
   Alert,
   AlertActions,
@@ -134,6 +135,14 @@ export const WithActions: Story = {
           <Button onClick={fn()} size="sm" variant="danger-soft">
             Retry
           </Button>
+        </AlertActions>
+      </Alert>
+      <Alert {...args} variant="warning">
+        <AlertDescription>Some changes haven't synced yet.</AlertDescription>
+        <AlertActions>
+          <IconButton label="Dismiss" onClick={fn()} size="sm" variant="ghost">
+            <X />
+          </IconButton>
         </AlertActions>
       </Alert>
     </div>
