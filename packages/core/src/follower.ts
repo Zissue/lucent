@@ -75,7 +75,7 @@ export const FollowerStateSchema = Schema.Struct({
 });
 export type FollowerState = typeof FollowerStateSchema.Type;
 
-const numericAttackTarget = /^[0-9]+$/u;
+const monsterMapIdToken = /^id[.:'-]([1-9][0-9]*)$/iu;
 
 const normalizedText = (value: unknown): string =>
   typeof value === "string" ? value.trim() : "";
@@ -94,13 +94,14 @@ const normalizeAttackTarget = (
   if (token === "") {
     return undefined;
   }
-  if (!numericAttackTarget.test(token)) {
-    return token;
-  }
-
-  const id = Number.parseInt(token, 10);
-  return id > 0 ? Math.min(Number.MAX_SAFE_INTEGER, id) : undefined;
+  const id = monsterMapIdToken.exec(token)?.[1];
+  return id === undefined
+    ? token
+    : Math.min(Number.MAX_SAFE_INTEGER, Number(id));
 };
+
+export const formatFollowerAttackTarget = (target: number | string): string =>
+  typeof target === "number" ? `id:${target}` : target;
 
 export const parseFollowerAttackPriority = (
   input: FollowerStartPayload["attackPriority"],
