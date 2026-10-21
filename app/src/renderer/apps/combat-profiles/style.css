@@ -684,7 +684,7 @@
   margin-inline: auto;
   max-width: 46rem;
   min-width: 0;
-  padding: 0 clamp(1rem, 5%, 1.75rem) 4rem;
+  padding: var(--focus-ring-width) clamp(1rem, 5%, 1.75rem) 4rem;
 }
 
 .cp-library-sheet:has(> .cp-savebar) {
