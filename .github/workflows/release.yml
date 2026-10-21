@@ -28,6 +28,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
+          persist-credentials: false
           ref: ${{ github.event.pull_request.merge_commit_sha }}
 
       - name: Setup pnpm
@@ -45,6 +46,7 @@ jobs:
       - name: Validate and push release tag
         id: release
         env:
+          GH_TOKEN: ${{ github.token }}
           RELEASE_BRANCH: ${{ github.event.pull_request.head.ref }}
         run: |
           tag="${RELEASE_BRANCH#release/}"
@@ -58,6 +60,7 @@ jobs:
           else
             git tag "$tag" HEAD
           fi
+          gh auth setup-git
           git push origin "refs/tags/$tag"
           echo "tag_name=$tag" >> "$GITHUB_OUTPUT"
 
