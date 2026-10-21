@@ -1,10 +1,10 @@
-import { join } from "path";
+import { join } from "node:path";
 
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import { makeCommittedState } from "../app/CommittedState";
 import * as Schema from "effect/Schema";
-import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import {
   DEFAULT_APP_SETTINGS,
@@ -30,9 +30,12 @@ import {
   type SettingsCommandId,
 } from "@lucent/core/hotkeys";
 import { DesktopEnvironment } from "../app/DesktopEnvironment";
-import { makeListenerRegistry, type Listener } from "../app/ListenerRegistry";
+import { type Listener } from "../app/ListenerRegistry";
 import { FileSystem } from "effect/FileSystem";
+import type * as Scope from "effect/Scope";
 import { type JsonFileError, makeJsonFile } from "../filesystem/JsonFile";
+import { makeSavedDocument } from "../filesystem/SavedDocument";
+import * as SettingsDiagnostics from "./DesktopSettingsDiagnostics";
 
 const settingsOperationSchema = Schema.Literals([
   "mkdir",
@@ -59,10 +62,9 @@ export class DesktopSettingsError extends Schema.TaggedError<DesktopSettingsErro
 
 export interface DesktopSettingsShape {
   readonly get: Effect.Effect<AppSettings, DesktopSettingsError>;
-  readonly load: Effect.Effect<AppSettings, DesktopSettingsError>;
   readonly onChanged: (
     listener: Listener<AppSettings>,
-  ) => Effect.Effect<() => void>;
+  ) => Effect.Effect<void, never, Scope.Scope>;
   readonly resetAppearance: Effect.Effect<AppSettings, DesktopSettingsError>;
   readonly resetHotkeys: Effect.Effect<AppSettings, DesktopSettingsError>;
   readonly updateAppearance: (
@@ -233,57 +235,24 @@ const makeDesktopSettings = Effect.gen(function* () {
   const env = yield* DesktopEnvironment;
   const jsonFile = makeJsonFile(yield* FileSystem);
   const settingsPath = join(env.appDataDir, "settings.json");
-  const settingsRef = yield* SynchronizedRef.make<AppSettings | null>(null);
-  const settingsChanges = makeListenerRegistry<AppSettings>();
-
-  const readSettingsFromFile = Effect.gen(function* () {
-    const result = yield* jsonFile
-      .read(settingsPath)
-      .pipe(Effect.mapError(wrapDataError));
-    const settings =
-      result.status === "missing"
-        ? DEFAULT_APP_SETTINGS
-        : normalizeAppSettings(result.value);
-    yield* jsonFile
-      .write(settingsPath, serializeAppSettings(settings))
-      .pipe(Effect.mapError(wrapDataError));
-    return settings;
+  const document = yield* makeSavedDocument(jsonFile, {
+    kind: "settings",
+    path: settingsPath,
+    versions: SettingsDiagnostics.settingsVersions,
+    defaults: () => DEFAULT_APP_SETTINGS,
+    decode: SettingsDiagnostics.decodeSettings,
+    encode: serializeAppSettings,
+    mapError: wrapDataError,
   });
 
-  const writeSettingsFile = (
-    settings: AppSettings,
-  ): Effect.Effect<AppSettings, DesktopSettingsError> => {
-    const normalized = normalizeAppSettings(settings);
-    return jsonFile
-      .write(settingsPath, serializeAppSettings(normalized))
-      .pipe(Effect.mapError(wrapDataError), Effect.as(normalized));
-  };
-
-  const get = SynchronizedRef.modifyEffect(settingsRef, (current) =>
-    (current === null ? readSettingsFromFile : Effect.succeed(current)).pipe(
-      Effect.map((settings) => [settings, settings] as const),
-    ),
-  );
-  const load = SynchronizedRef.modifyEffect(settingsRef, () =>
-    readSettingsFromFile.pipe(
-      Effect.map((settings) => [settings, settings] as const),
-    ),
-  );
-  const update = (
-    modify: (
-      current: AppSettings,
-    ) => Effect.Effect<AppSettings, DesktopSettingsError>,
-  ) =>
-    SynchronizedRef.modifyEffect(settingsRef, (current) =>
-      (current === null ? readSettingsFromFile : Effect.succeed(current)).pipe(
-        Effect.flatMap(modify),
-        Effect.flatMap(writeSettingsFile),
-        Effect.map((saved) => [saved, saved] as const),
-      ),
-    ).pipe(Effect.tap(settingsChanges.publish));
-
-  const onChanged: DesktopSettingsShape["onChanged"] =
-    settingsChanges.subscribe;
+  const {
+    get,
+    update,
+    subscribe: onChanged,
+  } = yield* makeCommittedState({
+    load: document.load,
+    write: document.save,
+  });
 
   const resetAppearance: DesktopSettingsShape["resetAppearance"] = update(
     (current) =>
@@ -317,7 +286,6 @@ const makeDesktopSettings = Effect.gen(function* () {
 
   return DesktopSettings.of({
     get,
-    load,
     onChanged,
     resetAppearance,
     resetHotkeys,

@@ -1,6 +1,11 @@
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
+import {
+  MAXIMUM_ROOM_NUMBER,
+  MINIMUM_ROOM_NUMBER,
+  RoomNumberSchema,
+} from "./accountSettings";
 import { NonNegativeInt } from "./baseSchemas";
 
 export type ArmyConfigRaw = Record<string, unknown>;
@@ -31,7 +36,7 @@ export interface ArmySetConfig {
 export interface ArmyConfigCore {
   readonly items: Readonly<Record<string, string>>;
   readonly players: readonly string[];
-  readonly room: string;
+  readonly room: number;
   readonly sets: Readonly<Record<string, ArmySetConfig>>;
 }
 
@@ -147,7 +152,6 @@ export type ArmyLoopTauntReport =
   | {
       readonly alive: boolean;
       readonly cooldownMs: number | null;
-      readonly reason?: string;
       readonly type: "participant-state";
       readonly usable: boolean;
     }
@@ -171,7 +175,6 @@ export type ArmyLoopTauntReport =
       readonly lifeRevision: number;
       readonly message: string;
       readonly monsterMapId: number;
-      readonly source: "animation" | "aura";
       readonly type: "message";
     }
   | {
@@ -183,7 +186,6 @@ export type ArmyLoopTauntReport =
         | "cast-failed"
         | "not-ready"
         | "skipped";
-      readonly reason?: string;
       readonly type: "command-result";
     }
   | {
@@ -195,24 +197,13 @@ export interface ArmyLoopTauntReportPayload extends ArmyLoopTauntRunPayload {
   readonly report: ArmyLoopTauntReport;
 }
 
-export type ArmyLoopTauntCommand =
-  | {
-      readonly assignmentId: number;
-      readonly expiresAt: number;
-      readonly lifeRevision: number;
-      readonly monsterMapId: number;
-      readonly type: "taunt";
-    }
-  | {
-      readonly type: "probe";
-    }
-  | {
-      readonly assignmentId: number;
-      readonly code: "degraded";
-      readonly level: "warning";
-      readonly message: string;
-      readonly type: "diagnostic";
-    };
+export type ArmyLoopTauntCommand = {
+  readonly assignmentId: number;
+  readonly expiresAt: number;
+  readonly lifeRevision: number;
+  readonly monsterMapId: number;
+  readonly type: "taunt";
+};
 
 export interface ArmyLoopTauntCommandPayload extends ArmyLoopTauntRunPayload {
   readonly command: ArmyLoopTauntCommand;
@@ -244,11 +235,9 @@ const ArmyConfigPayloadFields = {
   items: Schema.Record(Schema.String, Schema.String),
   players: Schema.Array(Schema.String),
   raw: ArmyConfigRawSchema,
-  room: Schema.String,
+  room: RoomNumberSchema,
   sets: Schema.Record(Schema.String, ArmySetConfigSchema),
 } as const;
-
-export const ArmyConfigPayloadSchema = Schema.Struct(ArmyConfigPayloadFields);
 
 export const ArmySessionPayloadSchema = Schema.Struct({
   ...ArmyConfigPayloadFields,
@@ -336,7 +325,6 @@ export const ArmyLoopTauntReportSchema = Schema.Union([
   Schema.Struct({
     alive: Schema.Boolean,
     cooldownMs: Schema.NullOr(NonNegativeFiniteNumber),
-    reason: Schema.optionalKey(Schema.String),
     type: Schema.Literal("participant-state"),
     usable: Schema.Boolean,
   }),
@@ -360,7 +348,6 @@ export const ArmyLoopTauntReportSchema = Schema.Union([
     lifeRevision: NonNegativeInt,
     message: Schema.String,
     monsterMapId: Schema.Int,
-    source: Schema.Literals(["animation", "aura"]),
     type: Schema.Literal("message"),
   }),
   Schema.Struct({
@@ -373,7 +360,6 @@ export const ArmyLoopTauntReportSchema = Schema.Union([
       "not-ready",
       "skipped",
     ]),
-    reason: Schema.optionalKey(Schema.String),
     type: Schema.Literal("command-result"),
   }),
   Schema.Struct({
@@ -388,25 +374,13 @@ export const ArmyLoopTauntReportPayloadSchema = Schema.Struct({
   sessionId: Schema.String,
 });
 
-export const ArmyLoopTauntCommandSchema = Schema.Union([
-  Schema.Struct({
-    assignmentId: NonNegativeInt,
-    expiresAt: NonNegativeFiniteNumber,
-    lifeRevision: NonNegativeInt,
-    monsterMapId: Schema.Int,
-    type: Schema.Literal("taunt"),
-  }),
-  Schema.Struct({
-    type: Schema.Literal("probe"),
-  }),
-  Schema.Struct({
-    assignmentId: NonNegativeInt,
-    code: Schema.Literal("degraded"),
-    level: Schema.Literal("warning"),
-    message: Schema.String,
-    type: Schema.Literal("diagnostic"),
-  }),
-]);
+export const ArmyLoopTauntCommandSchema = Schema.Struct({
+  assignmentId: NonNegativeInt,
+  expiresAt: NonNegativeFiniteNumber,
+  lifeRevision: NonNegativeInt,
+  monsterMapId: Schema.Int,
+  type: Schema.Literal("taunt"),
+});
 
 export const ArmyLoopTauntCommandPayloadSchema = Schema.Struct({
   command: ArmyLoopTauntCommandSchema,
@@ -447,6 +421,21 @@ const stringAt = (value: unknown, message: string): string => {
   const normalized = String(decoded.value).trim();
   if (normalized === "") throw new Error(message);
   return normalized;
+};
+
+const decodeRoomNumber = Schema.decodeUnknownOption(RoomNumberSchema);
+
+const roomAt = (value: unknown): number => {
+  const text = stringAt(value, "Army config must define room");
+  const room = /^\d+$/u.test(text)
+    ? decodeRoomNumber(Number(text))
+    : Option.none();
+  if (Option.isNone(room)) {
+    throw new Error(
+      `Army config room must be a whole number from ${MINIMUM_ROOM_NUMBER} to ${MAXIMUM_ROOM_NUMBER}`,
+    );
+  }
+  return room.value;
 };
 
 const optionalStringAt = (
@@ -603,7 +592,7 @@ export const parseArmyConfigCore = (value: unknown): ArmyConfigCore => {
   return {
     items: parseItems(raw["items"]),
     players,
-    room: stringAt(raw["room"], "Army config must define room"),
+    room: roomAt(raw["room"]),
     sets: parseSets(raw["sets"], players.length),
   };
 };

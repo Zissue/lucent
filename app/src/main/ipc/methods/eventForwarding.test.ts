@@ -15,8 +15,8 @@ import {
   makeListenerRegistry,
   type ListenerRegistry,
 } from "../../app/ListenerRegistry";
-import { Accounts } from "../../internal/accounts/Accounts";
-import { CombatProfiles } from "../../internal/combat-profiles/CombatProfiles";
+import { Accounts } from "../../game/accounts/Accounts";
+import { CombatProfiles } from "../../game/combat-profiles/CombatProfiles";
 import { ScriptPackageCatalog } from "../../scripting/ScriptPackageCatalog";
 import { DesktopSettings } from "../../settings/DesktopSettings";
 import { DesktopUpdates } from "../../updates/DesktopUpdates";

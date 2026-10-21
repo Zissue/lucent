@@ -2,6 +2,13 @@ const { definePlugin, defineRule } = require("@oxlint/plugins");
 
 const TEST_FILE_PATTERN = /\.(?:test|spec)\.[cm]?[jt]sx?$/u;
 
+const EFFECT_LOG_METHODS = new Set([
+  "logError",
+  "logWarning",
+  "logInfo",
+  "logDebug",
+]);
+
 const EFFECT_RUNTIME_METHODS = new Set([
   "runCallback",
   "runFork",
@@ -310,11 +317,66 @@ const staticScriptInputs = defineRule({
   },
 });
 
+const logMessageLiteral = defineRule({
+  meta: {
+    type: "problem",
+    docs: {
+      description:
+        "Require literal messages for Effect logging calls and logFailure.",
+    },
+  },
+  create(context) {
+    return {
+      CallExpression(node) {
+        const callee = unwrapExpression(node.callee);
+        const isLogFailure =
+          callee?.type === "Identifier" && callee.name === "logFailure";
+        if (
+          !isLogFailure &&
+          (callee?.type !== "MemberExpression" ||
+            (callee.computed && callee.property.type === "Identifier"))
+        ) {
+          return;
+        }
+
+        const object = isLogFailure
+          ? undefined
+          : unwrapExpression(callee.object);
+        if (
+          !isLogFailure &&
+          (object?.type !== "Identifier" ||
+            object.name !== "Effect" ||
+            !EFFECT_LOG_METHODS.has(getPropertyName(callee.property)))
+        ) {
+          return;
+        }
+
+        const [message] = node.arguments;
+        if (
+          ((message?.type === "Literal" || message?.type === "StringLiteral") &&
+            typeof message.value === "string") ||
+          (message?.type === "TemplateLiteral" &&
+            message.expressions.length === 0)
+        ) {
+          return;
+        }
+
+        context.report({
+          node,
+          message:
+            "Use a string literal or a template literal without expressions as the log message. Move dynamic context into Effect.annotateLogs({ component, data }).",
+        });
+      },
+    };
+  },
+});
+
 module.exports = definePlugin({
   meta: {
     name: "lucent",
   },
   rules: {
+    "log-message-literal": logMessageLiteral,
     "no-manual-effect-runtime-in-tests": noManualEffectRuntimeInTests,
     "no-inline-schema-compile": noInlineSchemaCompile,
     "static-script-inputs": staticScriptInputs,

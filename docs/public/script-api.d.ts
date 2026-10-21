@@ -2533,7 +2533,7 @@ type ArmyLoopTauntStrategy = {
 interface ArmyConfigCore {
   readonly items: Readonly<Record<string, string>>;
   readonly players: readonly string[];
-  readonly room: string;
+  readonly room: number;
   readonly sets: Readonly<Record<string, ArmySetConfig>>;
 }
 type ArmyConfigRaw = Record<string, unknown>;

@@ -1,30 +1,26 @@
-import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import * as DesktopEnvironment from "./DesktopEnvironment";
 import * as DesktopGameRendererRecovery from "./DesktopGameRendererRecovery";
-import * as DesktopLifecycle from "./DesktopLifecycle";
 import * as DesktopChromiumPerformanceRecording from "./observability/DesktopChromiumPerformanceRecording";
 import * as DesktopObservability from "./observability/DesktopObservability";
-import * as ArmyConfigRepository from "../internal/army/ArmyConfigRepository";
-import * as ArmyCoordinator from "../internal/army/ArmyCoordinator";
-import * as ArmyLoopTauntOrchestrator from "../internal/army/ArmyLoopTauntOrchestrator";
-import * as AccountRepository from "../internal/accounts/AccountRepository";
-import * as AccountSettingsRepository from "../internal/account-settings/AccountSettingsRepository";
-import * as Accounts from "../internal/accounts/Accounts";
-import * as AccountServers from "../internal/accounts/AccountServers";
-import * as AccountSessions from "../internal/accounts/AccountSessions";
-import * as CombatProfiles from "../internal/combat-profiles/CombatProfiles";
-import * as GameEnvironments from "../internal/environment/GameEnvironments";
-import * as GameFollowers from "../internal/follower/GameFollowers";
-import * as GamePackets from "../internal/packets/GamePackets";
-import * as GameRendererRpc from "../internal/game-renderer/GameRendererRpc";
-import * as GitHubApiClient from "../github/GitHubApiClient";
+import * as ArmyConfigRepository from "../game/army/ArmyConfigRepository";
+import * as ArmyCoordinator from "../game/army/ArmyCoordinator";
+import * as ArmyLoopTauntOrchestrator from "../game/army/ArmyLoopTauntOrchestrator";
+import * as AccountRepository from "../game/accounts/AccountRepository";
+import * as AccountSettingsRepository from "../game/account-settings/AccountSettingsRepository";
+import * as Accounts from "../game/accounts/Accounts";
+import * as AccountServers from "../game/accounts/AccountServers";
+import * as AccountSessions from "../game/accounts/AccountSessions";
+import * as CombatProfiles from "../game/combat-profiles/CombatProfiles";
+import * as GameEnvironments from "../game/environment/GameEnvironments";
+import * as GameFollowers from "../game/follower/GameFollowers";
+import * as GamePackets from "../game/packets/GamePackets";
+import * as GameRendererRpc from "../game/rpc/GameRendererRpc";
+import * as GitHubApiClient from "../http/GitHubApiClient";
 import * as DesktopHttpClient from "../http/DesktopHttpClient";
 import * as DesktopIpc from "../ipc/DesktopIpc";
-import * as DesktopIpcSenders from "../ipc/DesktopIpcSenders";
 import * as DesktopSettings from "../settings/DesktopSettings";
-import * as ScriptFiles from "../scripting/ScriptFiles";
 import * as ScriptInputRepository from "../scripting/ScriptInputRepository";
 import * as DesktopScriptLibrary from "../scripting/DesktopScriptLibrary";
 import * as GitHubCredentials from "../scripting/GitHubCredentials";
@@ -43,33 +39,23 @@ import * as DesktopWindows from "../window/DesktopWindows";
 import * as ElectronApp from "../electron/ElectronApp";
 import * as ElectronChromiumPerformance from "../electron/ElectronChromiumPerformance";
 import * as ElectronDialog from "../electron/ElectronDialog";
-import * as ElectronSession from "../electron/ElectronSession";
+import * as GameSessions from "../game/session/GameSessions";
 import * as ElectronShell from "../electron/ElectronShell";
 import * as ElectronTheme from "../electron/ElectronTheme";
 import * as ElectronWindow from "../electron/ElectronWindow";
-import * as RuffleSocketProxy from "../ruffle/RuffleSocketProxy";
+import * as RuffleSocketProxy from "../game/session/RuffleSocketProxy";
 import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
 
-export const makeDesktopLayer = (
+export const makeDesktopObservabilityLayer = (
   envConfig: DesktopEnvironment.DesktopEnvironmentConfig,
-) => {
-  const diagnostics = Layer.effectDiscard(
-    Effect.flatMap(
-      DesktopLifecycle.DesktopLifecycle,
-      (lifecycle) => lifecycle.attachObservability,
-    ),
-  ).pipe(
+) =>
+  DesktopObservability.layer.pipe(
     Layer.provideMerge(
-      DesktopObservability.layer.pipe(
-        Layer.provideMerge(
-          Layer.mergeAll(
-            NodeFileSystem.layer,
-            DesktopEnvironment.layer(envConfig),
-          ),
-        ),
-      ),
+      Layer.mergeAll(NodeFileSystem.layer, DesktopEnvironment.layer(envConfig)),
     ),
   );
+
+export const makeDesktopLayer = () => {
   const platform = Layer.mergeAll(
     ElectronApp.layer,
     ElectronChromiumPerformance.layer,
@@ -81,12 +67,11 @@ export const makeDesktopLayer = (
     DesktopHttpClient.layer,
     RuffleSocketProxy.layer,
     AccountSessions.layer,
-    ScriptFiles.layer,
-  ).pipe(Layer.provideMerge(diagnostics));
+  );
 
   const storage = Layer.mergeAll(
     DesktopSettings.layer,
-    ElectronSession.layer,
+    GameSessions.layer,
     AccountRepository.layer,
     AccountSettingsRepository.layer,
     ArmyConfigRepository.layer,
@@ -110,7 +95,6 @@ export const makeDesktopLayer = (
   const game = Layer.mergeAll(
     DesktopAccountGameWindows.layer,
     DesktopChromiumPerformanceRecording.layer,
-    DesktopIpcSenders.layer,
     GameRendererRpc.layer,
     GamePackets.layer,
     ArmyLoopTauntOrchestrator.layer,

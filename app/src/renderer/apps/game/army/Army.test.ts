@@ -28,7 +28,7 @@ const makeSession = (
   players: ["Alice"],
   raw: { players: ["Alice"], room: "1234", sets },
   role: "leader",
-  room: "1234",
+  room: 1234,
   sessionId: "session-1",
   sets,
 });
@@ -43,7 +43,6 @@ const makeBridge = (overrides: Partial<DesktopArmyBridge> = {}) => {
   const bridge: DesktopArmyBridge = {
     fail: async () => undefined,
     leave: async () => undefined,
-    loadConfig: async () => makeSession(),
     loopTauntAwait: async () => ({ status: "completed" }),
     loopTauntLeave: async () => undefined,
     loopTauntRegister: async () => ({ runId: "loop-1" }),

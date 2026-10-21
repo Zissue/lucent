@@ -1,10 +1,20 @@
-import { createServer, type IncomingMessage, type ServerResponse } from "http";
-import type { Socket } from "net";
+import {
+  createServer,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
+import type { Socket } from "node:net";
 import { afterEach, expect, layer as testLayer } from "@effect/vitest";
 import { gzipSync } from "node:zlib";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
-import { DesktopHttpClient, layer } from "./DesktopHttpClient";
+import { HttpClient, HttpClientRequest } from "effect/http";
+import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
+import {
+  DesktopHttpClient,
+  layer,
+  makeDesktopHttpClient,
+} from "./DesktopHttpClient";
 import * as TestClock from "effect/testing/TestClock";
 const cleanups: (() => Promise<void>)[] = [];
 const server = async (
@@ -35,6 +45,71 @@ afterEach(async () => {
   await Promise.all(cleanups.splice(0).map((close) => close()));
 });
 testLayer(layer)("Desktop HTTP request lifecycle", (it) => {
+  it.effect(
+    "reports native response inactivity as timeout and closes the connection",
+    () =>
+      Effect.gen(function* () {
+        const closed = Promise.withResolvers<void>();
+        const url = yield* Effect.promise(() =>
+          server((_request, response) => {
+            response.on("close", () => closed.resolve());
+            response.write("partial");
+          }),
+        );
+        const transport = yield* HttpClient.HttpClient;
+        const http = yield* makeDesktopHttpClient.pipe(
+          Effect.provideService(
+            HttpClient.HttpClient,
+            transport.pipe(
+              HttpClient.mapRequest(HttpClientRequest.setUrl(url)),
+            ),
+          ),
+          Effect.provide(NodeFileSystem.layer),
+        );
+        const error = yield* http
+          .get({ url: new URL("https://example.com/"), timeoutMs: 100 })
+          .pipe(Effect.flip);
+        expect(error.kind).toBe("timeout");
+        yield* Effect.promise(() => closed.promise);
+      }).pipe(TestClock.withLive),
+  );
+
+  it.effect(
+    "resets the native inactivity timeout while response bytes arrive",
+    () =>
+      Effect.gen(function* () {
+        const url = yield* Effect.promise(() =>
+          server((_request, response) => {
+            let chunks = 0;
+            const timer = setInterval(() => {
+              response.write("tick");
+              chunks += 1;
+              if (chunks === 10) {
+                clearInterval(timer);
+                response.end();
+              }
+            }, 25);
+            response.on("close", () => clearInterval(timer));
+          }),
+        );
+        const transport = yield* HttpClient.HttpClient;
+        const http = yield* makeDesktopHttpClient.pipe(
+          Effect.provideService(
+            HttpClient.HttpClient,
+            transport.pipe(
+              HttpClient.mapRequest(HttpClientRequest.setUrl(url)),
+            ),
+          ),
+          Effect.provide(NodeFileSystem.layer),
+        );
+        const response = yield* http.get({
+          url: new URL("https://example.com/"),
+          timeoutMs: 150,
+        });
+        expect(response.body.toString()).toBe("tick".repeat(10));
+      }).pipe(TestClock.withLive),
+  );
+
   it.effect(
     "preserves extension methods, status text, repeated cookies, and encoded response bytes",
     () =>
@@ -227,9 +302,9 @@ testLayer(layer)("Desktop HTTP request lifecycle", (it) => {
         yield* Effect.promise(() => closed.promise);
       }),
   );
-  it.effect(
-    "enforces streamed byte limits but does not treat HEAD content-length as a body",
-    () =>
+  it.effect.each([4])(
+    "enforces a %s byte streamed limit but exempts HEAD content-length",
+    (maxBytes) =>
       Effect.gen(function* () {
         const url = yield* Effect.promise(() =>
           server((request, response) => {
@@ -244,10 +319,10 @@ testLayer(layer)("Desktop HTTP request lifecycle", (it) => {
         );
         const http = yield* DesktopHttpClient;
         expect(
-          (yield* http.request({ url, maxBytes: 4 }).pipe(Effect.flip)).kind,
+          (yield* http.request({ url, maxBytes }).pipe(Effect.flip)).kind,
         ).toBe("response-too-large");
         expect(
-          (yield* http.request({ url, method: "HEAD", maxBytes: 4 })).body
+          (yield* http.request({ url, method: "HEAD", maxBytes })).body
             .byteLength,
         ).toBe(0);
       }),

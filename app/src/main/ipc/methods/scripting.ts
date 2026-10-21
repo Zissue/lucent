@@ -9,18 +9,7 @@ import { DesktopScriptLibrary } from "../../scripting/DesktopScriptLibrary";
 import { DesktopWindows } from "../../window/DesktopWindows";
 import { DesktopIpc, makeDesktopIpcMethod } from "../DesktopIpc";
 
-const scriptingSenders = ["account-manager", "game"] as const;
-
-export const listPackageLeftovers = makeDesktopIpcMethod({
-  descriptor: ScriptingIpc.listPackageLeftovers,
-  allowedSenders: scriptingSenders,
-  handler: Effect.fn("desktop.ipc.scripting.listPackageLeftovers")(
-    function* () {
-      const packages = yield* ScriptPackageManager;
-      return yield* packages.listLeftovers;
-    },
-  ),
-});
+const scriptingSenders = ["game"] as const;
 
 export const listCredentials = makeDesktopIpcMethod({
   descriptor: ScriptingIpc.listCredentials,
@@ -196,7 +185,7 @@ export const resolveReference = makeDesktopIpcMethod({
 
 export const selectFile = makeDesktopIpcMethod({
   descriptor: ScriptingIpc.selectFile,
-  allowedSenders: scriptingSenders,
+  allowedSenders: ["account-manager"],
   handler: Effect.fn("desktop.ipc.scripting.selectFile")(function* () {
     const scripts = yield* DesktopScriptLibrary;
     return yield* scripts.selectFile;
@@ -258,7 +247,6 @@ export const credentialMethods = [
 ] as const;
 
 export const packageMethods = [
-  listPackageLeftovers,
   installPackage,
   updatePackage,
   restorePackage,
@@ -280,17 +268,14 @@ export const installEventForwarding = Effect.fn(
   const catalog = yield* ScriptPackageCatalog;
   const windows = yield* DesktopWindows;
 
-  yield* Effect.acquireRelease(
-    catalog.onChanged((change) =>
-      Effect.gen(function* () {
-        const rendererIds = yield* windows.getRendererIds("game");
-        yield* ipc.sendToRendererIds(
-          rendererIds,
-          ScriptingIpc.catalogChanged,
-          change,
-        );
-      }),
-    ),
-    (unsubscribe) => Effect.sync(unsubscribe),
+  yield* catalog.onChanged((change) =>
+    Effect.gen(function* () {
+      const rendererIds = yield* windows.getRendererIds("game");
+      yield* ipc.sendToRendererIds(
+        rendererIds,
+        ScriptingIpc.catalogChanged,
+        change,
+      );
+    }),
   );
 });

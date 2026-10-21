@@ -2,8 +2,9 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
-import * as Fiber from "effect/Fiber";
+import * as Exit from "effect/Exit";
 import * as Logger from "effect/Logger";
+import * as Scope from "effect/Scope";
 
 import { makeListenerRegistry } from "./ListenerRegistry";
 
@@ -12,9 +13,7 @@ describe("ListenerRegistry", () => {
     "delivers concurrent events without waiting for the first listener",
     () =>
       Effect.gen(function* () {
-        const registry = makeListenerRegistry<number>({
-          concurrency: "unbounded",
-        });
+        const registry = makeListenerRegistry<number>();
         const released = yield* Deferred.make<void>();
         const received: string[] = [];
         yield* registry.subscribe((value) =>
@@ -30,7 +29,7 @@ describe("ListenerRegistry", () => {
           }),
         );
 
-        yield* registry.publish(7);
+        yield* registry.publish(7, "unbounded");
         expect(received).toEqual(["second:7", "first:7"]);
       }),
   );
@@ -70,12 +69,15 @@ describe("ListenerRegistry", () => {
     Effect.gen(function* () {
       const registry = makeListenerRegistry<number>();
       const received: number[] = [];
-      const unsubscribe = yield* registry.subscribe((value) => {
-        received.push(value);
-      });
+      const scope = yield* Scope.make();
+      yield* registry
+        .subscribe((value) => {
+          received.push(value);
+        })
+        .pipe(Effect.provideService(Scope.Scope, scope));
 
       yield* registry.publish(1);
-      unsubscribe();
+      yield* Scope.close(scope, Exit.void);
       yield* registry.publish(2);
 
       expect(received).toEqual([1]);
@@ -106,67 +108,6 @@ describe("ListenerRegistry", () => {
       );
       expect(received).toEqual([7]);
       expect(failures).toEqual(["subscriber failed"]);
-    }),
-  );
-
-  it.effect(
-    "drops stale and repeated revisions when the publication executes",
-    () =>
-      Effect.gen(function* () {
-        const registry = makeListenerRegistry<string>();
-        const received: string[] = [];
-        yield* registry.subscribe((value) => {
-          received.push(value);
-        });
-        const stale = registry.publishLatest(1, "old");
-        yield* registry.publishLatest(2, "new");
-        yield* stale;
-        yield* registry.publishLatest(2, "repeated");
-        expect(received).toEqual(["new"]);
-      }),
-  );
-
-  it.effect(
-    "skips remaining stale listeners after a newer publication overtakes it",
-    () =>
-      Effect.gen(function* () {
-        const registry = makeListenerRegistry<string>();
-        const started = yield* Deferred.make<void>();
-        const finish = yield* Deferred.make<void>();
-        yield* registry.subscribe((value) =>
-          value === "old"
-            ? Deferred.succeed(started, undefined).pipe(
-                Effect.andThen(Deferred.await(finish)),
-              )
-            : Effect.void,
-        );
-        const received: string[] = [];
-        yield* registry.subscribe((value) => {
-          received.push(value);
-        });
-        const old = yield* registry
-          .publishLatest(1, "old")
-          .pipe(Effect.forkScoped);
-        yield* Deferred.await(started);
-        yield* registry.publishLatest(2, "new");
-        yield* Deferred.succeed(finish, undefined);
-        yield* Fiber.join(old);
-        expect(received).toEqual(["new"]);
-      }),
-  );
-
-  it.effect("allows a listener to publish a newer revision", () =>
-    Effect.gen(function* () {
-      const registry = makeListenerRegistry<string>();
-      yield* registry.subscribe((value) =>
-        value === "old" ? registry.publishLatest(2, "new") : Effect.void,
-      );
-      const received: string[] = [];
-      yield* registry.subscribe((value) => {
-        received.push(value);
-      });
-      yield* registry.publishLatest(1, "old");
-      expect(received).toEqual(["new"]);
     }),
   );
 });

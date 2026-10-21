@@ -1,15 +1,13 @@
-import "../shared/immediate";
-
-import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
+import { contextBridge, ipcRenderer } from "electron";
 
 import {
   applyAppearanceSnapshotToDocument,
-  readDesktopViewArgument,
   readAppearanceSnapshotArgument,
   readSettingsSnapshotArgument,
 } from "../shared/appearance";
 import {
   readDebugModeArgument,
+  readDesktopViewArgument,
   readGameConsoleObservabilityArgument,
   readGameViewLayoutArgument,
 } from "../shared/rendererBootstrapArguments";
@@ -43,7 +41,6 @@ import {
   AccountsIpc,
   ArmyIpc,
   CombatProfilesIpc,
-  RendererLogIpc,
   EnvironmentIpc,
   FollowerIpc,
   FileSystemIpc,
@@ -60,11 +57,12 @@ import {
   PacketsIpc,
   type RendererLogRecord,
 } from "../shared/ipc";
+import type { DesktopLogError } from "../shared/logRecord";
 import {
-  desktopLogErrorDetails,
-  desktopLogJsonSafe,
-} from "../shared/logRecord";
-import { createInvoke, createSubscribe } from "./preloadIpcClient";
+  createInvoke,
+  createSubscribe,
+  writeRendererLog,
+} from "./preloadIpcClient";
 
 // Cancel cross-document navigations before Chromium emits the loading events
 // that reset renderer state; reopening routes the URL through the main
@@ -124,91 +122,170 @@ const platform: AppPlatform =
       ? "windows"
       : "linux";
 
-const writeRendererLog = (record: RendererLogRecord): void => {
-  try {
-    ipcRenderer.send(RendererLogIpc.record.channel, desktopLogJsonSafe(record));
-  } catch {}
+const rendererErrorRepeatKey = (error: DesktopLogError): string => {
+  const firstFrame = error.stack
+    ?.split("\n")
+    .map((line) => line.trim())
+    .find((line) => line.startsWith("at "));
+  const identity = (firstFrame ?? error.message).replace(
+    /[a-z][a-z\d+.-]*:\/\/[^\s)]+/gi,
+    (source) => {
+      const coordinates = /:\d+:\d+$/.exec(source)?.[0] ?? "";
+      const url = URL.parse(
+        source.slice(0, source.length - coordinates.length),
+      );
+      return url === null
+        ? "[invalid URL]"
+        : `${url.host}${url.pathname}${coordinates}`;
+    },
+  );
+  return `${error.name}:${identity}`;
 };
 
 const logRenderer = (
   level: RendererLogRecord["level"],
   message: string,
   data: Record<string, unknown>,
-  error?: unknown,
-): void => {
-  try {
-    writeRendererLog({
-      level,
-      message,
-      component: "renderer",
-      data,
-      ...(error === undefined
-        ? {}
-        : { error: [desktopLogErrorDetails(error)] }),
-    });
-  } catch {}
-};
-
-const logAtLevel =
-  (level: RendererLogRecord["level"]) =>
-  (message: string, error?: unknown): void =>
-    logRenderer(level, message, { view: bridgeView }, error);
-
-const logBridge: DesktopLogBridge = {
-  error: logAtLevel("error"),
-  warn: logAtLevel("warn"),
-  info: logAtLevel("info"),
-  debug: logAtLevel("debug"),
-  write: writeRendererLog,
-};
+  error?: DesktopLogError,
+  repeatKey?: string,
+): void =>
+  writeRendererLog({
+    level,
+    message,
+    component: "renderer",
+    data,
+    ...(error === undefined
+      ? {}
+      : { error: [error], repeatKey: rendererErrorRepeatKey(error) }),
+    ...(repeatKey === undefined ? {} : { repeatKey }),
+  });
 
 const invoke = createInvoke((channel, payload) =>
   ipcRenderer.invoke(channel, payload),
 );
 
-if (debug) {
+interface RendererFailure {
+  readonly message: "Renderer error" | "Renderer unhandled rejection";
+  readonly error: DesktopLogError;
+  readonly location?: {
+    readonly columnNumber?: number;
+    readonly lineNumber?: number;
+    readonly source?: string;
+  };
+}
+
+// Error events reach only listeners in the world that threw, and bridged Errors
+// lose their original names, stack frames, and causes. Electron sends this
+// function to the page as source text, so its whole body must be self-contained.
+const installRendererLogging = (
+  reportFailure: (failure: RendererFailure) => void,
+  reportLog: (
+    level: RendererLogRecord["level"],
+    message: string,
+    error?: DesktopLogError,
+  ) => void,
+  write: DesktopLogBridge["write"],
+): DesktopLogBridge => {
+  const errorDetails = (value: unknown, depth = 0): DesktopLogError => {
+    if (value instanceof Error) {
+      return {
+        name: String(value.name),
+        message: String(value.message),
+        ...(typeof value.stack === "string" ? { stack: value.stack } : {}),
+        ...(value.cause === undefined || depth >= 5
+          ? {}
+          : { cause: errorDetails(value.cause, depth + 1) }),
+      };
+    }
+
+    let message: string;
+    try {
+      message =
+        typeof value === "string"
+          ? value
+          : (JSON.stringify(value) ?? String(value));
+    } catch {
+      try {
+        message = String(value);
+      } catch {
+        message = "[Unserializable]";
+      }
+    }
+    return { name: "NonError", message: message.slice(0, 1_024) };
+  };
+
   window.addEventListener("error", (event) => {
-    logRenderer(
-      "error",
-      "Renderer error",
-      {
-        ...(event.colno === 0 ? {} : { columnNumber: event.colno }),
-        ...(event.lineno === 0 ? {} : { lineNumber: event.lineno }),
-        observedAt: new Date().toISOString(),
-        ...(event.filename === "" ? {} : { source: event.filename }),
-        view: bridgeView,
-      },
-      event.error ?? event.message,
-    );
+    try {
+      reportFailure({
+        message: "Renderer error",
+        error: errorDetails(event.error ?? event.message),
+        location: {
+          ...(event.colno === 0 ? {} : { columnNumber: event.colno }),
+          ...(event.lineno === 0 ? {} : { lineNumber: event.lineno }),
+          ...(event.filename === "" ? {} : { source: event.filename }),
+        },
+      });
+    } catch {}
   });
   window.addEventListener("unhandledrejection", (event) => {
-    logRenderer(
-      "error",
-      "Renderer unhandled rejection",
-      { observedAt: new Date().toISOString(), view: bridgeView },
-      event.reason,
-    );
+    try {
+      reportFailure({
+        message: "Renderer unhandled rejection",
+        error: errorDetails(event.reason),
+      });
+    } catch {}
   });
-}
-const eventWrappers = new WeakMap<
-  (rawPayload: unknown) => void,
-  (event: IpcRendererEvent, rawPayload: unknown) => void
->();
-const subscribe = createSubscribe({
-  on: (channel, listener) => {
-    const wrapper = (_event: IpcRendererEvent, rawPayload: unknown) =>
-      listener(rawPayload);
-    eventWrappers.set(listener, wrapper);
-    ipcRenderer.on(channel, wrapper);
-  },
-  removeListener: (channel, listener) => {
-    const wrapper = eventWrappers.get(listener);
-    if (wrapper !== undefined) {
-      ipcRenderer.removeListener(channel, wrapper);
-      eventWrappers.delete(listener);
-    }
-  },
+
+  const logAtLevel =
+    (level: RendererLogRecord["level"]) =>
+    (message: string, error?: unknown): void => {
+      try {
+        reportLog(
+          level,
+          message,
+          error === undefined ? undefined : errorDetails(error),
+        );
+      } catch {}
+    };
+
+  return {
+    error: logAtLevel("error"),
+    warn: logAtLevel("warn"),
+    info: logAtLevel("info"),
+    debug: logAtLevel("debug"),
+    write,
+  };
+};
+
+const reportRendererFailure = (failure: RendererFailure): void =>
+  logRenderer(
+    "error",
+    failure.message,
+    {
+      ...failure.location,
+      observedAt: new Date().toISOString(),
+      view: bridgeView,
+    },
+    failure.error,
+  );
+
+const reportRendererLog = (
+  level: RendererLogRecord["level"],
+  message: string,
+  error?: DesktopLogError,
+): void => logRenderer(level, message, { view: bridgeView }, error);
+
+installRendererLogging(
+  reportRendererFailure,
+  reportRendererLog,
+  writeRendererLog,
+);
+const logBridge: DesktopLogBridge = contextBridge.executeInMainWorld({
+  func: installRendererLogging,
+  args: [reportRendererFailure, reportRendererLog, writeRendererLog],
 });
+
+const subscribe = createSubscribe(ipcRenderer);
 
 const settingsBridge: DesktopSettingsBridge = {
   initial: initialSettings,
@@ -225,21 +302,24 @@ const settingsManagementBridge: DesktopSettingsManagementBridge = {
   updatePreferences: (patch) => invoke(SettingsIpc.updatePreferences, patch),
 };
 
+const combatProfilesReaderBridge: DesktopBridgeByView["game"]["combatProfiles"] =
+  {
+    getState: () => invoke(CombatProfilesIpc.getState, undefined),
+    onChanged: (listener) => subscribe(CombatProfilesIpc.changed, listener),
+  };
+
 const combatProfilesBridge: DesktopCombatProfilesBridge = {
+  ...combatProfilesReaderBridge,
   deleteProfile: (profileId) =>
     invoke(CombatProfilesIpc.deleteProfile, { profileId }),
-  getState: () => invoke(CombatProfilesIpc.getState, undefined),
-  onChanged: (listener) => subscribe(CombatProfilesIpc.changed, listener),
   saveProfile: (profile) => invoke(CombatProfilesIpc.saveProfile, profile),
 };
 
 const accountsBridge: DesktopAccountsBridge = {
-  closeGameWindow: (request) => invoke(AccountsIpc.closeGameWindow, request),
   closeGameWindows: (gameWindowIds) =>
     invoke(AccountsIpc.closeGameWindows, { gameWindowIds }),
   createAccount: (draft) => invoke(AccountsIpc.createAccount, draft),
   createGroup: (draft) => invoke(AccountsIpc.createGroup, draft),
-  deleteAccount: (username) => invoke(AccountsIpc.deleteAccount, { username }),
   deleteAccounts: (usernames) =>
     invoke(AccountsIpc.deleteAccounts, { usernames }),
   deleteGroup: (name) => invoke(AccountsIpc.deleteGroup, { name }),
@@ -279,8 +359,6 @@ const scriptingBridge: DesktopScriptingBridge = {
     invoke(ScriptingIpc.getInputValues, definition),
   installPackage: (input) => invoke(ScriptingIpc.installPackage, input),
   listCredentials: () => invoke(ScriptingIpc.listCredentials, undefined),
-  listPackageLeftovers: () =>
-    invoke(ScriptingIpc.listPackageLeftovers, undefined),
   loadReference: (reference) => invoke(ScriptingIpc.loadReference, reference),
   onCatalogChanged: (listener) =>
     subscribe(ScriptingIpc.catalogChanged, listener),
@@ -299,36 +377,30 @@ const scriptingBridge: DesktopScriptingBridge = {
   saveInputValues: (definition, values) =>
     invoke(ScriptingIpc.saveInputValues, { definition, values }),
   saveCredential: (input) => invoke(ScriptingIpc.saveCredential, input),
-  selectFile: () => invoke(ScriptingIpc.selectFile, undefined),
   updatePackage: (input) => invoke(ScriptingIpc.updatePackage, input),
 };
 
 const gameConsoleObservabilityBridge: DesktopGameConsoleObservabilityBridge = {
   message: (method, message) =>
-    logRenderer("debug", "Renderer console message", { method, message }),
+    logRenderer(
+      "debug",
+      "Renderer console message",
+      { method, message },
+      undefined,
+      message,
+    ),
 };
 
 const fileSystemBridge: DesktopFileSystemBridge = {
-  closeSession: (sessionId) =>
-    invoke(FileSystemIpc.closeSession, { sessionId }),
-  exists: (sessionId, path) =>
-    invoke(FileSystemIpc.exists, { path, sessionId }),
-  list: (sessionId, path) =>
-    invoke(FileSystemIpc.list, {
-      ...(path === undefined ? {} : { path }),
-      sessionId,
-    }),
-  openSession: () => invoke(FileSystemIpc.openSession, undefined),
-  readJson: (sessionId, path) =>
-    invoke(FileSystemIpc.readJson, { path, sessionId }),
-  readText: (sessionId, path) =>
-    invoke(FileSystemIpc.readText, { path, sessionId }),
-  remove: (sessionId, path) =>
-    invoke(FileSystemIpc.remove, { path, sessionId }),
-  writeJson: (sessionId, path, value) =>
-    invoke(FileSystemIpc.writeJson, { path, sessionId, value }),
-  writeText: (sessionId, path, contents) =>
-    invoke(FileSystemIpc.writeText, { contents, path, sessionId }),
+  exists: (path) => invoke(FileSystemIpc.exists, { path }),
+  list: (path) =>
+    invoke(FileSystemIpc.list, path === undefined ? {} : { path }),
+  readJson: (path) => invoke(FileSystemIpc.readJson, { path }),
+  readText: (path) => invoke(FileSystemIpc.readText, { path }),
+  remove: (path) => invoke(FileSystemIpc.remove, { path }),
+  writeJson: (path, value) => invoke(FileSystemIpc.writeJson, { path, value }),
+  writeText: (path, contents) =>
+    invoke(FileSystemIpc.writeText, { contents, path }),
 };
 
 const windowsBridge: DesktopWindowsBridge = {
@@ -340,34 +412,44 @@ const loaderGrabberWindowBridge: DesktopLoaderGrabberWindowBridge = {
   load: (payload) => invoke(LoaderGrabberIpc.load, payload),
 };
 
-const gameViewHostBridge: DesktopGameViewHostBridge = {
+const gameViewHostStateBridge: Pick<
+  DesktopGameViewHostBridge,
+  "getState" | "onChanged" | "setGroupControlsOpen"
+> = {
+  getState: () => invoke(GameViewsIpc.getState, undefined),
+  onChanged: (listener) => subscribe(GameViewsIpc.changed, listener),
+  setGroupControlsOpen: (open) =>
+    invoke(GameViewsIpc.setGroupControlsOpen, { open }),
+};
+
+const gameViewHostBridge: DesktopBridgeByView["game-host"]["gameViewHost"] = {
+  ...gameViewHostStateBridge,
   getRecentlyClosed: () => invoke(GameViewsIpc.getRecentlyClosed, undefined),
   reopen: (id) => invoke(GameViewsIpc.reopen, { id }),
   add: () => invoke(GameViewsIpc.add, undefined),
   close: (id) => invoke(GameViewsIpc.close, { id }),
-  dispatchGroupCommand: (request) =>
-    invoke(GameViewsIpc.dispatchGroupCommand, request),
-  getState: () => invoke(GameViewsIpc.getState, undefined),
-  onChanged: (listener) => subscribe(GameViewsIpc.changed, listener),
   onShortcutModifierChanged: (listener) =>
     subscribe(GameViewsIpc.shortcutModifierChanged, listener),
   onTabMenuOpenChanged: (listener) =>
     subscribe(GameViewsIpc.tabMenuOpenChanged, listener),
   reorder: (ids) => invoke(GameViewsIpc.reorder, { ids }),
   select: (id, focus) => invoke(GameViewsIpc.select, { focus, id }),
-  setGroupControlsOpen: (open) =>
-    invoke(GameViewsIpc.setGroupControlsOpen, { open }),
   setGroupTargets: (ids) => invoke(GameViewsIpc.setGroupTargets, { ids }),
   setLayout: (layout) => invoke(GameViewsIpc.setLayout, { layout }),
   setTabMenuOpen: (open) => invoke(GameViewsIpc.setTabMenuOpen, { open }),
   syncTabBarLayout: () => invoke(GameViewsIpc.syncTabBarLayout, undefined),
 };
 
+const gameGroupControlsBridge: DesktopBridgeByView["game-group-controls"]["gameViewHost"] =
+  {
+    ...gameViewHostStateBridge,
+    dispatchGroupCommand: (request) =>
+      invoke(GameViewsIpc.dispatchGroupCommand, request),
+  };
+
 const gameViewBridge: DesktopGameViewBridge = {
   close: () => {
-    void invoke(GameViewsIpc.closeCurrent, undefined).catch((cause) => {
-      console.error("Failed to close the current game client.", cause);
-    });
+    void invoke(GameViewsIpc.closeCurrent, undefined).catch(() => undefined);
   },
   dispatchGroupOptionHotkey: (commandId) =>
     invoke(GameViewsIpc.dispatchGroupOptionHotkey, { commandId }),
@@ -412,24 +494,23 @@ const gameFollowerBridge: DesktopGameFollowerBridge = {
   publishState: (state) => invoke(FollowerIpc.publishState, state),
 };
 
-const environmentBridge: DesktopEnvironmentBridge = {
-  addBoost: (name) => invoke(EnvironmentIpc.addBoost, { name }),
-  addBoosts: (names) => invoke(EnvironmentIpc.addBoosts, { names }),
-  addItem: (name) => invoke(EnvironmentIpc.addItem, { name }),
-  addItems: (names) => invoke(EnvironmentIpc.addItems, { names }),
-  addQuest: (questId, rewardItemId) =>
-    invoke(EnvironmentIpc.addQuest, {
-      questId,
-      ...(rewardItemId === undefined ? {} : { rewardItemId }),
-    }),
-  addQuests: (quests) => invoke(EnvironmentIpc.addQuests, { quests }),
+const environmentBridge: Omit<
+  DesktopEnvironmentBridge,
+  | "addBoost"
+  | "addBoosts"
+  | "addItem"
+  | "addItems"
+  | "addQuest"
+  | "addQuests"
+  | "fetchBoosts"
+  | "withdrawBoosts"
+> = {
   clear: () => invoke(EnvironmentIpc.clear, undefined),
   clearBoosts: () => invoke(EnvironmentIpc.clearBoosts, undefined),
   clearItems: () => invoke(EnvironmentIpc.clearItems, undefined),
   clearQuestReward: (questId) =>
     invoke(EnvironmentIpc.clearQuestReward, { questId }),
   clearQuests: () => invoke(EnvironmentIpc.clearQuests, undefined),
-  fetchBoosts: () => invoke(EnvironmentIpc.fetchBoosts, undefined),
   getState: () => invoke(EnvironmentIpc.getState, undefined),
   onChanged: (listener) => subscribe(EnvironmentIpc.changed, listener),
   removeBoost: (name) => invoke(EnvironmentIpc.removeBoost, { name }),
@@ -445,12 +526,32 @@ const environmentBridge: DesktopEnvironmentBridge = {
   setQuestReward: (questId, rewardItemId) =>
     invoke(EnvironmentIpc.setQuestReward, { questId, rewardItemId }),
   syncToAll: () => invoke(EnvironmentIpc.syncToAll, undefined),
-  withdrawBoosts: (itemIds) =>
-    invoke(EnvironmentIpc.withdrawBoosts, { itemIds }),
 };
 
+const gameEnvironmentBridge: DesktopBridgeByView["game"]["environment"] = {
+  ...environmentBridge,
+  addBoost: (name) => invoke(EnvironmentIpc.addBoost, { name }),
+  addItem: (name) => invoke(EnvironmentIpc.addItem, { name }),
+  addQuest: (questId, rewardItemId) =>
+    invoke(EnvironmentIpc.addQuest, {
+      questId,
+      ...(rewardItemId === undefined ? {} : { rewardItemId }),
+    }),
+};
+
+const environmentWindowBridge: DesktopBridgeByView["environment"]["environment"] =
+  {
+    ...environmentBridge,
+    addBoosts: (names) => invoke(EnvironmentIpc.addBoosts, { names }),
+    addItems: (names) => invoke(EnvironmentIpc.addItems, { names }),
+    addQuests: (quests) => invoke(EnvironmentIpc.addQuests, { quests }),
+    fetchBoosts: () => invoke(EnvironmentIpc.fetchBoosts, undefined),
+    withdrawBoosts: (itemIds) =>
+      invoke(EnvironmentIpc.withdrawBoosts, { itemIds }),
+  };
+
 const updatesBridge: DesktopUpdatesBridge = {
-  checkNow: (options) => invoke(UpdatesIpc.checkNow, options ?? {}),
+  checkNow: () => invoke(UpdatesIpc.checkNow, undefined),
   getState: () => invoke(UpdatesIpc.getState, undefined),
   onChanged: (listener) => subscribe(UpdatesIpc.changed, listener),
   openReleasePage: () => invoke(UpdatesIpc.openReleasePage, undefined),
@@ -479,7 +580,9 @@ const bridges = {
   "account-manager": {
     ...commonBridge,
     accounts: accountsBridge,
-    scripting: scriptingBridge,
+    scripting: {
+      selectFile: () => invoke(ScriptingIpc.selectFile, undefined),
+    },
     view: "account-manager",
   },
   "combat-profiles": {
@@ -489,12 +592,12 @@ const bridges = {
   },
   environment: {
     ...commonBridge,
-    environment: environmentBridge,
+    environment: environmentWindowBridge,
     view: "environment",
   },
   follower: {
     ...commonBridge,
-    combatProfiles: combatProfilesBridge,
+    combatProfiles: combatProfilesReaderBridge,
     follower: followerBridge,
     view: "follower",
     windows: windowsBridge,
@@ -505,7 +608,6 @@ const bridges = {
     army: {
       fail: (payload) => invoke(ArmyIpc.fail, payload),
       leave: () => invoke(ArmyIpc.leave, undefined),
-      loadConfig: (configName) => invoke(ArmyIpc.loadConfig, { configName }),
       loopTauntAwait: (payload) => invoke(ArmyIpc.loopTauntAwait, payload),
       loopTauntLeave: (payload) => invoke(ArmyIpc.loopTauntLeave, payload),
       loopTauntRegister: (payload) =>
@@ -519,8 +621,8 @@ const bridges = {
       start: (payload) => invoke(ArmyIpc.start, payload),
       sync: (payload) => invoke(ArmyIpc.sync, payload),
     },
-    combatProfiles: combatProfilesBridge,
-    environment: environmentBridge,
+    combatProfiles: combatProfilesReaderBridge,
+    environment: gameEnvironmentBridge,
     fileSystem: fileSystemBridge,
     http: {
       openSession: () => invoke(HttpIpc.openSession, undefined),
@@ -534,8 +636,8 @@ const bridges = {
     gameRenderer: {
       beginScriptExecution: () =>
         invoke(GameRendererIpc.beginScriptExecution, undefined),
-      finishScriptExecution: (token) =>
-        invoke(GameRendererIpc.finishScriptExecution, { token }),
+      finishScriptExecution: () =>
+        invoke(GameRendererIpc.finishScriptExecution, undefined),
       getGeneration: () => invoke(GameRendererIpc.getGeneration, undefined),
       ready: () => invoke(GameRendererIpc.ready, undefined),
     },
@@ -544,13 +646,13 @@ const bridges = {
     scripting: scriptingBridge,
     view: "game",
     windows: windowsBridge,
-    ...(gameConsoleObservabilityEnabled
+    ...(debug && gameConsoleObservabilityEnabled
       ? { gameConsoleObservability: gameConsoleObservabilityBridge }
       : {}),
   },
   "game-group-controls": {
     ...commonBridge,
-    gameViewHost: gameViewHostBridge,
+    gameViewHost: gameGroupControlsBridge,
     view: "game-group-controls",
   },
   "game-host": {

@@ -15,7 +15,7 @@ import {
 interface TopNavFixture {
   readonly autoAttackEnabled?: boolean;
   readonly autoAttackLastError?: string;
-  readonly autoAttackWarning?: string;
+  readonly autoAttackWarnings?: readonly string[];
   readonly autoReloginAttempting?: boolean;
   readonly autoReloginAttemptsRemaining?: number | null;
   readonly autoReloginEnabled?: boolean;
@@ -142,7 +142,7 @@ function TopNavStory(props: { readonly fixture: TopNavFixture }): JSX.Element {
         }
         autoAttackEnabled={autoAttackEnabled}
         autoAttackLastError={() => fixture.autoAttackLastError ?? ""}
-        autoAttackWarning={() => fixture.autoAttackWarning ?? ""}
+        autoAttackWarnings={() => fixture.autoAttackWarnings ?? []}
         autoAttackProfileLabel={() => selectedProfile()?.label ?? "Generic"}
         autoAttackTargetPriority={autoAttackPriority}
         autoReloginAttempting={() => fixture.autoReloginAttempting ?? false}
@@ -298,8 +298,22 @@ export const AutoAttackConsumableWarning: Story = {
   args: {
     fixture: {
       autoAttackEnabled: true,
-      autoAttackWarning:
-        "Lucent could not equip Potent Honor Potion while you were in combat. Skill 5 will use whichever consumable is available.",
+      autoAttackWarnings: [
+        "Could not equip Potent Honor Potion while you were in combat. Skill 5 will use whichever consumable is equipped.",
+      ],
+      openMenu: "combat",
+    },
+  },
+};
+
+export const AutoAttackClassAndConsumableWarnings: Story = {
+  args: {
+    fixture: {
+      autoAttackEnabled: true,
+      autoAttackWarnings: [
+        "This profile is for Lord of Order, but Legion Revenant is equipped.",
+        "Could not equip Potent Honor Potion while you were in combat. Skill 5 will use whichever consumable is equipped.",
+      ],
       openMenu: "combat",
     },
   },

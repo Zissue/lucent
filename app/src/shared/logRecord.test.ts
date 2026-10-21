@@ -5,50 +5,53 @@ import * as Logger from "effect/Logger";
 
 import { desktopLogJsonSafe, desktopLogRecord } from "./logRecord";
 
-const collect = (records: unknown[]) =>
+const collect = (records: unknown[], debug = false) =>
   Logger.layer(
     [
       Logger.make((options) => {
-        records.push(desktopLogRecord(options));
+        records.push(desktopLogRecord(options, debug));
       }),
     ],
     { mergeWithExisting: false },
   );
 
 describe("log records", () => {
-  it.effect("preserves messages, errors, annotations, data, and spans", () =>
-    Effect.gen(function* () {
-      const records: unknown[] = [];
-      yield* Effect.logWarning(
-        "Loop failed",
-        new Error("raw"),
-        Cause.fail(new Error("x")),
-      ).pipe(
-        Effect.annotateLogs({
-          component: "army",
-          data: { attempt: 2 },
-          requestId: "r1",
-        }),
-        Effect.withSpan("loop"),
-        Effect.provide(collect(records)),
-      );
-      expect(records).toEqual([
-        {
-          at: "1970-01-01T00:00:00.000Z",
-          level: "warn",
-          component: "army",
-          message: "Loop failed",
-          data: { attempt: 2 },
-          annotations: { requestId: "r1" },
-          error: [
-            { name: "Error", message: "raw", stack: expect.any(String) },
-            { name: "Error", message: "x", stack: expect.any(String) },
-          ],
-          traceId: expect.any(String),
-          spanId: expect.any(String),
-        },
-      ]);
-    }),
+  it.effect.each([false, true])(
+    "preserves failures with debug logging %s",
+    (debug) =>
+      Effect.gen(function* () {
+        const records: unknown[] = [];
+        yield* Effect.logWarning(
+          "Loop failed",
+          new Error("raw"),
+          Cause.fail(new Error("x")),
+        ).pipe(
+          Effect.annotateLogs({
+            component: "army",
+            data: { attempt: 2 },
+            requestId: "r1",
+          }),
+          Effect.withSpan("loop"),
+          Effect.provide(collect(records, debug)),
+        );
+        expect(records).toEqual([
+          {
+            at: "1970-01-01T00:00:00.000Z",
+            level: "warn",
+            component: "army",
+            message: "Loop failed",
+            data: { attempt: 2 },
+            annotations: { requestId: "r1" },
+            error: [
+              { name: "Error", message: "raw", stack: expect.any(String) },
+              { name: "Error", message: "x", stack: expect.any(String) },
+            ],
+            ...(debug
+              ? { traceId: expect.any(String), spanId: expect.any(String) }
+              : {}),
+          },
+        ]);
+      }),
   );
 
   it.effect(
@@ -148,6 +151,14 @@ describe("log records", () => {
         cause: { name: "NonError", message: "root" },
       },
       self: "[Circular]",
+    });
+  });
+
+  it("tracks circular and repeated arrays for IPC", () => {
+    const array: unknown[] = [42];
+    array.push(array);
+    expect(desktopLogJsonSafe({ data: [array, array] })).toEqual({
+      data: [[42, "[Circular]"], "[Circular]"],
     });
   });
 

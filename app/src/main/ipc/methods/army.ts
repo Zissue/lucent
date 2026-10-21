@@ -4,15 +4,13 @@ import { ArmyIpc } from "../../../shared/ipc";
 import {
   ArmyConfigRepository,
   type ArmyConfigRepositoryError,
-} from "../../internal/army/ArmyConfigRepository";
-import {
-  ArmyCoordinator,
-  type ArmyCoordinatorError,
-} from "../../internal/army/ArmyCoordinator";
+} from "../../game/army/ArmyConfigRepository";
+import { ArmyCoordinator } from "../../game/army/ArmyCoordinator";
+import type { ArmyCoordinatorError } from "../../game/army/ArmySession";
 import {
   ArmyLoopTauntOrchestrator,
   type ArmyLoopTauntOrchestratorError,
-} from "../../internal/army/ArmyLoopTauntOrchestrator";
+} from "../../game/army/ArmyLoopTauntOrchestrator";
 import { DesktopWindows } from "../../window/DesktopWindows";
 import {
   DesktopIpc,
@@ -21,15 +19,6 @@ import {
 } from "../DesktopIpc";
 
 const gameSenders = ["game"] as const;
-
-export const loadConfig = makeDesktopIpcMethod({
-  descriptor: ArmyIpc.loadConfig,
-  allowedSenders: gameSenders,
-  handler: Effect.fn("desktop.ipc.army.loadConfig")(function* (payload) {
-    const configs = yield* ArmyConfigRepository;
-    return yield* configs.read(payload.configName);
-  }),
-});
 
 export const start = makeDesktopIpcMethod({
   descriptor: ArmyIpc.start,
@@ -153,7 +142,6 @@ type ArmyIpcMethod = DesktopIpcMethodRegistration<
 >;
 
 export const methods: readonly ArmyIpcMethod[] = [
-  loadConfig,
   start,
   leave,
   sync,
@@ -173,25 +161,19 @@ export const installLifecycle = Effect.fn("desktop.ipc.army.installLifecycle")(
     const ipc = yield* DesktopIpc;
     const windows = yield* DesktopWindows;
 
-    yield* Effect.acquireRelease(
-      loopTauntOrchestrator.onCommand((event) =>
-        ipc.sendToRendererIds(
-          event.participantIds,
-          ArmyIpc.loopTauntCommand,
-          event.command,
-        ),
+    yield* loopTauntOrchestrator.onCommand((event) =>
+      ipc.sendToRendererIds(
+        event.participantIds,
+        ArmyIpc.loopTauntCommand,
+        event.command,
       ),
-      (unsubscribe) => Effect.sync(unsubscribe),
     );
 
-    yield* Effect.acquireRelease(
-      coordinator.onSessionEnded((event) =>
-        ipc.sendToRendererIds(event.participantIds, ArmyIpc.ended, {
-          reason: event.reason,
-          sessionId: event.sessionId,
-        }),
-      ),
-      (unsubscribe) => Effect.sync(unsubscribe),
+    yield* coordinator.onSessionEnded((event) =>
+      ipc.sendToRendererIds(event.participantIds, ArmyIpc.ended, {
+        reason: event.reason,
+        sessionId: event.sessionId,
+      }),
     );
 
     yield* windows.observe({ kind: "game" }, (event) => {

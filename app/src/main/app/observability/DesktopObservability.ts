@@ -2,8 +2,7 @@ import { ipcMain, type IpcMainEvent } from "electron";
 import * as Clock from "effect/Clock";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
-import type { EventEmitter } from "events";
-import { join } from "path";
+import { join } from "node:path";
 import * as Cause from "effect/Cause";
 import * as Logger from "effect/Logger";
 import * as References from "effect/References";
@@ -13,6 +12,8 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Scope from "effect/Scope";
 
+import { listen } from "../../electron/NativeListener";
+import type { QuitSource } from "../DesktopLifecycle";
 import { DesktopEnvironment } from "../DesktopEnvironment";
 import { makeBufferedDesktopLogWriter } from "./DesktopLogWriter";
 import {
@@ -64,6 +65,9 @@ const boundRendererError = (
 
 export interface DesktopObservabilityShape {
   readonly flush: Effect.Effect<void>;
+  readonly setSessionStop: (
+    source: QuitSource | undefined,
+  ) => Effect.Effect<void>;
   readonly installProcessHooks: Effect.Effect<void, never, Scope.Scope>;
   readonly logFilePath: string;
 }
@@ -76,9 +80,15 @@ export class DesktopObservability extends Context.Service<
 const makeDesktopObservability = Effect.gen(function* () {
   const env = yield* DesktopEnvironment;
   const clock = yield* Clock.Clock;
+  const startedAt = yield* clock.monotonicTimeNanos;
+  let stopSource: QuitSource | undefined;
   const logsDir = join(env.appDataDir, "logs");
   const logFilePath = join(logsDir, "lucent.log");
-  const bufferedWriter = makeBufferedDesktopLogWriter(logsDir, logFilePath);
+  const bufferedWriter = makeBufferedDesktopLogWriter(
+    logsDir,
+    logFilePath,
+    clock,
+  );
   const mainWindows = new Map<string, RepeatWindow>();
   const rendererWindows = new Map<string, RepeatWindow>();
 
@@ -166,7 +176,10 @@ const makeDesktopObservability = Effect.gen(function* () {
   };
 
   const logger = Logger.make<unknown, void>((options) => {
-    writeRecord(desktopLogRecord(options), options.date.getTime());
+    writeRecord(
+      desktopLogRecord(options, env.debug === true),
+      options.date.getTime(),
+    );
   });
 
   const handleRendererRecord = (
@@ -235,26 +248,32 @@ const makeDesktopObservability = Effect.gen(function* () {
       ).catch(() => undefined);
     };
 
-    yield* Effect.sync(() => {
-      process.on("uncaughtException", handleUncaughtException);
-      process.on("unhandledRejection", handleUnhandledRejection);
-    });
-    yield* Effect.addFinalizer(() =>
-      Effect.sync(() => {
-        (process as EventEmitter).removeListener(
-          "uncaughtException",
-          handleUncaughtException,
-        );
-        (process as EventEmitter).removeListener(
-          "unhandledRejection",
-          handleUnhandledRejection,
-        );
-      }),
-    );
+    yield* listen(process, "uncaughtException", handleUncaughtException);
+    yield* listen(process, "unhandledRejection", handleUnhandledRejection);
   });
 
   yield* Effect.addFinalizer(() =>
-    Effect.promise(() => bufferedWriter.close()),
+    Effect.gen(function* () {
+      const at = yield* DateTime.nowAsDate;
+      const stoppedAt = yield* clock.monotonicTimeNanos;
+      yield* Effect.promise(() =>
+        bufferedWriter.close(
+          stopSource === undefined
+            ? undefined
+            : {
+                at: at.toISOString(),
+                level: "info",
+                component: "lifecycle",
+                message: "Lucent desktop runtime stopped",
+                data: {
+                  source: stopSource,
+                  uptimeMs: Number((stoppedAt - startedAt) / 1_000_000n),
+                  outcome: "clean",
+                },
+              },
+        ),
+      );
+    }),
   );
   yield* Effect.addFinalizer(() => drainWindows(true));
   yield* drainWindows(false).pipe(
@@ -263,23 +282,16 @@ const makeDesktopObservability = Effect.gen(function* () {
     Effect.forkScoped,
   );
 
-  yield* Effect.acquireRelease(
-    Effect.sync(() =>
-      ipcMain.on(RendererLogIpc.record.channel, handleRendererRecord),
-    ),
-    () =>
-      Effect.sync(() => {
-        ipcMain.removeListener(
-          RendererLogIpc.record.channel,
-          handleRendererRecord,
-        );
-      }),
-  );
+  yield* listen(ipcMain, RendererLogIpc.record.channel, handleRendererRecord);
 
   return Context.make(
     DesktopObservability,
     DesktopObservability.of({
       flush,
+      setSessionStop: (source) =>
+        Effect.sync(() => {
+          stopSource = source;
+        }),
       installProcessHooks,
       logFilePath,
     }),

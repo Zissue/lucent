@@ -9,7 +9,6 @@ export class DesktopHttpClientError extends Schema.TaggedError<DesktopHttpClient
       "request-failed",
       "response-too-large",
       "timeout",
-      "aborted",
     ]),
     detail: Schema.String,
     url: Schema.String,

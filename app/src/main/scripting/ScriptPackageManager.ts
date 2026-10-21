@@ -1,45 +1,39 @@
-import { promises as fs } from "fs";
-import { basename, dirname, join, resolve } from "path";
-import { isDeepStrictEqual } from "util";
+import { basename, dirname, join, resolve } from "node:path";
 
-import type * as Cause from "effect/Cause";
+import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import { FileSystem } from "effect/FileSystem";
+import { isPlatformError } from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
-import { list as listTar, extract as extractTar } from "tar";
 
 import type {
   ScriptCatalogOverview,
   ScriptPackageMutationResult,
   ScriptPackageIntegrity,
-  ScriptPackageLeftoverCopy,
   ScriptPackageRevision,
 } from "@lucent/core/scriptPackages";
-import {
-  ScriptPackageDirectorySchema,
-  ScriptPackageRepositorySubdirectorySchema,
-} from "@lucent/core/scriptPackages";
+import { ScriptPackageDirectorySchema } from "@lucent/core/scriptPackages";
 import { DesktopEnvironment } from "../app/DesktopEnvironment";
+import { logFailure } from "../../shared/logFailure";
 import {
   GitHubScriptPackageClient,
-  GitHubScriptPackageClientError,
+  type GitHubScriptPackageClientError,
   normalizeGitHubRepositoryUrl,
 } from "./GitHubScriptPackageClient";
+import { extractScriptPackageArchive } from "./ScriptPackageArchive";
 import {
   inspectScriptPackageDirectory,
   inspectManagedPackageFolder,
   integrityFor,
-  ScriptPackageCatalog,
-  type ScriptPackageCatalogReplacement,
-} from "./ScriptPackageCatalog";
-import {
-  findLeftoverPackageCopies,
-  SCRIPT_PACKAGE_BACKUP_PREFIX,
-  SCRIPT_PACKAGE_REMOVE_PREFIX,
-} from "./ScriptPackageLeftovers";
+  logScriptPackageInspectionFailures,
+  type ScriptPackageInspectionFailure,
+} from "./ScriptPackageInspection";
+import { ScriptPackageCatalog } from "./ScriptPackageCatalog";
+import type { ScriptPackageCatalogReplacement } from "./ScriptCatalogDiscovery";
 import { hashDirectory, isPathInside } from "./ScriptPackageFileSystem";
 import { copyBundledScriptPackage } from "./BundledScriptPackageSnapshot";
 import {
@@ -49,29 +43,23 @@ import {
 } from "./ScriptPackageDirectories";
 import {
   ScriptPackageState,
+  ManagedScriptPackageSchema,
   type ManagedScriptPackage,
 } from "./ScriptPackageState";
 import { resolveScriptWorkspacePaths } from "./ScriptWorkspacePaths";
-import {
-  formatBytes,
-  SCRIPT_PACKAGE_ARCHIVE_MAX_ENTRIES,
-  SCRIPT_PACKAGE_ARCHIVE_PATH_MAX_BYTES,
-  SCRIPT_PACKAGE_MAX_BYTES,
-  SCRIPT_PACKAGE_PATH_COMPONENT_MAX_BYTES,
-} from "./ScriptLimits";
 
 const decodePackageDirectory = Schema.decodeUnknownSync(
   ScriptPackageDirectorySchema,
 );
-const decodeRepositorySubdirectory = Schema.decodeUnknownSync(
-  ScriptPackageRepositorySubdirectorySchema,
+
+const managedPackagesEquivalent = Schema.toEquivalence(
+  ManagedScriptPackageSchema,
 );
 
 const packageManagerOperationSchema = Schema.Literals([
   "check-update",
   "extract",
   "install",
-  "list-leftovers",
   "remove",
   "replace",
   "restore",
@@ -93,10 +81,6 @@ export class ScriptPackageManagerError extends Schema.TaggedError<ScriptPackageM
 }
 
 export interface ScriptPackageManagerShape {
-  readonly listLeftovers: Effect.Effect<
-    readonly ScriptPackageLeftoverCopy[],
-    ScriptPackageManagerError
-  >;
   readonly checkUpdate: (input: {
     readonly packageName: string;
   }) => Effect.Effect<ScriptCatalogOverview, ScriptPackageManagerError>;
@@ -124,14 +108,6 @@ export class ScriptPackageManager extends Context.Service<
   ScriptPackageManager,
   ScriptPackageManagerShape
 >()("lucent/desktop/scripting/ScriptPackageManager") {}
-
-interface ArchiveInventory {
-  readonly root: string;
-}
-
-interface ArchiveValidationOptions {
-  readonly subdirectory?: string;
-}
 
 interface ResolvedPackageRevision {
   readonly checkedAt: string;
@@ -189,6 +165,9 @@ const recordRemoteResolution = (
   ...(resolution.etag === undefined ? {} : { etag: resolution.etag }),
 });
 
+const nativeCause = (cause: unknown): unknown =>
+  isPlatformError(cause) ? (cause.reason.cause ?? cause) : cause;
+
 const managerError = (
   operation: typeof packageManagerOperationSchema.Type,
   detail: string,
@@ -197,7 +176,7 @@ const managerError = (
   new ScriptPackageManagerError({
     operation,
     detail,
-    ...(cause === undefined ? {} : { cause }),
+    ...(cause === undefined ? {} : { cause: nativeCause(cause) }),
   });
 
 const localModifications = (
@@ -208,184 +187,30 @@ const localModifications = (
   reason: "local-modifications",
 });
 
-const movePath = (from: string, to: string) =>
-  Effect.tryPromise(() => fs.rename(from, to));
-
-const archivePath = (rawPath: string): readonly string[] => {
-  if (
-    rawPath === "" ||
-    rawPath.startsWith("/") ||
-    rawPath.includes("\\") ||
-    rawPath.includes("\0") ||
-    Buffer.byteLength(rawPath, "utf8") > SCRIPT_PACKAGE_ARCHIVE_PATH_MAX_BYTES
-  ) {
-    throw new Error(
-      `Archive contains an unsafe path: ${JSON.stringify(rawPath)}.`,
-    );
-  }
-  const parts = rawPath.endsWith("/")
-    ? rawPath.slice(0, -1).split("/")
-    : rawPath.split("/");
-  if (
-    parts.some(
-      (part) =>
-        part === "" ||
-        part === "." ||
-        part === ".." ||
-        Buffer.byteLength(part, "utf8") >
-          SCRIPT_PACKAGE_PATH_COMPONENT_MAX_BYTES,
-    )
-  ) {
-    throw new Error(
-      `Archive contains an unsafe path: ${JSON.stringify(rawPath)}.`,
-    );
-  }
-  return parts;
-};
-
-export const validateScriptPackageArchive = async (
-  path: string,
-  options: ArchiveValidationOptions = {},
-): Promise<ArchiveInventory> => {
-  const caseInsensitivePaths =
-    process.platform === "darwin" || process.platform === "win32";
-  const subdirectory =
-    options.subdirectory === undefined
-      ? undefined
-      : decodeRepositorySubdirectory(options.subdirectory);
-  const subdirectoryPrefix =
-    subdirectory === undefined ? undefined : `${subdirectory}/`;
-  const platformPaths = new Set<string>();
-  let entryCount = 0;
-  let extractedBytes = 0;
-  let root: string | undefined;
-  let selectedDirectoryFound = subdirectory === undefined;
-  let validationError: Error | undefined;
-
-  await listTar({
-    file: path,
-    strict: true,
-    onReadEntry: (entry) => {
-      if (validationError !== undefined) return;
-      try {
-        if (
-          entry.type !== "File" &&
-          entry.type !== "OldFile" &&
-          entry.type !== "Directory"
-        ) {
-          throw new Error(
-            `Archive entry ${JSON.stringify(entry.path)} has unsupported type ${entry.type}.`,
-          );
-        }
-        const [entryRoot, ...relativeParts] = archivePath(entry.path);
-        if (entryRoot === undefined) {
-          throw new Error("Archive entry has no root directory.");
-        }
-        root ??= entryRoot;
-        if (root !== entryRoot) {
-          throw new Error("Archive contains more than one root directory.");
-        }
-        if (relativeParts.length === 0) return;
-
-        const relativePath = relativeParts.join("/");
-        if (relativePath === subdirectory) {
-          if (entry.type !== "Directory") {
-            throw new Error(
-              `Selected package path ${JSON.stringify(subdirectory)} is not a directory.`,
-            );
-          }
-          selectedDirectoryFound = true;
-        } else if (
-          subdirectoryPrefix !== undefined &&
-          relativePath.startsWith(subdirectoryPrefix)
-        ) {
-          selectedDirectoryFound = true;
-        }
-        const normalizedPath = relativePath.normalize("NFC");
-        const platformPath = caseInsensitivePaths
-          ? normalizedPath.toLocaleLowerCase("en-US")
-          : normalizedPath;
-        if (platformPaths.has(platformPath)) {
-          throw new Error(
-            `Archive contains a colliding path: ${relativePath}.`,
-          );
-        }
-        platformPaths.add(platformPath);
-
-        entryCount += 1;
-        const size = entry.type === "Directory" ? 0 : entry.size;
-        if (size === undefined || !Number.isSafeInteger(size) || size < 0) {
-          throw new Error(
-            `Archive entry ${JSON.stringify(entry.path)} has an invalid size.`,
-          );
-        }
-        extractedBytes += size;
-        if (entryCount > SCRIPT_PACKAGE_ARCHIVE_MAX_ENTRIES) {
-          throw new Error(
-            `Archive contains more than ${SCRIPT_PACKAGE_ARCHIVE_MAX_ENTRIES} entries.`,
-          );
-        }
-        if (extractedBytes > SCRIPT_PACKAGE_MAX_BYTES) {
-          throw new Error(
-            `Archive expands beyond ${formatBytes(SCRIPT_PACKAGE_MAX_BYTES)}.`,
-          );
-        }
-      } catch (cause) {
-        validationError =
-          cause instanceof Error
-            ? cause
-            : new Error("Archive validation failed.");
-      }
-    },
-  });
-  if (validationError !== undefined) throw validationError;
-  if (root === undefined) throw new Error("Archive is empty.");
-  if (!selectedDirectoryFound) {
-    throw new Error(
-      `Archive does not contain package directory ${JSON.stringify(subdirectory)}.`,
-    );
-  }
-  return { root };
-};
-
-export const extractScriptPackageArchive = async (
-  archivePath: string,
-  targetPath: string,
-  subdirectory?: string,
-): Promise<void> => {
-  const inventory = await validateScriptPackageArchive(
-    archivePath,
-    subdirectory === undefined ? {} : { subdirectory },
-  );
-  await fs.mkdir(targetPath, { recursive: true });
-  const selectedPrefix =
-    subdirectory === undefined
-      ? undefined
-      : `${inventory.root}/${subdirectory}/`;
-  await extractTar({
-    cwd: targetPath,
-    file: archivePath,
-    ...(selectedPrefix === undefined
-      ? {}
-      : { filter: (path) => path.startsWith(selectedPrefix) }),
-    noMtime: true,
-    preserveOwner: false,
-    preservePaths: false,
-    strict: true,
-    strip: subdirectory === undefined ? 1 : subdirectory.split("/").length + 1,
-    unlink: true,
-  });
-};
-
 export const layer = Layer.effect(
   ScriptPackageManager,
   Effect.gen(function* () {
     const catalog = yield* ScriptPackageCatalog;
     const client = yield* GitHubScriptPackageClient;
     const env = yield* DesktopEnvironment;
+    const fileSystem = yield* FileSystem;
+    const movePath = fileSystem.rename;
     const state = yield* ScriptPackageState;
     const { packagesDir } = resolveScriptWorkspacePaths(env.workspaceDir);
     const mutationGate = yield* Semaphore.make(1);
+
+    const inspectIntegrity = Effect.fnUntraced(function* (
+      rootPath: string,
+      managed: ManagedScriptPackage | undefined,
+    ) {
+      const failures: ScriptPackageInspectionFailure[] = [];
+      const integrity = yield* Effect.promise(() =>
+        integrityFor(rootPath, managed, (failure) => failures.push(failure)),
+      );
+      if (failures.length > 0)
+        yield* logScriptPackageInspectionFailures(failures);
+      return integrity;
+    });
 
     const mapCatalogError = (cause: unknown) =>
       managerError("validate", "Failed to update the script catalog.", cause);
@@ -410,107 +235,54 @@ export const layer = Layer.effect(
       });
     });
 
-    const resolveManagedRevision = Effect.fn(
-      "ScriptPackageManager.resolveManagedRevision",
-    )(function* (managed: ManagedScriptPackage) {
-      if (managed.source.kind === "directory") {
-        const result = yield* client.resolveDirectory({
-          repositoryUrl: managed.source.repositoryUrl,
-          subdirectory: managed.source.subdirectory,
-          ...(managed.source.credentialId === undefined
+    const resolveSource = Effect.fn("ScriptPackageManager.resolveSource")(
+      function* (input: {
+        readonly repositoryUrl: string;
+        readonly credentialId?: string;
+        readonly ref?: string;
+        readonly subdirectory?: string;
+        readonly known?: Pick<ManagedScriptPackage, "etag" | "remoteRevision">;
+      }) {
+        const commit = yield* client.resolveCommit({
+          repositoryUrl: input.repositoryUrl,
+          ...(input.credentialId === undefined
             ? {}
-            : { credentialId: managed.source.credentialId }),
-          ...(managed.source.requestedRef === undefined
-            ? {}
-            : { ref: managed.source.requestedRef }),
+            : { credentialId: input.credentialId }),
+          ...(input.ref === undefined ? {} : { ref: input.ref }),
+          ...(input.subdirectory === undefined &&
+          input.known?.remoteRevision?.kind === "commit" &&
+          input.known.etag !== undefined
+            ? {
+                known: {
+                  etag: input.known.etag,
+                  commit: input.known.remoteRevision.sha,
+                },
+              }
+            : {}),
         });
-        return {
-          checkedAt: new Date().toISOString(),
-          revision: { kind: "tree", sha: result.tree },
-        } satisfies ResolvedPackageRevision;
-      }
-
-      const etag =
-        managed.remoteRevision?.kind === "commit" ? managed.etag : undefined;
-      const result = yield* client.resolveCommit({
-        repositoryUrl: managed.source.repositoryUrl,
-        ...(managed.source.credentialId === undefined
-          ? {}
-          : { credentialId: managed.source.credentialId }),
-        ...(managed.source.requestedRef === undefined
-          ? {}
-          : { ref: managed.source.requestedRef }),
-        ...(etag === undefined ? {} : { etag }),
-      });
-      const checkedAt = new Date().toISOString();
-      if (result.status === "modified") {
-        return {
-          checkedAt,
-          revision: { kind: "commit", sha: result.commit },
-          ...(result.etag === undefined ? {} : { etag: result.etag }),
-        } satisfies ResolvedPackageRevision;
-      }
-      if (managed.remoteRevision?.kind !== "commit") {
-        return yield* new GitHubScriptPackageClientError({
-          kind: "unexpected-response",
-          detail: "GitHub returned an incomplete update response. Try again.",
-        });
-      }
-      return {
-        checkedAt,
-        revision: managed.remoteRevision,
-        ...(result.etag === undefined && managed.etag === undefined
-          ? {}
-          : { etag: result.etag ?? managed.etag }),
-      } satisfies ResolvedPackageRevision;
-    });
-
-    const resolveManagedInstallSource = Effect.fn(
-      "ScriptPackageManager.resolveManagedInstallSource",
-    )(function* (managed: ManagedScriptPackage) {
-      if (managed.source.kind === "repository") {
-        const resolution = yield* resolveManagedRevision(managed);
-        if (resolution.revision.kind !== "commit") {
-          return yield* new GitHubScriptPackageClientError({
-            kind: "unexpected-response",
-            detail: "GitHub returned an incomplete package revision.",
-          });
+        if (input.subdirectory === undefined) {
+          return {
+            checkedAt: (yield* DateTime.nowAsDate).toISOString(),
+            commit: commit.commit,
+            revision: { kind: "commit", sha: commit.commit },
+            ...(commit.etag === undefined ? {} : { etag: commit.etag }),
+          } satisfies ResolvedInstallSource;
         }
-        return {
-          ...resolution,
-          commit: resolution.revision.sha,
-        } satisfies ResolvedInstallSource;
-      }
-
-      const commit = yield* client.resolveCommit({
-        repositoryUrl: managed.source.repositoryUrl,
-        ...(managed.source.credentialId === undefined
-          ? {}
-          : { credentialId: managed.source.credentialId }),
-        ...(managed.source.requestedRef === undefined
-          ? {}
-          : { ref: managed.source.requestedRef }),
-      });
-      if (commit.status !== "modified") {
-        return yield* new GitHubScriptPackageClientError({
-          kind: "unexpected-response",
-          detail: "GitHub couldn't resolve the selected Git ref to a commit.",
+        const directory = yield* client.resolveDirectory({
+          repositoryUrl: input.repositoryUrl,
+          ref: commit.commit,
+          subdirectory: input.subdirectory,
+          ...(input.credentialId === undefined
+            ? {}
+            : { credentialId: input.credentialId }),
         });
-      }
-      const directory = yield* client.resolveDirectory({
-        repositoryUrl: managed.source.repositoryUrl,
-        ref: commit.commit,
-        subdirectory: managed.source.subdirectory,
-        ...(managed.source.credentialId === undefined
-          ? {}
-          : { credentialId: managed.source.credentialId }),
-      });
-      return {
-        checkedAt: new Date().toISOString(),
-        commit: commit.commit,
-        revision: { kind: "tree", sha: directory.tree },
-      } satisfies ResolvedInstallSource;
-    });
+        return {
+          checkedAt: (yield* DateTime.nowAsDate).toISOString(),
+          commit: commit.commit,
+          revision: { kind: "tree", sha: directory.tree },
+        } satisfies ResolvedInstallSource;
+      },
+    );
 
     const replacePackage = Effect.fn("ScriptPackageManager.replacePackage")(
       function* (
@@ -544,19 +316,10 @@ export const layer = Layer.effect(
               cause,
             ),
         });
-        yield* Effect.tryPromise({
-          try: () => fs.mkdir(dirname(destination), { recursive: true }),
-          catch: (cause) =>
-            managerError(
-              "replace",
-              "Failed to replace the package directory.",
-              cause,
-            ),
-        });
-
-        if (!destinationExists) {
-          yield* movePath(staging, destination).pipe(
-            Effect.mapError(({ cause }) =>
+        yield* fileSystem
+          .makeDirectory(dirname(destination), { recursive: true })
+          .pipe(
+            Effect.mapError((cause) =>
               managerError(
                 "replace",
                 "Failed to replace the package directory.",
@@ -564,105 +327,40 @@ export const layer = Layer.effect(
               ),
             ),
           );
-          yield* state.save(managed).pipe(
-            Effect.catch((cause) =>
-              movePath(destination, staging).pipe(
-                Effect.matchEffect({
-                  onFailure: ({ cause: undoCause }) =>
-                    Effect.fail(
-                      managerError(
-                        "replace",
-                        `Failed to save package installation state. The new package was left at ${destination}.`,
-                        { cause, undoCause },
-                      ),
-                    ),
-                  onSuccess: () =>
-                    Effect.fail(
-                      managerError(
-                        "replace",
-                        "Failed to save package installation state.",
-                        cause,
-                      ),
-                    ),
-                }),
+
+        if (!destinationExists) {
+          yield* movePath(staging, destination).pipe(
+            Effect.mapError((cause) =>
+              managerError(
+                "replace",
+                "Failed to replace the package directory.",
+                cause,
               ),
             ),
           );
+          yield* state
+            .save(managed)
+            .pipe(
+              Effect.catch((cause) =>
+                movePath(destination, staging).pipe(
+                  Effect.ignore,
+                  Effect.andThen(
+                    managerError(
+                      "replace",
+                      `Failed to save package installation state. Check ${destination}.`,
+                      cause,
+                    ),
+                  ),
+                ),
+              ),
+            );
           return yield* publish;
         }
 
-        const backupRoot = yield* Effect.tryPromise({
-          try: () =>
-            fs.mkdtemp(join(env.workspaceDir, SCRIPT_PACKAGE_BACKUP_PREFIX)),
-          catch: (cause) =>
-            managerError(
-              "replace",
-              "Failed to prepare the package backup.",
-              cause,
-            ),
-        });
-        const backup = join(backupRoot, basename(destination));
-        const discardBackup = Effect.tryPromise(() =>
-          fs.rm(backupRoot, { recursive: true, force: true }),
-        ).pipe(Effect.ignore);
-        const removeEmptyBackup = Effect.tryPromise(() =>
-          fs.rmdir(backupRoot),
-        ).pipe(Effect.ignore);
-        const failReplacement = Effect.fnUntraced(function* (
-          cause: unknown,
-          restoredDetail: string,
-          unrestoredDetail = restoredDetail,
-        ): Effect.fn.Return<never, ScriptPackageManagerError> {
-          const backupExists = yield* Effect.tryPromise(() =>
-            pathExists(backup),
-          ).pipe(Effect.orElseSucceed(() => true));
-          if (!backupExists) yield* removeEmptyBackup;
-          return yield* managerError(
-            "replace",
-            backupExists
-              ? `${unrestoredDetail} The previous package is saved at ${backup}.`
-              : restoredDetail,
-            cause,
-          );
-        });
-        const rollBack = (
-          undo: Effect.Effect<void, Cause.UnknownError>,
-          cause: unknown,
-          restoredDetail: string,
-          unrestoredDetail: string,
-        ) =>
-          undo.pipe(
-            Effect.match({
-              onFailure: ({ cause: restoreCause }) => ({
-                cause,
-                restoreCause,
-              }),
-              onSuccess: () => cause,
-            }),
-            Effect.flatMap((failureCause) =>
-              failReplacement(failureCause, restoredDetail, unrestoredDetail),
-            ),
-          );
-
-        yield* movePath(destination, backup).pipe(
-          Effect.catch(({ cause }) =>
-            failReplacement(cause, "Failed to replace the package directory."),
-          ),
-        );
         if (
           expected !== undefined &&
-          (yield* Effect.promise(() => integrityFor(backup, expected))) !==
-            "verified"
+          (yield* inspectIntegrity(destination, expected)) !== "verified"
         ) {
-          yield* movePath(backup, destination).pipe(
-            Effect.catch(({ cause }) =>
-              failReplacement(
-                cause,
-                "Failed to restore the locally modified package.",
-              ),
-            ),
-          );
-          yield* removeEmptyBackup;
           yield* refreshPackageIntegrity(
             expected.name,
             destination,
@@ -670,30 +368,81 @@ export const layer = Layer.effect(
           ).pipe(Effect.mapError(mapCatalogError));
           return localModifications(expected.name);
         }
-        yield* movePath(staging, destination).pipe(
-          Effect.catch(({ cause }) =>
-            rollBack(
-              movePath(backup, destination),
-              cause,
-              "Failed to replace the package directory; the previous package was restored.",
-              "Failed to replace the package directory and could not restore the previous package.",
-            ),
-          ),
-        );
-        yield* state
-          .save(managed)
+        const backupRoot = yield* fileSystem
+          .makeTempDirectory({
+            directory: env.workspaceDir,
+            prefix: ".lucent-package-backup-",
+          })
           .pipe(
-            Effect.catch((cause) =>
-              rollBack(
-                movePath(destination, staging).pipe(
-                  Effect.andThen(movePath(backup, destination)),
-                ),
+            Effect.mapError((cause) =>
+              managerError(
+                "replace",
+                "Failed to prepare the package backup.",
                 cause,
-                "Failed to save package installation state.",
-                "Package state failed and the previous package could not be restored.",
               ),
             ),
           );
+        const backup = join(backupRoot, basename(destination));
+        const discardBackup = fileSystem
+          .remove(backupRoot, { recursive: true, force: true })
+          .pipe(
+            Effect.catch((cause) =>
+              Effect.logWarning(
+                "Failed to delete the package backup",
+                Cause.fail(cause),
+              ).pipe(
+                Effect.annotateLogs({
+                  component: "script-packages",
+                  data: { path: backupRoot },
+                }),
+              ),
+            ),
+          );
+        yield* movePath(destination, backup).pipe(
+          Effect.catch((cause) =>
+            discardBackup.pipe(
+              Effect.andThen(
+                managerError(
+                  "replace",
+                  `Failed to move the previous package. Check ${destination}.`,
+                  cause,
+                ),
+              ),
+            ),
+          ),
+        );
+        yield* movePath(staging, destination).pipe(
+          Effect.andThen(
+            state
+              .save(managed)
+              .pipe(
+                Effect.tapError(() =>
+                  fileSystem
+                    .remove(destination, { recursive: true, force: true })
+                    .pipe(Effect.ignore),
+                ),
+              ),
+          ),
+          Effect.catch(
+            Effect.fnUntraced(function* (cause) {
+              yield* movePath(backup, destination).pipe(
+                Effect.mapError(() =>
+                  managerError(
+                    "replace",
+                    `Failed to replace the package. The previous package remains at ${backup}. Check ${destination}.`,
+                    cause,
+                  ),
+                ),
+              );
+              yield* discardBackup;
+              return yield* managerError(
+                "replace",
+                `Failed to replace the package. The previous package was restored at ${destination}.`,
+                cause,
+              );
+            }),
+          ),
+        );
         yield* discardBackup;
         return yield* publish;
       },
@@ -714,18 +463,7 @@ export const layer = Layer.effect(
               cause,
             ),
         });
-        const subdirectory =
-          input.subdirectory === undefined
-            ? undefined
-            : yield* Effect.try({
-                try: () => decodeRepositorySubdirectory(input.subdirectory),
-                catch: (cause) =>
-                  managerError(
-                    "install",
-                    "Enter a valid repository-relative package directory.",
-                    cause,
-                  ),
-              });
+        const subdirectory = input.subdirectory;
         const resolvedSource =
           replacement?.kind === "restore"
             ? {
@@ -735,90 +473,48 @@ export const layer = Layer.effect(
               }
             : {
                 ...(replacement?.source ??
-                  (yield* Effect.gen(function* () {
-                    const commit = yield* client
-                      .resolveCommit({
-                        repositoryUrl: repository.url,
-                        ...(input.credentialId === undefined
-                          ? {}
-                          : { credentialId: input.credentialId }),
-                        ...(input.ref === undefined ? {} : { ref: input.ref }),
-                      })
-                      .pipe(
-                        Effect.mapError((cause) =>
-                          managerError("install", cause.message, cause),
-                        ),
-                      );
-                    if (commit.status !== "modified") {
-                      return yield* managerError(
-                        "install",
-                        "GitHub couldn't resolve the selected Git ref to a commit.",
-                      );
-                    }
-                    const checkedAt = new Date().toISOString();
-                    if (subdirectory === undefined) {
-                      return {
-                        checkedAt,
-                        commit: commit.commit,
-                        revision: { kind: "commit", sha: commit.commit },
-                        ...(commit.etag === undefined
-                          ? {}
-                          : { etag: commit.etag }),
-                      } satisfies ResolvedInstallSource;
-                    }
-                    const directory = yield* client
-                      .resolveDirectory({
-                        repositoryUrl: repository.url,
-                        ref: commit.commit,
-                        subdirectory,
-                        ...(input.credentialId === undefined
-                          ? {}
-                          : { credentialId: input.credentialId }),
-                      })
-                      .pipe(
-                        Effect.mapError((cause) =>
-                          managerError("install", cause.message, cause),
-                        ),
-                      );
-                    return {
-                      checkedAt,
-                      commit: commit.commit,
-                      revision: { kind: "tree", sha: directory.tree },
-                    } satisfies ResolvedInstallSource;
-                  }))),
+                  (yield* resolveSource({
+                    repositoryUrl: repository.url,
+                    ...(input.credentialId === undefined
+                      ? {}
+                      : { credentialId: input.credentialId }),
+                    ...(input.ref === undefined ? {} : { ref: input.ref }),
+                    ...(subdirectory === undefined ? {} : { subdirectory }),
+                  }).pipe(
+                    Effect.mapError((cause) =>
+                      managerError("install", cause.message, cause),
+                    ),
+                  ))),
                 kind: "remote" as const,
               };
-        if (
-          (subdirectory === undefined &&
-            resolvedSource.revision.kind !== "commit") ||
-          (subdirectory !== undefined &&
-            resolvedSource.revision.kind !== "tree")
-        ) {
-          return yield* managerError(
-            "install",
-            "GitHub returned an incomplete package revision.",
-          );
-        }
 
-        yield* Effect.tryPromise({
-          try: () => fs.mkdir(packagesDir, { recursive: true }),
-          catch: (cause) =>
-            managerError(
-              "install",
-              "Failed to create the package directory.",
-              cause,
+        yield* fileSystem
+          .makeDirectory(packagesDir, { recursive: true })
+          .pipe(
+            Effect.mapError((cause) =>
+              managerError(
+                "install",
+                "Failed to create the package directory.",
+                cause,
+              ),
             ),
-        });
-        const temporaryRoot = yield* Effect.tryPromise({
-          try: () =>
-            fs.mkdtemp(join(env.workspaceDir, ".lucent-package-install-")),
-          catch: (cause) =>
-            managerError("install", "Failed to create package staging.", cause),
-        });
-
+          );
         return yield* Effect.acquireUseRelease(
-          Effect.succeed(temporaryRoot),
-          () =>
+          fileSystem
+            .makeTempDirectory({
+              directory: env.workspaceDir,
+              prefix: ".lucent-package-install-",
+            })
+            .pipe(
+              Effect.mapError((cause) =>
+                managerError(
+                  "install",
+                  "Failed to create package staging.",
+                  cause,
+                ),
+              ),
+            ),
+          (temporaryRoot) =>
             Effect.gen(function* () {
               const archive = join(temporaryRoot, "repository.tgz");
               const staging = join(temporaryRoot, "package");
@@ -971,17 +667,18 @@ export const layer = Layer.effect(
                     cause,
                   ),
               });
+              const installedAt = (yield* DateTime.nowAsDate).toISOString();
               const managed: ManagedScriptPackage =
                 resolvedSource.kind === "restore"
                   ? {
                       ...resolvedSource.installed,
                       files,
-                      installedAt: new Date().toISOString(),
+                      installedAt,
                     }
                   : {
                       directory,
                       files,
-                      installedAt: new Date().toISOString(),
+                      installedAt,
                       name: packageName,
                       remoteRevision: resolvedSource.revision,
                       source:
@@ -1032,16 +729,10 @@ export const layer = Layer.effect(
                   : undefined,
               );
             }),
-          () =>
-            Effect.tryPromise({
-              try: () => fs.rm(temporaryRoot, { recursive: true }),
-              catch: (cause) =>
-                managerError(
-                  "install",
-                  "Failed to clean package staging.",
-                  cause,
-                ),
-            }).pipe(Effect.catch(() => Effect.void)),
+          (temporaryRoot) =>
+            fileSystem
+              .remove(temporaryRoot, { recursive: true })
+              .pipe(Effect.ignore),
         );
       },
     );
@@ -1089,7 +780,13 @@ export const layer = Layer.effect(
             );
           }
 
-          const resolution = yield* resolveManagedInstallSource(managed).pipe(
+          const resolution = yield* resolveSource({
+            ...managed.source,
+            ...(managed.source.requestedRef === undefined
+              ? {}
+              : { ref: managed.source.requestedRef }),
+            known: managed,
+          }).pipe(
             Effect.mapError((cause) =>
               managerError("update", cause.message, cause),
             ),
@@ -1106,9 +803,7 @@ export const layer = Layer.effect(
                 ),
               ),
             );
-          const integrity = yield* Effect.promise(() =>
-            integrityFor(savedRoot, managed),
-          );
+          const integrity = yield* inspectIntegrity(savedRoot, managed);
           const nextCatalog = yield* (
             integrity === summary.integrity
               ? catalog.updateManagedPackage(observed)
@@ -1194,16 +889,20 @@ export const layer = Layer.effect(
           if (!isPathInside(bundledRoot, bundledPath))
             return yield* managerError("restore", unavailable);
           return yield* Effect.acquireUseRelease(
-            Effect.tryPromise({
-              try: () =>
-                fs.mkdtemp(join(env.workspaceDir, ".lucent-package-install-")),
-              catch: (cause) =>
-                managerError(
-                  "restore",
-                  "Failed to create package staging.",
-                  cause,
+            fileSystem
+              .makeTempDirectory({
+                directory: env.workspaceDir,
+                prefix: ".lucent-package-install-",
+              })
+              .pipe(
+                Effect.mapError((cause) =>
+                  managerError(
+                    "restore",
+                    "Failed to create package staging.",
+                    cause,
+                  ),
                 ),
-            }),
+              ),
             (temporaryRoot) =>
               Effect.gen(function* () {
                 const staging = join(temporaryRoot, "package");
@@ -1263,9 +962,9 @@ export const layer = Layer.effect(
                 });
               }),
             (temporaryRoot) =>
-              Effect.tryPromise(() =>
-                fs.rm(temporaryRoot, { recursive: true, force: true }),
-              ).pipe(Effect.ignore),
+              fileSystem
+                .remove(temporaryRoot, { recursive: true, force: true })
+                .pipe(Effect.ignore),
           );
         }),
       );
@@ -1315,84 +1014,10 @@ export const layer = Layer.effect(
             return localModifications(input.packageName);
           }
           return yield* Effect.gen(function* () {
-            const temporaryRoot = yield* Effect.tryPromise({
-              try: () =>
-                fs.mkdtemp(
-                  join(env.workspaceDir, SCRIPT_PACKAGE_REMOVE_PREFIX),
-                ),
-              catch: (cause) =>
-                managerError(
-                  "remove",
-                  "Failed to create removal staging.",
-                  cause,
-                ),
-            });
-            const removedPath = join(temporaryRoot, basename(root));
-            const removeEmptyStaging = Effect.tryPromise(() =>
-              fs.rmdir(temporaryRoot),
-            ).pipe(Effect.ignore);
-            const failRemoval = Effect.fnUntraced(function* (
-              cause: unknown,
-              restoredDetail: string,
-              unrestoredDetail = restoredDetail,
-            ): Effect.fn.Return<never, ScriptPackageManagerError> {
-              const location = yield* Effect.tryPromise(() =>
-                pathExists(removedPath),
-              ).pipe(
-                Effect.match({
-                  onFailure: () => "unknown" as const,
-                  onSuccess: (exists) =>
-                    exists ? ("present" as const) : ("absent" as const),
-                }),
-              );
-              if (location === "absent") yield* removeEmptyStaging;
-              return yield* managerError(
-                "remove",
-                location === "unknown"
-                  ? `Failed to remove the package. Its location could not be checked. Check ${root} and ${removedPath}.`
-                  : location === "present"
-                    ? `${unrestoredDetail} The package is saved at ${removedPath}.`
-                    : restoredDetail,
-                cause,
-              );
-            });
-            yield* Effect.tryPromise({
-              try: () => fs.rename(root, removedPath),
-              catch: (cause) =>
-                managerError(
-                  "remove",
-                  "Failed to stage the package for removal.",
-                  cause,
-                ),
-            }).pipe(
-              Effect.catch((cause) =>
-                failRemoval(cause, "Failed to stage the package for removal."),
-              ),
-            );
             if (
               input.confirmModified !== true &&
-              (yield* Effect.promise(() =>
-                integrityFor(removedPath, managed),
-              )) !== "verified"
+              (yield* inspectIntegrity(root, managed)) !== "verified"
             ) {
-              yield* Effect.tryPromise({
-                try: () => fs.rename(removedPath, root),
-                catch: (cause) =>
-                  managerError(
-                    "remove",
-                    "Failed to restore the locally modified package.",
-                    cause,
-                  ),
-              }).pipe(
-                Effect.catch((cause) =>
-                  failRemoval(
-                    cause,
-                    "The locally modified package was restored.",
-                    "Failed to restore the locally modified package.",
-                  ),
-                ),
-              );
-              yield* removeEmptyStaging;
               yield* refreshPackageIntegrity(
                 input.packageName,
                 root,
@@ -1400,47 +1025,27 @@ export const layer = Layer.effect(
               ).pipe(Effect.mapError(mapCatalogError));
               return localModifications(input.packageName);
             }
-            yield* state.remove(input.packageName).pipe(
-              Effect.mapError((cause) =>
-                managerError(
-                  "remove",
-                  "Failed to update package state.",
-                  cause,
-                ),
-              ),
-              Effect.catch((error) =>
-                Effect.tryPromise(() => fs.rename(removedPath, root)).pipe(
-                  Effect.match({
-                    onFailure: (restoreCause) => ({
-                      cause: error,
-                      restoreCause,
-                    }),
-                    onSuccess: () => error,
-                  }),
-                  Effect.flatMap((cause) =>
-                    failRemoval(
-                      cause,
-                      "Failed to update package state. The package was restored.",
-                      "Package state failed and the package could not be restored.",
-                    ),
+            yield* state
+              .remove(input.packageName)
+              .pipe(
+                Effect.mapError((cause) =>
+                  managerError(
+                    "remove",
+                    "Failed to update package state.",
+                    cause,
                   ),
                 ),
-              ),
-            );
-            yield* Effect.tryPromise({
-              try: () => fs.rm(temporaryRoot, { recursive: true }),
-              catch: (cause) =>
-                managerError(
-                  "remove",
-                  "Failed to clean removal staging.",
-                  cause,
-                ),
-            }).pipe(
-              Effect.catch((cause) =>
-                Effect.logWarning(
-                  `Failed to clean package removal folder at ${temporaryRoot}.`,
-                  cause,
-                ),
+              );
+            yield* fileSystem.remove(root, { recursive: true }).pipe(
+              Effect.catch(
+                Effect.fnUntraced(function* (cause) {
+                  yield* catalog.refresh.pipe(Effect.ignore);
+                  return yield* managerError(
+                    "remove",
+                    `Failed to delete the package folder at ${root}. It is now unmanaged.`,
+                    cause,
+                  );
+                }),
               ),
             );
             const nextCatalog = yield* catalog
@@ -1464,20 +1069,74 @@ export const layer = Layer.effect(
             "This package is unmanaged and has no GitHub source to check.",
           );
         }
-        const result = yield* resolveManagedRevision(managed).pipe(
-          Effect.match({
-            onFailure: (error) => ({ status: "failed", error }) as const,
-            onSuccess: (value) => ({ status: "succeeded", value }) as const,
+        const source = managed.source;
+        const resolution: Effect.Effect<
+          ResolvedPackageRevision,
+          GitHubScriptPackageClientError
+        > =
+          source.kind === "directory"
+            ? client
+                .resolveDirectory({
+                  repositoryUrl: source.repositoryUrl,
+                  subdirectory: source.subdirectory,
+                  ...(source.credentialId === undefined
+                    ? {}
+                    : { credentialId: source.credentialId }),
+                  ...(source.requestedRef === undefined
+                    ? {}
+                    : { ref: source.requestedRef }),
+                })
+                .pipe(
+                  Effect.flatMap((directory) =>
+                    DateTime.nowAsDate.pipe(
+                      Effect.map(
+                        (now): ResolvedPackageRevision => ({
+                          checkedAt: now.toISOString(),
+                          revision: { kind: "tree", sha: directory.tree },
+                        }),
+                      ),
+                    ),
+                  ),
+                )
+            : resolveSource({
+                ...source,
+                ...(source.requestedRef === undefined
+                  ? {}
+                  : { ref: source.requestedRef }),
+                known: managed,
+              });
+        const result = yield* resolution.pipe(
+          Effect.matchEffect({
+            onFailure: (error) =>
+              logFailure(
+                "Failed to check script package updates",
+                Cause.fail(error),
+                { failure: "warning" },
+              ).pipe(
+                Effect.annotateLogs({
+                  component: "script-packages",
+                  repeatKey: error.kind,
+                  data: {
+                    packageName: managed.name,
+                    category: error.kind,
+                    ...(error.retryAt === undefined
+                      ? {}
+                      : { retryAt: error.retryAt }),
+                  },
+                }),
+                Effect.as({ status: "failed", error } as const),
+              ),
+            onSuccess: (value) =>
+              Effect.succeed({ status: "succeeded", value } as const),
           }),
         );
 
         const lastSuccessfulCheckAt =
           managed.update?.status === "current" ||
-          managed.update?.status === "available"
+          managed.update?.status === "available" ||
+          managed.update?.status === "unknown"
             ? managed.update.checkedAt
-            : managed.update?.status === "unknown"
-              ? managed.update.checkedAt
-              : undefined;
+            : undefined;
         const next: ManagedScriptPackage =
           result.status === "succeeded"
             ? recordRemoteResolution(managed, result.value)
@@ -1502,7 +1161,10 @@ export const layer = Layer.effect(
         return yield* mutationGate.withPermits(1)(
           Effect.gen(function* () {
             const current = yield* state.get(input.packageName);
-            if (current === undefined || !isDeepStrictEqual(current, managed)) {
+            if (
+              current === undefined ||
+              !managedPackagesEquivalent(current, managed)
+            ) {
               return yield* catalog.getOverview.pipe(
                 Effect.mapError(mapCatalogError),
               );
@@ -1527,17 +1189,6 @@ export const layer = Layer.effect(
 
     return ScriptPackageManager.of({
       checkUpdate,
-      listLeftovers: mutationGate.withPermits(1)(
-        Effect.tryPromise({
-          try: () => findLeftoverPackageCopies(env.workspaceDir),
-          catch: (cause) =>
-            managerError(
-              "list-leftovers",
-              "Failed to find saved package folders.",
-              cause,
-            ),
-        }),
-      ),
       install,
       remove,
       restore,

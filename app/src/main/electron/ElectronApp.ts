@@ -1,9 +1,11 @@
 import { app, type ProcessMetric } from "electron";
-import type { EventEmitter } from "node:events";
 
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import type * as Scope from "effect/Scope";
+
+import { listen } from "./NativeListener";
 
 export interface ElectronWillQuitEvent {
   readonly preventDefault: () => void;
@@ -29,7 +31,7 @@ export interface ElectronAppShape {
   readonly on: <EventName extends keyof ElectronAppListeners>(
     eventName: EventName,
     listener: ElectronAppListeners[EventName],
-  ) => Effect.Effect<() => void>;
+  ) => Effect.Effect<void, never, Scope.Scope>;
   readonly relaunch: Effect.Effect<void>;
   readonly quit: Effect.Effect<void>;
   readonly whenReady: Effect.Effect<void>;
@@ -44,14 +46,7 @@ export const layer = Layer.succeed(ElectronApp, {
   exit: (code) => Effect.sync(() => app.exit(code)),
   getAppMetrics: Effect.sync(() => app.getAppMetrics()),
   getVersion: Effect.sync(() => app.getVersion()),
-  on: (event, listener) =>
-    Effect.sync(() => {
-      const events: EventEmitter = app;
-      events.on(event, listener);
-      return () => {
-        events.removeListener(event, listener);
-      };
-    }),
+  on: (event, listener) => listen(app, event, listener),
   relaunch: Effect.sync(() => app.relaunch()),
   quit: Effect.sync(() => app.quit()),
   whenReady: Effect.promise(() => app.whenReady()).pipe(Effect.asVoid),

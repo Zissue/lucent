@@ -1,4 +1,8 @@
 import type { RendererLogRecord } from "./ipc/rendererLog";
+import type {
+  DesktopRendererKindSchema,
+  DesktopWindowKindSchema,
+} from "./ipc/windows";
 import type { RecentlyClosedGameSession } from "@lucent/core/accounts";
 import type {
   AppSettings,
@@ -27,7 +31,6 @@ import type {
   FileSystemFailure,
 } from "@lucent/core/filesystem";
 import type {
-  ArmyConfigPayload,
   ArmyFailPayload,
   ArmyLoopTauntCommandPayload,
   ArmyLoopTauntLeavePayload,
@@ -64,7 +67,6 @@ import type {
   ScriptCatalogPage,
   ScriptCatalogPageRequest,
   ScriptPackageInstallRequest,
-  ScriptPackageLeftoverCopy,
   ScriptPackageMutationResult,
   ScriptPackageRemoveRequest,
   ScriptPackageRestoreRequest,
@@ -114,28 +116,8 @@ import type {
 } from "./gameViews";
 
 export type AppPlatform = "linux" | "mac" | "windows";
-export type DesktopBridgeView =
-  | "about"
-  | "account-manager"
-  | "combat-profiles"
-  | "environment"
-  | "follower"
-  | "game"
-  | "game-group-controls"
-  | "game-host"
-  | "loader-grabber"
-  | "packets"
-  | "settings";
-export type DesktopBridgeWindowKind =
-  | "about"
-  | "account-manager"
-  | "combat-profiles"
-  | "environment"
-  | "follower"
-  | "game"
-  | "loader-grabber"
-  | "packets"
-  | "settings";
+export type DesktopBridgeView = typeof DesktopRendererKindSchema.Type;
+export type DesktopBridgeWindowKind = typeof DesktopWindowKindSchema.Type;
 
 export interface DesktopSettingsBridge {
   readonly initial: AppSettings | null;
@@ -152,9 +134,7 @@ export interface DesktopSettingsManagementBridge extends DesktopSettingsBridge {
 }
 
 export interface DesktopUpdatesBridge {
-  readonly checkNow: (options?: {
-    readonly force?: boolean;
-  }) => Promise<UpdateCheckState>;
+  readonly checkNow: () => Promise<UpdateCheckState>;
   readonly getState: () => Promise<UpdateCheckState>;
   readonly onChanged: (
     listener: (state: UpdateCheckState) => void,
@@ -184,9 +164,6 @@ export interface DesktopScriptingBridge {
     request: ScriptPackageInstallRequest,
   ) => Promise<ScriptPackageMutationResult>;
   readonly listCredentials: () => Promise<readonly GitHubCredentialSummary[]>;
-  readonly listPackageLeftovers: () => Promise<
-    readonly ScriptPackageLeftoverCopy[]
-  >;
   readonly loadReference: (reference: ScriptReference) => Promise<ScriptFile>;
   readonly openFile: () => Promise<ScriptOpenFileResult>;
   readonly openPath: (path: string) => Promise<boolean>;
@@ -207,7 +184,6 @@ export interface DesktopScriptingBridge {
   readonly resolveReference: (
     reference: ScriptReference,
   ) => Promise<ScriptFileResolution>;
-  readonly selectFile: () => Promise<ScriptSelectFileResult>;
   readonly saveInputValues: (
     definition: ScriptInputsDefinition,
     values: ScriptInputValues,
@@ -232,9 +208,6 @@ export interface DesktopCombatProfilesBridge {
 }
 
 export interface DesktopAccountsBridge {
-  readonly closeGameWindow: (
-    request: AccountGameWindowTargetRequest,
-  ) => Promise<AccountManagerState>;
   readonly closeGameWindows: (
     gameWindowIds: readonly number[],
   ) => Promise<AccountManagerState>;
@@ -244,7 +217,6 @@ export interface DesktopAccountsBridge {
   readonly createGroup: (
     draft: ManagedAccountGroupDraft,
   ) => Promise<AccountManagerState>;
-  readonly deleteAccount: (username: string) => Promise<AccountManagerState>;
   readonly deleteAccounts: (
     usernames: readonly string[],
   ) => Promise<AccountManagerState>;
@@ -291,10 +263,8 @@ export interface DesktopGameConsoleObservabilityBridge {
 }
 
 export interface DesktopGameRendererBridge {
-  /** Arms main-process recovery while script-authored JavaScript can run. */
-  readonly beginScriptExecution: () => Promise<number>;
-  /** Disarms a completed script execution without affecting concurrent runs. */
-  readonly finishScriptExecution: (token: number) => Promise<void>;
+  readonly beginScriptExecution: () => Promise<void>;
+  readonly finishScriptExecution: () => Promise<void>;
   /** Reads the generation assigned to this game document. */
   readonly getGeneration: () => Promise<number>;
   readonly ready: () => Promise<void>;
@@ -305,35 +275,22 @@ export type DesktopFileSystemResult<A> =
   | { readonly error: FileSystemFailure; readonly ok: false };
 
 export interface DesktopFileSystemBridge {
-  readonly closeSession: (sessionId: string) => Promise<void>;
-  readonly exists: (
-    sessionId: string,
-    path: string,
-  ) => Promise<DesktopFileSystemResult<boolean>>;
+  readonly exists: (path: string) => Promise<DesktopFileSystemResult<boolean>>;
   readonly list: (
-    sessionId: string,
     path?: string,
   ) => Promise<DesktopFileSystemResult<readonly FileSystemEntry[]>>;
-  readonly openSession: () => Promise<string>;
   readonly readJson: (
-    sessionId: string,
     path: string,
   ) => Promise<DesktopFileSystemResult<unknown | undefined>>;
   readonly readText: (
-    sessionId: string,
     path: string,
   ) => Promise<DesktopFileSystemResult<string | undefined>>;
-  readonly remove: (
-    sessionId: string,
-    path: string,
-  ) => Promise<DesktopFileSystemResult<void>>;
+  readonly remove: (path: string) => Promise<DesktopFileSystemResult<void>>;
   readonly writeJson: (
-    sessionId: string,
     path: string,
     value: unknown,
   ) => Promise<DesktopFileSystemResult<void>>;
   readonly writeText: (
-    sessionId: string,
     path: string,
     contents: string,
   ) => Promise<DesktopFileSystemResult<void>>;
@@ -491,7 +448,6 @@ export interface DesktopEnvironmentBridge {
 export interface DesktopArmyBridge {
   readonly fail: (payload: ArmyFailPayload) => Promise<void>;
   readonly leave: () => Promise<void>;
-  readonly loadConfig: (configName: string) => Promise<ArmyConfigPayload>;
   readonly loopTauntAwait: (
     payload: ArmyLoopTauntRunPayload,
   ) => Promise<ArmyLoopTauntTerminalResult>;
@@ -540,7 +496,6 @@ interface DesktopBridgeCapabilities {
   readonly accounts: DesktopAccountsBridge;
   readonly army: DesktopArmyBridge;
   readonly combatProfiles: DesktopCombatProfilesBridge;
-  readonly environment: DesktopEnvironmentBridge;
   readonly follower: DesktopFollowerBridge;
   readonly fileSystem: DesktopFileSystemBridge;
   readonly gameAccounts: DesktopGameAccountsBridge;
@@ -548,7 +503,6 @@ interface DesktopBridgeCapabilities {
   readonly gameFollower: DesktopGameFollowerBridge;
   readonly gameRenderer: DesktopGameRendererBridge;
   readonly gameView: DesktopGameViewBridge;
-  readonly gameViewHost: DesktopGameViewHostBridge;
   readonly scripting: DesktopScriptingBridge;
   readonly updates: DesktopUpdatesBridge;
   readonly windows: DesktopWindowsBridge;
@@ -558,22 +512,28 @@ interface DesktopBridgeViewCapabilities {
   readonly about: Pick<DesktopBridgeCapabilities, "updates"> & {
     readonly about: DesktopAboutBridge;
   };
-  readonly "account-manager": Pick<
-    DesktopBridgeCapabilities,
-    "accounts" | "scripting"
-  >;
+  readonly "account-manager": Pick<DesktopBridgeCapabilities, "accounts"> & {
+    readonly scripting: {
+      readonly selectFile: () => Promise<ScriptSelectFileResult>;
+    };
+  };
   readonly "combat-profiles": Pick<DesktopBridgeCapabilities, "combatProfiles">;
-  readonly environment: Pick<DesktopBridgeCapabilities, "environment">;
-  readonly follower: Pick<
-    DesktopBridgeCapabilities,
-    "combatProfiles" | "follower" | "windows"
-  >;
+  readonly environment: {
+    readonly environment: Omit<
+      DesktopEnvironmentBridge,
+      "addBoost" | "addItem" | "addQuest"
+    >;
+  };
+  readonly follower: Pick<DesktopBridgeCapabilities, "follower" | "windows"> & {
+    readonly combatProfiles: Pick<
+      DesktopCombatProfilesBridge,
+      "getState" | "onChanged"
+    >;
+  };
   readonly game: Pick<
     DesktopBridgeCapabilities,
     | "accountSettings"
     | "army"
-    | "combatProfiles"
-    | "environment"
     | "fileSystem"
     | "http"
     | "gameAccounts"
@@ -583,16 +543,31 @@ interface DesktopBridgeViewCapabilities {
     | "scripting"
     | "windows"
   > & {
+    readonly combatProfiles: Pick<
+      DesktopCombatProfilesBridge,
+      "getState" | "onChanged"
+    >;
+    readonly environment: Omit<
+      DesktopEnvironmentBridge,
+      "addBoosts" | "addItems" | "addQuests" | "fetchBoosts" | "withdrawBoosts"
+    >;
     readonly packets: DesktopGamePacketsBridge;
   } & Partial<Pick<DesktopBridgeCapabilities, "gameConsoleObservability">>;
-  readonly "game-group-controls": Pick<
-    DesktopBridgeCapabilities,
-    "gameViewHost"
-  >;
+  readonly "game-group-controls": {
+    readonly gameViewHost: Pick<
+      DesktopGameViewHostBridge,
+      "getState" | "onChanged" | "dispatchGroupCommand" | "setGroupControlsOpen"
+    >;
+  };
   readonly "loader-grabber": {
     readonly loaderGrabber: DesktopLoaderGrabberWindowBridge;
   };
-  readonly "game-host": Pick<DesktopBridgeCapabilities, "gameViewHost">;
+  readonly "game-host": {
+    readonly gameViewHost: Omit<
+      DesktopGameViewHostBridge,
+      "dispatchGroupCommand"
+    >;
+  };
   readonly packets: {
     readonly packets: DesktopPacketsWindowBridge;
   };

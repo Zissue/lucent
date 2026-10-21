@@ -34,6 +34,7 @@
         ]
       }
     ],
+    "unicorn/prefer-node-protocol": "error",
     "lucent/no-inline-schema-compile": "warn",
     "lucent/no-manual-effect-runtime-in-tests": "error"
   },
@@ -62,6 +63,80 @@
       "files": ["script-packages/*/scripts/**/*.js"],
       "rules": {
         "lucent/static-script-inputs": "error"
+      }
+    },
+    {
+      "files": ["app/src/shared/**/*.ts"],
+      "rules": {
+        "eslint/no-restricted-imports": [
+          "error",
+          {
+            "paths": [
+              {
+                "name": "effect",
+                "message": "Import Effect namespaces from explicit subpaths such as effect/Effect."
+              }
+            ],
+            "patterns": [
+              {
+                "regex": "^(\\.\\./)+(main|renderer)(/|$)",
+                "message": "shared/ runs in every process. It must not import main or renderer code."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["app/src/main/electron/*.ts"],
+      "rules": {
+        "eslint/no-restricted-imports": [
+          "error",
+          {
+            "paths": [
+              {
+                "name": "effect",
+                "message": "Import Effect namespaces from explicit subpaths such as effect/Effect."
+              }
+            ],
+            "patterns": [
+              {
+                "regex": "^\\.\\./[^.]",
+                "message": "electron/ holds thin Electron adapters. Import only electron/, shared/, and packages."
+              },
+              {
+                "regex": "^\\.\\./\\.\\./(main|renderer)(/|$)",
+                "message": "electron/ holds thin Electron adapters. Import only electron/, shared/, and packages."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["app/src/main/**/*.ts", "app/src/shared/**/*.ts"],
+      "excludeFiles": ["**/*.test.ts"],
+      "rules": {
+        "eslint/no-console": "error",
+        "eslint/no-restricted-properties": [
+          "error",
+          {
+            "object": "Effect",
+            "property": "log",
+            "message": "Use an explicit log level: logError, logWarning, logInfo, logDebug."
+          },
+          {
+            "object": "Effect",
+            "property": "logTrace",
+            "message": "Use an allowed log level: logError, logWarning, logInfo, logDebug."
+          },
+          {
+            "object": "Effect",
+            "property": "logFatal",
+            "message": "Use an allowed log level: logError, logWarning, logInfo, logDebug."
+          }
+        ],
+        "lucent/log-message-literal": "error"
       }
     }
   ]

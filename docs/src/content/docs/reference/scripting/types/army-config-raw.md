@@ -13,4 +13,4 @@ type ArmyConfigRaw = {
 }
 ```
 
-<p class="source-reference">Defined in <a class="source-reference__link" href="https://github.com/toommyliu/lucent/blob/main/packages/core/src/army.ts#L6" aria-label="Open source: packages/core/src/army.ts:6" title="packages/core/src/army.ts:6" target="_blank" rel="noreferrer"><code class="source-reference__path">army.ts:6</code></a></p>
+<p class="source-reference">Defined in <a class="source-reference__link" href="https://github.com/toommyliu/lucent/blob/main/packages/core/src/army.ts#L11" aria-label="Open source: packages/core/src/army.ts:11" title="packages/core/src/army.ts:11" target="_blank" rel="noreferrer"><code class="source-reference__path">army.ts:11</code></a></p>

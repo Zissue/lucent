@@ -8,6 +8,7 @@ import * as Fiber from "effect/Fiber";
 import * as Logger from "effect/Logger";
 import * as Layer from "effect/Layer";
 
+import { listen } from "../electron/NativeListener";
 import {
   ElectronApp,
   type ElectronWillQuitEvent,
@@ -43,6 +44,7 @@ const makeHarness = (flushCompletes: boolean) => {
     : flushStarted.pipe(Effect.andThen(Effect.never));
   const observability = DesktopObservability.of({
     flush,
+    setSessionStop: () => Effect.void,
     installProcessHooks: Effect.void,
     logFilePath: "lucent.log",
   });
@@ -54,13 +56,7 @@ const makeHarness = (flushCompletes: boolean) => {
       }),
     getAppMetrics: Effect.succeed([]),
     getVersion: Effect.succeed("1.0.0"),
-    on: (eventName, listener) =>
-      Effect.sync(() => {
-        appEvents.on(eventName, listener);
-        return () => {
-          appEvents.removeListener(eventName, listener);
-        };
-      }),
+    on: (eventName, listener) => listen(appEvents, eventName, listener),
     quit: Effect.void,
     relaunch: Effect.void,
     whenReady: Effect.void,
@@ -127,7 +123,9 @@ describe("DesktopLifecycle", () => {
       yield* lifecycle.register;
       yield* lifecycle.attachObservability;
       expect(yield* lifecycle.isQuitting).toBe(false);
+      expect(lifecycle.isQuittingSync()).toBe(false);
       harness.emitBeforeQuit();
+      expect(lifecycle.isQuittingSync()).toBe(true);
       expect(yield* lifecycle.isQuitting).toBe(true);
     }).pipe(Effect.provide(harness.layer), Effect.scoped);
   });
@@ -148,7 +146,8 @@ describe("DesktopLifecycle", () => {
             }),
           );
           harness.emitWillQuit();
-          yield* lifecycle.awaitQuit;
+          expect(lifecycle.isQuittingSync()).toBe(true);
+          expect(yield* lifecycle.awaitQuit).toBe("will-quit");
         }).pipe(Effect.provide(harness.layer)),
       );
 
@@ -211,6 +210,7 @@ describe("DesktopLifecycle", () => {
           yield* lifecycle.register;
           yield* lifecycle.attachObservability;
           findInstalledSignalListener(previousListeners)(TEST_SIGNAL);
+          expect(lifecycle.isQuittingSync()).toBe(true);
 
           yield* Effect.promise(() => vi.advanceTimersByTimeAsync(1_500));
           yield* Effect.promise(() => harness.exited);

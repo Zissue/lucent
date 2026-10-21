@@ -27,7 +27,7 @@ export const desktopLogErrorDetails = (
   value: unknown,
   depth = 0,
 ): DesktopLogError => {
-  if (value instanceof Error) {
+  if (Predicate.isError(value)) {
     return {
       name: value.name,
       message: value.message,
@@ -40,10 +40,9 @@ export const desktopLogErrorDetails = (
 
   let message: string;
   try {
-    message =
-      typeof value === "string"
-        ? value
-        : (JSON.stringify(value) ?? String(value));
+    message = Predicate.isString(value)
+      ? value
+      : (JSON.stringify(value) ?? String(value));
   } catch {
     try {
       message = String(value);
@@ -55,12 +54,12 @@ export const desktopLogErrorDetails = (
 };
 
 const boundReason = (reason: Cause.Reason<unknown>): Cause.Reason<unknown> => {
-  if (Cause.isFailReason(reason) && reason.error instanceof Error) {
+  if (Cause.isFailReason(reason) && Predicate.isError(reason.error)) {
     return Cause.makeFailReason(desktopLogErrorDetails(reason.error)).annotate(
       Cause.reasonAnnotations(reason),
     );
   }
-  if (Cause.isDieReason(reason) && reason.defect instanceof Error) {
+  if (Cause.isDieReason(reason) && Predicate.isError(reason.defect)) {
     return Cause.makeDieReason(desktopLogErrorDetails(reason.defect)).annotate(
       Cause.reasonAnnotations(reason),
     );
@@ -70,6 +69,7 @@ const boundReason = (reason: Cause.Reason<unknown>): Cause.Reason<unknown> => {
 
 export const desktopLogRecord = (
   options: Logger.Options<unknown>,
+  debug = false,
 ): DesktopLogRecord => {
   const {
     component = "effect",
@@ -81,12 +81,12 @@ export const desktopLogRecord = (
   const messages = Array.isArray(options.message)
     ? options.message
     : [options.message];
-  const labeled = typeof messages[0] === "string";
+  const labeled = Predicate.isString(messages[0]);
   const message = labeled ? messages[0] : "Unlabeled log message";
   const errors = (
     labeled
       ? messages.slice(1)
-      : messages.filter((part) => typeof part !== "string")
+      : messages.filter((part) => !Predicate.isString(part))
   ).map((value) => desktopLogErrorDetails(value));
   if (options.cause.reasons.length > 0) {
     errors.push(
@@ -100,11 +100,11 @@ export const desktopLogRecord = (
     level: options.logLevel.toLowerCase(),
     component,
     message,
-    ...(typeof repeatKey === "string" ? { repeatKey } : {}),
+    ...(Predicate.isString(repeatKey) ? { repeatKey } : {}),
     ...(data === undefined ? {} : { data }),
     ...(Object.keys(annotations).length === 0 ? {} : { annotations }),
     ...(errors.length === 0 ? {} : { error: errors }),
-    ...(span === undefined
+    ...(!debug || span === undefined
       ? {}
       : { traceId: span.traceId, spanId: span.spanId }),
   };
@@ -116,11 +116,11 @@ const utf8 = new TextEncoder();
 export const desktopLogJsonSafe = (value: unknown): unknown => {
   const seen = new WeakSet<object>();
   const source = JSON.stringify(value, (_key, part: unknown) => {
-    if (typeof part === "bigint") return part.toString();
-    if (part instanceof Error) return desktopLogErrorDetails(part);
-    if (typeof part === "function" || typeof part === "symbol")
+    if (Predicate.isBigInt(part)) return part.toString();
+    if (Predicate.isError(part)) return desktopLogErrorDetails(part);
+    if (Predicate.isFunction(part) || Predicate.isSymbol(part))
       return undefined;
-    if (typeof part === "object" && part !== null) {
+    if (Predicate.isObjectOrArray(part)) {
       if (seen.has(part)) return "[Circular]";
       seen.add(part);
     }
@@ -130,7 +130,7 @@ export const desktopLogJsonSafe = (value: unknown): unknown => {
   const safe: unknown = JSON.parse(source);
   if (
     Predicate.isObject(safe) &&
-    "data" in safe &&
+    Predicate.hasProperty(safe, "data") &&
     safe["data"] !== undefined
   ) {
     const bytes = utf8.encode(JSON.stringify(safe["data"])).byteLength;

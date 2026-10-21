@@ -1,5 +1,5 @@
-import { promises as fs } from "fs";
-import { dirname, resolve } from "path";
+import { promises as fs } from "node:fs";
+import { dirname, resolve } from "node:path";
 
 import * as Schema from "effect/Schema";
 
@@ -8,7 +8,7 @@ import {
   ScriptPackageNameSchema,
   type ScriptPackageDirectory,
 } from "@lucent/core/scriptPackages";
-import { isMissingFileError } from "./ScriptPackageFileSystem";
+import { isMissingFileError } from "../filesystem/BoundedFileSystem";
 import { SCRIPT_PACKAGE_DIRECTORY_SLUG_MAX_BYTES } from "./ScriptLimits";
 
 const decodePackageDirectory = Schema.decodeUnknownSync(
@@ -64,9 +64,8 @@ export const packageDirectoryPath = (
   packagesDir: string,
   directory: string,
 ): string => {
-  const decodedDirectory = decodePackageDirectory(directory);
   const root = resolve(packagesDir);
-  const path = resolve(root, decodedDirectory);
+  const path = resolve(root, directory);
   if (dirname(path) !== root) {
     throw new Error("Package folder escapes the package directory.");
   }

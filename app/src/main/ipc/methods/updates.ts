@@ -18,9 +18,9 @@ export const getState = makeDesktopIpcMethod({
 export const checkNow = makeDesktopIpcMethod({
   descriptor: UpdatesIpc.checkNow,
   allowedSenders: updateSenders,
-  handler: Effect.fn("desktop.ipc.updates.checkNow")(function* (payload) {
+  handler: Effect.fn("desktop.ipc.updates.checkNow")(function* () {
     const updates = yield* DesktopUpdates;
-    return yield* updates.checkNow({ force: payload.force === true });
+    return yield* updates.checkNow({ force: true });
   }),
 });
 
@@ -41,8 +41,7 @@ export const installEventForwarding = Effect.fn(
   const ipc = yield* DesktopIpc;
   const updates = yield* DesktopUpdates;
 
-  yield* Effect.acquireRelease(
-    updates.onStateChanged((state) => ipc.sendToAll(UpdatesIpc.changed, state)),
-    (unsubscribe) => Effect.sync(unsubscribe),
+  yield* updates.onStateChanged((state) =>
+    ipc.sendToAll(UpdatesIpc.changed, state),
   );
 });
