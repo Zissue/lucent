@@ -245,4 +245,37 @@ describe("combatProfiles", () => {
       source.messageTriggers?.[0],
     );
   });
+
+  it("keeps the copy suffix when duplicating a full-length label", () => {
+    const source = normalizeCombatProfile({
+      ...canonicalLibrary.profiles[1]!,
+      label: `${"Long Rotation ".repeat(5)}Name ABCDEFG`,
+    });
+    const first = duplicateCombatProfile(source, [source], () => "copy-1");
+    const second = duplicateCombatProfile(
+      source,
+      [source, first],
+      () => "copy-2",
+    );
+
+    expect(source.label).toHaveLength(80);
+    expect(first.label).toBe(
+      "Long Rotation Long Rotation Long Rotation Long Rotation Long Rotation Name Copy",
+    );
+    expect(second.label).toBe(
+      "Long Rotation Long Rotation Long Rotation Long Rotation Long Rotation Copy 2",
+    );
+    expect(normalizeCombatProfile(second).label).toBe(second.label);
+  });
+
+  it("cuts mid-word instead of dropping most of a label with an early space", () => {
+    const source = normalizeCombatProfile({
+      ...canonicalLibrary.profiles[1]!,
+      label: `A ${"VeryLongNameWithoutAnySpaces".repeat(3)}`.slice(0, 80),
+    });
+
+    expect(duplicateCombatProfile(source, [source], () => "copy-1").label).toBe(
+      "A VeryLongNameWithoutAnySpacesVeryLongNameWithoutAnySpacesVeryLongNameWitho Copy",
+    );
+  });
 });

@@ -19,4 +19,4 @@ type CombatProfileMessageTriggerDefinition = Partial<{
 }
 ```
 
-<p class="source-reference">Defined in <a class="source-reference__link" href="https://github.com/toommyliu/lucent/blob/main/packages/core/src/combatProfiles.ts#L125" aria-label="Open source: packages/core/src/combatProfiles.ts:125" title="packages/core/src/combatProfiles.ts:125" target="_blank" rel="noreferrer"><code class="source-reference__path">combatProfiles.ts:125</code></a></p>
+<p class="source-reference">Defined in <a class="source-reference__link" href="https://github.com/toommyliu/lucent/blob/main/packages/core/src/combatProfiles.ts#L128" aria-label="Open source: packages/core/src/combatProfiles.ts:128" title="packages/core/src/combatProfiles.ts:128" target="_blank" rel="noreferrer"><code class="source-reference__path">combatProfiles.ts:128</code></a></p>

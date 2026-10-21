@@ -42,4 +42,4 @@ type CombatProfile = {
 }
 ```
 
-<p class="source-reference">Defined in <a class="source-reference__link" href="https://github.com/toommyliu/lucent/blob/main/packages/core/src/combatProfiles.ts#L113" aria-label="Open source: packages/core/src/combatProfiles.ts:113" title="packages/core/src/combatProfiles.ts:113" target="_blank" rel="noreferrer"><code class="source-reference__path">combatProfiles.ts:113</code></a></p>
+<p class="source-reference">Defined in <a class="source-reference__link" href="https://github.com/toommyliu/lucent/blob/main/packages/core/src/combatProfiles.ts#L116" aria-label="Open source: packages/core/src/combatProfiles.ts:116" title="packages/core/src/combatProfiles.ts:116" target="_blank" rel="noreferrer"><code class="source-reference__path">combatProfiles.ts:116</code></a></p>
