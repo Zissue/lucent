@@ -878,6 +878,7 @@ function ProfileBrowser({
           onFocus={(event) => {
             if (
               event.target === event.currentTarget &&
+              event.currentTarget.matches(":focus-visible") &&
               activeRow !== undefined
             ) {
               virtualizer.scrollToIndex(activeRow, { align: "auto" });
