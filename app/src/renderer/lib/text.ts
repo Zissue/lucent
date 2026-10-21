@@ -3,30 +3,28 @@ export interface TextMatchSegment {
   readonly text: string;
 }
 
+const escapeRegExp = (value: string): string =>
+  value.replaceAll(/[$()*+.?[\\\]^{|}]/gu, "\\$&");
+
 export const splitTextMatches = (
   value: string,
   query: string,
 ): readonly TextMatchSegment[] => {
-  const needle = query.toLocaleLowerCase();
-  if (needle === "") {
+  if (query === "") {
     return [{ match: false, text: value }];
   }
 
-  const source = value.toLocaleLowerCase();
   const segments: TextMatchSegment[] = [];
   let offset = 0;
-  while (offset < value.length) {
-    const index = source.indexOf(needle, offset);
-    if (index < 0) {
-      segments.push({ match: false, text: value.slice(offset) });
-      break;
+  for (const match of value.matchAll(new RegExp(escapeRegExp(query), "giu"))) {
+    if (match.index > offset) {
+      segments.push({ match: false, text: value.slice(offset, match.index) });
     }
-    if (index > offset) {
-      segments.push({ match: false, text: value.slice(offset, index) });
-    }
-    const end = index + needle.length;
-    segments.push({ match: true, text: value.slice(index, end) });
-    offset = end;
+    segments.push({ match: true, text: match[0] });
+    offset = match.index + match[0].length;
+  }
+  if (offset < value.length) {
+    segments.push({ match: false, text: value.slice(offset) });
   }
   return segments;
 };

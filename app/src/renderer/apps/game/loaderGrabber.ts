@@ -17,7 +17,7 @@ const requirePlayerReady = Effect.fn("loaderGrabber.requirePlayerReady")(
     const api = yield* Api;
     if (!(yield* api.player.isReady())) {
       return yield* new LoaderGrabberError({
-        detail: "The player is not ready.",
+        detail: "Log in and wait for your character to load.",
       });
     }
     return api;

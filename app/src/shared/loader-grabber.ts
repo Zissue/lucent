@@ -90,6 +90,15 @@ export const GrabbedItemSchema = Schema.Struct({
   name: Schema.String,
   pet: Schema.Boolean,
   quantity: Schema.Number,
+  requirements: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({
+        itemId: Schema.Number,
+        name: Schema.String,
+        quantity: Schema.Number,
+      }),
+    ),
+  ),
   shopItemId: Schema.optionalKey(Schema.Number),
   temporaryItem: Schema.Boolean,
   wearable: Schema.Boolean,
