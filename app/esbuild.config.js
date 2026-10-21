@@ -182,6 +182,7 @@ const rendererViews = [
   }),
   createRendererView("follower", "Follower", { startsPending: true }),
   createRendererView("loader-grabber", "Loader Grabber", {
+    framework: "react",
     startsPending: true,
   }),
   createRendererView("packets", "Packets", { startsPending: true }),
