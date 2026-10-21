@@ -44,6 +44,7 @@ import {
   DEFAULT_FOLLOWER_COPY_WALK,
   DEFAULT_FOLLOWER_RETRY_ENABLED,
   createIdleFollowerState,
+  formatFollowerAttackTarget,
   parseFollowerLocationFallbacks,
   type FollowerStartPayload,
   type FollowerConfig,
@@ -140,7 +141,8 @@ export function FollowerView(props: FollowerViewProps): JSX.Element {
       DEFAULT_COMBAT_PROFILE_ID,
   );
   const [attackPriority, setAttackPriority] = createSignal(
-    initialConfig?.attackPriority.join(", ") ?? "",
+    initialConfig?.attackPriority.map(formatFollowerAttackTarget).join(", ") ??
+      "",
   );
   const [lockedZoneFallbacks, setLockedZoneFallbacks] = createSignal<
     readonly string[]
@@ -318,7 +320,9 @@ export function FollowerView(props: FollowerViewProps): JSX.Element {
       setRetryEnabled(config.retryEnabled);
       setMaxAttempts(config.maxAttempts);
       setSelectedProfileId(config.selectedProfileId);
-      setAttackPriority(config.attackPriority.join(", "));
+      setAttackPriority(
+        config.attackPriority.map(formatFollowerAttackTarget).join(", "),
+      );
       setLockedZoneFallbacks(config.lockedZoneFallbacks);
       setLockedZoneRoomOverride(config.lockedZoneRoomOverride);
     });
@@ -513,7 +517,7 @@ export function FollowerView(props: FollowerViewProps): JSX.Element {
         <Input
           id="follower-attack-priority"
           value={attackPriority()}
-          placeholder="Defense Drone, Attack Drone"
+          placeholder="Defense Drone, id:17"
           autocomplete="off"
           disabled={running() || !combatEnabled()}
           onInput={(event) => setAttackPriority(event.currentTarget.value)}
