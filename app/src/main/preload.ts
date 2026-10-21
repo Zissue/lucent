@@ -179,6 +179,11 @@ interface RendererFailure {
 // function to the page as source text, so its whole body must be self-contained.
 const installRendererLogging = (
   reportFailure: (failure: RendererFailure) => void,
+  reportLog: (
+    level: RendererLogRecord["level"],
+    message: string,
+    error?: DesktopLogError,
+  ) => void,
   write: DesktopLogBridge["write"],
 ): DesktopLogBridge => {
   const errorDetails = (value: unknown, depth = 0): DesktopLogError => {
@@ -231,7 +236,25 @@ const installRendererLogging = (
     } catch {}
   });
 
-  return { write };
+  const logAtLevel =
+    (level: RendererLogRecord["level"]) =>
+    (message: string, error?: unknown): void => {
+      try {
+        reportLog(
+          level,
+          message,
+          error === undefined ? undefined : errorDetails(error),
+        );
+      } catch {}
+    };
+
+  return {
+    error: logAtLevel("error"),
+    warn: logAtLevel("warn"),
+    info: logAtLevel("info"),
+    debug: logAtLevel("debug"),
+    write,
+  };
 };
 
 const reportRendererFailure = (failure: RendererFailure): void =>
@@ -246,10 +269,20 @@ const reportRendererFailure = (failure: RendererFailure): void =>
     failure.error,
   );
 
-installRendererLogging(reportRendererFailure, writeRendererLog);
+const reportRendererLog = (
+  level: RendererLogRecord["level"],
+  message: string,
+  error?: DesktopLogError,
+): void => logRenderer(level, message, { view: bridgeView }, error);
+
+installRendererLogging(
+  reportRendererFailure,
+  reportRendererLog,
+  writeRendererLog,
+);
 const logBridge: DesktopLogBridge = contextBridge.executeInMainWorld({
   func: installRendererLogging,
-  args: [reportRendererFailure, writeRendererLog],
+  args: [reportRendererFailure, reportRendererLog, writeRendererLog],
 });
 
 const subscribe = createSubscribe(ipcRenderer);
