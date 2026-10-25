@@ -245,6 +245,7 @@ fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     out
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 #[ignore = "needs a GPU and the AQW servers; run with TMPDIR set to an empty directory"]
 fn a5_twenty_start_stop_cycles_leave_threads_sockets_and_temp_files_unchanged() {
