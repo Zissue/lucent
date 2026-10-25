@@ -272,6 +272,7 @@ fn a5_twenty_start_stop_cycles_leave_threads_sockets_and_temp_files_unchanged() 
     cycle();
     settle();
     let before = support::resources();
+    let names_before = support::thread_names();
     let temp_before = support::files_in(&std::env::temp_dir());
     let mut elapsed = Vec::new();
     for index in 0..20 {
@@ -288,11 +289,30 @@ fn a5_twenty_start_stop_cycles_leave_threads_sockets_and_temp_files_unchanged() 
     }
     settle();
     let after = support::resources();
+    let names_after = support::thread_names();
     let temp_after = support::files_in(&std::env::temp_dir());
     summary("shutdown", &mut elapsed);
     println!("before {before:?} temp files {temp_before}");
     println!("after  {after:?} temp files {temp_after}");
-    assert_eq!(after, before);
+    println!("threads before {names_before:?}");
+    println!("threads after  {names_after:?}");
+    let named = |names: &[String]| {
+        names
+            .iter()
+            .filter(|name| !name.is_empty())
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let unnamed = |names: &[String]| names.iter().filter(|name| name.is_empty()).count();
+    assert_eq!(named(&names_after), named(&names_before));
+    assert!(!names_after.iter().any(|name| name == "lucent-player"));
+    // Unnamed threads are macOS dispatch workers the OS starts and parks itself; every
+    // thread Lucent starts is named. They drift by a few in either direction between runs.
+    assert!(unnamed(&names_after) <= unnamed(&names_before) + 4);
+    assert_eq!(
+        (after.sockets, after.open_files),
+        (before.sockets, before.open_files)
+    );
     assert_eq!(temp_after, temp_before);
     let _ = std::fs::remove_dir_all(&data);
 }

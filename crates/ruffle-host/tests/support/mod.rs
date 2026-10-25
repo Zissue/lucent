@@ -75,6 +75,59 @@ pub fn resources() -> Resources {
     }
 }
 
+#[cfg(target_os = "macos")]
+const PROC_PIDLISTTHREADS: libc::c_int = 6;
+
+#[cfg(target_os = "macos")]
+pub fn thread_names() -> Vec<String> {
+    use std::mem::size_of;
+    let pid = std::process::id() as libc::c_int;
+    let mut ids = vec![0u64; 512];
+    let bytes = (ids.len() * size_of::<u64>()) as libc::c_int;
+    let used =
+        unsafe { libc::proc_pidinfo(pid, PROC_PIDLISTTHREADS, 0, ids.as_mut_ptr().cast(), bytes) };
+    assert!(used >= 0, "proc_pidinfo(PROC_PIDLISTTHREADS) failed");
+    ids.truncate(used as usize / size_of::<u64>());
+    let mut names: Vec<String> = ids
+        .into_iter()
+        .filter_map(|id| {
+            let mut info: libc::proc_threadinfo = unsafe { std::mem::zeroed() };
+            let size = size_of::<libc::proc_threadinfo>() as libc::c_int;
+            let read = unsafe {
+                libc::proc_pidinfo(
+                    pid,
+                    libc::PROC_PIDTHREADINFO,
+                    id,
+                    (&raw mut info).cast(),
+                    size,
+                )
+            };
+            (read == size).then(|| {
+                let name: Vec<u8> = info
+                    .pth_name
+                    .iter()
+                    .take_while(|&&c| c != 0)
+                    .map(|&c| c as u8)
+                    .collect();
+                String::from_utf8_lossy(&name).into_owned()
+            })
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+#[cfg(target_os = "linux")]
+pub fn thread_names() -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir("/proc/self/task")
+        .unwrap()
+        .filter_map(|entry| std::fs::read_to_string(entry.ok()?.path().join("comm")).ok())
+        .map(|name| name.trim().to_owned())
+        .collect();
+    names.sort();
+    names
+}
+
 pub fn files_in(dir: &Path) -> usize {
     std::fs::read_dir(dir)
         .map(|entries| entries.count())
