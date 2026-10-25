@@ -14,18 +14,24 @@ use gpui::{
 use ruffle_host::ruffle::{
     ImeEvent, MouseButton as GameButton, MouseCursor, MouseWheelDelta, PlayerEvent, TextControlCode,
 };
-use ruffle_host::{InputSink, PlayerHost, Presentation, UiRequest, Viewport};
+use ruffle_host::{
+    Engine, InputSink, PlayerConfig, PlayerHost, Presentation, Profile, UiRequest, Viewport,
+};
 
 use crate::keys;
 use crate::present::Presented;
 
 const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(2);
+const LOAD_DELAY: Duration = Duration::from_secs(10);
 
 pub struct GameWindow {
+    engine: Engine,
+    profile: Profile,
     host: Option<PlayerHost>,
     input: InputSink,
     presented: Presented,
     boot: Boot,
+    load_delayed: bool,
     focus: FocusHandle,
     viewport: Rc<Cell<Viewport>>,
     modifiers: gpui::Modifiers,
@@ -36,11 +42,39 @@ pub struct GameWindow {
 
 impl GameWindow {
     pub fn new(
+        engine: Engine,
+        profile: Profile,
         host: PlayerHost,
         presentation: Presentation,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let this = cx.entity().downgrade();
+        window.on_window_should_close(cx, move |_, cx| {
+            this.update(cx, |view, cx| view.close(cx)).unwrap_or(true)
+        });
+        let focus = cx.focus_handle();
+        focus.focus(window, cx);
+        let mut view = Self {
+            engine,
+            profile,
+            input: host.input().clone(),
+            boot: host.session().status().boot,
+            load_delayed: false,
+            host: None,
+            presented: Presented::default(),
+            focus,
+            viewport: Rc::new(Cell::new(Viewport::AUTHORED)),
+            modifiers: gpui::Modifiers::default(),
+            composing: None,
+            cursor: CursorStyle::Arrow,
+            _tasks: Vec::new(),
+        };
+        view.attach(host, presentation, cx);
+        view
+    }
+
+    fn attach(&mut self, host: PlayerHost, presentation: Presentation, cx: &mut Context<Self>) {
         let Presentation { frames, ui } = presentation;
         let frame_task = cx.spawn(async move |this, cx| {
             while let Some(frame) = frames.next().await {
@@ -74,23 +108,37 @@ impl GameWindow {
                 }
             }
         });
-        let this = cx.entity().downgrade();
-        window.on_window_should_close(cx, move |_, cx| {
-            this.update(cx, |view, cx| view.close(cx)).unwrap_or(true)
+        let delay_task = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(LOAD_DELAY).await;
+            let _ = this.update(cx, |view, cx| {
+                view.load_delayed = true;
+                cx.notify();
+            });
         });
-        let focus = cx.focus_handle();
-        focus.focus(window, cx);
-        Self {
-            input: host.input().clone(),
-            boot: host.session().status().boot,
-            host: Some(host),
-            presented: Presented::default(),
-            focus,
-            viewport: Rc::new(Cell::new(Viewport::AUTHORED)),
-            modifiers: gpui::Modifiers::default(),
-            composing: None,
-            cursor: CursorStyle::Arrow,
-            _tasks: vec![frame_task, ui_task, status_task],
+        self.input = host.input().clone();
+        self.boot = host.session().status().boot;
+        self.load_delayed = false;
+        self.host = Some(host);
+        self._tasks = vec![frame_task, ui_task, status_task, delay_task];
+        self.viewport.set(Viewport::AUTHORED);
+        cx.notify();
+    }
+
+    fn reload(&mut self, cx: &mut Context<Self>) {
+        if let Some(host) = self.host.take() {
+            cx.background_executor()
+                .spawn(async move { host.shutdown(Instant::now() + SHUTDOWN_DEADLINE) })
+                .detach();
+        }
+        match PlayerHost::spawn(&self.engine, PlayerConfig::launcher(self.profile.clone())) {
+            Ok((host, presentation)) => self.attach(host, presentation, cx),
+            Err(error) => {
+                tracing::error!(%error, "could not restart the player thread");
+                self.boot = Boot::Failed {
+                    error: error.to_string(),
+                };
+                cx.notify();
+            }
         }
     }
 
@@ -295,32 +343,81 @@ impl Render for GameWindow {
             .on_key_up(cx.listener(|view, event, _, _| view.key_up(event)))
             .on_modifiers_changed(cx.listener(|view, event, _, _| view.modifiers_changed(event)))
             .child(game)
-            .when_some(overlay_text(&self.boot), |root, text| {
+            .when_some(overlay(&self.boot, self.load_delayed), |root, overlay| {
+                let reload = overlay.offers_reload.then(|| {
+                    div()
+                        .id("reload-game")
+                        .mt_3()
+                        .px_3()
+                        .py_1()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(rgb(0x52525b))
+                        .cursor_pointer()
+                        .hover(|style| style.bg(rgb(0x27272a)))
+                        .child("Reload game")
+                        .on_click(cx.listener(|view, _, _, cx| view.reload(cx)))
+                });
                 root.child(
                     div()
                         .absolute()
                         .inset_0()
                         .occlude()
                         .flex()
+                        .flex_col()
                         .items_center()
                         .justify_center()
+                        .gap_1()
                         .bg(rgb(0x000000))
                         .text_color(rgb(0xd4d4d8))
                         .text_size(px(14.))
-                        .child(text),
+                        .child(overlay.title)
+                        .children(overlay.detail)
+                        .children(reload),
                 )
             })
     }
 }
 
-fn overlay_text(boot: &Boot) -> Option<String> {
-    match boot {
-        Boot::Ready => None,
-        Boot::Starting => Some("Loading".into()),
-        Boot::Downloading { percent } => Some(format!("Loading {percent}%")),
-        Boot::Failed { error } => Some(format!("The game could not start: {error}")),
-        Boot::Stopping => Some("Closing".into()),
-    }
+struct Overlay {
+    title: String,
+    detail: Option<&'static str>,
+    offers_reload: bool,
+}
+
+fn overlay(boot: &Boot, delayed: bool) -> Option<Overlay> {
+    let loading = |title: String| {
+        if delayed {
+            Overlay {
+                title: "Still loading...".into(),
+                detail: Some(
+                    "The game is taking longer than expected. You can keep waiting or reload it.",
+                ),
+                offers_reload: true,
+            }
+        } else {
+            Overlay {
+                title,
+                detail: None,
+                offers_reload: false,
+            }
+        }
+    };
+    Some(match boot {
+        Boot::Ready => return None,
+        Boot::Starting => loading("Loading".into()),
+        Boot::Downloading { percent } => loading(format!("Loading {percent}%")),
+        Boot::Failed { error } => Overlay {
+            title: format!("The game could not start: {error}"),
+            detail: None,
+            offers_reload: true,
+        },
+        Boot::Stopping => Overlay {
+            title: "Closing".into(),
+            detail: None,
+            offers_reload: false,
+        },
+    })
 }
 
 impl EntityInputHandler for GameWindow {
@@ -418,4 +515,40 @@ pub fn observe_focus(view: &gpui::Entity<GameWindow>, window: &mut Window, cx: &
             let _ = view.update(cx, |view, _| view.release_input());
         })
         .detach();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn shown(boot: Boot, delayed: bool) -> Option<(String, bool)> {
+        overlay(&boot, delayed).map(|overlay| (overlay.title, overlay.offers_reload))
+    }
+
+    #[test]
+    fn offers_a_reload_once_loading_is_slow_or_has_failed() {
+        assert_eq!(
+            shown(Boot::Downloading { percent: 40 }, false),
+            Some(("Loading 40%".into(), false))
+        );
+        assert_eq!(
+            shown(Boot::Downloading { percent: 40 }, true),
+            Some(("Still loading...".into(), true))
+        );
+        assert_eq!(
+            shown(Boot::Starting, true),
+            Some(("Still loading...".into(), true))
+        );
+        assert_eq!(
+            shown(
+                Boot::Failed {
+                    error: "offline".into()
+                },
+                false
+            ),
+            Some(("The game could not start: offline".into(), true))
+        );
+        assert_eq!(shown(Boot::Stopping, true), Some(("Closing".into(), false)));
+        assert_eq!(shown(Boot::Ready, true), None);
+    }
 }

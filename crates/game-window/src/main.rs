@@ -35,7 +35,7 @@ fn main() -> ExitCode {
         .with_quit_mode(QuitMode::Explicit)
         .run(move |cx: &mut App| {
             let (host, presentation) =
-                match PlayerHost::spawn(&engine, PlayerConfig::launcher(profile)) {
+                match PlayerHost::spawn(&engine, PlayerConfig::launcher(profile.clone())) {
                     Ok(started) => started,
                     Err(error) => {
                         tracing::error!(%error, "could not start the player thread");
@@ -56,7 +56,8 @@ fn main() -> ExitCode {
                 ..Default::default()
             };
             let opened = cx.open_window(options, |window, cx| {
-                let view = cx.new(|cx| GameWindow::new(host, presentation, window, cx));
+                let view =
+                    cx.new(|cx| GameWindow::new(engine, profile, host, presentation, window, cx));
                 window::observe_focus(&view, window, cx);
                 view
             });
