@@ -2,8 +2,8 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::task::Wake;
 use std::time::Instant;
 
-// A condvar rather than thread::park: wgpu polling and std channels park the player
-// thread internally and would consume a park token.
+// A condvar rather than thread::park: frame readback waits on a std channel, which
+// parks the player thread and would consume a park token.
 pub(crate) struct Doorbell {
     rung: Mutex<bool>,
     bell: Condvar,

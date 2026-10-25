@@ -34,6 +34,7 @@ pub struct LucentUi {
     requests: Sender<UiRequest>,
     paste: String,
     mouse_visible: bool,
+    cursor: Option<MouseCursor>,
 }
 
 impl LucentUi {
@@ -42,6 +43,7 @@ impl LucentUi {
             requests,
             paste: String::new(),
             mouse_visible: true,
+            cursor: None,
         }
     }
 
@@ -61,7 +63,9 @@ impl UiBackend for LucentUi {
     }
 
     fn set_mouse_cursor(&mut self, cursor: MouseCursor) {
-        let _ = self.requests.try_send(UiRequest::Cursor(cursor));
+        if self.cursor.replace(cursor) != Some(cursor) {
+            let _ = self.requests.try_send(UiRequest::Cursor(cursor));
+        }
     }
 
     fn clipboard_content(&mut self) -> String {
@@ -146,6 +150,25 @@ mod tests {
             ui.set_mouse_cursor(cursor);
             assert_eq!(block_on(requests.next()), Some(UiRequest::Cursor(cursor)));
         }
+    }
+
+    #[test]
+    fn repeats_of_the_same_cursor_send_one_request() {
+        let (sender, requests) = channel();
+        let mut ui = LucentUi::new(sender);
+        ui.set_mouse_cursor(MouseCursor::Hand);
+        ui.set_mouse_cursor(MouseCursor::Hand);
+        ui.set_mouse_cursor(MouseCursor::Arrow);
+        assert_eq!(
+            block_on(requests.next()),
+            Some(UiRequest::Cursor(MouseCursor::Hand))
+        );
+        assert_eq!(
+            block_on(requests.next()),
+            Some(UiRequest::Cursor(MouseCursor::Arrow))
+        );
+        drop(ui);
+        assert_eq!(block_on(requests.next()), None);
     }
 
     #[test]

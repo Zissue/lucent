@@ -171,7 +171,8 @@ impl Status {
         }
     }
 
-    pub fn apply(&mut self, event: &Event) {
+    pub fn apply(&mut self, event: &Event) -> bool {
+        self.last = event.seq;
         match &event.kind {
             GameEvent::Loader(LoaderEvent::Progress(percent))
                 if matches!(self.boot, Boot::Starting | Boot::Downloading { .. }) =>
@@ -189,9 +190,9 @@ impl Status {
                 };
             }
             GameEvent::Lifecycle(Lifecycle::Stopping) => self.boot = Boot::Stopping,
-            _ => {}
+            _ => return false,
         }
-        self.last = event.seq;
+        true
     }
 }
 
@@ -240,22 +241,13 @@ impl EventWriter {
             at: Instant::now(),
             kind,
         });
-        self.status.send_if_modified(|status| {
-            let shown = (status.boot.clone(), status.server);
-            status.apply(&event);
-            (status.boot.clone(), status.server) != shown
-        });
+        self.status.send_if_modified(|status| status.apply(&event));
         let _ = self.tx.send(event);
-        self.last
-    }
-
-    pub fn last(&self) -> Seq {
         self.last
     }
 }
 
 pub(crate) struct Shared {
-    // Weak so that every stream ends once the writer drops.
     weak: broadcast::WeakSender<Arc<Event>>,
     status: watch::Receiver<Status>,
 }

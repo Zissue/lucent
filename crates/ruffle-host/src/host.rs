@@ -61,6 +61,17 @@ pub struct ShutdownReport {
     pub net_tasks_left: usize,
 }
 
+impl ShutdownReport {
+    pub(crate) fn clean(elapsed: Duration, leaked_tasks: usize, net_tasks_left: usize) -> Self {
+        Self {
+            elapsed,
+            outcome: ShutdownOutcome::Clean,
+            leaked_tasks,
+            net_tasks_left,
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum ShutdownOutcome {
     Clean,
@@ -72,8 +83,10 @@ pub struct PlayerHost {
     closer: Closer,
     input: InputSink,
     report: mpsc::Receiver<ShutdownReport>,
-    thread: thread::JoinHandle<()>,
+    thread: Option<thread::JoinHandle<()>>,
 }
+
+const DROPPED_HOST_DEADLINE: Duration = Duration::from_secs(2);
 
 impl PlayerHost {
     pub fn spawn(
@@ -118,7 +131,7 @@ impl PlayerHost {
                 closer,
                 input,
                 report,
-                thread,
+                thread: Some(thread),
             },
             Presentation { frames, ui },
         ))
@@ -132,16 +145,18 @@ impl PlayerHost {
         &self.input
     }
 
-    pub fn shutdown(self, deadline: Instant) -> ShutdownReport {
+    pub fn shutdown(mut self, deadline: Instant) -> ShutdownReport {
         let started = Instant::now();
-        self.closer.close();
-        self.input.push(Command::Shutdown { deadline });
+        self.request_stop(deadline);
+        let thread = self.thread.take();
         match self
             .report
             .recv_timeout(deadline.saturating_duration_since(Instant::now()))
         {
             Ok(report) => {
-                let _ = self.thread.join();
+                if let Some(thread) = thread {
+                    let _ = thread.join();
+                }
                 report
             }
             Err(_) => ShutdownReport {
@@ -150,6 +165,19 @@ impl PlayerHost {
                 leaked_tasks: 0,
                 net_tasks_left: 0,
             },
+        }
+    }
+
+    fn request_stop(&self, deadline: Instant) {
+        self.closer.close();
+        self.input.push(Command::Shutdown { deadline });
+    }
+}
+
+impl Drop for PlayerHost {
+    fn drop(&mut self) {
+        if self.thread.is_some() {
+            self.request_stop(Instant::now() + DROPPED_HOST_DEADLINE);
         }
     }
 }

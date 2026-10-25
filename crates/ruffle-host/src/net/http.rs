@@ -1,15 +1,18 @@
 use std::borrow::Cow;
-use std::rc::Rc;
+
 use std::sync::Arc;
 
 use reqwest::Method;
-use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue, LOCATION};
+use reqwest::header::{
+    AUTHORIZATION, CONTENT_TYPE, COOKIE, HeaderMap, HeaderName, HeaderValue, LOCATION,
+    PROXY_AUTHORIZATION,
+};
 use ruffle_core::backend::navigator::{
     ErrorResponse, NavigationMethod, OwnedFuture, Request, SuccessResponse, get_encoding,
 };
 use ruffle_core::loader::Error as LoaderError;
 use ruffle_core::swf::Encoding;
-use tokio::sync::{Mutex, mpsc, oneshot};
+use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 use url::Url;
@@ -49,6 +52,7 @@ pub(crate) struct HttpClient {
 }
 
 const MAX_REDIRECTS: usize = 20;
+const MAX_RESERVED_BODY: u64 = 16 * 1024 * 1024;
 
 enum NetError {
     Connect,
@@ -111,10 +115,10 @@ impl HttpClient {
         let outgoing = outgoing(url.clone(), request);
         let client = self.client.clone();
         let (head_tx, head_rx) = oneshot::channel();
-        let (chunk_tx, chunk_rx) = mpsc::channel(8);
+        let (chunk_tx, chunk_rx) = async_channel::bounded(8);
         self.tasks.spawn(async move {
             let requested = outgoing.url.clone();
-            let mut response = match send(&client, outgoing).await {
+            let mut response = match send_following_redirects(&client, outgoing).await {
                 Ok(response) => response,
                 Err(error) => {
                     let _ = head_tx.send(Err(error));
@@ -159,7 +163,7 @@ impl HttpClient {
             match head_rx.await {
                 Ok(Ok(head)) => Ok(Box::new(NetworkResponse {
                     head,
-                    chunks: Rc::new(Mutex::new(chunk_rx)),
+                    chunks: chunk_rx,
                 }) as Box<dyn SuccessResponse>),
                 Ok(Err(error)) => Err(ErrorResponse {
                     error: error.into_loader(&url),
@@ -205,9 +209,7 @@ fn outgoing(url: Url, request: &Request) -> Outgoing {
     }
 }
 
-// Redirects are followed here rather than by reqwest so the launcher headers are
-// recomputed for every hop's host, as Electron's onBeforeSendHeaders does.
-async fn send(
+async fn send_following_redirects(
     client: &reqwest::Client,
     mut request: Outgoing,
 ) -> Result<reqwest::Response, NetError> {
@@ -244,6 +246,11 @@ async fn send(
             request.body = None;
             request.headers.remove(CONTENT_TYPE);
         }
+        if location.origin() != request.url.origin() {
+            for name in [AUTHORIZATION, COOKIE, PROXY_AUTHORIZATION] {
+                request.headers.remove(name);
+            }
+        }
         request.url = location;
     }
     Err(NetError::Fetch(format!(
@@ -251,11 +258,9 @@ async fn send(
     )))
 }
 
-type Chunks = Rc<Mutex<mpsc::Receiver<Result<Vec<u8>, String>>>>;
-
 struct NetworkResponse {
     head: Head,
-    chunks: Chunks,
+    chunks: async_channel::Receiver<Result<Vec<u8>, String>>,
 }
 
 impl SuccessResponse for NetworkResponse {
@@ -269,9 +274,9 @@ impl SuccessResponse for NetworkResponse {
 
     fn body(self: Box<Self>) -> OwnedFuture<Vec<u8>, LoaderError> {
         Box::pin(async move {
-            let mut body = Vec::with_capacity(self.head.expected_length.unwrap_or(0) as usize);
-            let mut chunks = self.chunks.lock().await;
-            while let Some(chunk) = chunks.recv().await {
+            let advertised = self.head.expected_length.unwrap_or(0);
+            let mut body = Vec::with_capacity(advertised.min(MAX_RESERVED_BODY) as usize);
+            while let Ok(chunk) = self.chunks.recv().await {
                 body.extend_from_slice(&chunk.map_err(LoaderError::FetchError)?);
             }
             Ok(body)
@@ -294,10 +299,9 @@ impl SuccessResponse for NetworkResponse {
         let chunks = self.chunks.clone();
         Box::pin(async move {
             chunks
-                .lock()
-                .await
                 .recv()
                 .await
+                .ok()
                 .transpose()
                 .map_err(LoaderError::FetchError)
         })
@@ -601,5 +605,55 @@ mod tests {
         let url = format!("http://game.aq.com:{}/x", server.port);
         let error = fetch(&client, Request::get(url)).unwrap_err();
         assert!(error.contains("403"), "{error}");
+    }
+
+    #[test]
+    fn reads_a_body_without_trusting_its_advertised_length() {
+        let (chunks, rx) = async_channel::bounded(1);
+        drop(chunks);
+        let response = Box::new(NetworkResponse {
+            head: Head {
+                url: "https://game.aq.com/x".into(),
+                status: 200,
+                redirected: false,
+                encoding: None,
+                expected_length: Some(u64::MAX),
+            },
+            chunks: rx,
+        });
+        assert_eq!(
+            futures::executor::block_on(response.body()).unwrap(),
+            Vec::<u8>::new()
+        );
+    }
+
+    #[test]
+    fn drops_credentials_when_a_redirect_changes_origin() {
+        let runtime = runtime();
+        let mut other = serve(&runtime, vec![response("200 OK", &[], b"ok")]);
+        let target = format!("http://cdn.example.test:{}/b", other.port);
+        let mut artix = serve(
+            &runtime,
+            vec![response(
+                "307 Temporary Redirect",
+                &[("location", &target)],
+                b"",
+            )],
+        );
+        let client = client(&runtime);
+        let mut request = Request::get(format!("http://game.aq.com:{}/a", artix.port));
+        request.set_headers(
+            [("Authorization", "Bearer secret"), ("Cookie", "session=1")]
+                .into_iter()
+                .map(|(name, value)| (name.to_owned(), value.to_owned()))
+                .collect(),
+        );
+        fetch(&client, request).unwrap();
+        let first = artix.sent.blocking_recv().unwrap();
+        let second = other.sent.blocking_recv().unwrap();
+        assert_eq!(header(&first, "authorization"), Some("Bearer secret"));
+        assert_eq!(header(&first, "cookie"), Some("session=1"));
+        assert_eq!(header(&second, "authorization"), None);
+        assert_eq!(header(&second, "cookie"), None);
     }
 }

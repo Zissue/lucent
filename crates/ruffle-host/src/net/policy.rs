@@ -4,6 +4,13 @@ use url::Url;
 
 const ARTIX_DOMAINS: [&str; 3] = ["aq.com", "aqworlds.com", "artix.com"];
 
+fn in_domain(host: &str, domain: &str) -> bool {
+    host == domain
+        || host
+            .strip_suffix(domain)
+            .is_some_and(|prefix| prefix.ends_with('.'))
+}
+
 pub(crate) fn allowed_link(raw: &str) -> Option<Url> {
     let url = Url::parse(raw).ok()?;
     if url.port().is_some() || !url.username().is_empty() || url.password().is_some() {
@@ -20,13 +27,7 @@ pub(crate) fn allowed_link(raw: &str) -> Option<Url> {
             ("http", "account.aqworlds.com"),
         ]
         .iter()
-        .any(|(scheme, root)| {
-            url.scheme() == *scheme
-                && (host == *root
-                    || host
-                        .strip_suffix(root)
-                        .is_some_and(|prefix| prefix.ends_with('.')))
-        });
+        .any(|(scheme, root)| url.scheme() == *scheme && in_domain(host, root));
     allowed.then_some(url)
 }
 
@@ -40,12 +41,7 @@ pub(crate) const USER_AGENT_VALUE: &str = if cfg!(target_os = "macos") {
 
 pub(crate) fn is_artix_host(host: &str) -> bool {
     let host = host.to_ascii_lowercase();
-    ARTIX_DOMAINS.iter().any(|domain| {
-        host == *domain
-            || host
-                .strip_suffix(domain)
-                .is_some_and(|prefix| prefix.ends_with('.'))
-    })
+    ARTIX_DOMAINS.iter().any(|domain| in_domain(&host, domain))
 }
 
 pub(crate) fn allow_socket(host: &str, port: u16) -> bool {

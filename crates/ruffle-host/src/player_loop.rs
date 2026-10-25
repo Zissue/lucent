@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use bridge::{Execution, GameEvent, Inbox, Lifecycle, NotRun, PlayerSide};
 use ruffle_core::config::Letterbox;
-use ruffle_core::{FloatDuration, Player, ViewportDimensions};
+use ruffle_core::{FloatDuration, Player, PlayerEvent, ViewportDimensions};
 use ruffle_render_wgpu::backend::WgpuRenderBackend;
 use ruffle_render_wgpu::target::TextureTarget;
 
@@ -15,7 +15,7 @@ use crate::engine::Engine;
 use crate::executor::LocalExecutor;
 use crate::external::{self, LoaderInterface};
 use crate::frame::{self, FrameSender};
-use crate::host::{Movie, ShutdownOutcome, ShutdownReport};
+use crate::host::{Movie, ShutdownReport};
 use crate::input::{Command, Viewport, Visibility};
 use crate::net::LucentNavigator;
 use crate::net::http::{HttpClient, NetTasks};
@@ -44,7 +44,7 @@ struct PlayerLoop {
     commands: mpsc::Receiver<Command>,
     tasks: LocalExecutor,
     net: NetTasks,
-    frames: Option<FrameSender>,
+    frames: FrameSender,
     doorbell: Arc<Doorbell>,
     visibility: Visibility,
     last_tick: Instant,
@@ -77,12 +77,7 @@ pub(crate) fn run(init: PlayerInit, lease: &mut crate::ProfileLease) -> Shutdown
                 .publish(GameEvent::Lifecycle(Lifecycle::Failed {
                     error: error.to_string(),
                 }));
-            return ShutdownReport {
-                elapsed: Duration::ZERO,
-                outcome: ShutdownOutcome::Clean,
-                leaked_tasks: tasks.drain(Instant::now()),
-                net_tasks_left: 0,
-            };
+            return ShutdownReport::clean(Duration::ZERO, tasks.drain(Instant::now()), 0);
         }
     };
     let navigator = LucentNavigator::new(
@@ -127,7 +122,7 @@ pub(crate) fn run(init: PlayerInit, lease: &mut crate::ProfileLease) -> Shutdown
         commands: init.commands,
         tasks,
         net,
-        frames: Some(init.frames),
+        frames: init.frames,
         doorbell: init.doorbell,
         visibility: Visibility::Visible,
         last_tick: Instant::now(),
@@ -162,9 +157,14 @@ impl PlayerLoop {
         let mut resize = None;
         let mut shutdown = None;
         let mut player = self.player.lock().expect("player lock");
+        let mut pending_move = None;
         while let Ok(command) = self.commands.try_recv() {
             match command {
+                Command::Input(event @ PlayerEvent::MouseMove { .. }) => pending_move = Some(event),
                 Command::Input(event) => {
+                    if let Some(moved) = pending_move.take() {
+                        player.handle_event(moved);
+                    }
                     player.handle_event(event);
                 }
                 Command::Paste(text) => crate::platform::paste(&mut player, text),
@@ -175,6 +175,9 @@ impl PlayerLoop {
                     break;
                 }
             }
+        }
+        if let Some(moved) = pending_move {
+            player.handle_event(moved);
         }
         if let Some(viewport) = resize {
             player.set_viewport_dimensions(ViewportDimensions {
@@ -200,9 +203,7 @@ impl PlayerLoop {
     }
 
     fn render(&mut self) {
-        let Some(frames) = self.frames.as_mut() else {
-            return;
-        };
+        let frames = &mut self.frames;
         if self.visibility == Visibility::Hidden || !frames.wanted() {
             return;
         }
@@ -297,11 +298,6 @@ impl PlayerLoop {
         drop(self.inbox);
         drop(self.player);
         drop(self.sequencer);
-        ShutdownReport {
-            elapsed: begun.elapsed(),
-            outcome: ShutdownOutcome::Clean,
-            leaked_tasks,
-            net_tasks_left,
-        }
+        ShutdownReport::clean(begun.elapsed(), leaked_tasks, net_tasks_left)
     }
 }

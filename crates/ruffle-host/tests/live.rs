@@ -8,6 +8,8 @@ use ruffle_host::{Engine, FrameStream, PlayerConfig, PlayerHost, Profile, Viewpo
 
 const BOOT_TIMEOUT: Duration = Duration::from_secs(90);
 const SHUTDOWN: Duration = Duration::from_secs(2);
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+const OS_WORKER_DRIFT: usize = 4;
 
 fn boot(engine: &Engine, viewport: Viewport) -> (PlayerHost, FrameStream) {
     let data = std::env::temp_dir().join(format!("lucent-live-{}", std::process::id()));
@@ -312,13 +314,37 @@ fn a5_twenty_start_stop_cycles_leave_threads_sockets_and_temp_files_unchanged() 
     let unnamed = |names: &[String]| names.iter().filter(|name| name.is_empty()).count();
     assert_eq!(named(&names_after), named(&names_before));
     assert!(!names_after.iter().any(|name| name == "lucent-player"));
-    // Unnamed threads are macOS dispatch workers the OS starts and parks itself; every
-    // thread Lucent starts is named. They drift by a few in either direction between runs.
-    assert!(unnamed(&names_after) <= unnamed(&names_before) + 4);
+    assert!(unnamed(&names_after) <= unnamed(&names_before) + OS_WORKER_DRIFT);
     assert_eq!(
         (after.sockets, after.open_files),
         (before.sockets, before.open_files)
     );
     assert_eq!(temp_after, temp_before);
     let _ = std::fs::remove_dir_all(&data);
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+#[ignore = "needs a GPU and the AQW servers"]
+fn a_dropped_host_stops_its_player_thread() {
+    let engine = Engine::start().unwrap();
+    let (host, frames) = boot(&engine, Viewport::AUTHORED);
+    assert!(
+        support::thread_names()
+            .iter()
+            .any(|name| name == "lucent-player")
+    );
+    drop(host);
+    drop(frames);
+    let deadline = Instant::now() + SHUTDOWN;
+    while support::thread_names()
+        .iter()
+        .any(|name| name == "lucent-player")
+    {
+        assert!(
+            Instant::now() < deadline,
+            "the player thread outlived its host"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
 }

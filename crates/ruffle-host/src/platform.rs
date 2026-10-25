@@ -7,7 +7,7 @@ use ruffle_core::events::{PlayerEvent, TextControlCode};
 use ruffle_core::{Player, PlayerBuilder};
 use ruffle_frontend_utils::backends::audio::CpalAudioBackend;
 
-use crate::host::{ShutdownOutcome, ShutdownReport};
+use crate::host::ShutdownReport;
 use crate::player_loop::{self, PlayerInit};
 use crate::{LucentUi, Profile, ProfileLease, UiRequest};
 
@@ -26,12 +26,7 @@ pub(crate) fn run(mut init: PlayerInit) -> ShutdownReport {
                 .publish(GameEvent::Lifecycle(Lifecycle::Failed {
                     error: error.to_string(),
                 }));
-            return ShutdownReport {
-                elapsed: Duration::ZERO,
-                outcome: ShutdownOutcome::Clean,
-                leaked_tasks: 0,
-                net_tasks_left: 0,
-            };
+            return ShutdownReport::clean(Duration::ZERO, 0, 0);
         }
     };
     player_loop::run(init, &mut lease)

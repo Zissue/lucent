@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -128,6 +126,7 @@ pub fn thread_names() -> Vec<String> {
     names
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub fn files_in(dir: &Path) -> usize {
     std::fs::read_dir(dir)
         .map(|entries| entries.count())

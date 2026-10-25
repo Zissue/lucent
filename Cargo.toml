@@ -22,7 +22,10 @@ gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1a246efd
 async-channel = "2.5.0"
 async-task = "4.7.1"
 futures = "0.3.31"
+libc = "0.2"
 image = { version = "0.25", default-features = false }
+sha2 = "0.10"
+tempfile = "3"
 reqwest = { version = "0.12.28", default-features = false, features = ["brotli", "charset", "cookies", "deflate", "gzip", "http2", "rustls-tls-native-roots"] }
 tokio = { version = "1.52", default-features = false }
 tokio-util = { version = "0.7", default-features = false, features = ["rt"] }

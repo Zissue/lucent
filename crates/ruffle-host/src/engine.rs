@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use ruffle_render_wgpu::backend::{create_wgpu_instance, request_adapter_and_device};
 use ruffle_render_wgpu::descriptors::Descriptors;
@@ -56,12 +55,5 @@ impl Engine {
         Ok(Engine {
             inner: Arc::new(EngineInner { net, gpu }),
         })
-    }
-
-    pub fn stop(self, timeout: Duration) {
-        match Arc::try_unwrap(self.inner) {
-            Ok(inner) => inner.net.shutdown_timeout(timeout),
-            Err(_) => tracing::error!("engine stopped while a player still holds it"),
-        }
     }
 }

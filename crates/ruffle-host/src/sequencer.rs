@@ -17,9 +17,6 @@ const INBOUND_CAPACITY: usize = 256;
 
 pub(crate) type SocketRule = fn(&str, u16) -> bool;
 
-// The only publisher of a session's events. Net tasks move bytes; ordering happens here,
-// on the player thread: an inbound packet is published before Ruffle receives its bytes,
-// and every publish first drains the bytes AS3 has already written.
 pub(crate) struct Sequencer {
     events: EventWriter,
     net: NetTasks,
@@ -443,6 +440,48 @@ mod tests {
             received.recv_timeout(Duration::from_secs(5)).unwrap(),
             b"a\0b\0partial\0"
         );
+    }
+
+    #[test]
+    fn publishes_an_as3_write_before_an_inbound_packet_that_arrives_after_it() {
+        let (hold, release) = std_mpsc::channel::<()>();
+        let port = server(move |mut stream| {
+            thread::sleep(Duration::from_millis(100));
+            stream.write_all(b"in\0").unwrap();
+            let _ = release.recv();
+        });
+        let mut harness = harness(any_host);
+        let as3 = harness.connect(port);
+        harness.pump_until(|seen| {
+            seen.contains(&GameEvent::Socket(SocketEvent::Connected {
+                conn: ConnId(1),
+            }))
+        });
+        as3.try_send(b"out\0".to_vec()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !harness.sequencer.has_inbound() {
+            assert!(Instant::now() < deadline, "no inbound data arrived");
+            harness
+                .doorbell
+                .wait_until(Instant::now() + Duration::from_millis(20));
+        }
+        harness.sequencer.deliver_inbound();
+        let events = harness.pump_until(|seen| packets(seen, Direction::ToClient).len() == 1);
+        let order: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                GameEvent::Packet(packet) => Some((packet.dir, packet.bytes.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            order,
+            [
+                (Direction::ToServer, b"out".to_vec()),
+                (Direction::ToClient, b"in".to_vec())
+            ]
+        );
+        drop(hold);
     }
 
     #[test]
