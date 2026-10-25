@@ -1,4 +1,5 @@
 mod keys;
+mod menus;
 mod present;
 mod window;
 
@@ -50,10 +51,13 @@ fn main() -> ExitCode {
                 window::observe_focus(&view, window, cx);
                 view
             });
-            if let Err(error) = opened {
-                tracing::error!(%error, "could not open the game window");
-                cx.quit();
-                return;
+            match opened {
+                Ok(window) => menus::install(window, cx),
+                Err(error) => {
+                    tracing::error!(%error, "could not open the game window");
+                    cx.quit();
+                    return;
+                }
             }
             cx.activate(true);
         });

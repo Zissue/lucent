@@ -91,7 +91,7 @@ impl GameWindow {
         }
     }
 
-    fn close(&mut self, cx: &mut Context<Self>) -> bool {
+    pub fn close(&mut self, cx: &mut Context<Self>) -> bool {
         let Some(host) = self.host.take() else {
             return false;
         };
