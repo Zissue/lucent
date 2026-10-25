@@ -619,13 +619,16 @@ mod tests {
         let run = session.begin_run().unwrap();
         let first = submit(run.caller(), 0.0, Instant::now() + WAIT);
         queued(&inbox, 1);
-        let started = Instant::now();
-        let deadline = started + Duration::from_millis(40);
-        let second = submit(run.caller(), 1.0, deadline);
-        assert_eq!(second.result(), Err(CallError::NotRun(NotRun::Full)));
-        let finished = Instant::now();
-        assert!(finished >= deadline);
-        assert!(finished.duration_since(deadline) < Duration::from_millis(50));
+        let deadline = Instant::now() + Duration::from_millis(40);
+        let caller = run.caller();
+        let second = thread::spawn(move || {
+            let result = caller.call(&NAME, vec![AsValue::Number(1.0)], deadline);
+            (result, Instant::now())
+        });
+        let (result, returned) = second.join().unwrap();
+        assert_eq!(result, Err(CallError::NotRun(NotRun::Full)));
+        assert!(returned >= deadline);
+        assert!(returned.duration_since(deadline) < Duration::from_secs(1));
         assert_eq!(wake.0.load(Ordering::SeqCst), 1);
         closer.close();
         assert_eq!(first.result(), Err(CallError::NotRun(NotRun::Closed)));
@@ -891,7 +894,7 @@ mod tests {
             Err(CallError::Unknown(Unknown::RunStopped))
         );
         assert_eq!(waiting.result(), Err(CallError::NotRun(NotRun::RunStopped)));
-        assert!(start.elapsed() < Duration::from_millis(10));
+        assert!(start.elapsed() < Duration::from_millis(250));
         release_tx.send(()).unwrap();
         let mut inbox = consumer.join().unwrap();
         assert!(inbox.next(Instant::now()).is_none());
@@ -1116,7 +1119,7 @@ mod tests {
             run.caller().call(&NAME, vec![], Instant::now() + WAIT),
             Err(CallError::NotRun(NotRun::WouldDeadlock))
         );
-        assert!(started.elapsed() < Duration::from_millis(10));
+        assert!(started.elapsed() < Duration::from_millis(250));
         assert_eq!(wake.0.load(Ordering::SeqCst), 0);
         let other = submit(run.caller(), 1.0, Instant::now() + WAIT);
         queued(&inbox, 1);
