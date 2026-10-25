@@ -2,7 +2,9 @@ use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use bridge::{Session, SessionConfig};
+use std::task::Waker;
+
+use bridge::{Closer, Opened, Session, SessionConfig};
 use url::Url;
 
 use crate::doorbell::Doorbell;
@@ -62,6 +64,7 @@ pub enum ShutdownOutcome {
 
 pub struct PlayerHost {
     session: Session,
+    closer: Closer,
     input: InputSink,
     report: mpsc::Receiver<ShutdownReport>,
     thread: thread::JoinHandle<()>,
@@ -73,7 +76,11 @@ impl PlayerHost {
         config: PlayerConfig,
     ) -> std::io::Result<(PlayerHost, Presentation)> {
         let doorbell = Doorbell::new();
-        let (session, side) = bridge::open(config.session);
+        let Opened {
+            session,
+            player: side,
+            closer,
+        } = bridge::open(config.session, Waker::from(doorbell.clone()));
         let (commands_tx, commands) = mpsc::channel();
         let (frames_tx, frames) = frame::mailbox();
         let (report_tx, report) = mpsc::sync_channel(1);
@@ -98,6 +105,7 @@ impl PlayerHost {
         Ok((
             PlayerHost {
                 session,
+                closer,
                 input,
                 report,
                 thread,
@@ -116,6 +124,7 @@ impl PlayerHost {
 
     pub fn shutdown(self, deadline: Instant) -> ShutdownReport {
         let started = Instant::now();
+        self.closer.close();
         self.input.push(Command::Shutdown { deadline });
         match self
             .report

@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use ruffle_render_wgpu::backend::WgpuRenderBackend;
 use ruffle_render_wgpu::target::TextureTarget;
 use ruffle_render_wgpu::utils::capture_image;
@@ -7,6 +9,8 @@ pub struct Frame {
     pub width: u32,
     pub height: u32,
     pub bgra: Vec<u8>,
+    pub render: Duration,
+    pub readback: Duration,
 }
 
 pub struct FrameStream {
@@ -34,12 +38,21 @@ impl FrameSender {
         !self.tx.is_closed()
     }
 
-    pub(crate) fn post(&mut self, width: u32, height: u32, bgra: Vec<u8>) {
+    pub(crate) fn post(
+        &mut self,
+        width: u32,
+        height: u32,
+        bgra: Vec<u8>,
+        render: Duration,
+        readback: Duration,
+    ) {
         let frame = Frame {
             seq: self.next_seq,
             width,
             height,
             bgra,
+            render,
+            readback,
         };
         self.next_seq += 1;
         let _ = self.tx.force_send(frame);
@@ -106,8 +119,8 @@ mod tests {
     #[test]
     fn keeps_only_the_newest_unread_frame() {
         let (mut sender, stream) = mailbox();
-        sender.post(1, 1, vec![0; 4]);
-        sender.post(1, 1, vec![1; 4]);
+        sender.post(1, 1, vec![0; 4], Duration::ZERO, Duration::ZERO);
+        sender.post(1, 1, vec![1; 4], Duration::ZERO, Duration::ZERO);
         let frame = futures::executor::block_on(stream.next()).unwrap();
         assert_eq!((frame.seq, frame.bgra), (2, vec![1; 4]));
     }

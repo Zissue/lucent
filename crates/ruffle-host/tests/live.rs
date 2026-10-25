@@ -1,0 +1,152 @@
+mod support;
+
+use std::thread;
+use std::time::{Duration, Instant};
+
+use bridge::{AsValue, Boot, CallbackName};
+use ruffle_host::{Engine, FrameStream, PlayerConfig, PlayerHost, Viewport, Visibility};
+
+const BOOT_TIMEOUT: Duration = Duration::from_secs(90);
+const SHUTDOWN: Duration = Duration::from_secs(2);
+
+fn boot(engine: &Engine, viewport: Viewport) -> (PlayerHost, FrameStream) {
+    let mut config = PlayerConfig::launcher();
+    config.viewport = viewport;
+    let (host, presentation) = PlayerHost::spawn(engine, config).unwrap();
+    assert_eq!(
+        support::wait_for_boot(host.session(), BOOT_TIMEOUT),
+        Boot::Ready
+    );
+    (host, presentation.frames)
+}
+
+fn summary(label: &str, samples: &mut [Duration]) -> (Duration, Duration) {
+    samples.sort();
+    let p50 = support::percentile(samples, 0.50);
+    let p99 = support::percentile(samples, 0.99);
+    println!(
+        "{label}: n={} p50={:.3}ms p99={:.3}ms max={:.3}ms",
+        samples.len(),
+        p50.as_secs_f64() * 1e3,
+        p99.as_secs_f64() * 1e3,
+        samples.last().unwrap().as_secs_f64() * 1e3
+    );
+    (p50, p99)
+}
+
+#[test]
+#[ignore = "needs a GPU and the AQW servers"]
+fn a3_calls_from_another_thread_run_without_waiting_for_a_frame() {
+    let engine = Engine::start().unwrap();
+    let (host, frames) = boot(&engine, Viewport::AUTHORED);
+    let drain =
+        thread::spawn(move || while futures::executor::block_on(frames.next()).is_some() {});
+    let run = host.session().begin_run().unwrap();
+    let caller = run.caller();
+    let logged_in = CallbackName::from_static("auth.isLoggedIn");
+    let level = CallbackName::from_static("player.getLevel");
+    assert_eq!(
+        caller.call(&logged_in, vec![], Instant::now() + Duration::from_secs(1)),
+        Ok(AsValue::Bool(false))
+    );
+    let level_reply = caller.call(&level, vec![], Instant::now() + Duration::from_secs(1));
+    println!("player.getLevel at the login screen: {level_reply:?}");
+    assert!(level_reply.is_ok());
+
+    let mut jitter = 0x2545_f491_u32;
+    let mut measure = |label: &str, visibility: Visibility| {
+        host.input().set_visibility(visibility);
+        thread::sleep(Duration::from_secs(1));
+        let mut samples = Vec::new();
+        for index in 0..4000 {
+            let name = if index % 2 == 0 { &logged_in } else { &level };
+            let started = Instant::now();
+            let reply = caller.call(name, vec![], started + Duration::from_secs(1));
+            samples.push(started.elapsed());
+            assert!(reply.is_ok(), "{label} call {index} failed: {reply:?}");
+            jitter ^= jitter << 13;
+            jitter ^= jitter >> 17;
+            jitter ^= jitter << 5;
+            thread::sleep(Duration::from_micros(u64::from(jitter % 3000)));
+        }
+        summary(label, &mut samples)
+    };
+    let (_, idle_p99) = measure("idle (hidden, no render)", Visibility::Hidden);
+    let (_, drawing_p99) = measure(
+        "drawing (visible, render and readback each frame)",
+        Visibility::Visible,
+    );
+    drop(run);
+    let report = host.shutdown(Instant::now() + SHUTDOWN);
+    drain.join().unwrap();
+    assert!(idle_p99 < Duration::from_millis(1), "idle p99 {idle_p99:?}");
+    assert!(
+        drawing_p99 < Duration::from_secs_f64(1.0 / 24.0),
+        "drawing p99 {drawing_p99:?}"
+    );
+    println!("shutdown: {report:?}");
+}
+
+#[test]
+#[ignore = "needs a GPU and the AQW servers"]
+fn frame_copy_cost_at_one_and_two_times_scale_with_one_and_seven_games() {
+    let engine = Engine::start().unwrap();
+    for (scale, games) in [(1.0, 1), (2.0, 1), (1.0, 7), (2.0, 7)] {
+        let viewport = Viewport {
+            width: (958.0 * scale) as u32,
+            height: (550.0 * scale) as u32,
+            scale,
+        };
+        let hosts: Vec<_> = (0..games).map(|_| boot(&engine, viewport)).collect();
+        let mut render = Vec::new();
+        let mut readback = Vec::new();
+        let mut frames = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        thread::scope(|scope| {
+            let workers: Vec<_> = hosts
+                .iter()
+                .map(|(_, stream)| {
+                    scope.spawn(move || {
+                        let mut timings = Vec::new();
+                        while Instant::now() < deadline {
+                            let next = futures::executor::block_on(futures::future::select(
+                                Box::pin(stream.next()),
+                                Box::pin(async_sleep(Duration::from_millis(200))),
+                            ));
+                            if let futures::future::Either::Left((Some(frame), _)) = next {
+                                timings.push((frame.render, frame.readback));
+                            }
+                        }
+                        timings
+                    })
+                })
+                .collect();
+            for worker in workers {
+                let timings = worker.join().unwrap();
+                frames.push(timings.len());
+                render.extend(timings.iter().map(|(render, _)| *render));
+                readback.extend(timings.iter().map(|(_, readback)| *readback));
+            }
+        });
+        let label = format!(
+            "{games} game(s) at {scale}x ({}x{})",
+            viewport.width, viewport.height
+        );
+        summary(&format!("{label} render"), &mut render);
+        summary(&format!("{label} readback"), &mut readback);
+        println!("{label} frames per game in 10 s: {frames:?}");
+        for (host, _) in hosts {
+            let report = host.shutdown(Instant::now() + SHUTDOWN);
+            assert_eq!(report.outcome, ruffle_host::ShutdownOutcome::Clean);
+        }
+    }
+}
+
+async fn async_sleep(duration: Duration) {
+    let (tx, rx) = futures::channel::oneshot::channel::<()>();
+    thread::spawn(move || {
+        thread::sleep(duration);
+        let _ = tx.send(());
+    });
+    let _ = rx.await;
+}

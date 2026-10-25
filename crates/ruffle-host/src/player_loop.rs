@@ -1,9 +1,10 @@
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
-use bridge::{GameEvent, Lifecycle, PlayerSide};
+use bridge::{Execution, GameEvent, Inbox, Lifecycle, NotRun, PlayerSide};
 use ruffle_core::config::Letterbox;
 use ruffle_core::{FloatDuration, Player, PlayerBuilder, ViewportDimensions};
 use ruffle_render_wgpu::backend::WgpuRenderBackend;
@@ -12,7 +13,7 @@ use ruffle_render_wgpu::target::TextureTarget;
 use crate::doorbell::Doorbell;
 use crate::engine::Engine;
 use crate::executor::LocalExecutor;
-use crate::external::LoaderInterface;
+use crate::external::{self, LoaderInterface};
 use crate::frame::{self, FrameSender};
 use crate::host::{Movie, ShutdownOutcome, ShutdownReport};
 use crate::input::{Command, Viewport, Visibility};
@@ -37,6 +38,8 @@ const AS3_EXECUTION_LIMIT: Duration = Duration::from_secs(15);
 struct PlayerLoop {
     player: Arc<Mutex<Player>>,
     sequencer: Rc<RefCell<Sequencer>>,
+    callbacks: Rc<RefCell<HashSet<String>>>,
+    inbox: Inbox,
     commands: mpsc::Receiver<Command>,
     tasks: LocalExecutor,
     net: NetTasks,
@@ -47,6 +50,8 @@ struct PlayerLoop {
 }
 
 pub(crate) fn run(init: PlayerInit) -> ShutdownReport {
+    init.side.inbox.bind_consumer();
+    let callbacks = Rc::new(RefCell::new(HashSet::new()));
     let net = NetTasks::new(init.engine.inner.net.handle().clone());
     let sequencer = Rc::new(RefCell::new(Sequencer::new(
         init.side.events,
@@ -90,6 +95,7 @@ pub(crate) fn run(init: PlayerInit) -> ShutdownReport {
         .with_navigator(navigator)
         .with_external_interface(Box::new(LoaderInterface {
             sequencer: sequencer.clone(),
+            callbacks: callbacks.clone(),
         }))
         .with_viewport_dimensions(width, height, scale)
         .with_letterbox(Letterbox::On)
@@ -114,6 +120,8 @@ pub(crate) fn run(init: PlayerInit) -> ShutdownReport {
     PlayerLoop {
         player,
         sequencer,
+        callbacks,
+        inbox: init.side.inbox,
         commands: init.commands,
         tasks,
         net,
@@ -132,13 +140,16 @@ impl PlayerLoop {
                 return self.shut_down(deadline);
             }
             self.drain_outbound();
-            let more = self.tasks.run_ready(Instant::now() + BUDGET);
+            let mut more = self.tasks.run_ready(Instant::now() + BUDGET);
             self.drain_outbound();
             self.deliver_inbound();
+            more |= self.serve_calls();
             self.tick();
             self.drain_outbound();
+            more |= self.serve_calls();
             self.render();
             self.drain_outbound();
+            more |= self.serve_calls();
             if !more {
                 self.wait();
             }
@@ -196,13 +207,15 @@ impl PlayerLoop {
         if !player.needs_render() {
             return;
         }
+        let started = Instant::now();
         player.render();
+        let rendered = Instant::now();
         let renderer: &dyn std::any::Any = player.renderer();
         let renderer = renderer
             .downcast_ref::<WgpuRenderBackend<TextureTarget>>()
             .expect("the player renders offscreen");
         if let Some((width, height, bgra)) = frame::read_back(renderer) {
-            frames.post(width, height, bgra);
+            frames.post(width, height, bgra, rendered - started, rendered.elapsed());
         }
     }
 
@@ -218,8 +231,38 @@ impl PlayerLoop {
         }
     }
 
+    fn serve_calls(&mut self) -> bool {
+        let end = Instant::now() + BUDGET;
+        while let Some(execution) = self.inbox.next(Instant::now()) {
+            self.execute(execution);
+            self.drain_outbound();
+            if Instant::now() >= end {
+                return self.inbox.has_queued();
+            }
+        }
+        false
+    }
+
+    fn execute(&mut self, mut execution: Execution) {
+        if !self.callbacks.borrow().contains(execution.name().as_str()) {
+            execution.refuse(NotRun::NotRegistered);
+            return;
+        }
+        let args: Vec<_> = execution
+            .take_args()
+            .into_iter()
+            .map(external::to_ruffle)
+            .collect();
+        let value = self
+            .player
+            .lock()
+            .expect("player lock")
+            .call_internal_interface(execution.name().as_str(), args);
+        execution.complete(external::from_ruffle(value));
+    }
+
     fn wait(&mut self) {
-        if self.sequencer.borrow().has_inbound() {
+        if self.sequencer.borrow().has_inbound() || self.inbox.has_queued() {
             return;
         }
         let next = self
@@ -248,6 +291,7 @@ impl PlayerLoop {
             .block_on(async move { tokio::time::timeout(remaining, tracker.wait()).await });
         let net_tasks_left = self.net.tracker.len();
         let leaked_tasks = self.tasks.drain(deadline);
+        drop(self.inbox);
         drop(self.player);
         drop(self.sequencer);
         ShutdownReport {

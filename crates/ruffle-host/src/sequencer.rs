@@ -269,7 +269,8 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        let (session, side) = bridge::open(SessionConfig::default());
+        let opened = bridge::open(SessionConfig::default(), std::task::Waker::noop().clone());
+        let (session, side) = (opened.session, opened.player);
         let mut stream = session.subscribe().unwrap();
         let (tx, events) = std_mpsc::channel();
         thread::spawn(move || {

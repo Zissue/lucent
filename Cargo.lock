@@ -5697,6 +5697,7 @@ dependencies = [
  "async-task",
  "bridge",
  "futures",
+ "libc",
  "reqwest",
  "ruffle_core",
  "ruffle_render_wgpu",
