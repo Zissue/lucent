@@ -47,20 +47,16 @@ export type AboutInfo = typeof AboutInfoSchema.Type;
 export const AboutIpc = {
   getInfo: defineInvoke({
     channel: `${namespace}:get-info`,
-    name: "about.getInfo",
     payload: Schema.Void,
     result: AboutInfoSchema,
-    trace: "metadata",
   }),
   openFolder: defineInvoke({
     channel: `${namespace}:open-folder`,
-    name: "about.openFolder",
     payload: Schema.Struct({ folder: AboutFolderSchema }),
     result: Schema.Boolean,
   }),
   openLink: defineInvoke({
     channel: `${namespace}:open-link`,
-    name: "about.openLink",
     payload: Schema.Struct({ link: AboutLinkSchema }),
     result: Schema.Boolean,
   }),

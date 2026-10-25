@@ -66,7 +66,6 @@ import {
   type PacketsStatusPayload,
 } from "../../../shared/packets";
 import { selectDesktopBridge } from "../../../shared/desktopBridge";
-import { createRandomId } from "../../../shared/randomId";
 import { downloadText } from "../../lib/download";
 import { splitTextMatches } from "../../lib/text";
 import { formatPacketLogEntries, formatPacketTimestamp } from "./logFormatting";
@@ -163,8 +162,6 @@ export interface PacketsViewProps {
   readonly onStopCapture?: () => Promise<void>;
   readonly onStopQueue?: () => Promise<void>;
 }
-
-const createEntryId = (): string => createRandomId();
 
 const estimateWrappedLogRowHeight = (
   entry: PacketLogEntry,
@@ -481,7 +478,7 @@ export function PacketsView(props: PacketsViewProps): JSX.Element {
 
   const addCapturedPacket = (payload: PacketCapturedPayload): void => {
     pendingCapturedPackets.push({
-      id: createEntryId(),
+      id: crypto.randomUUID(),
       raw: payload.packet,
       text: normalizePacketText(payload.packet, payload.type),
       timestamp: payload.capturedAt,

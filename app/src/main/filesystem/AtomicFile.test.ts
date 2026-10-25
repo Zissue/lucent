@@ -1,18 +1,15 @@
-import { promises as fs } from "fs";
-import { tmpdir } from "os";
-import { join } from "path";
+import { promises as fs } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { afterEach, expect, layer as testLayer } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 
 import { makeAtomicFile } from "./AtomicFile";
-import {
-  DesktopFileSystem,
-  DesktopFileSystemError,
-  type DesktopFileSystemReason,
-} from "./DesktopFileSystem";
-import { layer } from "./DesktopFileSystemNode";
+import { FileSystem } from "effect/FileSystem";
+import * as PlatformError from "effect/PlatformError";
+import { layer } from "@effect/platform-node/NodeFileSystem";
 
 const fixtureDirectories = new Set<string>();
 
@@ -24,13 +21,13 @@ const makeFixture = async (): Promise<string> => {
 
 const makeWriteError = (
   path: string,
-  reason: DesktopFileSystemReason,
-): DesktopFileSystemError =>
-  new DesktopFileSystemError({
-    operation: "write",
-    target: { _tag: "PathTarget", path },
-    reason,
-    cause: new Error(`Simulated ${reason} write failure.`),
+  reason: PlatformError.SystemErrorTag,
+): PlatformError.PlatformError =>
+  PlatformError.systemError({
+    _tag: reason,
+    module: "FileSystem",
+    method: "writeFile",
+    pathOrDescriptor: path,
   });
 
 afterEach(async () => {
@@ -47,10 +44,10 @@ testLayer(layer)("AtomicFile", (it) => {
     Effect.gen(function* () {
       const root = yield* Effect.promise(makeFixture);
       const path = join(root, "nested", "state.json");
-      const fileSystem = yield* DesktopFileSystem;
-      const guardedFileSystem = DesktopFileSystem.of({
+      const fileSystem = yield* FileSystem;
+      const guardedFileSystem = FileSystem.of({
         ...fileSystem,
-        removeFile: () => Effect.die("successful publication ran cleanup"),
+        remove: () => Effect.die("successful publication ran cleanup"),
       });
 
       yield* makeAtomicFile(guardedFileSystem).write(path, "value");
@@ -68,12 +65,12 @@ testLayer(layer)("AtomicFile", (it) => {
     Effect.gen(function* () {
       const root = yield* Effect.promise(makeFixture);
       const destination = join(root, "state.json");
-      const fileSystem = yield* DesktopFileSystem;
-      const failingFileSystem = DesktopFileSystem.of({
+      const fileSystem = yield* FileSystem;
+      const failingFileSystem = FileSystem.of({
         ...fileSystem,
         writeFile: (path, _data, options) =>
           fileSystem
-            .writeFile(path, "partial", options)
+            .writeFile(path, new TextEncoder().encode("partial"), options)
             .pipe(
               Effect.flatMap(() =>
                 Effect.fail(makeWriteError(path, "Unknown")),
@@ -93,12 +90,14 @@ testLayer(layer)("AtomicFile", (it) => {
     Effect.gen(function* () {
       const root = yield* Effect.promise(makeFixture);
       const destination = join(root, "state.json");
-      const fileSystem = yield* DesktopFileSystem;
-      const collidingFileSystem = DesktopFileSystem.of({
+      const fileSystem = yield* FileSystem;
+      const collidingFileSystem = FileSystem.of({
         ...fileSystem,
         writeFile: (path) =>
           fileSystem
-            .writeFile(path, "other-owner", { disposition: "create-new" })
+            .writeFile(path, new TextEncoder().encode("other-owner"), {
+              flag: "wx",
+            })
             .pipe(
               Effect.flatMap(() =>
                 Effect.fail(makeWriteError(path, "AlreadyExists")),
@@ -128,7 +127,7 @@ testLayer(layer)("AtomicFile", (it) => {
       const root = yield* Effect.promise(makeFixture);
       const destination = join(root, "occupied");
       yield* Effect.promise(() => fs.mkdir(destination));
-      const atomicFile = makeAtomicFile(yield* DesktopFileSystem);
+      const atomicFile = makeAtomicFile(yield* FileSystem);
 
       yield* atomicFile.write(destination, "value").pipe(Effect.flip);
 
@@ -138,27 +137,45 @@ testLayer(layer)("AtomicFile", (it) => {
     }),
   );
 
-  it.effect("cleans its temp when interrupted before publication", () =>
+  it.effect("waits for an interrupted publication to settle", () =>
     Effect.gen(function* () {
       const root = yield* Effect.promise(makeFixture);
       const destination = join(root, "state.json");
-      const fileSystem = yield* DesktopFileSystem;
-      let renameStarted!: () => void;
-      const waitForRename = new Promise<void>((resolve) => {
-        renameStarted = resolve;
-      });
-      const interruptedFileSystem = DesktopFileSystem.of({
+      const fileSystem = yield* FileSystem;
+      const started = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const delayed = FileSystem.of({
         ...fileSystem,
-        rename: () =>
-          Effect.sync(renameStarted).pipe(Effect.flatMap(() => Effect.never)),
+        rename: (from, to) =>
+          Effect.promise(() => {
+            started.resolve();
+            return release.promise;
+          }).pipe(Effect.andThen(fileSystem.rename(from, to))),
       });
-      const fiber = yield* Effect.forkChild(
-        makeAtomicFile(interruptedFileSystem).write(destination, "value"),
+      const writer = yield* Effect.forkChild(
+        makeAtomicFile(delayed).write(destination, "value"),
       );
-      yield* Effect.promise(() => waitForRename);
-      yield* Fiber.interrupt(fiber);
-
-      expect(yield* Effect.promise(() => fs.readdir(root))).toEqual([]);
+      yield* Effect.promise(() => started.promise);
+      let finished = false;
+      const interruption = yield* Effect.forkChild(
+        Fiber.interrupt(writer).pipe(
+          Effect.tap(() =>
+            Effect.sync(() => {
+              finished = true;
+            }),
+          ),
+        ),
+      );
+      yield* Effect.yieldNow;
+      expect(finished).toBe(false);
+      release.resolve();
+      yield* Fiber.join(interruption);
+      expect(
+        yield* Effect.promise(() => fs.readFile(destination, "utf8")),
+      ).toBe("value");
+      expect(yield* Effect.promise(() => fs.readdir(root))).toEqual([
+        "state.json",
+      ]);
     }),
   );
 });

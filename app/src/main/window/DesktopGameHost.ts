@@ -1,4 +1,11 @@
 import type { Event as ElectronEvent, Input } from "electron";
+import * as Cause from "effect/Cause";
+import * as Context from "effect/Context";
+import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import { logFailure } from "../../shared/logFailure";
+import type * as Scope from "effect/Scope";
+import type { CloseableRendererLifetime } from "./DesktopWindows";
 
 import {
   MAX_GAME_VIEWS_PER_WINDOW,
@@ -10,18 +17,16 @@ import {
   type GameViewSelectionFocus,
   type GameViewSession,
 } from "../../shared/gameViews";
-import { GameViewsIpc } from "../../shared/ipc";
-import type { ElectronGameViewHandle } from "../electron/ElectronGameView";
-import {
-  isElectronWindowUsable,
-  type ElectronWindowHandle,
+import { GameViewsIpc, type IpcEventDescriptor } from "../../shared/ipc";
+import type {
+  ElectronGameViewHandle,
+  ElectronNativeWindowHandle,
 } from "../electron/ElectronWindow";
 import { focusedGameViewBounds, gridGameViewBounds } from "./GameViewLayout";
 import {
   readGameViewShortcutIndex,
   readGameViewShortcutModifierHintUpdate,
 } from "./GameViewShortcuts";
-import type { DesktopWindowInstanceId } from "./DesktopWindows";
 
 const GAME_VIEW_RESIZE_SETTLE_DELAY_MS = 100;
 const GAME_GROUP_CONTROLS_HEIGHT = 408;
@@ -29,56 +34,44 @@ const GAME_GROUP_CONTROLS_MARGIN = 8;
 const GAME_GROUP_CONTROLS_WIDTH = 392;
 
 export interface DesktopGameViewRecord {
+  /** The layout whose bounds this view has, which can differ from its host's. */
+  boundsLayout: GameViewLayout;
   readonly gameHostRendererId: number;
-  readonly gamePartition: string;
+  readonly scope: Scope.Closeable;
   readonly gameView: ElectronGameViewHandle;
   gameViewError?: string;
   gameViewName?: string;
   gameViewPhase: GameViewSession["phase"];
-  generation: number;
-  readonly hostWindow: ElectronWindowHandle;
+  lifetime: CloseableRendererLifetime;
+  readonly hostWindow: ElectronNativeWindowHandle;
   readonly kind: "game";
   loggedInUsername?: string;
-  readonly ownerId?: DesktopWindowInstanceId;
+  readonly ownerId?: number;
   publishedPresentation?: GameViewPresentation;
   readonly rendererId: number;
   rendererReady: boolean;
-  stopObservingFocus: () => void;
-  stopObservingReloads: () => void;
-  stopObservingShortcutInput: () => void;
-  /** Rejects delayed readiness from a failed generation until navigation advances it. */
-  unavailableGeneration?: number;
 }
 
 export interface DesktopGameHostRecord {
-  closing: boolean;
+  readonly scope: Scope.Closeable;
+  nativeCloseRequested?: true;
   groupControlsNativeDialogOpen: boolean;
   readonly groupControlsView: ElectronGameViewHandle;
   groupControlsOpen: boolean;
-  readonly groupTargetIds: Set<DesktopWindowInstanceId>;
+  readonly groupTargets: Set<DesktopGameViewRecord>;
   readonly hostView: ElectronGameViewHandle;
   readonly rendererId: number;
   layout: GameViewLayout;
-  readonly orderedIds: DesktopWindowInstanceId[];
-  repaintTimer?: ReturnType<typeof setTimeout>;
+  readonly tabs: DesktopGameViewRecord[];
   resizeSettleTimer?: ReturnType<typeof setTimeout>;
-  selectedId: DesktopWindowInstanceId;
+  selected: DesktopGameViewRecord;
   shortcutModifierPressed: boolean;
-  stackedGameViewId?: DesktopWindowInstanceId;
-  stopObservingShortcutInput: () => void;
+  stacked?: DesktopGameViewRecord;
   tabMenuOpen: boolean;
-  readonly window: ElectronWindowHandle;
+  readonly window: ElectronNativeWindowHandle;
 }
 
 interface DesktopGameHostsOptions {
-  readonly getGameViewRecord: (
-    id: DesktopWindowInstanceId,
-  ) => DesktopGameViewRecord | undefined;
-  readonly onShortcutError: (details: {
-    readonly cause: unknown;
-    readonly hostRendererId: number;
-    readonly id: DesktopWindowInstanceId;
-  }) => void;
   readonly onStateChanged: (host: DesktopGameHostRecord) => void;
   readonly platform: NodeJS.Platform;
 }
@@ -99,14 +92,23 @@ const sameGameViewPresentation = (
 ): boolean =>
   left.active === right.active &&
   left.layout === right.layout &&
+  left.tiled === right.tiled &&
   left.windowActive === right.windowActive;
 
+export const parseGameViewTabId = (id: string): number => {
+  const rendererId = Number(id);
+  return Number.isSafeInteger(rendererId) &&
+    rendererId > 0 &&
+    String(rendererId) === id
+    ? rendererId
+    : Number.NaN;
+};
+
 const gameViewSession = (
-  id: DesktopWindowInstanceId,
   record: DesktopGameViewRecord,
   index: number,
 ): GameViewSession => ({
-  id,
+  id: String(record.rendererId),
   name: record.gameViewName ?? gameViewFallbackName(index),
   phase: record.gameViewPhase,
   ...(record.gameViewError === undefined
@@ -116,10 +118,11 @@ const gameViewSession = (
 
 const gameViewPresentation = (
   host: DesktopGameHostRecord,
-  id: DesktopWindowInstanceId,
+  record: DesktopGameViewRecord,
 ): GameViewPresentation => ({
-  active: host.selectedId === id,
+  active: host.selected === record,
   layout: host.layout,
+  tiled: record.boundsLayout === "grid",
   windowActive: host.window.isFocused(),
 });
 
@@ -166,12 +169,6 @@ const setGameViewBounds = (
   }
 };
 
-const cancelRepaint = (host: DesktopGameHostRecord): void => {
-  if (host.repaintTimer === undefined) return;
-  clearTimeout(host.repaintTimer);
-  delete host.repaintTimer;
-};
-
 const cancelResize = (host: DesktopGameHostRecord): void => {
   if (host.resizeSettleTimer === undefined) return;
   clearTimeout(host.resizeSettleTimer);
@@ -184,53 +181,34 @@ const setShortcutModifierPressed = (
 ): void => {
   if (host.shortcutModifierPressed === pressed) return;
   host.shortcutModifierPressed = pressed;
-  if (
-    !isElectronWindowUsable(host.window) ||
-    host.hostView.webContents.isDestroyed()
-  ) {
-    return;
-  }
-  try {
-    host.hostView.webContents.send(
-      GameViewsIpc.shortcutModifierChanged.channel,
-      pressed,
-    );
-  } catch {}
+  send(host.hostView, GameViewsIpc.shortcutModifierChanged, pressed);
 };
 
-/** Owns the mutable mechanics shared by grouped game hosts. */
+const send = <Payload>(
+  view: ElectronGameViewHandle,
+  descriptor: IpcEventDescriptor<Payload>,
+  payload: Payload,
+): void => {
+  if (!view.webContents.isDestroyed())
+    view.webContents.send(
+      descriptor.channel,
+      descriptor.encodePayload(payload),
+    );
+};
+
 export const makeDesktopGameHosts = (options: DesktopGameHostsOptions) => {
-  const hosts = new Map<number, DesktopGameHostRecord>();
-  const groupControlHosts = new Map<number, DesktopGameHostRecord>();
-
-  const find = (rendererId: number): DesktopGameHostRecord | null => {
-    const host = hosts.get(rendererId) ?? groupControlHosts.get(rendererId);
-    if (
-      host === undefined ||
-      host.closing ||
-      !isElectronWindowUsable(host.window) ||
-      host.groupControlsView.webContents.isDestroyed() ||
-      host.hostView.webContents.isDestroyed()
-    ) {
-      if (host !== undefined) {
-        hosts.delete(host.rendererId);
-        groupControlHosts.delete(host.groupControlsView.webContents.id);
-      }
-      return null;
-    }
-    return host;
-  };
-
+  const runSync = Effect.runSyncWith(
+    Fiber.getCurrent()?.context ?? Context.empty(),
+  );
   const state = (host: DesktopGameHostRecord): GameViewHostState => ({
     capacity: MAX_GAME_VIEWS_PER_WINDOW,
     groupControlsOpen: host.groupControlsOpen,
-    groupTargetIds: host.orderedIds.filter((id) => host.groupTargetIds.has(id)),
+    groupTargetIds: host.tabs
+      .filter((record) => host.groupTargets.has(record))
+      .map((record) => String(record.rendererId)),
     layout: host.layout,
-    selectedId: host.selectedId,
-    sessions: host.orderedIds.flatMap((id, index) => {
-      const record = options.getGameViewRecord(id);
-      return record === undefined ? [] : [gameViewSession(id, record, index)];
-    }),
+    selectedId: String(host.selected.rendererId),
+    sessions: host.tabs.map(gameViewSession),
   });
 
   const applyGroupControlsLayout = (
@@ -244,7 +222,7 @@ export const makeDesktopGameHosts = (options: DesktopGameHostsOptions) => {
       host.groupControlsView,
       gameGroupControlsBounds(width, height, topInset),
     );
-    host.window.setTopBrowserView(host.groupControlsView);
+    host.window.contentView.addChildView(host.groupControlsView.native);
   };
 
   const applyHostViewLayout = (
@@ -259,101 +237,78 @@ export const makeDesktopGameHosts = (options: DesktopGameHostsOptions) => {
       x: 0,
       y: 0,
     });
-    host.window.setTopBrowserView(host.hostView);
+    host.window.contentView.addChildView(host.hostView.native);
   };
 
   const applyLayout = (host: DesktopGameHostRecord): void => {
-    if (!isElectronWindowUsable(host.window)) return;
-
     const { height, width } = host.window.getContentBounds();
     const topInset = scaledGameViewTabBarHeight(
       host.hostView.webContents.getZoomFactor(),
     );
     if (host.layout === "focused") {
-      const bounds = focusedGameViewBounds(width, height, topInset);
-      const selected = options.getGameViewRecord(host.selectedId);
-      if (selected !== undefined) {
-        setGameViewBounds(selected.gameView, bounds);
-        if (host.stackedGameViewId !== host.selectedId) {
-          host.window.setTopBrowserView(selected.gameView);
-          host.stackedGameViewId = host.selectedId;
-        }
-      }
-
-      // Keep inactive views at their final focused size behind the selected
-      // view. Tab changes then only alter native stacking order.
-      for (const id of host.orderedIds) {
-        if (id === host.selectedId) continue;
-        const record = options.getGameViewRecord(id);
-        if (record !== undefined) setGameViewBounds(record.gameView, bounds);
+      host.selected.boundsLayout = "focused";
+      if (host.stacked !== host.selected) {
+        host.window.contentView.addChildView(host.selected.gameView.native);
+        host.stacked = host.selected;
       }
     } else {
-      for (const [index, id] of host.orderedIds.entries()) {
-        const record = options.getGameViewRecord(id);
-        if (record !== undefined) {
-          setGameViewBounds(
-            record.gameView,
-            gridGameViewBounds(
+      for (const record of host.tabs) record.boundsLayout = "grid";
+    }
+
+    // Inactive views keep their last size behind the selected view, and a
+    // hidden tile keeps its bounds until the grid shows it. A resized view
+    // redraws everything at its new size, and views resized together compete
+    // for the GPU.
+    const focusedBounds = focusedGameViewBounds(width, height, topInset);
+    for (const [index, record] of host.tabs.entries()) {
+      if (host.layout === "focused" && record.boundsLayout === "grid") continue;
+      setGameViewBounds(
+        record.gameView,
+        record.boundsLayout === "focused"
+          ? focusedBounds
+          : gridGameViewBounds(
               width,
               height,
               topInset,
               index,
-              host.orderedIds.length,
+              host.tabs.length,
             ),
-          );
-        }
-      }
+      );
     }
 
     applyGroupControlsLayout(host, width, height, topInset);
     applyHostViewLayout(host, width, height, topInset);
+    publishPresentations(host);
   };
 
-  const repaint = (host: DesktopGameHostRecord): void => {
-    if (!isElectronWindowUsable(host.window)) return;
-
-    if (!host.hostView.webContents.isDestroyed()) {
-      host.hostView.webContents.invalidate();
-    }
-    const visibleIds =
-      host.layout === "focused" ? [host.selectedId] : host.orderedIds;
-    for (const id of visibleIds) {
-      const record = options.getGameViewRecord(id);
-      if (record !== undefined && !record.gameView.webContents.isDestroyed()) {
-        record.gameView.webContents.invalidate();
-      }
-    }
-    if (
-      host.groupControlsOpen &&
-      !host.groupControlsView.webContents.isDestroyed()
-    ) {
-      host.groupControlsView.webContents.invalidate();
-    }
-  };
-
-  const scheduleRepaint = (host: DesktopGameHostRecord): void => {
-    cancelRepaint(host);
-    host.repaintTimer = setTimeout(() => {
-      delete host.repaintTimer;
-      repaint(host);
-    }, 16);
-  };
+  const isClosing = (host: DesktopGameHostRecord): boolean =>
+    host.scope.state._tag === "Closed" ||
+    host.nativeCloseRequested === true ||
+    host.window.isDestroyed();
 
   const finishResize = (host: DesktopGameHostRecord): void => {
     cancelResize(host);
-    cancelRepaint(host);
-    if (host.closing) return;
+    if (isClosing(host)) return;
 
     try {
       applyLayout(host);
-      repaint(host);
-    } catch {}
+    } catch (cause) {
+      if (isClosing(host)) return;
+      runSync(
+        logFailure("Failed to lay out game views", Cause.die(cause)).pipe(
+          Effect.annotateLogs({
+            component: "window",
+            data: { hostRendererId: host.rendererId },
+            repeatKey: String(host.rendererId),
+          }),
+        ),
+      );
+    }
   };
 
   const scheduleResize = (host: DesktopGameHostRecord): void => {
-    if (host.closing) return;
+    if (host.scope.state._tag === "Closed" || host.nativeCloseRequested) return;
 
-    cancelRepaint(host);
     if (host.resizeSettleTimer !== undefined) {
       clearTimeout(host.resizeSettleTimer);
     }
@@ -364,23 +319,14 @@ export const makeDesktopGameHosts = (options: DesktopGameHostsOptions) => {
     );
   };
 
-  const syncTabBarLayout = (host: DesktopGameHostRecord): void => {
-    applyLayout(host);
-    scheduleRepaint(host);
-  };
-
   const presentation = (
     host: DesktopGameHostRecord,
-    id: DesktopWindowInstanceId,
-  ): GameViewPresentation => gameViewPresentation(host, id);
+    record: DesktopGameViewRecord,
+  ): GameViewPresentation => gameViewPresentation(host, record);
 
   const publishPresentations = (host: DesktopGameHostRecord): void => {
-    for (const id of host.orderedIds) {
-      const record = options.getGameViewRecord(id);
-      if (record === undefined || record.gameView.webContents.isDestroyed()) {
-        continue;
-      }
-      const nextPresentation = presentation(host, id);
+    for (const record of host.tabs) {
+      const nextPresentation = presentation(host, record);
       if (
         record.publishedPresentation !== undefined &&
         sameGameViewPresentation(record.publishedPresentation, nextPresentation)
@@ -388,26 +334,14 @@ export const makeDesktopGameHosts = (options: DesktopGameHostsOptions) => {
         continue;
       }
       record.publishedPresentation = nextPresentation;
-      record.gameView.webContents.send(
-        GameViewsIpc.presentationChanged.channel,
-        nextPresentation,
-      );
+      send(record.gameView, GameViewsIpc.presentationChanged, nextPresentation);
     }
   };
 
   const publishState = (host: DesktopGameHostRecord): void => {
-    if (!isElectronWindowUsable(host.window)) return;
-
     const nextState = state(host);
-    if (!host.hostView.webContents.isDestroyed()) {
-      host.hostView.webContents.send(GameViewsIpc.changed.channel, nextState);
-    }
-    if (!host.groupControlsView.webContents.isDestroyed()) {
-      host.groupControlsView.webContents.send(
-        GameViewsIpc.changed.channel,
-        nextState,
-      );
-    }
+    send(host.hostView, GameViewsIpc.changed, nextState);
+    send(host.groupControlsView, GameViewsIpc.changed, nextState);
     publishPresentations(host);
     options.onStateChanged(host);
   };
@@ -416,15 +350,14 @@ export const makeDesktopGameHosts = (options: DesktopGameHostsOptions) => {
     cancelResize(host);
     applyLayout(host);
     publishState(host);
-    scheduleRepaint(host);
   };
 
   const activate = (
     host: DesktopGameHostRecord,
-    id: DesktopWindowInstanceId,
+    record: DesktopGameViewRecord,
   ): void => {
-    if (host.selectedId === id) return;
-    host.selectedId = id;
+    if (host.selected === record) return;
+    host.selected = record;
     publishState(host);
   };
 
@@ -441,20 +374,12 @@ export const makeDesktopGameHosts = (options: DesktopGameHostsOptions) => {
       } catch {}
       throw cause;
     }
-    scheduleRepaint(host);
-    if (open && !host.hostView.webContents.isDestroyed()) {
+    if (open) {
       try {
         host.hostView.webContents.focus();
       } catch {}
     }
-    if (!host.hostView.webContents.isDestroyed()) {
-      try {
-        host.hostView.webContents.send(
-          GameViewsIpc.tabMenuOpenChanged.channel,
-          host.tabMenuOpen,
-        );
-      } catch {}
-    }
+    send(host.hostView, GameViewsIpc.tabMenuOpenChanged, host.tabMenuOpen);
   };
 
   const setGroupControlsOpen = (
@@ -464,56 +389,44 @@ export const makeDesktopGameHosts = (options: DesktopGameHostsOptions) => {
     if (host.groupControlsOpen === open) return;
     if (open && host.tabMenuOpen) setTabMenuOpen(host, false);
     if (open) {
-      host.window.addBrowserView(host.groupControlsView);
+      host.window.contentView.addChildView(host.groupControlsView.native);
     } else {
-      host.window.removeBrowserView(host.groupControlsView);
+      host.window.contentView.removeChildView(host.groupControlsView.native);
     }
     host.groupControlsOpen = open;
-    if (!open) delete host.stackedGameViewId;
+    if (!open) delete host.stacked;
     refresh(host);
-    if (open && !host.groupControlsView.webContents.isDestroyed()) {
+    if (open) {
       host.groupControlsView.webContents.focus();
-      return;
-    }
-
-    const selected = options.getGameViewRecord(host.selectedId);
-    if (
-      !open &&
-      selected !== undefined &&
-      !selected.gameView.webContents.isDestroyed()
-    ) {
-      selected.gameView.webContents.focus();
+    } else {
+      host.selected.gameView.webContents.focus();
     }
   };
 
   const select = (
     host: DesktopGameHostRecord,
-    id: DesktopWindowInstanceId,
+    id: number,
     focus: GameViewSelectionFocus,
   ): void => {
-    const record = options.getGameViewRecord(id);
-    if (record === undefined || record.gameHostRendererId !== host.rendererId) {
+    const record = host.tabs.find((record) => record.rendererId === id);
+    if (record === undefined) {
       throw new Error(`Game view does not belong to this host: ${id}`);
     }
 
-    if (host.selectedId !== id || host.layout !== "focused") {
-      host.selectedId = id;
+    if (host.selected !== record || host.layout !== "focused") {
+      host.selected = record;
       host.layout = "focused";
       refresh(host);
     }
     if (focus === "host") {
-      if (!host.hostView.webContents.isDestroyed()) {
-        host.hostView.webContents.focus();
-      }
-    } else if (!record.gameView.webContents.isDestroyed()) {
+      host.hostView.webContents.focus();
+    } else {
       record.gameView.webContents.focus();
     }
   };
 
-  const focus = (
-    host: DesktopGameHostRecord,
-    id: DesktopWindowInstanceId,
-  ): void => select(host, id, "view");
+  const focus = (host: DesktopGameHostRecord, id: number): void =>
+    select(host, id, "view");
 
   const makeShortcutInputListener =
     (
@@ -531,53 +444,32 @@ export const makeDesktopGameHosts = (options: DesktopGameHostsOptions) => {
       const index = readGameViewShortcutIndex(
         input,
         options.platform,
-        host.orderedIds.length,
+        host.tabs.length,
       );
       if (index === null) return;
-      const id = host.orderedIds[index];
-      if (id === undefined) return;
+      const record = host.tabs[index];
+      if (record === undefined) return;
 
       event.preventDefault();
-      try {
-        focus(host, id);
-      } catch (cause) {
-        options.onShortcutError({ cause, hostRendererId: host.rendererId, id });
-      }
+      focus(host, record.rendererId);
     };
-
-  const register = (host: DesktopGameHostRecord): void => {
-    hosts.set(host.rendererId, host);
-    groupControlHosts.set(host.groupControlsView.webContents.id, host);
-  };
-
-  const unregister = (host: DesktopGameHostRecord): void => {
-    hosts.delete(host.rendererId);
-    groupControlHosts.delete(host.groupControlsView.webContents.id);
-  };
 
   return {
     activate,
-    cancelRepaint,
     cancelResize,
-    find,
     finishResize,
     focus,
-    hasGroupControlsRenderer: (rendererId: number) =>
-      groupControlHosts.has(rendererId),
     makeShortcutInputListener,
     presentation,
     publishPresentations,
     publishState,
     refresh,
-    register,
     scheduleResize,
     select,
     setGroupControlsOpen,
     setShortcutModifierPressed,
     setTabMenuOpen,
-    syncTabBarLayout,
+    syncTabBarLayout: applyLayout,
     state,
-    unregister,
-    values: () => hosts.values(),
   };
 };

@@ -1,8 +1,8 @@
-import { promises as fs } from "fs";
-import { basename } from "path";
+import { basename } from "node:path";
 
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import { FileSystem } from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
@@ -21,7 +21,7 @@ import type {
 import { DesktopEnvironment } from "../app/DesktopEnvironment";
 import { ElectronDialog } from "../electron/ElectronDialog";
 import { ElectronShell } from "../electron/ElectronShell";
-import { ScriptFiles } from "../internal/scripting/ScriptFiles";
+import { readScriptFile } from "./ScriptFileAnalysis";
 import { ScriptPackageCatalog } from "./ScriptPackageCatalog";
 import { normalizeGitHubRepositoryUrl } from "./GitHubScriptPackageClient";
 import { ScriptSourceRegistry } from "./ScriptSourceRegistry";
@@ -112,20 +112,12 @@ const wrapError = (
     ...(path === undefined ? {} : { path }),
   });
 
-const ensureDirectory = (
-  path: string,
-): Effect.Effect<void, DesktopScriptLibraryError> =>
-  Effect.tryPromise({
-    try: () => fs.mkdir(path, { recursive: true }),
-    catch: (cause) => wrapError("mkdir", cause, path),
-  }).pipe(Effect.asVoid);
-
 export const layer = Layer.effect(
   DesktopScriptLibrary,
   Effect.gen(function* () {
     const dialog = yield* ElectronDialog;
     const env = yield* DesktopEnvironment;
-    const files = yield* ScriptFiles;
+    const fileSystem = yield* FileSystem;
     const catalog = yield* ScriptPackageCatalog;
     const sources = yield* ScriptSourceRegistry;
     const shell = yield* ElectronShell;
@@ -162,7 +154,7 @@ export const layer = Layer.effect(
                   new Error("The selected script is no longer available."),
                 ),
               )
-            : files.read(entry.path).pipe(
+            : readScriptFile(entry.path).pipe(
                 Effect.map((file) => ({
                   ...file,
                   name: entry.name,
@@ -179,7 +171,13 @@ export const layer = Layer.effect(
     const selectPath = Effect.fn("DesktopScriptLibrary.selectPath")(function* (
       parentWindowId?: number,
     ) {
-      yield* ensureDirectory(scriptsDir);
+      yield* fileSystem
+        .makeDirectory(scriptsDir, { recursive: true })
+        .pipe(
+          Effect.mapError((cause) =>
+            wrapError("mkdir", cause.reason.cause ?? cause, scriptsDir),
+          ),
+        );
       const result = yield* dialog
         .showOpenDialog(
           {
@@ -238,7 +236,7 @@ export const layer = Layer.effect(
         const file =
           reference?.kind === "package"
             ? yield* loadReference(reference)
-            : yield* files.read(path).pipe(
+            : yield* readScriptFile(path).pipe(
                 Effect.map((file) =>
                   reference === undefined ? file : { ...file, reference },
                 ),

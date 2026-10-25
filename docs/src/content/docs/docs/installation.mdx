@@ -1,32 +1,19 @@
 ---
 title: Installation
-description: Download Lucent, add Flash Player, and update it manually.
+description: Download Lucent and update it manually.
 ---
+
+:::note
+As of v0.1.0-beta.1, Lucent runs on a
+[patched version of Ruffle Web](https://github.com/toommyliu/ruffle/tree/e86a3fba0cfd80175a3538d6a81917c701e6bd45).
+It requires macOS 13 (Ventura) or later, or Windows 10 or later. On Linux, use a
+distribution release that is still supported by its maintainer.
+:::
 
 ## Download Lucent
 
 Download the latest version for your system from the
 [releases page][latest-release].
-
-## Add Flash Player
-
-Lucent does not come with Flash Player. Sorry!
-
-Get a compatible Pepper Flash plugin separately, then place it in
-`Documents/Lucent` with the exact name shown below. Only use a plugin from a
-source you trust.
-
-| System  | Expected file              |
-| ------- | -------------------------- |
-| macOS   | `PepperFlashPlayer.plugin` |
-| Windows | `pepflashplayer.dll`       |
-| Linux   | `libpepflashplayer.so`     |
-
-Create the `Lucent` folder if it does not exist. If the plugin is missing,
-Lucent shows the expected path and closes.
-
-To keep the plugin elsewhere, start Lucent with
-[`--flash-plugin-path`](/reference/cli#options).
 
 ## Update Lucent
 

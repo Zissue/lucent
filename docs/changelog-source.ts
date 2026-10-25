@@ -8,7 +8,7 @@ const changelogUrl = new URL("../CHANGELOG.md", import.meta.url);
 const changelogPath = fileURLToPath(changelogUrl);
 const repoRoot = fileURLToPath(new URL("../", import.meta.url));
 const releaseHeading =
-  /^# \[(\d+\.\d+\.\d+)\]\([^)\r\n]+\) - \((\d{4}-\d{2}-\d{2})\)[ \t]*$/gm;
+  /^# \[(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\]\([^)\r\n]+\) - \((\d{4}-\d{2}-\d{2})\)[ \t]*$/gm;
 
 const parseChangelog = (changelog: string): SourceEntry[] => {
   const headings = [...changelog.matchAll(releaseHeading)];

@@ -72,7 +72,6 @@ import {
   resolvePreferredCombatProfileId,
   writeStoredCombatProfileId,
 } from "./profileSelection";
-import { createRandomId } from "../../../shared/randomId";
 import {
   buildCombatProfileOptions,
   resolveCombatProfileOptionValue,
@@ -621,7 +620,7 @@ export function CombatProfilesView(
     }
 
     const baseLabel = "New Profile";
-    const id = createRandomId("profile");
+    const id = `profile-${crypto.randomUUID()}`;
     const profile: CombatProfile = {
       id,
       label: baseLabel,
@@ -652,8 +651,10 @@ export function CombatProfilesView(
       return;
     }
 
-    const duplicate = duplicateCombatProfile(profile, library().profiles, () =>
-      createRandomId("profile"),
+    const duplicate = duplicateCombatProfile(
+      profile,
+      library().profiles,
+      () => `profile-${crypto.randomUUID()}`,
     );
     const nextLibrary = await runUpdate(
       props.onSaveProfile?.(duplicate) ?? Promise.resolve(library()),

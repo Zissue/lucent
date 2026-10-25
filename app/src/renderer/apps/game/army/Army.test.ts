@@ -28,7 +28,7 @@ const makeSession = (
   players: ["Alice"],
   raw: { players: ["Alice"], room: "1234", sets },
   role: "leader",
-  room: "1234",
+  room: 1234,
   sessionId: "session-1",
   sets,
 });
@@ -43,7 +43,6 @@ const makeBridge = (overrides: Partial<DesktopArmyBridge> = {}) => {
   const bridge: DesktopArmyBridge = {
     fail: async () => undefined,
     leave: async () => undefined,
-    loadConfig: async () => makeSession(),
     loopTauntAwait: async () => ({ status: "completed" }),
     loopTauntLeave: async () => undefined,
     loopTauntRegister: async () => ({ runId: "loop-1" }),
@@ -164,12 +163,18 @@ describe("Army API", () => {
     Effect.gen(function* () {
       const actionStarted = yield* Deferred.make<void>();
       const actionStopped = yield* Deferred.make<void>();
+      let reports = 0;
       const testBridge = makeBridge({
-        progress: async () => ({
-          complete: false,
-          completedPlayers: ["Alice"],
-          pendingPlayers: ["Bob"],
-        }),
+        progress: () => {
+          reports += 1;
+          return reports === 1
+            ? Promise.resolve({
+                complete: false,
+                completedPlayers: [],
+                pendingPlayers: ["Alice", "Bob"],
+              })
+            : new Promise(() => undefined);
+        },
       });
       const reason = "Timed out waiting for army progress 25; missing: Bob";
 

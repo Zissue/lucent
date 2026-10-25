@@ -88,7 +88,7 @@ const ogImage =
 
       <h1>Automation for the rest of us.</h1>
       <p class="landing-intro">
-        AQW automation for macOS, Windows, and Linux.
+        AQW automation for macOS, Windows, and Linux. No Flash installation required.
       </p>
 
       <div class="landing-actions">
@@ -211,7 +211,7 @@ const ogImage =
       </div>
 
       <p class="landing-note" id="download-note">
-        <span>Unofficial client. Use at your own risk.</span>
+        <span>Unofficial client, use at your own risk.</span>
         <span>Exclusively tested on macOS.</span>
       </p>
     </div>
@@ -292,6 +292,25 @@ const ogImage =
               Lucent is a smaller, mostly DIY toolkit. Skua or Grimlite may
               better satisfy your needs if you want similar scripting
               flexibility with a richer ecosystem and more ready-made scripts.
+            </p>
+          </div>
+        </details>
+        <details>
+          <summary>
+            <span>Is Flash Player required?</span>
+            <Icon
+              aria-hidden="true"
+              class="landing-faq-icon"
+              name="chevron-down"
+              size={16}
+            />
+          </summary>
+          <div class="landing-faq-answer">
+            <p>
+              No. As of v0.1.0-beta.1, Lucent runs on a{" "}
+              <a href="https://github.com/toommyliu/ruffle/tree/e86a3fba0cfd80175a3538d6a81917c701e6bd45" rel="noreferrer" target="_blank">patched version of Ruffle Web</a>.
+              The integration is experimental, but has worked well in testing.
+              Please report any bugs you encounter.
             </p>
           </div>
         </details>

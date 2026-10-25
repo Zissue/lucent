@@ -1,63 +1,17 @@
-import { randomFillSync } from "crypto";
-import { existsSync } from "fs";
-import { homedir } from "os";
-import { join } from "path";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 import { app } from "electron";
 
 import appBranding from "../../../appBranding.json";
 import { parseCliOptions, type CliOptions } from "../cli";
 import { type DesktopEnvironmentConfig } from "./DesktopEnvironment";
-import {
-  resolveFlashTrustRootPath,
-  resolvePepperFlashPluginPath,
-} from "../flash/FlashPaths";
-import { writeTrustFile } from "../flash/FlashTrust";
-
-export type FlashStartupResult =
-  | {
-      readonly status: "configured";
-      readonly flashPluginPath: string;
-      readonly flashTrustRootPath: string;
-      readonly trustedPaths: readonly string[];
-    }
-  | {
-      readonly status: "missing-plugin";
-      readonly flashPluginPath: string | null;
-      readonly flashTrustRootPath: string;
-      readonly trustedPaths: readonly string[];
-    }
-  | {
-      readonly status: "failed";
-      readonly cause: unknown;
-      readonly flashPluginPath: string | null;
-      readonly flashTrustRootPath: string;
-      readonly trustedPaths: readonly string[];
-    };
+import { registerRuffleAssetScheme } from "../game/session/RuffleAssets";
 
 export interface MainProcessBootstrap {
   readonly cliOptions: CliOptions;
   readonly envConfig: DesktopEnvironmentConfig;
-  readonly flash: FlashStartupResult;
 }
-
-const installCryptoFallback = (): void => {
-  if (globalThis.crypto !== undefined) {
-    return;
-  }
-
-  Object.defineProperty(globalThis, "crypto", {
-    configurable: true,
-    value: {
-      getRandomValues: <T extends ArrayBufferView>(array: T): T => {
-        randomFillSync(
-          Buffer.from(array.buffer, array.byteOffset, array.byteLength),
-        );
-        return array;
-      },
-    },
-  });
-};
 
 export const resolveWorkspaceHome = (
   options: {
@@ -112,88 +66,28 @@ const resolveEnvironmentConfig = (
   return {
     appDataDir: app.getPath("userData"),
     assetsDir: join(app.getAppPath(), "..", "assets"),
-    debug: cliOptions.debug === true || cliOptions.traceProjections === true,
+    debug: cliOptions.debug === true,
     isDev,
     platform,
-    traceProjections: cliOptions.traceProjections === true,
     workspaceDir: resolveWorkspaceHome({
       documentsPath: app.getPath("documents"),
     }),
   };
 };
 
-export const configureFlashStartup = (
-  envConfig: DesktopEnvironmentConfig,
-  options: {
-    readonly flashPluginPathOverride?: string;
-    readonly flashVersion?: string;
-  } = {},
-): FlashStartupResult => {
-  const trustedPaths = [join(envConfig.assetsDir, "loader.swf")];
-  const flashPluginPath = resolvePepperFlashPluginPath({
-    ...(options.flashPluginPathOverride === undefined
-      ? {}
-      : { override: options.flashPluginPathOverride }),
-    platform: envConfig.platform,
-    workspaceDir: envConfig.workspaceDir,
-  });
-  const flashTrustRootPath = resolveFlashTrustRootPath(envConfig.appDataDir);
-  const pluginMissing =
-    flashPluginPath === null || !existsSync(flashPluginPath);
-
-  if (!pluginMissing) {
-    app.commandLine.appendSwitch("ppapi-flash-path", flashPluginPath);
-    if (options.flashVersion !== undefined) {
-      app.commandLine.appendSwitch("ppapi-flash-version", options.flashVersion);
-    }
-  }
-
-  try {
-    writeTrustFile({
-      appName: "lucent",
-      rootPath: flashTrustRootPath,
-      trustedPaths,
-    });
-  } catch (cause) {
-    return {
-      status: "failed",
-      cause,
-      flashPluginPath,
-      flashTrustRootPath,
-      trustedPaths,
-    };
-  }
-
-  if (pluginMissing) {
-    return {
-      status: "missing-plugin",
-      flashPluginPath,
-      flashTrustRootPath,
-      trustedPaths,
-    };
-  }
-
-  return {
-    status: "configured",
-    flashPluginPath,
-    flashTrustRootPath,
-    trustedPaths,
-  };
+const keepBackgroundGamesRunning = (): void => {
+  app.commandLine.appendSwitch("disable-renderer-backgrounding");
+  app.commandLine.appendSwitch("disable-background-timer-throttling");
+  app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
 };
 
 export const prepareMainProcess = (): MainProcessBootstrap => {
   process.env["ELECTRON_DISABLE_SECURITY_WARNINGS"] = "true";
-  installCryptoFallback();
 
   const cliOptions = parseCliOptions(process.argv);
   const envConfig = resolveEnvironmentConfig(cliOptions);
-  const flash = configureFlashStartup(envConfig, {
-    ...(cliOptions.flashPluginPath === undefined
-      ? {}
-      : { flashPluginPathOverride: cliOptions.flashPluginPath }),
-    ...(cliOptions.flashVersion === undefined
-      ? {}
-      : { flashVersion: cliOptions.flashVersion }),
-  });
-  return { cliOptions, envConfig, flash };
+  registerRuffleAssetScheme();
+  app.commandLine.appendSwitch("ignore-gpu-blocklist");
+  keepBackgroundGamesRunning();
+  return { cliOptions, envConfig };
 };

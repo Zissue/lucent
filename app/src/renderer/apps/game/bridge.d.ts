@@ -220,7 +220,6 @@ declare global {
     onConnection?: (status: string) => void;
     onDebug?: (message: string) => void;
     onExtensionResponse?: (packet: string) => void;
-    onGameInteraction?: () => void;
     onLoaded?: () => void;
     onProgress?: (percent: number) => void;
     packetFromClient?: (packet: string) => void;

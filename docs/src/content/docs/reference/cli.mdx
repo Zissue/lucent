@@ -11,11 +11,9 @@ Lucent [options]
 
 ## Options
 
-| Argument              | Value                       | Description                                                                                                                                 |
-| --------------------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--launch-mode`       | `game` or `account-manager` | Opens the selected window at startup instead of the saved launch preference. `manager` is also accepted as shorthand for `account-manager`. |
-| `--flash-plugin-path` | File path                   | Overrides the Pepper Flash plugin path. Relative paths are resolved from the working directory.                                             |
-| `--flash-version`     | Version string              | Sets the PPAPI Flash version passed to Chromium when the Flash plugin is available.                                                         |
+| Argument        | Value                       | Description                                                                                                                                 |
+| --------------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--launch-mode` | `game` or `account-manager` | Opens the selected window at startup instead of the saved launch preference. `manager` is also accepted as shorthand for `account-manager`. |
 
 ## Examples
 
@@ -25,12 +23,6 @@ Open the account manager:
 Lucent --launch-mode account-manager
 ```
 
-Use a specific Flash plugin and version:
-
-```sh
-Lucent --flash-plugin-path "./PepperFlashPlayer.plugin" --flash-version "32.0.0.371"
-```
-
 On macOS, pass arguments to an installed application with `open`:
 
 ```sh
@@ -38,6 +30,6 @@ open -a Lucent --args --launch-mode account-manager
 ```
 
 :::tip[Compatibility aliases]
-The camel-case aliases `--launchMode`, `--flashPath`, and `--flashVersion` are
-also accepted. Prefer the kebab-case forms above in new commands.
+The camel-case alias `--launchMode` is also accepted. Prefer `--launch-mode`
+in new commands.
 :::

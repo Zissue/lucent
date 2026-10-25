@@ -216,7 +216,7 @@ export const MixedSessionStatuses: Story = {
             rendererGeneration: 1,
             revision: 4,
             script: {
-              message: "Loading the game client",
+              message: "Loading the game",
               name: "Support loop",
               state: "starting",
             },

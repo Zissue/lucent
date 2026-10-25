@@ -94,10 +94,10 @@ describe("script package references", () => {
     );
     const files = await generate();
     const first = files.find((file) =>
-      file.path.endsWith("test/first/index.md"),
+      file.path.endsWith(join("test", "first", "index.md")),
     )!.content;
     const second = files.find((file) =>
-      file.path.endsWith("test/second/index.md"),
+      file.path.endsWith(join("test", "second", "index.md")),
     )!.content;
     expect(files[0]!.content).toContain(
       "/reference/scripting/packages/test/second/",

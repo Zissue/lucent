@@ -528,12 +528,16 @@ export const layer = Layer.effect(
         }).pipe(
           Effect.map(runtimeOptionsFrom),
           Effect.catch((cause) =>
-            Effect.logWarning({
-              message:
-                "Failed to load account script settings; using defaults.",
-              username,
-              cause,
-            }).pipe(Effect.as(DEFAULT_SCRIPT_RUNTIME_OPTIONS)),
+            Effect.logWarning(
+              "Failed to load account script settings; using defaults.",
+              Cause.fail(cause),
+            ).pipe(
+              Effect.annotateLogs({
+                component: "scripting",
+                data: { username },
+              }),
+              Effect.as(DEFAULT_SCRIPT_RUNTIME_OPTIONS),
+            ),
           ),
         );
       },
@@ -594,12 +598,16 @@ export const layer = Layer.effect(
           }).pipe(
             Effect.map(runtimeOptionsFrom),
             Effect.catch((cause) =>
-              Effect.logWarning({
-                message:
-                  "Failed to persist account script settings; keeping the session value.",
-                username,
-                cause,
-              }).pipe(Effect.as(null)),
+              Effect.logWarning(
+                "Failed to persist account script settings; keeping the session value.",
+                Cause.fail(cause),
+              ).pipe(
+                Effect.annotateLogs({
+                  component: "scripting",
+                  data: { username },
+                }),
+                Effect.as(null),
+              ),
             ),
           );
 
@@ -1069,17 +1077,13 @@ export const layer = Layer.effect(
             setOptions(update).pipe(Effect.map((result) => result.options)),
           source: { sourceName: statusName(file) },
         });
-        const fileSystem = yield* makeScriptFileSystemApi(
-          fileSystemBridge,
-          scriptScope,
-        );
         const http = yield* makeScriptHttpApi(httpBridge, scriptScope);
         const modules = makeScriptBuiltinModules({
           autoRelogin,
           autoZone,
           bridge,
           failCause: (cause) => failActiveCause(starting.id, cause),
-          fileSystem,
+          fileSystem: makeScriptFileSystemApi(fileSystemBridge, scriptScope),
           http,
           roomPolicy: SubscriptionRef.get(optionsRef).pipe(
             Effect.map((options) => snapshotRoomPolicy(options.roomPolicy)),

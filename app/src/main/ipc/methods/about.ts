@@ -1,4 +1,4 @@
-import { dirname } from "path";
+import { dirname } from "node:path";
 
 import * as Effect from "effect/Effect";
 
@@ -7,13 +7,25 @@ import {
   type AboutFolder,
   type AboutLink,
 } from "../../../shared/ipc";
-import { desktopBuildInfo } from "../../app/DesktopBuildInfo";
 import { DesktopEnvironment } from "../../app/DesktopEnvironment";
 import { DesktopObservability } from "../../app/observability/DesktopObservability";
 import { ElectronApp } from "../../electron/ElectronApp";
 import { ElectronShell } from "../../electron/ElectronShell";
 import { resolveScriptWorkspacePaths } from "../../scripting/ScriptWorkspacePaths";
 import { makeDesktopIpcMethod } from "../DesktopIpc";
+
+interface DesktopBuildInfo {
+  readonly builtAt: string | null;
+  readonly commit: string | null;
+  readonly dirty: boolean;
+}
+
+declare const __LUCENT_BUILD_INFO__: DesktopBuildInfo | undefined;
+
+const desktopBuildInfo: DesktopBuildInfo =
+  typeof __LUCENT_BUILD_INFO__ === "undefined"
+    ? { builtAt: null, commit: null, dirty: false }
+    : __LUCENT_BUILD_INFO__;
 
 const aboutSenders = ["about"] as const;
 

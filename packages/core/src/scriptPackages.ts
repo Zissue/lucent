@@ -422,6 +422,13 @@ export const ScriptPackageUpdateRequestSchema = Schema.Struct({
 export type ScriptPackageUpdateRequest =
   typeof ScriptPackageUpdateRequestSchema.Type;
 
+export const ScriptPackageRestoreRequestSchema = Schema.Struct({
+  packageName: ScriptPackageNameSchema,
+});
+
+export type ScriptPackageRestoreRequest =
+  typeof ScriptPackageRestoreRequestSchema.Type;
+
 export const ScriptPackageRemoveRequestSchema = Schema.Struct({
   confirmModified: Schema.optionalKey(Schema.Boolean),
   packageName: ScriptPackageNameSchema,

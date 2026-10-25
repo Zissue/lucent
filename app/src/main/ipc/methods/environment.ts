@@ -21,53 +21,17 @@ import {
   type EnvironmentState,
 } from "@lucent/core/environment";
 import * as Effect from "effect/Effect";
-import * as Schema from "effect/Schema";
 
 import { EnvironmentIpc } from "../../../shared/ipc";
-import { GameEnvironments } from "../../internal/environment/GameEnvironments";
+import { GameEnvironments } from "../../game/environment/GameEnvironments";
 import { DesktopWindows } from "../../window/DesktopWindows";
 import { DesktopIpc, makeDesktopIpcMethod } from "../DesktopIpc";
-import type { DesktopIpcSender } from "../DesktopIpcSenders";
-
-export class EnvironmentOwnerError extends Schema.TaggedError<EnvironmentOwnerError>()(
-  "EnvironmentOwnerError",
-  {
-    rendererId: Schema.Int,
-  },
-) {
-  override get message(): string {
-    return `Environment IPC sender has no owning game: ${this.rendererId}`;
-  }
-}
+import {
+  resolveGameRendererId,
+  type DesktopIpcSender,
+} from "../DesktopIpcSenders";
 
 const allowedSenders = ["game", "environment"] as const;
-
-const resolveGameRendererId = Effect.fn("desktop.ipc.environment.resolveGame")(
-  function* (sender: DesktopIpcSender) {
-    if (sender.kind === "game") {
-      return sender.rendererId;
-    }
-
-    const windows = yield* DesktopWindows;
-    const ownerRendererId = yield* windows.getOwnerRendererId(
-      sender.rendererId,
-    );
-    if (ownerRendererId === null) {
-      return yield* new EnvironmentOwnerError({
-        rendererId: sender.rendererId,
-      });
-    }
-
-    const ownerKind = yield* windows.getRendererKind(ownerRendererId);
-    if (ownerKind !== "game") {
-      return yield* new EnvironmentOwnerError({
-        rendererId: sender.rendererId,
-      });
-    }
-
-    return ownerRendererId;
-  },
-);
 
 const notifyChanged = Effect.fn("desktop.ipc.environment.notifyChanged")(
   function* (
@@ -120,7 +84,7 @@ export const clear = makeDesktopIpcMethod({
 
 export const addQuest = makeDesktopIpcMethod({
   descriptor: EnvironmentIpc.addQuest,
-  allowedSenders,
+  allowedSenders: ["game"],
   handler: (payload, sender) =>
     mutate(sender, (state) =>
       addEnvironmentQuest(state, payload.questId, payload.rewardItemId),
@@ -129,7 +93,7 @@ export const addQuest = makeDesktopIpcMethod({
 
 export const addQuests = makeDesktopIpcMethod({
   descriptor: EnvironmentIpc.addQuests,
-  allowedSenders,
+  allowedSenders: ["environment"],
   handler: (payload, sender) =>
     mutate(sender, (state) => addEnvironmentQuests(state, payload.quests)),
 });
@@ -189,14 +153,14 @@ export const setAutomationEnabled = makeDesktopIpcMethod({
 
 export const addItem = makeDesktopIpcMethod({
   descriptor: EnvironmentIpc.addItem,
-  allowedSenders,
+  allowedSenders: ["game"],
   handler: (payload, sender) =>
     mutate(sender, (state) => addEnvironmentItem(state, payload.name)),
 });
 
 export const addItems = makeDesktopIpcMethod({
   descriptor: EnvironmentIpc.addItems,
-  allowedSenders,
+  allowedSenders: ["environment"],
   handler: (payload, sender) =>
     mutate(sender, (state) => addEnvironmentItems(state, payload.names)),
 });
@@ -232,14 +196,14 @@ export const clearItems = makeDesktopIpcMethod({
 
 export const addBoost = makeDesktopIpcMethod({
   descriptor: EnvironmentIpc.addBoost,
-  allowedSenders,
+  allowedSenders: ["game"],
   handler: (payload, sender) =>
     mutate(sender, (state) => addEnvironmentBoost(state, payload.name)),
 });
 
 export const addBoosts = makeDesktopIpcMethod({
   descriptor: EnvironmentIpc.addBoosts,
-  allowedSenders,
+  allowedSenders: ["environment"],
   handler: (payload, sender) =>
     mutate(sender, (state) => addEnvironmentBoosts(state, payload.names)),
 });
@@ -259,7 +223,7 @@ export const clearBoosts = makeDesktopIpcMethod({
 
 export const fetchBoosts = makeDesktopIpcMethod({
   descriptor: EnvironmentIpc.fetchBoosts,
-  allowedSenders,
+  allowedSenders: ["environment"],
   handler: Effect.fn("desktop.ipc.environment.fetchBoosts")(
     function* (_payload, sender) {
       const environments = yield* GameEnvironments;
@@ -269,45 +233,15 @@ export const fetchBoosts = makeDesktopIpcMethod({
   ),
 });
 
-export const fetchBoostsResponse = makeDesktopIpcMethod({
-  descriptor: EnvironmentIpc.fetchBoostsResponse,
-  allowedSenders: ["game"],
-  handler: Effect.fn("desktop.ipc.environment.fetchBoostsResponse")(
-    function* (payload, sender) {
-      const environments = yield* GameEnvironments;
-      yield* environments.respondToBoostFetch(
-        sender.rendererId,
-        payload.requestId,
-        payload.discovery,
-      );
-    },
-  ),
-});
-
 export const withdrawBoosts = makeDesktopIpcMethod({
   descriptor: EnvironmentIpc.withdrawBoosts,
-  allowedSenders,
+  allowedSenders: ["environment"],
   handler: Effect.fn("desktop.ipc.environment.withdrawBoosts")(
     function* (payload, sender) {
       const environments = yield* GameEnvironments;
       const gameRendererId = yield* resolveGameRendererId(sender);
       return yield* environments.withdrawBoosts(
         gameRendererId,
-        payload.itemIds,
-      );
-    },
-  ),
-});
-
-export const withdrawBoostsResponse = makeDesktopIpcMethod({
-  descriptor: EnvironmentIpc.withdrawBoostsResponse,
-  allowedSenders: ["game"],
-  handler: Effect.fn("desktop.ipc.environment.withdrawBoostsResponse")(
-    function* (payload, sender) {
-      const environments = yield* GameEnvironments;
-      yield* environments.respondToBoostWithdrawal(
-        sender.rendererId,
-        payload.requestId,
         payload.itemIds,
       );
     },
@@ -357,8 +291,6 @@ export const methods = [
   removeBoost,
   clearBoosts,
   fetchBoosts,
-  fetchBoostsResponse,
   withdrawBoosts,
-  withdrawBoostsResponse,
   syncToAll,
 ] as const;

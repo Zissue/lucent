@@ -1,10 +1,21 @@
-import { createServer, type IncomingMessage, type ServerResponse } from "http";
-import type { Socket } from "net";
-import { afterEach, describe, expect, it } from "@effect/vitest";
-import { vi } from "vitest";
+import {
+  createServer,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
+import type { Socket } from "node:net";
+import { afterEach, expect, layer as testLayer } from "@effect/vitest";
+import { gzipSync } from "node:zlib";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
-import { makeDesktopHttpClient } from "./DesktopHttpClient";
+import { HttpClient, HttpClientRequest } from "effect/http";
+import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
+import {
+  DesktopHttpClient,
+  layer,
+  makeDesktopHttpClient,
+} from "./DesktopHttpClient";
+import * as TestClock from "effect/testing/TestClock";
 const cleanups: (() => Promise<void>)[] = [];
 const server = async (
   handle: (request: IncomingMessage, response: ServerResponse) => void,
@@ -31,10 +42,124 @@ const server = async (
   return new URL(`http://127.0.0.1:${address.port}/`);
 };
 afterEach(async () => {
-  vi.useRealTimers();
   await Promise.all(cleanups.splice(0).map((close) => close()));
 });
-describe("Desktop HTTP request lifecycle", () => {
+testLayer(layer)("Desktop HTTP request lifecycle", (it) => {
+  it.effect(
+    "reports native response inactivity as timeout and closes the connection",
+    () =>
+      Effect.gen(function* () {
+        const closed = Promise.withResolvers<void>();
+        const url = yield* Effect.promise(() =>
+          server((_request, response) => {
+            response.on("close", () => closed.resolve());
+            response.write("partial");
+          }),
+        );
+        const transport = yield* HttpClient.HttpClient;
+        const http = yield* makeDesktopHttpClient.pipe(
+          Effect.provideService(
+            HttpClient.HttpClient,
+            transport.pipe(
+              HttpClient.mapRequest(HttpClientRequest.setUrl(url)),
+            ),
+          ),
+          Effect.provide(NodeFileSystem.layer),
+        );
+        const error = yield* http
+          .get({ url: new URL("https://example.com/"), timeoutMs: 100 })
+          .pipe(Effect.flip);
+        expect(error.kind).toBe("timeout");
+        yield* Effect.promise(() => closed.promise);
+      }).pipe(TestClock.withLive),
+  );
+
+  it.effect(
+    "resets the native inactivity timeout while response bytes arrive",
+    () =>
+      Effect.gen(function* () {
+        const url = yield* Effect.promise(() =>
+          server((_request, response) => {
+            let chunks = 0;
+            const timer = setInterval(() => {
+              response.write("tick");
+              chunks += 1;
+              if (chunks === 10) {
+                clearInterval(timer);
+                response.end();
+              }
+            }, 25);
+            response.on("close", () => clearInterval(timer));
+          }),
+        );
+        const transport = yield* HttpClient.HttpClient;
+        const http = yield* makeDesktopHttpClient.pipe(
+          Effect.provideService(
+            HttpClient.HttpClient,
+            transport.pipe(
+              HttpClient.mapRequest(HttpClientRequest.setUrl(url)),
+            ),
+          ),
+          Effect.provide(NodeFileSystem.layer),
+        );
+        const response = yield* http.get({
+          url: new URL("https://example.com/"),
+          timeoutMs: 150,
+        });
+        expect(response.body.toString()).toBe("tick".repeat(10));
+      }).pipe(TestClock.withLive),
+  );
+
+  it.effect(
+    "preserves extension methods, status text, repeated cookies, and encoded response bytes",
+    () =>
+      Effect.gen(function* () {
+        const compressed = gzipSync("payload");
+        let method: string | undefined;
+        const url = yield* Effect.promise(() =>
+          server((request, response) => {
+            method = request.method;
+            response.writeHead(207, "Custom status", {
+              "set-cookie": ["a=1", "b=2"],
+              "content-encoding": "gzip",
+            });
+            response.end(compressed);
+          }),
+        );
+        const response = yield* (yield* DesktopHttpClient).request({
+          url,
+          method: "PROPFIND",
+        });
+        expect(method).toBe("PROPFIND");
+        expect(response.statusCode).toBe(207);
+        expect(response.statusMessage).toBe("Custom status");
+        expect(response.headers["set-cookie"]).toEqual(["a=1", "b=2"]);
+        expect(response.body).toEqual(compressed);
+      }),
+  );
+
+  it.effect(
+    "fails at the redirect limit and closes unfinished redirect bodies",
+    () =>
+      Effect.gen(function* () {
+        let requests = 0;
+        const closed = Promise.withResolvers<void>();
+        const url = yield* Effect.promise(() =>
+          server((_request, response) => {
+            requests += 1;
+            if (requests === 1) response.on("close", () => closed.resolve());
+            response.writeHead(302, { location: "/again" });
+            response.write("unfinished redirect");
+          }),
+        );
+        const result = yield* (yield* DesktopHttpClient)
+          .request({ url, maxRedirects: 2 })
+          .pipe(Effect.flip);
+        expect(result.kind).toBe("redirect-failed");
+        expect(requests).toBe(3);
+        yield* Effect.promise(() => closed.promise);
+      }),
+  );
   it.effect.each([303, 307])(
     "handles methods, bytes, and credentials across a %i redirect",
     (status) =>
@@ -61,7 +186,7 @@ describe("Desktop HTTP request lifecycle", () => {
             response.end();
           }),
         );
-        const result = yield* makeDesktopHttpClient().request({
+        const result = yield* (yield* DesktopHttpClient).request({
           url: source,
           method: "POST",
           body: new Uint8Array(Buffer.from("!payload?")).subarray(1, -1),
@@ -87,14 +212,14 @@ describe("Desktop HTTP request lifecycle", () => {
             response.end("redirect");
           }),
         );
-        const result = yield* makeDesktopHttpClient().request({
+        const result = yield* (yield* DesktopHttpClient).request({
           url,
           redirect: "manual",
         });
         expect(result.statusCode).toBe(302);
         expect(result.body.toString()).toBe("redirect");
         expect(calls).toBe(1);
-        const error = yield* makeDesktopHttpClient()
+        const error = yield* (yield* DesktopHttpClient)
           .request({ url, redirect: "error" })
           .pipe(Effect.flip);
         expect(error.kind).toBe("redirect-failed");
@@ -113,7 +238,7 @@ describe("Desktop HTTP request lifecycle", () => {
             response.end();
           }),
         );
-        const http = makeDesktopHttpClient();
+        const http = yield* DesktopHttpClient;
         expect(
           (yield* http.request({ url, method: "CONNECT" }).pipe(Effect.flip))
             .kind,
@@ -137,7 +262,7 @@ describe("Desktop HTTP request lifecycle", () => {
           }),
         );
         const fiber = yield* Effect.forkChild(
-          makeDesktopHttpClient().request({ url }),
+          (yield* DesktopHttpClient).request({ url }),
         );
         yield* Effect.promise(() => started.promise);
         yield* Fiber.interrupt(fiber);
@@ -162,26 +287,24 @@ describe("Desktop HTTP request lifecycle", () => {
             }
           }),
         );
-        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
         const result = yield* Effect.forkChild(
-          makeDesktopHttpClient()
+          (yield* DesktopHttpClient)
             .request({ url, timeoutMs: 100 })
             .pipe(Effect.flip),
         );
         const response = yield* Effect.promise(() => first.promise);
-        yield* Effect.promise(() => vi.advanceTimersByTimeAsync(60));
+        yield* TestClock.adjust(60);
         response.writeHead(302, { location: "/body" });
         response.end();
         yield* Effect.promise(() => second.promise);
-        yield* Effect.promise(() => vi.advanceTimersByTimeAsync(40));
+        yield* TestClock.adjust(40);
         expect((yield* Fiber.join(result)).kind).toBe("timeout");
         yield* Effect.promise(() => closed.promise);
-        expect(vi.getTimerCount()).toBe(0);
       }),
   );
-  it.effect(
-    "enforces streamed byte limits but does not treat HEAD content-length as a body",
-    () =>
+  it.effect.each([4])(
+    "enforces a %s byte streamed limit but exempts HEAD content-length",
+    (maxBytes) =>
       Effect.gen(function* () {
         const url = yield* Effect.promise(() =>
           server((request, response) => {
@@ -194,12 +317,12 @@ describe("Desktop HTTP request lifecycle", () => {
             }
           }),
         );
-        const http = makeDesktopHttpClient();
+        const http = yield* DesktopHttpClient;
         expect(
-          (yield* http.request({ url, maxBytes: 4 }).pipe(Effect.flip)).kind,
+          (yield* http.request({ url, maxBytes }).pipe(Effect.flip)).kind,
         ).toBe("response-too-large");
         expect(
-          (yield* http.request({ url, method: "HEAD", maxBytes: 4 })).body
+          (yield* http.request({ url, method: "HEAD", maxBytes })).body
             .byteLength,
         ).toBe(0);
       }),

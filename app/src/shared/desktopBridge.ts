@@ -1,3 +1,8 @@
+import type { RendererLogRecord } from "./ipc/rendererLog";
+import type {
+  DesktopRendererKindSchema,
+  DesktopWindowKindSchema,
+} from "./ipc/windows";
 import type { RecentlyClosedGameSession } from "@lucent/core/accounts";
 import type {
   AppSettings,
@@ -26,9 +31,7 @@ import type {
   FileSystemFailure,
 } from "@lucent/core/filesystem";
 import type {
-  ArmyConfigPayload,
   ArmyFailPayload,
-  ArmyLeavePayload,
   ArmyLoopTauntCommandPayload,
   ArmyLoopTauntLeavePayload,
   ArmyLoopTauntRegisterPayload,
@@ -49,13 +52,9 @@ import type {
   ScriptOpenFileResult,
   ScriptSelectFileResult,
 } from "./ipc/scripting";
-import type { EnvironmentBoostDiscovery } from "./ipc/environment";
+import type { EnvironmentBoostDiscovery } from "./environmentBoosts";
 import type { DesktopHttpBridge } from "./http";
-import type {
-  FollowerCommand,
-  FollowerCommandOutcome,
-  FollowerPlayers,
-} from "./ipc/follower";
+import type { FollowerPlayers } from "./ipc/follower";
 import type {
   ScriptInputsDefinition,
   ScriptInputValues,
@@ -70,6 +69,7 @@ import type {
   ScriptPackageInstallRequest,
   ScriptPackageMutationResult,
   ScriptPackageRemoveRequest,
+  ScriptPackageRestoreRequest,
   ScriptPackageUpdateRequest,
   ScriptReference,
 } from "@lucent/core/scriptPackages";
@@ -99,11 +99,6 @@ import type {
   LoaderGrabberLoadRequest,
 } from "./loader-grabber";
 import type {
-  LoaderGrabberRequest,
-  LoaderGrabberResponse,
-} from "./ipc/loaderGrabber";
-import type { PacketsRequest, PacketsResponse } from "./ipc/packets";
-import type {
   PacketCapturedPayload,
   PacketQueuePayload,
   PacketSendPayload,
@@ -121,28 +116,8 @@ import type {
 } from "./gameViews";
 
 export type AppPlatform = "linux" | "mac" | "windows";
-export type DesktopBridgeView =
-  | "about"
-  | "account-manager"
-  | "combat-profiles"
-  | "environment"
-  | "follower"
-  | "game"
-  | "game-group-controls"
-  | "game-host"
-  | "loader-grabber"
-  | "packets"
-  | "settings";
-export type DesktopBridgeWindowKind =
-  | "about"
-  | "account-manager"
-  | "combat-profiles"
-  | "environment"
-  | "follower"
-  | "game"
-  | "loader-grabber"
-  | "packets"
-  | "settings";
+export type DesktopBridgeView = typeof DesktopRendererKindSchema.Type;
+export type DesktopBridgeWindowKind = typeof DesktopWindowKindSchema.Type;
 
 export interface DesktopSettingsBridge {
   readonly initial: AppSettings | null;
@@ -159,9 +134,7 @@ export interface DesktopSettingsManagementBridge extends DesktopSettingsBridge {
 }
 
 export interface DesktopUpdatesBridge {
-  readonly checkNow: (options?: {
-    readonly force?: boolean;
-  }) => Promise<UpdateCheckState>;
+  readonly checkNow: () => Promise<UpdateCheckState>;
   readonly getState: () => Promise<UpdateCheckState>;
   readonly onChanged: (
     listener: (state: UpdateCheckState) => void,
@@ -187,11 +160,11 @@ export interface DesktopScriptingBridge {
   readonly getInputValues: (
     definition: ScriptInputsDefinition,
   ) => Promise<ScriptInputValues>;
-  readonly loadReference: (reference: ScriptReference) => Promise<ScriptFile>;
   readonly installPackage: (
     request: ScriptPackageInstallRequest,
   ) => Promise<ScriptPackageMutationResult>;
   readonly listCredentials: () => Promise<readonly GitHubCredentialSummary[]>;
+  readonly loadReference: (reference: ScriptReference) => Promise<ScriptFile>;
   readonly openFile: () => Promise<ScriptOpenFileResult>;
   readonly openPath: (path: string) => Promise<boolean>;
   readonly openRepository: (repositoryUrl: string) => Promise<boolean>;
@@ -201,6 +174,9 @@ export interface DesktopScriptingBridge {
   readonly readFile: (path: string) => Promise<ScriptFile>;
   readonly readReference: (reference: ScriptReference) => Promise<ScriptFile>;
   readonly refreshCatalog: () => Promise<ScriptCatalogOverview>;
+  readonly restorePackage: (
+    request: ScriptPackageRestoreRequest,
+  ) => Promise<ScriptPackageMutationResult>;
   readonly removePackage: (
     request: ScriptPackageRemoveRequest,
   ) => Promise<ScriptPackageMutationResult>;
@@ -208,7 +184,6 @@ export interface DesktopScriptingBridge {
   readonly resolveReference: (
     reference: ScriptReference,
   ) => Promise<ScriptFileResolution>;
-  readonly selectFile: () => Promise<ScriptSelectFileResult>;
   readonly saveInputValues: (
     definition: ScriptInputsDefinition,
     values: ScriptInputValues,
@@ -233,9 +208,6 @@ export interface DesktopCombatProfilesBridge {
 }
 
 export interface DesktopAccountsBridge {
-  readonly closeGameWindow: (
-    request: AccountGameWindowTargetRequest,
-  ) => Promise<AccountManagerState>;
   readonly closeGameWindows: (
     gameWindowIds: readonly number[],
   ) => Promise<AccountManagerState>;
@@ -245,7 +217,6 @@ export interface DesktopAccountsBridge {
   readonly createGroup: (
     draft: ManagedAccountGroupDraft,
   ) => Promise<AccountManagerState>;
-  readonly deleteAccount: (username: string) => Promise<AccountManagerState>;
   readonly deleteAccounts: (
     usernames: readonly string[],
   ) => Promise<AccountManagerState>;
@@ -288,18 +259,15 @@ export interface DesktopAccountSettingsBridge {
 }
 
 export interface DesktopGameConsoleObservabilityBridge {
-  readonly message: (message: string) => void;
+  readonly message: (method: string, message: string) => void;
 }
 
 export interface DesktopGameRendererBridge {
-  /** Arms main-process recovery while script-authored JavaScript can run. */
-  readonly beginScriptExecution: () => Promise<number>;
-  /** Disarms a completed script execution without affecting concurrent runs. */
-  readonly finishScriptExecution: (token: number) => Promise<void>;
+  readonly beginScriptExecution: () => Promise<void>;
+  readonly finishScriptExecution: () => Promise<void>;
   /** Reads the generation assigned to this game document. */
   readonly getGeneration: () => Promise<number>;
-  /** Marks the current game renderer generation ready to receive commands. */
-  readonly ready: (generation: number) => Promise<void>;
+  readonly ready: () => Promise<void>;
 }
 
 export type DesktopFileSystemResult<A> =
@@ -307,35 +275,22 @@ export type DesktopFileSystemResult<A> =
   | { readonly error: FileSystemFailure; readonly ok: false };
 
 export interface DesktopFileSystemBridge {
-  readonly closeSession: (sessionId: string) => Promise<void>;
-  readonly exists: (
-    sessionId: string,
-    path: string,
-  ) => Promise<DesktopFileSystemResult<boolean>>;
+  readonly exists: (path: string) => Promise<DesktopFileSystemResult<boolean>>;
   readonly list: (
-    sessionId: string,
     path?: string,
   ) => Promise<DesktopFileSystemResult<readonly FileSystemEntry[]>>;
-  readonly openSession: () => Promise<string>;
   readonly readJson: (
-    sessionId: string,
     path: string,
   ) => Promise<DesktopFileSystemResult<unknown | undefined>>;
   readonly readText: (
-    sessionId: string,
     path: string,
   ) => Promise<DesktopFileSystemResult<string | undefined>>;
-  readonly remove: (
-    sessionId: string,
-    path: string,
-  ) => Promise<DesktopFileSystemResult<void>>;
+  readonly remove: (path: string) => Promise<DesktopFileSystemResult<void>>;
   readonly writeJson: (
-    sessionId: string,
     path: string,
     value: unknown,
   ) => Promise<DesktopFileSystemResult<void>>;
   readonly writeText: (
-    sessionId: string,
     path: string,
     contents: string,
   ) => Promise<DesktopFileSystemResult<void>>;
@@ -376,7 +331,6 @@ export interface DesktopGameViewHostBridge {
 }
 
 export interface DesktopGameViewBridge {
-  readonly activate: () => Promise<GameViewPresentation>;
   readonly close: () => void;
   readonly dispatchGroupOptionHotkey: (
     commandId: GameViewGroupOptionHotkeyCommandId,
@@ -403,13 +357,6 @@ export interface DesktopLoaderGrabberWindowBridge {
   readonly load: (payload: LoaderGrabberLoadRequest) => Promise<void>;
 }
 
-export interface DesktopGameLoaderGrabberBridge {
-  readonly onRequest: (
-    listener: (request: LoaderGrabberRequest) => void,
-  ) => () => void;
-  readonly respond: (response: LoaderGrabberResponse) => Promise<void>;
-}
-
 export interface DesktopPacketsWindowBridge {
   readonly getStatus: () => Promise<PacketsStatusPayload>;
   readonly onCaptured: (
@@ -426,12 +373,8 @@ export interface DesktopPacketsWindowBridge {
 }
 
 export interface DesktopGamePacketsBridge {
-  readonly onRequest: (
-    listener: (request: PacketsRequest) => void,
-  ) => () => void;
   readonly publishCaptured: (payload: PacketCapturedPayload) => Promise<void>;
   readonly publishStatus: (payload: PacketsStatusPayload) => Promise<void>;
-  readonly respond: (response: PacketsResponse) => Promise<void>;
 }
 
 export interface DesktopFollowerBridge {
@@ -449,11 +392,6 @@ export interface DesktopFollowerBridge {
 }
 
 export interface DesktopGameFollowerBridge {
-  readonly onCommand: (
-    listener: (
-      command: FollowerCommand,
-    ) => FollowerCommandOutcome | Promise<FollowerCommandOutcome>,
-  ) => () => void;
   readonly publishPlayers: (players: FollowerPlayers) => Promise<void>;
   readonly publishState: (state: FollowerState) => Promise<void>;
 }
@@ -479,16 +417,6 @@ export interface DesktopEnvironmentBridge {
   readonly getState: () => Promise<EnvironmentState>;
   readonly onChanged: (
     listener: (state: EnvironmentState) => void,
-  ) => () => void;
-  readonly onFetchBoostsRequest: (
-    listener: () =>
-      | Promise<EnvironmentBoostDiscovery>
-      | EnvironmentBoostDiscovery,
-  ) => () => void;
-  readonly onWithdrawBoostsRequest: (
-    listener: (
-      itemIds: readonly number[],
-    ) => Promise<readonly number[]> | readonly number[],
   ) => () => void;
   readonly removeBoost: (name: string) => Promise<EnvironmentState>;
   readonly removeItem: (name: string) => Promise<EnvironmentState>;
@@ -519,8 +447,7 @@ export interface DesktopEnvironmentBridge {
 
 export interface DesktopArmyBridge {
   readonly fail: (payload: ArmyFailPayload) => Promise<void>;
-  readonly leave: (payload: ArmyLeavePayload) => Promise<void>;
-  readonly loadConfig: (configName: string) => Promise<ArmyConfigPayload>;
+  readonly leave: () => Promise<void>;
   readonly loopTauntAwait: (
     payload: ArmyLoopTauntRunPayload,
   ) => Promise<ArmyLoopTauntTerminalResult>;
@@ -547,12 +474,20 @@ export interface DesktopArmyBridge {
   readonly sync: (payload: ArmySyncPayload) => Promise<void>;
 }
 
+export interface DesktopLogBridge {
+  readonly error: (message: string, error?: unknown) => void;
+  readonly warn: (message: string, error?: unknown) => void;
+  readonly info: (message: string, error?: unknown) => void;
+  readonly debug: (message: string, error?: unknown) => void;
+  readonly write: (record: RendererLogRecord) => void;
+}
+
 interface DesktopBridgeBase {
+  readonly log: DesktopLogBridge;
   readonly debug: boolean;
   readonly platform: {
     readonly os: AppPlatform;
   };
-  readonly traceProjections: boolean;
 }
 
 interface DesktopBridgeCapabilities {
@@ -561,7 +496,6 @@ interface DesktopBridgeCapabilities {
   readonly accounts: DesktopAccountsBridge;
   readonly army: DesktopArmyBridge;
   readonly combatProfiles: DesktopCombatProfilesBridge;
-  readonly environment: DesktopEnvironmentBridge;
   readonly follower: DesktopFollowerBridge;
   readonly fileSystem: DesktopFileSystemBridge;
   readonly gameAccounts: DesktopGameAccountsBridge;
@@ -569,7 +503,6 @@ interface DesktopBridgeCapabilities {
   readonly gameFollower: DesktopGameFollowerBridge;
   readonly gameRenderer: DesktopGameRendererBridge;
   readonly gameView: DesktopGameViewBridge;
-  readonly gameViewHost: DesktopGameViewHostBridge;
   readonly scripting: DesktopScriptingBridge;
   readonly updates: DesktopUpdatesBridge;
   readonly windows: DesktopWindowsBridge;
@@ -579,22 +512,28 @@ interface DesktopBridgeViewCapabilities {
   readonly about: Pick<DesktopBridgeCapabilities, "updates"> & {
     readonly about: DesktopAboutBridge;
   };
-  readonly "account-manager": Pick<
-    DesktopBridgeCapabilities,
-    "accounts" | "scripting"
-  >;
+  readonly "account-manager": Pick<DesktopBridgeCapabilities, "accounts"> & {
+    readonly scripting: {
+      readonly selectFile: () => Promise<ScriptSelectFileResult>;
+    };
+  };
   readonly "combat-profiles": Pick<DesktopBridgeCapabilities, "combatProfiles">;
-  readonly environment: Pick<DesktopBridgeCapabilities, "environment">;
-  readonly follower: Pick<
-    DesktopBridgeCapabilities,
-    "combatProfiles" | "follower" | "windows"
-  >;
+  readonly environment: {
+    readonly environment: Omit<
+      DesktopEnvironmentBridge,
+      "addBoost" | "addItem" | "addQuest"
+    >;
+  };
+  readonly follower: Pick<DesktopBridgeCapabilities, "follower" | "windows"> & {
+    readonly combatProfiles: Pick<
+      DesktopCombatProfilesBridge,
+      "getState" | "onChanged"
+    >;
+  };
   readonly game: Pick<
     DesktopBridgeCapabilities,
     | "accountSettings"
     | "army"
-    | "combatProfiles"
-    | "environment"
     | "fileSystem"
     | "http"
     | "gameAccounts"
@@ -604,17 +543,31 @@ interface DesktopBridgeViewCapabilities {
     | "scripting"
     | "windows"
   > & {
-    readonly loaderGrabber: DesktopGameLoaderGrabberBridge;
+    readonly combatProfiles: Pick<
+      DesktopCombatProfilesBridge,
+      "getState" | "onChanged"
+    >;
+    readonly environment: Omit<
+      DesktopEnvironmentBridge,
+      "addBoosts" | "addItems" | "addQuests" | "fetchBoosts" | "withdrawBoosts"
+    >;
     readonly packets: DesktopGamePacketsBridge;
   } & Partial<Pick<DesktopBridgeCapabilities, "gameConsoleObservability">>;
-  readonly "game-group-controls": Pick<
-    DesktopBridgeCapabilities,
-    "gameViewHost"
-  >;
+  readonly "game-group-controls": {
+    readonly gameViewHost: Pick<
+      DesktopGameViewHostBridge,
+      "getState" | "onChanged" | "dispatchGroupCommand" | "setGroupControlsOpen"
+    >;
+  };
   readonly "loader-grabber": {
     readonly loaderGrabber: DesktopLoaderGrabberWindowBridge;
   };
-  readonly "game-host": Pick<DesktopBridgeCapabilities, "gameViewHost">;
+  readonly "game-host": {
+    readonly gameViewHost: Omit<
+      DesktopGameViewHostBridge,
+      "dispatchGroupCommand"
+    >;
+  };
   readonly packets: {
     readonly packets: DesktopPacketsWindowBridge;
   };

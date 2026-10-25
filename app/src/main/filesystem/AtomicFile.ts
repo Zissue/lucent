@@ -1,13 +1,11 @@
-import { randomBytes } from "crypto";
-import { dirname, join } from "path";
+import { randomBytes } from "node:crypto";
+import { dirname, join } from "node:path";
 
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 
-import {
-  type DesktopFileSystem,
-  type DesktopFileSystemError,
-} from "./DesktopFileSystem";
+import type { FileSystem } from "effect/FileSystem";
+import type { PlatformError } from "effect/PlatformError";
 
 export const ATOMIC_FILE_TEMPORARY_PREFIX = ".lucent-atomic-";
 
@@ -15,29 +13,35 @@ export const isAtomicFileTemporaryName = (name: string): boolean =>
   name.startsWith(ATOMIC_FILE_TEMPORARY_PREFIX);
 
 /** Publishes through a same-directory rename; visibility is atomic, durability is not. */
-export const makeAtomicFile = (fileSystem: DesktopFileSystem["Service"]) => {
+export const makeAtomicFile = (fileSystem: FileSystem) => {
   const removeTemp = (path: string) =>
-    fileSystem.removeFile(path, { ifMissing: "ignore" }).pipe(Effect.ignore);
+    fileSystem
+      .remove(path, { force: true })
+      .pipe(Effect.ignore, Effect.uninterruptible);
 
   const writeToExistingParent = Effect.fn("AtomicFile.writeToExistingParent")(
     function* (
       path: string,
       data: string | Uint8Array,
       options: { readonly mode?: number } = {},
-    ): Effect.fn.Return<void, DesktopFileSystemError> {
+    ): Effect.fn.Return<void, PlatformError> {
       const tempPath = join(
         dirname(path),
         `${ATOMIC_FILE_TEMPORARY_PREFIX}${process.pid}-${randomBytes(16).toString("hex")}.tmp`,
       );
 
       const createTemp = fileSystem
-        .writeFile(tempPath, data, {
-          disposition: "create-new",
-          ...(options.mode === undefined ? {} : { mode: options.mode }),
-        })
+        .writeFile(
+          tempPath,
+          typeof data === "string" ? new TextEncoder().encode(data) : data,
+          {
+            flag: "wx",
+            ...(options.mode === undefined ? {} : { mode: options.mode }),
+          },
+        )
         .pipe(
           Effect.tapError((error) =>
-            error.reason === "AlreadyExists"
+            error.reason._tag === "AlreadyExists"
               ? Effect.void
               : removeTemp(tempPath),
           ),
@@ -46,7 +50,8 @@ export const makeAtomicFile = (fileSystem: DesktopFileSystem["Service"]) => {
 
       yield* Effect.acquireUseRelease(
         createTemp,
-        (temporaryPath) => fileSystem.rename(temporaryPath, path),
+        (temporaryPath) =>
+          fileSystem.rename(temporaryPath, path).pipe(Effect.uninterruptible),
         (temporaryPath, exit) =>
           Exit.isSuccess(exit) ? Effect.void : removeTemp(temporaryPath),
       );
@@ -57,8 +62,10 @@ export const makeAtomicFile = (fileSystem: DesktopFileSystem["Service"]) => {
     path: string,
     data: string | Uint8Array,
     options: { readonly mode?: number } = {},
-  ): Effect.fn.Return<void, DesktopFileSystemError> {
-    yield* fileSystem.makeDirectory(dirname(path), { recursive: true });
+  ): Effect.fn.Return<void, PlatformError> {
+    yield* fileSystem
+      .makeDirectory(dirname(path), { recursive: true })
+      .pipe(Effect.uninterruptible);
     yield* writeToExistingParent(path, data, options);
   });
 

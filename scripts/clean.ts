@@ -7,7 +7,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Console from "effect/Console";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
-import { Command, Flag } from "effect/unstable/cli";
+import { Command, Flag } from "effect/cli";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(SCRIPT_DIR, "..");
@@ -28,16 +28,9 @@ const CLEAN_RELATIVE_PATHS = [
   "docs/.blume-verify/node_modules",
   "docs/.blume-verify/dist",
   "docs/.blume-verify/build",
-  "observability/node_modules",
-  "observability/dist",
-  "observability/build",
   "packages/core/node_modules",
   "packages/core/dist",
   "packages/core/build",
-  "packages/electron/node_modules",
-  "packages/electron/dist",
-  "packages/electron/build",
-  "packages/electron/path.txt",
   "packages/game/node_modules",
   "packages/game/dist",
   "packages/game/build",
@@ -156,7 +149,7 @@ const clean = (input: CliInput): Effect.Effect<void, CleanError> =>
   });
 
 const command = Command.make("clean", {
-  dryRun: Flag.boolean("dry-run").pipe(
+  dryRun: Flag.Boolean("dry-run").pipe(
     Flag.withDescription(
       "Print paths that would be deleted without removing them",
     ),

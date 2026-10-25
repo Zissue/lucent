@@ -1,11 +1,14 @@
+import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
+import { HttpBody, HttpClient, HttpClientRequest } from "effect/http";
+import type { HttpClientResponse } from "effect/http/HttpClientResponse";
+import type { HttpMethod } from "effect/http/HttpMethod";
+import { NodeHttpIncomingMessage } from "@effect/platform-node/NodeHttpIncomingMessage";
 import {
-  request as httpRequest,
-  type ClientRequest,
-  type IncomingMessage,
-} from "http";
-import { request as httpsRequest } from "https";
-
-import { clientError, crossOriginRedirectHeaders } from "./DesktopHttpError";
+  clientError,
+  crossOriginRedirectHeaders,
+  type DesktopHttpClientError,
+} from "./DesktopHttpError";
 
 interface RequestOptions {
   readonly url: URL;
@@ -16,220 +19,183 @@ interface RequestOptions {
   readonly redirect?: "follow" | "manual" | "error";
   readonly timeoutMs?: number;
   readonly socketTimeoutMs?: number;
-  readonly httpsOnly?: boolean;
-  readonly signal: AbortSignal;
+  readonly httpsOnly: boolean;
 }
 
-const validateUrl = (url: URL, httpsOnly: boolean): void => {
-  if (
-    (url.protocol !== "https:" && (httpsOnly || url.protocol !== "http:")) ||
-    url.username !== "" ||
-    url.password !== ""
-  ) {
-    throw clientError(
-      "invalid-url",
-      `HTTP requests require an absolute ${httpsOnly ? "HTTPS" : "HTTP or HTTPS"} URL without embedded credentials.`,
-      url,
-    );
-  }
-};
+const decodeMethod = Schema.decodeUnknownEffect(
+  Schema.String.check(Schema.isPattern(/^[!#$%&'*+.^_`|~0-9A-Z-]+$/u)),
+);
 
-/** Owns every redirect and body read under one deadline and abort signal. */
-export const requestFollowingRedirects = <Value>(
-  options: RequestOptions,
-  consume: (response: IncomingMessage, url: URL) => Promise<Value>,
-): Promise<Value> =>
-  new Promise((resolve, reject) => {
-    let outgoing: ClientRequest | undefined;
-    let incoming: IncomingMessage | undefined;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let settled = false;
-    let currentUrl = options.url;
-
-    const cleanup = () => {
-      if (timer !== undefined) clearTimeout(timer);
-      options.signal.removeEventListener("abort", onAbort);
-    };
-    const fail = (cause: unknown) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      incoming?.destroy();
-      outgoing?.destroy();
-      reject(cause);
-    };
-    const onAbort = () =>
-      fail(clientError("aborted", "HTTP request was aborted.", currentUrl));
-    const succeed = (value: Value) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      resolve(value);
-    };
-
-    const send = (
-      url: URL,
-      method: string,
-      headers: Readonly<Record<string, string>>,
-      body: Uint8Array | undefined,
-      redirects: number,
-    ): void => {
-      if (settled) return;
-      currentUrl = url;
-      try {
-        validateUrl(url, options.httpsOnly ?? true);
-        if (method === "CONNECT")
-          throw clientError(
-            "request-failed",
-            "HTTP tunnels are not supported.",
-            url,
-          );
-        const request = url.protocol === "https:" ? httpsRequest : httpRequest;
-        const active = request(
+const validateUrl = (
+  url: URL,
+  httpsOnly: boolean,
+): Effect.Effect<void, DesktopHttpClientError> =>
+  (url.protocol !== "https:" && (httpsOnly || url.protocol !== "http:")) ||
+  url.username !== "" ||
+  url.password !== ""
+    ? Effect.fail(
+        clientError(
+          "invalid-url",
+          `HTTP requests require an absolute ${httpsOnly ? "HTTPS" : "HTTP or HTTPS"} URL without embedded credentials.`,
           url,
-          { headers: { ...headers }, method },
-          (response) => {
-            if (settled) {
-              response.destroy();
-              return;
+        ),
+      )
+    : Effect.void;
+
+export const requestFollowingRedirects = <A, E, R>(
+  client: HttpClient.HttpClient,
+  options: RequestOptions,
+  consume: (response: HttpClientResponse, url: URL) => Effect.Effect<A, E, R>,
+) =>
+  Effect.suspend(() => {
+    let url = options.url;
+    let method = options.method;
+    let headers = options.headers;
+    let body = options.body;
+    const scopedClient = HttpClient.withScope(client);
+    const request = Effect.gen(function* () {
+      yield* decodeMethod(method).pipe(
+        Effect.mapError((cause) =>
+          clientError("request-failed", "Invalid HTTP method.", url, cause),
+        ),
+      );
+      if (method === "CONNECT")
+        return yield* clientError(
+          "request-failed",
+          "HTTP tunnels are not supported.",
+          url,
+        );
+      for (let redirects = 0; ; redirects += 1) {
+        yield* validateUrl(url, options.httpsOnly);
+        const result = yield* Effect.scoped(
+          Effect.gen(function* () {
+            // Effect's Node transport forwards extension methods, though its type lists only common methods.
+            const outgoing = HttpClientRequest.make(method as HttpMethod)(
+              url.href,
+            ).pipe(
+              body === undefined
+                ? (request) => request
+                : HttpClientRequest.setBody(HttpBody.raw(body)),
+              HttpClientRequest.setHeaders(headers),
+            );
+            const waiting = scopedClient.execute(outgoing);
+            const response = yield* options.socketTimeoutMs === undefined
+              ? waiting
+              : waiting.pipe(
+                  Effect.timeoutOrElse({
+                    duration: options.socketTimeoutMs,
+                    orElse: () =>
+                      Effect.fail(
+                        clientError("timeout", "HTTP response timed out.", url),
+                      ),
+                  }),
+                );
+            if (response instanceof NodeHttpIncomingMessage) {
+              if (response.status === 101) {
+                response.source.socket.destroy();
+                return yield* clientError(
+                  "request-failed",
+                  "HTTP protocol upgrades are not supported.",
+                  url,
+                );
+              }
+              if (options.socketTimeoutMs !== undefined)
+                response.source.setTimeout(options.socketTimeoutMs, () =>
+                  response.source.destroy(
+                    clientError("timeout", "HTTP response timed out.", url),
+                  ),
+                );
             }
-            incoming = response;
-            const status = response.statusCode ?? 0;
-            const location = response.headers.location;
+            const location = response.headers["location"];
             if (
-              [301, 302, 303, 307, 308].includes(status) &&
-              location !== undefined &&
-              options.redirect !== "manual"
+              ![301, 302, 303, 307, 308].includes(response.status) ||
+              location === undefined ||
+              options.redirect === "manual"
             ) {
-              if (
-                options.redirect === "error" ||
-                redirects >= options.maxRedirects
-              ) {
-                fail(
-                  clientError(
-                    "redirect-failed",
-                    options.redirect === "error"
-                      ? "HTTP redirects are disabled."
-                      : "HTTP request exceeded its redirect limit.",
-                    url,
-                  ),
-                );
-                return;
-              }
-              let nextUrl: URL;
-              try {
-                nextUrl = new URL(location, url);
-                validateUrl(nextUrl, options.httpsOnly ?? true);
-              } catch (cause) {
-                fail(
-                  clientError(
-                    "redirect-failed",
-                    "HTTP response contained an invalid redirect URL.",
-                    url,
-                    cause,
-                  ),
-                );
-                return;
-              }
-              const nextHeaders =
-                nextUrl.origin === url.origin
-                  ? { ...headers }
-                  : crossOriginRedirectHeaders(headers);
-              const dropBody =
-                ((status === 301 || status === 302) && method === "POST") ||
-                (status === 303 && method !== "GET" && method !== "HEAD");
-              if (dropBody) {
-                for (const name of Object.keys(nextHeaders)) {
-                  if (
-                    [
+              return {
+                done: true,
+                value: yield* consume(response, url),
+              } as const;
+            }
+            if (
+              options.redirect === "error" ||
+              redirects >= options.maxRedirects
+            ) {
+              return yield* clientError(
+                "redirect-failed",
+                options.redirect === "error"
+                  ? "HTTP redirects are disabled."
+                  : "HTTP request exceeded its redirect limit.",
+                url,
+              );
+            }
+            const nextUrl = yield* Effect.try({
+              try: () => new URL(location, url),
+              catch: (cause) =>
+                clientError(
+                  "redirect-failed",
+                  "HTTP response contained an invalid redirect URL.",
+                  url,
+                  cause,
+                ),
+            });
+            yield* validateUrl(nextUrl, options.httpsOnly).pipe(
+              Effect.mapError((cause) =>
+                clientError(
+                  "redirect-failed",
+                  "HTTP response contained an invalid redirect URL.",
+                  url,
+                  cause,
+                ),
+              ),
+            );
+            headers =
+              nextUrl.origin === url.origin
+                ? { ...headers }
+                : crossOriginRedirectHeaders(headers);
+            if (
+              ((response.status === 301 || response.status === 302) &&
+                method === "POST") ||
+              (response.status === 303 && method !== "GET" && method !== "HEAD")
+            ) {
+              method = "GET";
+              body = undefined;
+              headers = Object.fromEntries(
+                Object.entries(headers).filter(
+                  ([name]) =>
+                    ![
                       "content-type",
                       "content-length",
                       "content-encoding",
                       "content-language",
                       "content-location",
                       "transfer-encoding",
-                    ].includes(name.toLowerCase())
-                  )
-                    delete nextHeaders[name];
-                }
-              }
-              // Discard redirect bodies before opening the next connection.
-              incoming = undefined;
-              outgoing = undefined;
-              response.destroy();
-              active.destroy();
-              send(
-                nextUrl,
-                dropBody ? "GET" : method,
-                nextHeaders,
-                dropBody ? undefined : body,
-                redirects + 1,
-              );
-              return;
-            }
-            try {
-              void consume(response, url).then(succeed, fail);
-            } catch (cause) {
-              fail(cause);
-            }
-          },
-        );
-        outgoing = active;
-        active.on("error", (cause) => {
-          if (outgoing === active) fail(cause);
-        });
-        active.on("upgrade", (_response, socket) => {
-          socket.destroy();
-          fail(
-            clientError(
-              "request-failed",
-              "HTTP protocol upgrades are not supported.",
-              url,
-            ),
-          );
-        });
-        if (options.socketTimeoutMs !== undefined) {
-          active.setTimeout(options.socketTimeoutMs, () => {
-            if (outgoing === active)
-              fail(
-                clientError(
-                  "request-failed",
-                  `HTTP request timed out after ${options.socketTimeoutMs} milliseconds.`,
-                  url,
+                    ].includes(name.toLowerCase()),
                 ),
               );
-          });
-        }
-        // Electron 11 requires a Buffer. Keep the IPC view's bounds without copying.
-        active.end(
-          body === undefined
-            ? undefined
-            : Buffer.from(body.buffer, body.byteOffset, body.byteLength),
+            }
+            url = nextUrl;
+            return { done: false } as const;
+          }),
         );
-      } catch (cause) {
-        fail(cause);
+        if (result.done) return result.value;
       }
-    };
-
-    if (options.signal.aborted) {
-      onAbort();
-      return;
-    }
-    options.signal.addEventListener("abort", onAbort, { once: true });
-    if (options.timeoutMs !== undefined) {
-      const expire = () =>
-        fail(
-          clientError(
-            "timeout",
-            `HTTP request timed out after ${options.timeoutMs} milliseconds.`,
-            currentUrl,
-          ),
-        );
-      if (options.timeoutMs === 0) {
-        expire();
-        return;
-      }
-      timer = setTimeout(expire, options.timeoutMs);
-    }
-    send(options.url, options.method, options.headers, options.body, 0);
+    }).pipe(Effect.provideService(HttpClient.TracerPropagationEnabled, false));
+    return options.timeoutMs === undefined
+      ? request
+      : options.timeoutMs === 0
+        ? Effect.fail(clientError("timeout", "HTTP request timed out.", url))
+        : request.pipe(
+            Effect.timeoutOrElse({
+              duration: options.timeoutMs,
+              orElse: () =>
+                Effect.fail(
+                  clientError(
+                    "timeout",
+                    `HTTP request timed out after ${options.timeoutMs} milliseconds.`,
+                    url,
+                  ),
+                ),
+            }),
+          );
   });

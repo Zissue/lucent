@@ -19,11 +19,9 @@
     "dist:app:win": "tsx scripts/build-desktop-artifact.ts --platform win",
     "docgen": "tsx scripts/gen-script-types.ts && tsx scripts/docgen.ts",
     "icons:build": "tsx scripts/build-icons.ts",
-    "lint": "pnpm polyfills:check && pnpm lint:css && oxlint --disable-nested-config",
+    "lint": "pnpm lint:css && oxlint --disable-nested-config",
     "lint:css": "stylelint \"packages/ui/src/**/*.css\" \"app/src/renderer/**/*.css\"",
     "lint:fix": "oxlint --disable-nested-config --fix",
-    "polyfills:check": "pnpm --dir app polyfills:check",
-    "polyfills:generate": "pnpm --dir app polyfills:generate",
     "format": "oxfmt --check",
     "format:write": "oxfmt",
     "prepare": "effect-tsgo patch --oxlint",
@@ -32,18 +30,18 @@
     "storybook": "storybook dev -p 6006",
     "storybook:build": "storybook build",
     "test": "pnpm test:scripts && pnpm -r --if-present test",
-    "test:scripts": "vitest run scripts/release-logic.test.ts scripts/docgen-packages.test.ts",
+    "test:scripts": "vitest run scripts/release-logic.test.ts scripts/docgen-packages.test.ts scripts/process.test.ts",
     "test:watch": "pnpm -r --if-present test:watch",
     "typecheck": "tsc -p tsconfig.json --noEmit && pnpm typecheck:script-packages && pnpm -r typecheck",
     "typecheck:script-packages": "tsc6 -p script-packages/lucent-consumables/jsconfig.repo.json --noEmit && tsc6 -p script-packages/lucent-dailies/jsconfig.repo.json --noEmit"
   },
   "dependencies": {
-    "effect": "4.0.0-rc.112"
+    "effect": "4.0.3"
   },
   "devDependencies": {
-    "@effect/platform-node": "4.0.0-rc.112",
+    "@effect/platform-node": "4.0.3",
     "@effect/tsgo": "0.37.0",
-    "@effect/vitest": "4.0.0-rc.112",
+    "@effect/vitest": "4.0.3",
     "@storybook/addon-themes": "10.5.10",
     "@types/node": "^24.12.2",
     "@types/semver": "7.7.1",
@@ -66,6 +64,6 @@
     "typescript": "npm:@typescript/typescript6@^6.0.2",
     "vite": "7.3.2",
     "vite-plugin-solid": "2.11.14",
-    "vitest": "^4.1.11"
+    "vitest": "^5.0.4"
   }
 }

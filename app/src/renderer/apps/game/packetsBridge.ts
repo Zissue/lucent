@@ -1,17 +1,12 @@
 import * as Effect from "effect/Effect";
-import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 
-import {
-  clampPacketQueueDelay,
-  normalizePacketQueuePayload,
-  type PacketQueuePayload,
-  type PacketSendPayload,
-  type PacketSendTarget,
-} from "../../../shared/packets";
+import { PacketsError, PacketsRpcs } from "../../../shared/gameRendererRpc";
 import type {
-  PacketsRequest,
-  PacketsResponse,
-} from "../../../shared/ipc/packets";
+  PacketQueuePayload,
+  PacketSendPayload,
+  PacketSendTarget,
+} from "../../../shared/packets";
 import type { DesktopGamePacketsBridge } from "../../../shared/desktopBridge";
 import { Api } from "./flash";
 import type { ClientPacketEncoding } from "./flash/api/Packet";
@@ -28,20 +23,13 @@ interface QueueState {
   timeout: ReturnType<typeof setTimeout> | undefined;
 }
 
-export class PacketOperationError extends Schema.TaggedError<PacketOperationError>()(
-  "PacketOperationError",
-  {
-    detail: Schema.String,
-  },
-) {
-  override get message(): string {
-    return this.detail;
-  }
-}
-
 export interface PacketsBridgeController {
   readonly dispose: () => void;
+  readonly startCapture: () => Promise<void>;
+  readonly startQueue: (payload: PacketQueuePayload) => void;
   readonly stopActive: (stoppedReason?: string) => void;
+  readonly stopCapture: () => void;
+  readonly stopQueue: () => void;
 }
 
 const errorMessage = (cause: unknown): string =>
@@ -70,7 +58,7 @@ const sendPacketEffect = Effect.fn("packetsBridge.sendPacket")(function* (
   }
 
   if (!sent) {
-    return yield* new PacketOperationError({
+    return yield* new PacketsError({
       detail: "The game rejected the packet send request.",
     });
   }
@@ -85,9 +73,6 @@ export const installPacketsBridge = (
   let connectionDispose: (() => void) | undefined;
   let disposed = false;
   let queueState: QueueState | undefined;
-  let requests = Promise.resolve();
-  const sendResponse = (response: PacketsResponse): Promise<void> =>
-    packetsBridge.respond(response);
 
   const publishStatus = (stoppedReason?: string): void => {
     void packetsBridge
@@ -197,72 +182,18 @@ export const installPacketsBridge = (
   };
 
   const startQueue = (payload: PacketQueuePayload): void => {
-    const normalized = normalizePacketQueuePayload(payload);
     stopQueue(false);
     queueState = {
-      delayMs: clampPacketQueueDelay(normalized.delayMs),
+      delayMs: payload.delayMs,
       index: 0,
-      packets: normalized.packets,
+      packets: payload.packets,
       stopped: false,
-      target: normalized.target,
+      target: payload.target,
       timeout: undefined,
     };
     void runQueueOnce();
     publishStatus();
   };
-
-  const handleRequest = async (request: PacketsRequest): Promise<void> => {
-    try {
-      switch (request.kind) {
-        case "start-capture":
-          await startCapture();
-          break;
-        case "stop-capture":
-          stopCapture();
-          break;
-        case "send":
-          await sendPacket(request.payload);
-          break;
-        case "start-queue":
-          startQueue(request.payload);
-          break;
-        case "stop-queue":
-          stopQueue();
-          break;
-      }
-
-      await sendResponse({
-        ok: true,
-        outcome: { kind: request.kind },
-        requestId: request.requestId,
-      });
-    } catch (cause) {
-      await sendResponse({
-        error: errorMessage(cause),
-        ok: false,
-        requestId: request.requestId,
-      });
-    }
-  };
-
-  const unsubscribeRequests = packetsBridge.onRequest((request) => {
-    requests = requests
-      .catch((cause: unknown) => {
-        console.error("[game:packets] request queue failed", cause);
-      })
-      .then(() =>
-        disposed
-          ? sendResponse({
-              error: "The Packets bridge is unavailable.",
-              ok: false,
-              requestId: request.requestId,
-            })
-          : handleRequest(request),
-      );
-    void requests.catch((cause: unknown) => {
-      console.error("[game:packets] response failed", cause);
-    });
-  });
 
   const stopActive = (stoppedReason?: string): void => {
     const wasRunning =
@@ -307,11 +238,41 @@ export const installPacketsBridge = (
   return {
     dispose: () => {
       disposed = true;
-      unsubscribeRequests();
       connectionDispose?.();
       connectionDispose = undefined;
       stopActive();
     },
+    startCapture,
+    startQueue,
     stopActive,
+    stopCapture,
+    stopQueue,
   };
 };
+
+export const makePacketsRpcHandlers = (packets: PacketsBridgeController) =>
+  PacketsRpcs.toLayer(
+    Effect.gen(function* () {
+      const requests = yield* Semaphore.make(1);
+      const toPacketsError = (cause: unknown) =>
+        new PacketsError({ detail: errorMessage(cause) });
+      const run = (operation: () => void) =>
+        requests.withPermit(
+          Effect.try({ try: operation, catch: toPacketsError }),
+        );
+      return PacketsRpcs.of({
+        PacketsSend: (payload) =>
+          requests.withPermit(sendPacketEffect(payload)),
+        PacketsStartCapture: () =>
+          requests.withPermit(
+            Effect.tryPromise({
+              try: packets.startCapture,
+              catch: toPacketsError,
+            }),
+          ),
+        PacketsStartQueue: (payload) => run(() => packets.startQueue(payload)),
+        PacketsStopCapture: () => run(() => packets.stopCapture()),
+        PacketsStopQueue: () => run(() => packets.stopQueue()),
+      });
+    }),
+  );

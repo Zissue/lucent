@@ -31,6 +31,10 @@ describe("release logic", () => {
       "nightly",
       "0.0.2",
       "v0.0.1-beta.1",
+      "v0.0.1+build.1",
+      "vv0.0.1",
+      "v01.0.1",
+      "v0.0.1 ",
       "v0.0.1",
     ]);
 
@@ -40,6 +44,55 @@ describe("release logic", () => {
       version: "0.0.2",
     });
     expect(formatReleaseTag("0.0.2")).toBe("v0.0.2");
+  });
+
+  it("bumps each component without changing the latest release", () => {
+    const latestRelease = findLatestRelease(["v1.2.3"]);
+    for (const [bump, version] of [
+      ["patch", "1.2.4"],
+      ["minor", "1.3.0"],
+      ["major", "2.0.0"],
+      ["patch", "1.2.4"],
+    ] as const) {
+      expect(resolveTargetVersion(bump, latestRelease)).toEqual({
+        ok: true,
+        version,
+      });
+    }
+  });
+
+  it.each([
+    "v1.2.3",
+    " 1.2.3",
+    "1.2.3 ",
+    "1.2.3+build.1",
+    "01.2.3",
+    "1.2",
+    "9007199254740992.0.0",
+  ])("rejects noncanonical or invalid versions: %s", (version) => {
+    expect(resolveTargetVersion(version, null).ok).toBe(false);
+    expect(
+      validateReleaseInputs({ packageVersion: version, tag: `v${version}` }),
+    ).toBe("app/package.json must contain a semantic version.");
+  });
+
+  it.each([
+    ["1.2.9", false],
+    ["1.2.10", false],
+    ["1.2.11", true],
+    ["1.3.0", true],
+    ["2.0.0", true],
+    ["1.1.99", false],
+    ["0.99.99", false],
+  ])("compares %s numerically against the latest release", (version, ok) => {
+    const result = resolveTargetVersion(
+      version,
+      findLatestRelease(["v1.2.10"]),
+    );
+    expect(result.ok).toBe(ok);
+    if (ok) {
+      expect(result).toEqual({ ok: true, version });
+    }
   });
 
   it("orders prerelease tags by semver precedence", () => {

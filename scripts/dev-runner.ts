@@ -23,15 +23,14 @@ import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
-import { Argument, Command, Flag } from "effect/unstable/cli";
-import { ChildProcess } from "effect/unstable/process";
-import type { ChildProcessHandle } from "effect/unstable/process/ChildProcessSpawner";
+import { Argument, Command, Flag } from "effect/cli";
+import { ChildProcess } from "effect/process";
+import type { ChildProcessHandle } from "effect/process/ChildProcessSpawner";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(SCRIPT_DIR, "..");
 const APP_DIR = join(REPO_ROOT, "app");
 const DOCS_DIR = join(REPO_ROOT, "docs");
-const OBSERVABILITY_DIR = join(REPO_ROOT, "observability");
 const DEV_ELECTRON_RUNTIME_BINARY = join(
   APP_DIR,
   ".electron-runtime",
@@ -84,11 +83,6 @@ type DevEvent =
       readonly exitCode: number | null;
       readonly managed: boolean;
       readonly cause?: unknown;
-    }
-  | {
-      readonly _tag: "observability-exit";
-      readonly exitCode: number | null;
-      readonly cause?: unknown;
     };
 
 type ActiveElectron = {
@@ -105,7 +99,6 @@ type DevProcessLease = {
   readonly version: 1;
   readonly runnerPid: number;
   readonly compileProcessGroupId: number;
-  readonly observabilityProcessGroupId?: number;
 };
 
 class DevRunnerError extends Data.TaggedError("DevRunnerError")<{
@@ -114,12 +107,6 @@ class DevRunnerError extends Data.TaggedError("DevRunnerError")<{
 }> {}
 
 const toExitCodeNumber = (exitCode: unknown): number => Number(exitCode);
-
-const shouldRunObservabilityDevServer = (
-  electronArgs: ReadonlyArray<string>,
-): boolean =>
-  electronArgs.includes("--debug") ||
-  electronArgs.includes("--trace-projections");
 
 const isErrnoException = (cause: unknown): cause is NodeJS.ErrnoException =>
   cause instanceof Error && "code" in cause;
@@ -428,10 +415,7 @@ const readDevProcessLease = (): DevProcessLease | null => {
       !Number.isSafeInteger(value.runnerPid) ||
       Number(value.runnerPid) <= 0 ||
       !Number.isSafeInteger(value.compileProcessGroupId) ||
-      Number(value.compileProcessGroupId) <= 0 ||
-      (value.observabilityProcessGroupId !== undefined &&
-        (!Number.isSafeInteger(value.observabilityProcessGroupId) ||
-          Number(value.observabilityProcessGroupId) <= 0))
+      Number(value.compileProcessGroupId) <= 0
     ) {
       return null;
     }
@@ -440,13 +424,6 @@ const readDevProcessLease = (): DevProcessLease | null => {
       version: 1,
       runnerPid: Number(value.runnerPid),
       compileProcessGroupId: Number(value.compileProcessGroupId),
-      ...(value.observabilityProcessGroupId === undefined
-        ? {}
-        : {
-            observabilityProcessGroupId: Number(
-              value.observabilityProcessGroupId,
-            ),
-          }),
     };
   } catch {
     return null;
@@ -491,15 +468,6 @@ const processGroupContainsCompileWatcher = (processGroupId: number): boolean =>
       command.includes("node esbuild.config.js --watch"),
   );
 
-const processGroupContainsObservabilityDevServer = (
-  processGroupId: number,
-): boolean =>
-  processGroupContainsCommand(
-    processGroupId,
-    (command) =>
-      command.includes(OBSERVABILITY_DIR) && command.includes("vite"),
-  );
-
 const stopExistingDevProcesses = Effect.gen(function* () {
   const lease = readDevProcessLease();
   if (lease === null) {
@@ -527,39 +495,16 @@ const stopExistingDevProcesses = Effect.gen(function* () {
     );
   }
 
-  if (
-    process.platform !== "win32" &&
-    lease.observabilityProcessGroupId !== undefined &&
-    isProcessGroupAlive(lease.observabilityProcessGroupId) &&
-    processGroupContainsObservabilityDevServer(
-      lease.observabilityProcessGroupId,
-    )
-  ) {
-    yield* Console.error(
-      `[dev-runner] found stale observability dev server process group ${lease.observabilityProcessGroupId}; stopping it before launch`,
-    );
-    yield* stopProcessGroup(
-      "stale observability dev server",
-      lease.observabilityProcessGroupId,
-    );
-  }
-
   yield* Effect.sync(() => rmSync(DEV_PROCESS_LEASE_PATH, { force: true }));
 });
 
 const writeDevProcessLease = (
   compileWatch: ChildProcessHandle,
-  observabilityDev: ChildProcessHandle | null,
 ): Effect.Effect<void, DevRunnerError> =>
   Effect.try({
     try: () => {
       if (compileWatch.pid === undefined) {
         throw new Error("Compile watcher did not report a process id");
-      }
-      if (observabilityDev !== null && observabilityDev.pid === undefined) {
-        throw new Error(
-          "Observability dev server did not report a process id",
-        );
       }
       writeFileSync(
         DEV_PROCESS_LEASE_PATH,
@@ -567,9 +512,6 @@ const writeDevProcessLease = (
           version: 1,
           runnerPid: process.pid,
           compileProcessGroupId: compileWatch.pid,
-          ...(observabilityDev?.pid === undefined
-            ? {}
-            : { observabilityProcessGroupId: observabilityDev.pid }),
         } satisfies DevProcessLease)}\n`,
         { flag: "wx" },
       );
@@ -931,26 +873,6 @@ const watchCompileExit = (
     }),
   );
 
-const watchObservabilityExit = (
-  events: Queue.Queue<DevEvent>,
-  observabilityDev: ChildProcessHandle,
-) =>
-  observabilityDev.exitCode.pipe(
-    Effect.matchEffect({
-      onFailure: (cause) =>
-        Queue.offer(events, {
-          _tag: "observability-exit",
-          exitCode: null,
-          cause,
-        }),
-      onSuccess: (exitCode) =>
-        Queue.offer(events, {
-          _tag: "observability-exit",
-          exitCode: toExitCodeNumber(exitCode),
-        }),
-    }),
-  );
-
 const watchElectronExit = (
   events: Queue.Queue<DevEvent>,
   electron: ChildProcessHandle,
@@ -987,8 +909,6 @@ const runDevLoop = (electronArgs: ReadonlyArray<string>) =>
     const baseEnv = createBaseEnv();
     const electronEnv = createElectronEnv();
     const watchEnv = createWatchEnv();
-    const runObservabilityDevServer =
-      shouldRunObservabilityDevServer(electronArgs);
 
     yield* stopExistingDevProcesses;
     yield* stopExistingDevElectronProcesses;
@@ -1006,22 +926,7 @@ const runDevLoop = (electronArgs: ReadonlyArray<string>) =>
     const compileWatch = yield* spawnPnpm(["compile:watch"], APP_DIR, watchEnv);
     yield* Effect.forkScoped(watchCompileExit(events, compileWatch));
 
-    const observabilityDev = runObservabilityDevServer
-      ? yield* Effect.gen(function* () {
-          yield* Console.log(
-            "[dev-runner] starting observability dev server",
-          );
-          const child = yield* spawnPnpm(
-            ["dev"],
-            OBSERVABILITY_DIR,
-            baseEnv,
-          );
-          yield* Effect.forkScoped(watchObservabilityExit(events, child));
-          return child;
-        })
-      : null;
-
-    yield* writeDevProcessLease(compileWatch, observabilityDev);
+    yield* writeDevProcessLease(compileWatch);
 
     const startElectron = Effect.gen(function* () {
       yield* Console.log("[dev-runner] starting electron");
@@ -1060,9 +965,6 @@ const runDevLoop = (electronArgs: ReadonlyArray<string>) =>
     yield* installTerminationCleanup(
       Effect.gen(function* () {
         yield* stopActiveElectron;
-        if (observabilityDev !== null) {
-          yield* stopChild("observability dev server", observabilityDev);
-        }
         yield* stopChild("compile watcher", compileWatch);
         yield* removeOwnedDevProcessLease;
       }),
@@ -1104,26 +1006,11 @@ const runDevLoop = (electronArgs: ReadonlyArray<string>) =>
 
         case "compile-watch-exit": {
           yield* stopActiveElectron;
-          if (observabilityDev !== null) {
-            yield* stopChild("observability dev server", observabilityDev);
-          }
           return yield* new DevRunnerError({
             message:
               event.exitCode === null
                 ? "compile watcher exited before reporting an exit code"
                 : `compile watcher exited with code ${event.exitCode}`,
-            cause: event.cause,
-          });
-        }
-
-        case "observability-exit": {
-          yield* stopActiveElectron;
-          yield* stopChild("compile watcher", compileWatch);
-          return yield* new DevRunnerError({
-            message:
-              event.exitCode === null
-                ? "observability dev server exited before reporting an exit code"
-                : `observability dev server exited with code ${event.exitCode}`,
             cause: event.cause,
           });
         }
@@ -1139,9 +1026,6 @@ const runDevLoop = (electronArgs: ReadonlyArray<string>) =>
           }
 
           yield* Ref.set(activeElectron, null);
-          if (observabilityDev !== null) {
-            yield* stopChild("observability dev server", observabilityDev);
-          }
           yield* stopChild("compile watcher", compileWatch);
 
           if (event.exitCode === 0) {
@@ -1208,11 +1092,6 @@ const dryRun = (mode: DevMode, electronArgs: ReadonlyArray<string>) =>
       yield* Console.log(
         `env.LUCENT_DEV_RENDERER_RELOAD=${DEV_RENDERER_RELOAD_PATH}`,
       );
-
-      if (shouldRunObservabilityDevServer(electronArgs)) {
-        yield* Console.log(`observabilityDir=${OBSERVABILITY_DIR}`);
-        yield* Console.log("observability=pnpm dev");
-      }
     }
 
     if (mode === "dev" || mode === "docs") {
@@ -1238,10 +1117,10 @@ const runDevRunner = (input: CliInput) => {
 
 const makeCommand = (electronArgs: ReadonlyArray<string>) =>
   Command.make("dev-runner", {
-    mode: Argument.choice("mode", DEV_RUNNER_MODES).pipe(
+    mode: Argument.Literals("mode", DEV_RUNNER_MODES).pipe(
       Argument.withDescription("Development mode to run"),
     ),
-    dryRun: Flag.boolean("dry-run").pipe(
+    dryRun: Flag.Boolean("dry-run").pipe(
       Flag.withDescription("Print resolved dev commands without spawning them"),
       Flag.withDefault(false),
     ),

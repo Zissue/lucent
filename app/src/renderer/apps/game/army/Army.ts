@@ -5,7 +5,9 @@ import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as SynchronizedRef from "effect/SynchronizedRef";
+import * as Option from "effect/Option";
+import * as Ref from "effect/Ref";
+import * as Semaphore from "effect/Semaphore";
 
 import {
   resolveArmyEquipSet,
@@ -67,20 +69,30 @@ export class ArmyApi extends Context.Service<ArmyApi, ArmyApiRuntimeShape>()(
   "lucent/game/army/ArmyApi",
 ) {}
 
-interface ArmyState {
-  readonly ended: Deferred.Deferred<never, ArmyError> | null;
-  readonly nextStep: number;
-  readonly session: ArmySession | null;
+type ArmyState =
+  | { readonly type: "Idle" }
+  | {
+      readonly type: "Starting";
+      readonly endedSessions: ReadonlyMap<string, ArmyError>;
+    }
+  | {
+      readonly type: "Started";
+      readonly ended: Deferred.Deferred<never, ArmyError>;
+      readonly nextStep: number;
+      readonly session: ArmySession;
+    };
+
+interface RosterStatus {
+  readonly complete: boolean;
+  readonly label: string;
 }
 
-const defaultState: ArmyState = {
-  ended: null,
-  nextStep: 0,
-  session: null,
-};
+type StartedState = Extract<ArmyState, { readonly type: "Started" }>;
+
+const idle: ArmyState = { type: "Idle" };
 
 const joinRosterTimeoutMs = 30_000;
-const joinRosterIntervalMs = 250;
+const progressPollInterval = "250 millis";
 const consumableSkillIndex = 5;
 
 const cloneSession = (session: ArmySession): ArmySession =>
@@ -93,20 +105,26 @@ const optionTimeoutMs = (
     ? undefined
     : Duration.toMillis(options.timeout);
 
-const fromDesktop = <A>(label: string, promise: () => Promise<A>) =>
+const fromDesktop = <A>(fallback: string, promise: () => Promise<A>) =>
   Effect.tryPromise({
     try: promise,
-    catch: (cause) => new ArmyError(label, cause),
+    catch: (cause) =>
+      new ArmyError(
+        cause instanceof Error && cause.message.length > 0
+          ? cause.message
+          : fallback,
+        cause,
+      ),
   });
 
 const normalizePlayerKey = (name: string): string => name.trim().toLowerCase();
 
-const withArmyRoom = (map: string, room: string): string => {
+const withArmyRoom = (map: string, room: number): string => {
   const target = map.trim();
   if (target === "" || /-\d+$/.test(target)) {
     return target;
   }
-  return `${target}-${room.trim()}`;
+  return `${target}-${room}`;
 };
 
 const causeMessage = (cause: Cause.Cause<unknown>): string => {
@@ -122,20 +140,6 @@ const resolveSetItem = (
   resolveItems: boolean,
 ): string | undefined =>
   resolveItems ? resolveArmyItemAlias(session, item) : item;
-
-const warnEquip = (
-  setName: string,
-  field: string,
-  item: string,
-  cause?: unknown,
-) =>
-  Effect.logWarning({
-    ...(cause === undefined ? {} : { cause }),
-    field,
-    item,
-    message: `Army equipSet skipped ${field}`,
-    setName,
-  });
 
 const getNestedConfigValue = (
   obj: Record<string, unknown>,
@@ -209,64 +213,127 @@ const makeArmyApi = (
       tempInventory,
       wait,
     } = api;
-    const stateRef = yield* SynchronizedRef.make<ArmyState>(defaultState);
-    const coordinationRef = yield* SynchronizedRef.make(false);
+    const stateRef = yield* Ref.make<ArmyState>(idle);
+    const operationLock = yield* Semaphore.make(1);
     const runFork = Effect.runForkWith(yield* Effect.context<never>());
 
-    const getState = SynchronizedRef.get(stateRef);
+    const currentSession = Ref.get(stateRef).pipe(
+      Effect.map((state) => (state.type === "Started" ? state.session : null)),
+    );
 
     const getSession: ScriptArmyApi["getSession"] = () =>
-      getState.pipe(
-        Effect.map((state) =>
-          state.session === null ? null : cloneSession(state.session),
+      currentSession.pipe(
+        Effect.map((session) =>
+          session === null ? null : cloneSession(session),
         ),
       );
     const loopTaunts = yield* makeArmyLoopTauntRuntime(api, bridge, getSession);
 
-    const assertStarted = Effect.gen(function* () {
-      const state = yield* getState;
-      if (state.session === null) {
-        return yield* Effect.fail(new ArmyError("Army has not been started"));
-      }
-      return cloneSession(state.session);
-    });
+    const assertStarted = currentSession.pipe(
+      Effect.flatMap((session) =>
+        session === null
+          ? Effect.fail(new ArmyError("Army has not been started"))
+          : Effect.succeed(cloneSession(session)),
+      ),
+    );
 
-    const nextStep = SynchronizedRef.modify(stateRef, (state) => [
-      state.nextStep,
-      { ...state, nextStep: state.nextStep + 1 },
-    ]);
+    const endLocally = (sessionId: string, error: ArmyError) =>
+      Ref.modify(stateRef, (state): readonly [StartedState | null, ArmyState] =>
+        state.type === "Starting"
+          ? [
+              null,
+              {
+                type: "Starting",
+                endedSessions: new Map(state.endedSessions).set(
+                  sessionId,
+                  error,
+                ),
+              },
+            ]
+          : state.type === "Started" && state.session.sessionId === sessionId
+            ? [state, idle]
+            : [null, state],
+      ).pipe(
+        Effect.flatMap((ended) =>
+          ended === null
+            ? Effect.succeed(false)
+            : Deferred.fail(ended.ended, error).pipe(Effect.as(true)),
+        ),
+        Effect.uninterruptible,
+      );
 
-    const withCoordination = <A, E>(
+    const failSession = (sessionId: string, reason: string) =>
+      endLocally(sessionId, new ArmyError(reason)).pipe(
+        Effect.flatMap((ended) =>
+          ended
+            ? Effect.sync(() => {
+                void bridge.fail({ reason, sessionId }).catch(() => undefined);
+              }).pipe(Effect.ignoreCause)
+            : Effect.void,
+        ),
+      );
+
+    const exclusive = <A, E>(
       operation: Effect.Effect<A, E>,
     ): Effect.Effect<A, E | ArmyError> =>
-      Effect.acquireUseRelease(
+      operationLock
+        .withPermitsIfAvailable(1)(operation)
+        .pipe(
+          Effect.flatMap(
+            Option.match({
+              onNone: () =>
+                Effect.fail(
+                  new ArmyError(
+                    "Another coordinated army operation is already running",
+                  ),
+                ),
+              onSome: Effect.succeed,
+            }),
+          ),
+        );
+
+    const coordinated = <A, E>(
+      steps: number,
+      body: (session: ArmySession, step: number) => Effect.Effect<A, E>,
+    ): Effect.Effect<A, E | ArmyError> =>
+      exclusive(
         Effect.gen(function* () {
-          const acquired = yield* SynchronizedRef.modify(
-            coordinationRef,
-            (busy) => [!busy, true] as const,
+          const reserved = yield* Ref.modify(
+            stateRef,
+            (state): readonly [StartedState | null, ArmyState] =>
+              state.type === "Started"
+                ? [state, { ...state, nextStep: state.nextStep + steps }]
+                : [null, state],
           );
-          if (!acquired) {
+          if (reserved === null) {
             return yield* Effect.fail(
-              new ArmyError(
-                "Another coordinated army operation is already running",
-              ),
+              new ArmyError("Army has not been started"),
             );
           }
+          const { ended, nextStep, session } = reserved;
+          return yield* Effect.raceFirst(
+            body(session, nextStep),
+            Deferred.await(ended),
+          ).pipe(
+            Effect.tapCause((cause) =>
+              Cause.hasInterruptsOnly(cause)
+                ? Effect.void
+                : failSession(session.sessionId, causeMessage(cause)),
+            ),
+          );
         }),
-        () =>
-          Effect.gen(function* () {
-            const ended = (yield* getState).ended;
-            const guarded =
-              ended === null
-                ? operation
-                : Effect.raceFirst(operation, Deferred.await(ended));
-            return yield* guarded;
-          }),
-        () => SynchronizedRef.set(coordinationRef, false),
       );
 
     const loopTaunt: ArmyApiRuntimeShape["loopTaunt"] = (plan, onFailure) =>
-      withCoordination(loopTaunts.loopTaunt(plan, onFailure)).pipe(
+      exclusive(
+        Effect.gen(function* () {
+          const state = yield* Ref.get(stateRef);
+          const startup = loopTaunts.loopTaunt(plan, onFailure);
+          return yield* state.type === "Started"
+            ? Effect.raceFirst(startup, Deferred.await(state.ended))
+            : startup;
+        }),
+      ).pipe(
         Effect.mapError((error) =>
           error instanceof ArmyLoopTauntError
             ? error
@@ -276,23 +343,6 @@ const makeArmyApi = (
               ),
         ),
       );
-
-    const failSession = (
-      session: ArmySession,
-      reason: string,
-      details?: { readonly label?: string; readonly step?: number },
-    ) =>
-      Effect.gen(function* () {
-        yield* fromDesktop("Failed to fail army session", () =>
-          bridge.fail({
-            ...(details?.label === undefined ? {} : { label: details.label }),
-            ...(details?.step === undefined ? {} : { step: details.step }),
-            reason,
-            sessionId: session.sessionId,
-          }),
-        ).pipe(Effect.catchCause(() => Effect.void));
-        yield* SynchronizedRef.set(stateRef, defaultState);
-      });
 
     const waitAtSync = (
       session: ArmySession,
@@ -308,11 +358,9 @@ const makeArmyApi = (
           step,
           ...(timeoutMs === undefined ? {} : { timeoutMs }),
         });
-      }).pipe(
-        Effect.tapError(() => SynchronizedRef.set(stateRef, defaultState)),
-      );
+      });
 
-    const waitAtProgress = (
+    const reportProgress = (
       session: ArmySession,
       step: number,
       label: string,
@@ -328,103 +376,140 @@ const makeArmyApi = (
           step,
           ...(timeoutMs === undefined ? {} : { timeoutMs }),
         });
-      }).pipe(
-        Effect.tapError(() => SynchronizedRef.set(stateRef, defaultState)),
-      );
+      });
 
-    const runStepInternal: ScriptArmyApi["runStep"] = (
-      label,
-      action,
-      options,
-    ) =>
+    const awaitRosterReport = <E>(
+      report: (
+        status: RosterStatus,
+      ) => Effect.Effect<ArmyProgressResult, ArmyError>,
+      observe: Effect.Effect<RosterStatus, E>,
+    ): Effect.Effect<ArmyProgressResult, E | ArmyError> =>
       Effect.gen(function* () {
-        const step = yield* nextStep;
-        const session = yield* assertStarted;
-        const result = yield* action.pipe(
-          Effect.catchCause((cause) =>
-            failSession(session, causeMessage(cause), { label, step }).pipe(
-              Effect.andThen(Effect.failCause(cause)),
-            ),
-          ),
+        const reported = yield* observe;
+        const completed = yield* Deferred.make<ArmyProgressResult, ArmyError>();
+        const changes = Effect.gen(function* () {
+          let previous = reported;
+          while (true) {
+            yield* Effect.sleep(progressPollInterval);
+            const next = yield* observe;
+            if (
+              next.complete === previous.complete &&
+              next.label === previous.label
+            ) {
+              continue;
+            }
+            previous = next;
+            yield* Deferred.complete(completed, report(next)).pipe(
+              Effect.forkChild,
+            );
+          }
+        });
+        return yield* Effect.raceFirst(
+          Effect.raceFirst(report(reported), Deferred.await(completed)),
+          changes,
         );
-        yield* waitAtSync(session, step, label, options);
-        return result;
       });
 
     const runStep: ScriptArmyApi["runStep"] = (label, action, options) =>
-      withCoordination(runStepInternal(label, action, options));
+      coordinated(1, (session, step) =>
+        action.pipe(
+          Effect.tap(() => waitAtSync(session, step, label, options)),
+        ),
+      );
 
     const sync: ScriptArmyApi["sync"] = (label = "sync", options) =>
-      withCoordination(
-        Effect.gen(function* () {
-          const step = yield* nextStep;
-          const session = yield* assertStarted;
-          yield* waitAtSync(session, step, label, options);
-        }),
+      coordinated(1, (session, step) =>
+        waitAtSync(session, step, label, options),
       );
 
     const start: ScriptArmyApi["start"] = (configName) =>
-      withCoordination(
-        Effect.gen(function* () {
-          const current = yield* getState;
-          if (current.session !== null) {
-            return yield* Effect.fail(
-              new ArmyError(
-                "Army has already been started; leave it before starting again",
+      exclusive(
+        Effect.uninterruptibleMask((restore) =>
+          Effect.gen(function* () {
+            if ((yield* Ref.get(stateRef)).type === "Started") {
+              return yield* Effect.fail(
+                new ArmyError(
+                  "Army has already been started; leave it before starting again",
+                ),
+              );
+            }
+            const username = yield* restore(auth.getUsername());
+            yield* Ref.set(stateRef, {
+              type: "Starting",
+              endedSessions: new Map(),
+            });
+            const session = yield* restore(
+              fromDesktop("Failed to start army", () =>
+                bridge.start({ configName, playerName: username }),
+              ),
+            ).pipe(
+              Effect.onInterrupt(() =>
+                fromDesktop("Failed to leave army", () => bridge.leave()).pipe(
+                  Effect.ignore,
+                ),
               ),
             );
-          }
-          const username = yield* auth.getUsername();
-          const session = yield* fromDesktop("Failed to start army", () =>
-            bridge.start({ configName, playerName: username }),
-          );
-          const ended = yield* Deferred.make<never, ArmyError>();
-          yield* SynchronizedRef.set(stateRef, {
-            ended,
-            nextStep: 0,
-            session,
-          });
-          return cloneSession(session);
-        }),
+            const state = yield* Ref.get(stateRef);
+            if (state.type === "Starting") {
+              const reason = state.endedSessions.get(session.sessionId);
+              if (reason !== undefined) return yield* Effect.fail(reason);
+            }
+            const ended = yield* Deferred.make<never, ArmyError>();
+            yield* Ref.set(stateRef, {
+              type: "Started",
+              ended,
+              nextStep: 0,
+              session,
+            });
+            return cloneSession(session);
+          }).pipe(
+            Effect.ensuring(
+              Ref.update(stateRef, (state) =>
+                state.type === "Starting" ? idle : state,
+              ),
+            ),
+          ),
+        ),
       );
 
     const leave: ScriptArmyApi["leave"] = () =>
       Effect.gen(function* () {
         yield* loopTaunts.stopActive("Army session is leaving");
-        const state = yield* getState;
-        if (state.session === null) {
-          return;
+        const state = yield* Ref.get(stateRef);
+        yield* fromDesktop("Failed to leave army", () => bridge.leave()).pipe(
+          Effect.ignore,
+        );
+        if (state.type === "Started") {
+          yield* endLocally(
+            state.session.sessionId,
+            new ArmyError("Army session left"),
+          );
         }
-
-        yield* fromDesktop("Failed to leave army", () =>
-          bridge.leave({
-            sessionId: state.session!.sessionId,
-          }),
-        ).pipe(Effect.catchCause(() => Effect.void));
-        yield* SynchronizedRef.set(stateRef, defaultState);
       });
 
     const isStarted: ScriptArmyApi["isStarted"] = () =>
-      getState.pipe(Effect.map((state) => state.session !== null));
+      currentSession.pipe(Effect.map((session) => session !== null));
 
     const isLeader: ScriptArmyApi["isLeader"] = () =>
-      getState.pipe(Effect.map((state) => state.session?.role === "leader"));
+      currentSession.pipe(Effect.map((session) => session?.role === "leader"));
 
     const isMember: ScriptArmyApi["isMember"] = () =>
-      getState.pipe(Effect.map((state) => state.session?.role === "member"));
+      currentSession.pipe(Effect.map((session) => session?.role === "member"));
 
     const getPlayerNumber: ScriptArmyApi["getPlayerNumber"] = () =>
-      getState.pipe(Effect.map((state) => state.session?.playerNumber ?? null));
+      currentSession.pipe(
+        Effect.map((session) => session?.playerNumber ?? null),
+      );
 
     const getConfigValue: ScriptArmyApi["getConfigValue"] = (
       key,
       defaultValue,
     ) =>
-      getState.pipe(
-        Effect.map((state) =>
-          state.session === null
+      currentSession.pipe(
+        Effect.map((session) =>
+          session === null
             ? defaultValue
-            : resolveConfigValue(state.session.raw, key, defaultValue),
+            : resolveConfigValue(session.raw, key, defaultValue),
         ),
       );
 
@@ -450,74 +535,65 @@ const makeArmyApi = (
         );
       });
 
-    const waitForAllInMapInternal = (session: ArmySession, step: number) =>
+    const awaitRosterInMap = (session: ArmySession, step: number) =>
       Effect.gen(function* () {
         const deadline = (yield* Clock.currentTimeMillis) + joinRosterTimeoutMs;
-        let lastProgress: ArmyProgressResult | undefined;
-        let lastMissing: readonly string[] = [];
-        while (true) {
+        const observe = Effect.gen(function* () {
           const [mapName, roomNumber, missing] = yield* Effect.all([
             map.getName(),
             map.getRoomNumber(),
             visibleMissingPlayers(session),
           ]);
-          const label = `map:${mapName.trim().toLowerCase()}-${roomNumber}`;
-          lastMissing = missing;
-          lastProgress = yield* waitAtProgress(
-            session,
-            step,
-            label,
-            missing.length === 0,
-            { timeout: joinRosterTimeoutMs },
-          );
-          if (lastProgress.complete) {
-            return;
-          }
-
-          if ((yield* Clock.currentTimeMillis) >= deadline) {
-            const reason =
-              lastMissing.length > 0
-                ? `Timed out waiting for army roster in ${label}; ${
-                    session.playerName
-                  } cannot see: ${lastMissing.join(", ")}`
-                : `Timed out waiting for army roster in ${label}; pending players: ${lastProgress.pendingPlayers.join(
-                    ", ",
-                  )}`;
-            yield* failSession(session, reason, { label, step });
-            return yield* Effect.fail(new ArmyError(reason));
-          }
-
-          yield* Effect.sleep(`${joinRosterIntervalMs} millis`);
+          return {
+            complete: missing.length === 0,
+            label: `map:${mapName.trim().toLowerCase()}-${roomNumber}`,
+          };
+        });
+        const report = (status: RosterStatus) =>
+          reportProgress(session, step, status.label, status.complete, {
+            timeout: joinRosterTimeoutMs,
+          });
+        const firstRound = yield* awaitRosterReport(report, observe);
+        if (firstRound.complete) {
+          return;
         }
+        const remainingMs = deadline - (yield* Clock.currentTimeMillis);
+        const completed = yield* awaitRosterReport(report, observe).pipe(
+          Effect.timeoutOption(Math.max(0, remainingMs)),
+        );
+        if (Option.isSome(completed)) {
+          return;
+        }
+
+        const missing = yield* visibleMissingPlayers(session);
+        const { label } = yield* observe;
+        return yield* Effect.fail(
+          new ArmyError(
+            missing.length > 0
+              ? `Timed out waiting for army roster in ${label}; ${
+                  session.playerName
+                } cannot see: ${missing.join(", ")}`
+              : `Timed out waiting for army roster in ${label}; pending players: ${firstRound.pendingPlayers.join(
+                  ", ",
+                )}`,
+          ),
+        );
       });
 
     const waitForAllInMap: ScriptArmyApi["waitForAllInMap"] = () =>
-      withCoordination(
-        Effect.gen(function* () {
-          const step = yield* nextStep;
-          const session = yield* assertStarted;
-          yield* waitForAllInMapInternal(session, step);
-        }),
-      );
+      coordinated(1, awaitRosterInMap);
 
     const joinMap: ScriptArmyApi["joinMap"] = (map, options) =>
-      withCoordination(
+      coordinated(2, (session, step) =>
         Effect.gen(function* () {
-          const targetStep = yield* nextStep;
-          const joinedStep = yield* nextStep;
-          const session = yield* assertStarted;
           const resolvedMap = withArmyRoom(map, session.room);
-          const label = `join:${resolvedMap}`;
-          yield* waitAtSync(session, targetStep, `join-ready:${resolvedMap}`);
-
-          const joined = yield* player.joinMap(resolvedMap, options);
-          if (!joined) {
-            const reason = `Failed to join army map: ${resolvedMap}`;
-            yield* failSession(session, reason, { label, step: joinedStep });
-            return yield* Effect.fail(new ArmyError(reason));
+          yield* waitAtSync(session, step, `join-ready:${resolvedMap}`);
+          if (!(yield* player.joinMap(resolvedMap, options))) {
+            return yield* Effect.fail(
+              new ArmyError(`Failed to join army map: ${resolvedMap}`),
+            );
           }
-
-          yield* waitForAllInMapInternal(session, joinedStep);
+          yield* awaitRosterInMap(session, step + 1);
         }),
       );
 
@@ -527,51 +603,39 @@ const makeArmyApi = (
         combat.kill(target, options).pipe(Effect.asVoid),
       );
 
-    const runUntilArmyProgressComplete = <E>(args: {
-      readonly action: () => Effect.Effect<void, E>;
-      readonly isComplete: () => Effect.Effect<boolean, E>;
+    const killUntilRosterComplete = <E>(args: {
+      readonly action: Effect.Effect<void, E>;
+      readonly isComplete: Effect.Effect<boolean, E>;
       readonly label: string;
     }): Effect.Effect<void, E | ArmyError> =>
-      withCoordination(
+      coordinated(1, (session, step) =>
         Effect.gen(function* () {
-          const step = yield* nextStep;
-          const session = yield* assertStarted;
-
-          while (true) {
-            const complete = yield* args.isComplete();
-            const progress = yield* waitAtProgress(
-              session,
-              step,
-              args.label,
-              complete,
-            );
-            if (progress.complete) {
-              return;
-            }
-
-            yield* args.action().pipe(
-              Effect.catchCause((cause) =>
-                failSession(session, causeMessage(cause), {
-                  label: args.label,
-                  step,
-                }).pipe(Effect.andThen(Effect.failCause(cause))),
-              ),
-            );
-            yield* Effect.sleep("100 millis");
+          const report = (status: RosterStatus) =>
+            reportProgress(session, step, status.label, status.complete);
+          const observe = args.isComplete.pipe(
+            Effect.map((complete) => ({ complete, label: args.label })),
+          );
+          if ((yield* awaitRosterReport(report, observe)).complete) {
+            return;
           }
+          yield* Effect.raceFirst(
+            awaitRosterReport(report, observe),
+            Effect.forever(
+              args.action.pipe(Effect.andThen(Effect.sleep("100 millis"))),
+            ),
+          );
         }),
       );
 
     const killForItem: ScriptArmyApi["killForItem"] = (target, goal, options) =>
-      runUntilArmyProgressComplete({
-        action: () => combat.kill(target, options).pipe(Effect.asVoid),
-        isComplete: () =>
-          Effect.gen(function* () {
-            if (yield* drops.contains(goal.item)) {
-              yield* drops.accept(goal.item);
-            }
-            return yield* inventory.contains(goal.item, goal.quantity);
-          }),
+      killUntilRosterComplete({
+        action: combat.kill(target, options).pipe(Effect.asVoid),
+        isComplete: Effect.gen(function* () {
+          if (yield* drops.contains(goal.item)) {
+            yield* drops.accept(goal.item);
+          }
+          return yield* inventory.contains(goal.item, goal.quantity);
+        }),
         label: `kill-item:${String(goal.item)}`,
       });
 
@@ -580,16 +644,14 @@ const makeArmyApi = (
       goal,
       options,
     ) =>
-      runUntilArmyProgressComplete({
-        action: () => combat.kill(target, options).pipe(Effect.asVoid),
-        isComplete: () => tempInventory.contains(goal.item, goal.quantity),
+      killUntilRosterComplete({
+        action: combat.kill(target, options).pipe(Effect.asVoid),
+        isComplete: tempInventory.contains(goal.item, goal.quantity),
         label: `kill-temp:${String(goal.item)}`,
       });
 
     const equipItem = (
       session: ArmySession,
-      setName: string,
-      field: string,
       item: string | undefined,
       resolveItems: boolean,
     ) =>
@@ -601,13 +663,8 @@ const makeArmyApi = (
 
         const equipped = yield* inventory
           .equip(resolved)
-          .pipe(
-            Effect.catchCause((cause) =>
-              warnEquip(setName, field, resolved, cause).pipe(Effect.as(false)),
-            ),
-          );
+          .pipe(Effect.catchCause(() => Effect.succeed(false)));
         if (!equipped) {
-          yield* warnEquip(setName, field, resolved);
           return;
         }
 
@@ -616,7 +673,6 @@ const makeArmyApi = (
 
     const drinkConsumable = Effect.fn("Army.drinkConsumable")(function* (
       session: ArmySession,
-      setName: string,
       item: string,
       resolveItems: boolean,
     ) {
@@ -627,28 +683,16 @@ const makeArmyApi = (
 
       const inventoryItem = yield* inventory
         .get(resolved)
-        .pipe(
-          Effect.catchCause((cause) =>
-            warnEquip(setName, "pots", resolved, cause).pipe(Effect.as(null)),
-          ),
-        );
+        .pipe(Effect.catchCause(() => Effect.succeed(null)));
       if (inventoryItem === null) {
-        yield* warnEquip(setName, "pots", resolved);
         return;
       }
 
       if (isDirectInventoryConsumable(inventoryItem.link)) {
         const used = yield* inventory
           .use(inventoryItem.itemId)
-          .pipe(
-            Effect.catchCause((cause) =>
-              warnEquip(setName, "pots", resolved, cause).pipe(
-                Effect.as(false),
-              ),
-            ),
-          );
+          .pipe(Effect.catchCause(() => Effect.succeed(false)));
         if (!used) {
-          yield* warnEquip(setName, "pots", resolved);
           return;
         }
 
@@ -660,13 +704,8 @@ const makeArmyApi = (
 
       const equipped = yield* inventory
         .equip(resolved)
-        .pipe(
-          Effect.catchCause((cause) =>
-            warnEquip(setName, "pots", resolved, cause).pipe(Effect.as(false)),
-          ),
-        );
+        .pipe(Effect.catchCause(() => Effect.succeed(false)));
       if (!equipped) {
-        yield* warnEquip(setName, "pots", resolved);
         return;
       }
 
@@ -681,7 +720,6 @@ const makeArmyApi = (
         { timeout: "5 seconds" },
       );
       if (!slotReady) {
-        yield* warnEquip(setName, "pots", resolved);
         return;
       }
 
@@ -690,13 +728,8 @@ const makeArmyApi = (
           force: true,
           waitUntilReady: true,
         })
-        .pipe(
-          Effect.catchCause((cause) =>
-            warnEquip(setName, "pots", resolved, cause).pipe(Effect.as(false)),
-          ),
-        );
+        .pipe(Effect.catchCause(() => Effect.succeed(false)));
       if (!used) {
-        yield* warnEquip(setName, "pots", resolved);
         return;
       }
 
@@ -711,7 +744,6 @@ const makeArmyApi = (
         { timeout: "5 seconds" },
       );
       if (!consumed) {
-        yield* warnEquip(setName, "pots", resolved);
         return;
       }
 
@@ -732,39 +764,23 @@ const makeArmyApi = (
           for (const field of armyEquipOrder) {
             const item = set[field];
             if (typeof item === "string") {
-              yield* equipItem(session, setName, field, item, resolveItems);
+              yield* equipItem(session, item, resolveItems);
             }
           }
 
           for (const pot of set.pots ?? []) {
-            yield* drinkConsumable(session, setName, pot, resolveItems);
+            yield* drinkConsumable(session, pot, resolveItems);
           }
 
-          yield* equipItem(
-            session,
-            setName,
-            "scroll",
-            set.scroll,
-            resolveItems,
-          );
+          yield* equipItem(session, set.scroll, resolveItems);
         }),
       );
 
     const disposeEnded = bridge.onEnded((payload) => {
       runFork(
-        Effect.gen(function* () {
-          const ended = yield* SynchronizedRef.modify(
-            stateRef,
-            (state): readonly [ArmyState["ended"], ArmyState] =>
-              state.session?.sessionId === payload.sessionId
-                ? [state.ended, defaultState]
-                : [null, state],
-          );
-          if (ended !== null) {
-            yield* Deferred.fail(ended, new ArmyError(payload.reason));
-          }
-          yield* loopTaunts.notifySessionEnded(payload);
-        }),
+        endLocally(payload.sessionId, new ArmyError(payload.reason)).pipe(
+          Effect.andThen(loopTaunts.notifySessionEnded(payload)),
+        ),
       );
     });
     yield* Effect.addFinalizer(() => Effect.sync(disposeEnded));

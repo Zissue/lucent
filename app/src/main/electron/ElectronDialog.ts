@@ -1,6 +1,5 @@
 import {
-  app,
-  BrowserWindow,
+  BaseWindow,
   dialog,
   type MessageBoxOptions,
   type MessageBoxReturnValue,
@@ -44,15 +43,6 @@ export interface ElectronDialogShape {
     options: OpenDialogOptions,
     parentWindowId?: number,
   ) => Effect.Effect<OpenDialogReturnValue, ElectronDialogOpenDialogError>;
-  readonly showErrorBox: (
-    title: string,
-    content: string,
-  ) => Effect.Effect<void>;
-  readonly showWarningAndQuit: (input: {
-    readonly title: string;
-    readonly message: string;
-    readonly detail: string;
-  }) => Effect.Effect<void>;
 }
 
 export class ElectronDialog extends Context.Service<
@@ -65,16 +55,16 @@ const showMessageBox: ElectronDialogShape["showMessageBox"] = (
   parentWindowId,
 ) =>
   Effect.tryPromise({
-    try: () => {
+    try: (signal) => {
       if (parentWindowId === undefined) {
-        return dialog.showMessageBox(options);
+        return dialog.showMessageBox({ ...options, signal });
       }
 
-      const browserWindow = BrowserWindow.fromId(parentWindowId);
+      const browserWindow = BaseWindow.fromId(parentWindowId);
       if (browserWindow === null) {
         throw new Error(`Browser window is not open: ${parentWindowId}`);
       }
-      return dialog.showMessageBox(browserWindow, options);
+      return dialog.showMessageBox(browserWindow, { ...options, signal });
     },
     catch: (cause) => new ElectronDialogMessageBoxError({ cause }),
   });
@@ -89,7 +79,7 @@ const showOpenDialog: ElectronDialogShape["showOpenDialog"] = (
         return dialog.showOpenDialog(options);
       }
 
-      const browserWindow = BrowserWindow.fromId(parentWindowId);
+      const browserWindow = BaseWindow.fromId(parentWindowId);
       if (browserWindow === null) {
         throw new Error(`Browser window is not open: ${parentWindowId}`);
       }
@@ -98,39 +88,10 @@ const showOpenDialog: ElectronDialogShape["showOpenDialog"] = (
     catch: (cause) => new ElectronDialogOpenDialogError({ cause }),
   });
 
-const showErrorBox: ElectronDialogShape["showErrorBox"] = (title, content) =>
-  Effect.sync(() => {
-    dialog.showErrorBox(title, content);
-  });
-
-const showWarningAndQuit: ElectronDialogShape["showWarningAndQuit"] = (input) =>
-  Effect.promise(() =>
-    dialog
-      .showMessageBox({
-        type: "warning",
-        title: input.title,
-        message: input.message,
-        detail: input.detail,
-        buttons: ["Quit"],
-        defaultId: 0,
-        cancelId: 0,
-      })
-      .catch(() => undefined),
-  ).pipe(
-    Effect.tap(() =>
-      Effect.sync(() => {
-        app.quit();
-      }),
-    ),
-    Effect.asVoid,
-  );
-
 export const layer = Layer.succeed(
   ElectronDialog,
   ElectronDialog.of({
     showMessageBox,
     showOpenDialog,
-    showErrorBox,
-    showWarningAndQuit,
   }),
 );

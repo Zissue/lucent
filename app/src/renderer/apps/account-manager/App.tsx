@@ -118,7 +118,6 @@ import {
 } from "./launchModePreference";
 import {
   type AccountLaunchMode,
-  resolveAccountLaunchTiling,
   resolveAccountLaunchWindowTarget,
 } from "./launchMode";
 import {
@@ -1518,7 +1517,9 @@ export function AccountManagerView(
     () => groupMemberEdit() === null && !busy(),
   );
   const primaryAccountLaunchMode = createMemo<AccountLaunchMode>(() =>
-    hasMultipleSelectedAccounts() ? accountLaunchMode() : "standard",
+    hasMultipleSelectedAccounts() && useGameTabs()
+      ? accountLaunchMode()
+      : "standard",
   );
   const canFocusLoginServer = createMemo(
     () =>
@@ -1597,7 +1598,6 @@ export function AccountManagerView(
     const arrangement = hasMultipleSelectedAccounts()
       ? currentMode
       : `${currentMode}. Applies when launching multiple accounts.`;
-    if (!useGameTabs()) return arrangement;
     const windowBehavior = launchInNewWindow()
       ? "Accounts launched together share a new window."
       : "An available game window may be used.";
@@ -1605,9 +1605,7 @@ export function AccountManagerView(
   });
   const launchOptionsAriaLabel = createMemo(() => {
     const arrangement = `Window arrangement: ${accountLaunchModeLabel()}.`;
-    return useGameTabs()
-      ? `Choose launch options. ${arrangement} Launch in new window: ${launchInNewWindow() ? "on" : "off"}.`
-      : `Choose window arrangement. ${arrangement}`;
+    return `Choose launch options. ${arrangement} Launch in new window: ${launchInNewWindow() ? "on" : "off"}.`;
   });
   const groupMemberLabel = (username: string): string => {
     const accountLookup = accountsByUsername();
@@ -2602,17 +2600,8 @@ export function AccountManagerView(
   const deleteAccountUsernames = async (usernames: readonly string[]) => {
     setBusy(true);
     try {
-      const deleteAccounts = props.callbacks?.deleteAccounts;
-      let nextState =
-        deleteAccounts === undefined
-          ? state()
-          : await deleteAccounts(usernames);
-      if (deleteAccounts === undefined) {
-        for (const username of usernames) {
-          nextState = await (props.callbacks?.deleteAccount?.(username) ??
-            Promise.resolve(nextState));
-        }
-      }
+      const nextState = await (props.callbacks?.deleteAccounts?.(usernames) ??
+        Promise.resolve(state()));
       applyState(nextState);
       setSelectedAccountUsernames((previous) => {
         const next = new Set(previous);
@@ -2661,13 +2650,8 @@ export function AccountManagerView(
     const useNewWindow = useGameTabs() && launchInNewWindow();
     let firstGameWindowId: number | undefined;
     try {
-      for (const [index, username] of usernames.entries()) {
+      for (const username of usernames) {
         try {
-          const tiling = resolveAccountLaunchTiling(
-            launchMode,
-            index,
-            usernames.length,
-          );
           const windowTarget = resolveAccountLaunchWindowTarget(
             useNewWindow,
             firstGameWindowId,
@@ -2676,7 +2660,7 @@ export function AccountManagerView(
             username,
             script,
             ...(server === "" ? {} : { server }),
-            ...(tiling === undefined ? {} : { tiling }),
+            ...(launchMode === "auto-grid" ? { gameViewLayout: "grid" } : {}),
             ...(windowTarget === undefined ? {} : { windowTarget }),
           }) ?? Promise.resolve({ gameWindowId: -1 }));
           if (useNewWindow && firstGameWindowId === undefined) {
@@ -2822,21 +2806,9 @@ export function AccountManagerView(
 
     const gameWindowIds = [...sessionsByWindowId.keys()];
     try {
-      if (props.callbacks?.closeGameWindows !== undefined) {
-        applyState(await props.callbacks.closeGameWindows(gameWindowIds));
-        return;
-      }
-
-      let nextState = state();
-      for (const gameWindowId of gameWindowIds) {
-        try {
-          nextState = await (props.callbacks?.closeGameWindow?.({
-            gameWindowId,
-          }) ?? Promise.resolve(nextState));
-        } catch (error) {
-          console.error("Failed to close tracked game window:", error);
-        }
-      }
+      const nextState = await (props.callbacks?.closeGameWindows?.(
+        gameWindowIds,
+      ) ?? Promise.resolve(state()));
       applyState(nextState);
     } catch (error) {
       console.error("Failed to close tracked game windows:", error);
@@ -2937,8 +2909,12 @@ export function AccountManagerView(
 
   onMount(() => {
     const unsubscribe = props.callbacks?.onChanged?.(applyState);
-    const unsubscribeUseGameTabs =
-      props.callbacks?.onUseGameTabsChanged?.(setUseGameTabs);
+    const unsubscribeUseGameTabs = props.callbacks?.onUseGameTabsChanged?.(
+      (enabled) => {
+        setUseGameTabs(enabled);
+        if (!enabled) setStartOptionsOpen(false);
+      },
+    );
     const loadingIndicatorTimeout =
       props.callbacks?.getState === undefined
         ? undefined
@@ -4140,7 +4116,7 @@ export function AccountManagerView(
                         ? ""
                         : undefined
                     }
-                    data-split=""
+                    data-split={useGameTabs() ? "" : undefined}
                     role="group"
                   >
                     <Tooltip
@@ -4153,8 +4129,9 @@ export function AccountManagerView(
                             {...(triggerProps({
                               "aria-keyshortcuts":
                                 startSelectedAriaKeyshortcuts(),
-                              class:
-                                "account-manager__start-button account-manager__start-button--split",
+                              class: useGameTabs()
+                                ? "account-manager__start-button account-manager__start-button--split"
+                                : "account-manager__start-button",
                               disabled: !canStartSelected(),
                               onClick: () => void handleLaunch(),
                               size: "lg",
@@ -4174,91 +4151,95 @@ export function AccountManagerView(
                       </TooltipContent>
                     </Tooltip>
 
-                    {/* The menu and tooltip share this button. Their shared ID
-                        preserves one trigger identity for both floating layers. */}
-                    <Tooltip
-                      closeDelay={0}
-                      disabled={startOptionsOpen()}
-                      ids={{ trigger: START_OPTIONS_TRIGGER_ID }}
-                      openDelay={ACTION_TOOLTIP_OPEN_DELAY_MS}
-                    >
-                      <Menu
+                    <Show when={useGameTabs()}>
+                      {/* The menu and tooltip share this button. Their shared ID
+                          preserves one trigger identity for both floating layers. */}
+                      <Tooltip
+                        closeDelay={0}
+                        disabled={startOptionsOpen()}
                         ids={{ trigger: START_OPTIONS_TRIGGER_ID }}
-                        open={startOptionsOpen()}
-                        positioning={{ gutter: 4, placement: "top-end" }}
-                        unmountOnExit
-                        onOpenChange={(details) =>
-                          setStartOptionsOpen(details.open)
-                        }
+                        openDelay={ACTION_TOOLTIP_OPEN_DELAY_MS}
                       >
-                        <MenuTrigger
-                          asChild={(menuTriggerProps) => (
-                            <TooltipTrigger
-                              value="start-options"
-                              asChild={(tooltipTriggerProps) => (
-                                <Button
-                                  {...(tooltipTriggerProps(
-                                    menuTriggerProps({
-                                      "aria-label": launchOptionsAriaLabel(),
-                                      class:
-                                        "account-manager__start-options-button",
-                                      disabled: !canConfigureLaunchOptions(),
-                                      size: "icon-lg",
-                                      type: "button",
-                                    } as ButtonProps),
-                                  ) as ButtonProps)}
+                        <Menu
+                          ids={{ trigger: START_OPTIONS_TRIGGER_ID }}
+                          open={startOptionsOpen()}
+                          positioning={{ gutter: 4, placement: "top-end" }}
+                          unmountOnExit
+                          onOpenChange={(details) =>
+                            setStartOptionsOpen(details.open)
+                          }
+                        >
+                          <MenuTrigger
+                            asChild={(menuTriggerProps) => (
+                              <TooltipTrigger
+                                value="start-options"
+                                asChild={(tooltipTriggerProps) => (
+                                  <Button
+                                    {...(tooltipTriggerProps(
+                                      menuTriggerProps({
+                                        "aria-label": launchOptionsAriaLabel(),
+                                        class:
+                                          "account-manager__start-options-button",
+                                        disabled: !canConfigureLaunchOptions(),
+                                        size: "icon-lg",
+                                        type: "button",
+                                      } as ButtonProps),
+                                    ) as ButtonProps)}
+                                  >
+                                    <Icon
+                                      icon="chevron_down"
+                                      class="button__icon"
+                                    />
+                                  </Button>
+                                )}
+                              />
+                            )}
+                          />
+                          <MenuContent class="account-manager__start-options-menu">
+                            <MenuItem
+                              aria-label={
+                                accountLaunchMode() === "standard"
+                                  ? "Default placement, selected"
+                                  : "Default placement"
+                              }
+                              onSelect={() =>
+                                selectAccountLaunchMode("standard")
+                              }
+                              value="standard"
+                            >
+                              <span
+                                aria-hidden="true"
+                                class="account-manager__start-option-indicator"
+                              >
+                                <Show when={accountLaunchMode() === "standard"}>
+                                  <Icon icon="check" />
+                                </Show>
+                              </span>
+                              Default placement
+                            </MenuItem>
+                            <MenuItem
+                              aria-label={
+                                accountLaunchMode() === "auto-grid"
+                                  ? "Auto grid, selected"
+                                  : "Auto grid"
+                              }
+                              onSelect={() =>
+                                selectAccountLaunchMode("auto-grid")
+                              }
+                              value="auto-grid"
+                            >
+                              <span
+                                aria-hidden="true"
+                                class="account-manager__start-option-indicator"
+                              >
+                                <Show
+                                  when={accountLaunchMode() === "auto-grid"}
                                 >
-                                  <Icon
-                                    icon="chevron_down"
-                                    class="button__icon"
-                                  />
-                                </Button>
-                              )}
-                            />
-                          )}
-                        />
-                        <MenuContent class="account-manager__start-options-menu">
-                          <MenuItem
-                            aria-label={
-                              accountLaunchMode() === "standard"
-                                ? "Default placement, selected"
-                                : "Default placement"
-                            }
-                            onSelect={() => selectAccountLaunchMode("standard")}
-                            value="standard"
-                          >
-                            <span
-                              aria-hidden="true"
-                              class="account-manager__start-option-indicator"
-                            >
-                              <Show when={accountLaunchMode() === "standard"}>
-                                <Icon icon="check" />
-                              </Show>
-                            </span>
-                            Default placement
-                          </MenuItem>
-                          <MenuItem
-                            aria-label={
-                              accountLaunchMode() === "auto-grid"
-                                ? "Auto grid, selected"
-                                : "Auto grid"
-                            }
-                            onSelect={() =>
-                              selectAccountLaunchMode("auto-grid")
-                            }
-                            value="auto-grid"
-                          >
-                            <span
-                              aria-hidden="true"
-                              class="account-manager__start-option-indicator"
-                            >
-                              <Show when={accountLaunchMode() === "auto-grid"}>
-                                <Icon icon="check" />
-                              </Show>
-                            </span>
-                            Auto grid
-                          </MenuItem>
-                          <Show when={useGameTabs()}>
+                                  <Icon icon="check" />
+                                </Show>
+                              </span>
+                              Auto grid
+                            </MenuItem>
                             <MenuSeparator />
                             <MenuCheckboxItem
                               checked={launchInNewWindow()}
@@ -4268,11 +4249,13 @@ export function AccountManagerView(
                             >
                               Launch in new window
                             </MenuCheckboxItem>
-                          </Show>
-                        </MenuContent>
-                      </Menu>
-                      <TooltipContent>{launchOptionsTooltip()}</TooltipContent>
-                    </Tooltip>
+                          </MenuContent>
+                        </Menu>
+                        <TooltipContent>
+                          {launchOptionsTooltip()}
+                        </TooltipContent>
+                      </Tooltip>
+                    </Show>
                   </div>
 
                   <Show when={serverError()}>
@@ -5150,12 +5133,10 @@ export function App(props: DesktopRendererProps): JSX.Element {
   return (
     <AccountManagerView
       callbacks={{
-        closeGameWindow: (request) => accounts.closeGameWindow(request),
         closeGameWindows: (gameWindowIds) =>
           accounts.closeGameWindows(gameWindowIds),
         createAccount: (draft) => accounts.createAccount(draft),
         createGroup: (draft) => accounts.createGroup(draft),
-        deleteAccount: (username) => accounts.deleteAccount(username),
         deleteAccounts: (usernames) => accounts.deleteAccounts(usernames),
         deleteGroup: (name) => accounts.deleteGroup(name),
         focusGameWindow: (request) => accounts.focusGameWindow(request),

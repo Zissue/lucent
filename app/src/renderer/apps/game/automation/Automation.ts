@@ -5,6 +5,7 @@ import * as FiberMap from "effect/FiberMap";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 
+import { FollowerRpcs } from "../../../../shared/gameRendererRpc";
 import { Api } from "../flash/api/Api";
 import { makeAutoAttack } from "./AutoAttack";
 import type { AutoAttackState } from "./AutoAttack";
@@ -96,3 +97,16 @@ export class Automation extends Context.Service<
 >()("lucent/renderer/automation/Automation") {}
 
 export const layer = Layer.effect(Automation, makeAutomation);
+
+export const followerRpcHandlers = FollowerRpcs.toLayer(
+  Effect.gen(function* () {
+    const { follower } = yield* Automation;
+    return FollowerRpcs.of({
+      FollowerConfigure: (config) => follower.configure(config),
+      FollowerGetState: () => follower.getState(),
+      FollowerMe: () => follower.me(),
+      FollowerStart: (config) => follower.startWithSavedProfiles(config),
+      FollowerStop: () => follower.stop(),
+    });
+  }),
+);

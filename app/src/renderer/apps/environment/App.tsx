@@ -53,7 +53,7 @@ import {
   type EnvironmentState,
 } from "@lucent/core/environment";
 import { selectDesktopBridge } from "../../../shared/desktopBridge";
-import type { EnvironmentBoostDiscovery } from "../../../shared/ipc/environment";
+import type { EnvironmentBoostDiscovery } from "../../../shared/environmentBoosts";
 
 export interface EnvironmentViewFixture {
   readonly error?: string;

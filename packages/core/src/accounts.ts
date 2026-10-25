@@ -171,8 +171,6 @@ export type AccountGameServerPing = typeof AccountGameServerPingSchema.Type;
 
 export const AccountGameServerPingsResultSchema = Schema.Struct({
   pings: Schema.Array(AccountGameServerPingSchema),
-  measuredAt: Schema.Number,
-  expiresAt: Schema.Number,
 });
 
 export type AccountGameServerPingsResult =
@@ -220,40 +218,6 @@ export const AccountManagerStateSchema = Schema.Struct({
 
 export type AccountManagerState = typeof AccountManagerStateSchema.Type;
 
-export const AccountWindowTilingAlgorithmSchema = Schema.Literals([
-  "auto-grid",
-  "horizontal",
-  "vertical",
-]);
-
-export type AccountWindowTilingAlgorithm =
-  typeof AccountWindowTilingAlgorithmSchema.Type;
-
-export const AccountLaunchTilingAlgorithmSchema = Schema.Union([
-  Schema.Literal("none"),
-  AccountWindowTilingAlgorithmSchema,
-]);
-
-export type AccountLaunchTilingAlgorithm =
-  typeof AccountLaunchTilingAlgorithmSchema.Type;
-
-const AccountLaunchTilingCountSchema = Schema.Int.check(
-  Schema.isGreaterThanOrEqualTo(2),
-);
-
-export const AccountLaunchTilingPlacementSchema = Schema.Struct({
-  algorithm: AccountWindowTilingAlgorithmSchema,
-  index: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
-  count: AccountLaunchTilingCountSchema,
-}).check(
-  Schema.makeFilter(({ count, index }) => index < count, {
-    expected: "tiling index to be less than tiling count",
-  }),
-);
-
-export type AccountLaunchTilingPlacement =
-  typeof AccountLaunchTilingPlacementSchema.Type;
-
 export const AccountLaunchWindowTargetSchema = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("new") }),
   Schema.Struct({
@@ -269,7 +233,7 @@ export const AccountLaunchRequestSchema = Schema.Struct({
   username: Schema.String,
   script: Schema.optionalKey(Schema.NullOr(AccountScriptReferenceSchema)),
   server: Schema.optionalKey(Schema.String),
-  tiling: Schema.optionalKey(AccountLaunchTilingPlacementSchema),
+  gameViewLayout: Schema.optionalKey(Schema.Literal("grid")),
   windowTarget: Schema.optionalKey(AccountLaunchWindowTargetSchema),
 });
 

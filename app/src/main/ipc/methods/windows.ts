@@ -7,6 +7,7 @@ import {
   DesktopWindows,
 } from "../../window/DesktopWindows";
 import { makeDesktopIpcMethod } from "../DesktopIpc";
+import { resolveGameRendererId } from "../DesktopIpcSenders";
 
 export const open = makeDesktopIpcMethod({
   descriptor: WindowsIpc.open,
@@ -21,26 +22,15 @@ export const open = makeDesktopIpcMethod({
     }
 
     const definition = getDesktopWindowDefinition(payload.kind);
-    const ownerRendererId =
-      definition.scope !== "game-child"
-        ? undefined
-        : sender.kind === "game"
-          ? sender.rendererId
-          : yield* windows.getOwnerRendererId(sender.rendererId).pipe(
-              Effect.flatMap((ownerRendererId) =>
-                ownerRendererId === null
-                  ? new DesktopWindowError({
-                      detail: "Game child window has no owning game.",
-                      id: String(sender.rendererId),
-                    })
-                  : Effect.succeed(ownerRendererId),
-              ),
-            );
+    const ownerRendererId = definition.gameChild
+      ? yield* resolveGameRendererId(sender)
+      : undefined;
 
-    return yield* windows.open(
+    const rendererId = yield* windows.open(
       payload.kind,
       ownerRendererId === undefined ? undefined : { ownerRendererId },
     );
+    return String(rendererId);
   }),
 });
 

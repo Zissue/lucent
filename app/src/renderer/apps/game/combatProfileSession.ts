@@ -358,10 +358,10 @@ export const makeCombatProfileSession = Effect.fn("makeCombatProfileSession")(
         ).pipe(
           Effect.catch((failure) =>
             options.onAsyncFailure === undefined
-              ? Effect.logError({
-                  cause: failure.failureCause,
-                  message: "Combat profile message trigger failed",
-                })
+              ? Effect.logError(
+                  "Combat profile message trigger failed",
+                  failure.failureCause,
+                ).pipe(Effect.annotateLogs({ component: "combat" }))
               : options.onAsyncFailure(failure),
           ),
         ),

@@ -1,3 +1,4 @@
+import * as Cause from "effect/Cause";
 import {
   app,
   webContents,
@@ -7,35 +8,31 @@ import {
 } from "electron";
 
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Scope from "effect/Scope";
+import * as FiberSet from "effect/FiberSet";
+import type * as Scope from "effect/Scope";
 
-import { Accounts } from "../internal/accounts/Accounts";
+import { Accounts } from "../game/accounts/Accounts";
 import { ElectronDialog } from "../electron/ElectronDialog";
-import { DesktopWindows } from "../window/DesktopWindows";
-import { DesktopObservability } from "./observability/DesktopObservability";
+import {
+  DesktopWindows,
+  type RendererLifetime,
+} from "../window/DesktopWindows";
+import { logFailure } from "../../shared/logFailure";
+import { DesktopLifecycle } from "./DesktopLifecycle";
 
 const RECOVERY_MESSAGE =
   "The client was reloaded because the script stopped responding.";
-const PLUGIN_RECOVERY_MESSAGE =
-  "The client was reloaded because its Flash plugin crashed.";
 const RENDERER_RECOVERY_MESSAGE = "The client was reloaded after it crashed.";
 const CLIENT_RELOAD_DETAIL =
   "Only that client will reload. Any running script will stop and won't run automatically.";
 
-type RecoverableGameCrash =
-  | {
-      readonly name: string;
-      readonly scriptWasRunning: boolean;
-      readonly type: "plugin";
-      readonly version: string;
-    }
-  | {
-      readonly reason: RenderProcessGoneDetails["reason"];
-      readonly scriptWasRunning: boolean;
-      readonly type: "renderer";
-    };
+interface RecoverableGameCrash {
+  readonly reason: RenderProcessGoneDetails["reason"];
+  readonly scriptWasRunning: boolean;
+}
 
 const isRecoverableRendererCrash = (
   reason: RenderProcessGoneDetails["reason"],
@@ -59,20 +56,13 @@ export type RecoverableGameWebContents = Pick<
 
 export interface DesktopGameRendererRecoveryDependencies {
   readonly allWebContents: () => readonly RecoverableGameWebContents[];
-  readonly getNativeWindowId: (
-    rendererId: number,
-  ) => Effect.Effect<number, unknown>;
-  readonly getRendererKind: (
-    rendererId: number,
-  ) => Effect.Effect<string | null, unknown>;
+  readonly describe: DesktopWindows["Service"]["describe"];
+  readonly observe: DesktopWindows["Service"]["observe"];
   readonly onWebContentsCreated: (
     listener: (contents: RecoverableGameWebContents) => void,
   ) => () => void;
-  readonly onBeforeQuit: (listener: () => void) => () => void;
+  readonly isQuitting: DesktopLifecycle["Service"]["isQuittingSync"];
   readonly showRecoveryPrompt: (
-    parentWindowId: number | undefined,
-  ) => Effect.Effect<number, unknown>;
-  readonly showPluginRecoveryPrompt: (
     parentWindowId: number | undefined,
   ) => Effect.Effect<number, unknown>;
   readonly showRendererRecoveryPrompt: (
@@ -81,21 +71,15 @@ export interface DesktopGameRendererRecoveryDependencies {
   readonly suppressLaunchScript: (
     rendererId: number,
     message: string,
-  ) => Effect.Effect<void, unknown>;
-  readonly warn: (message: string, data?: unknown) => Effect.Effect<void>;
-  readonly error: (
-    message: string,
-    cause: unknown,
-    data?: unknown,
   ) => Effect.Effect<void>;
-  readonly info: (message: string, data?: unknown) => Effect.Effect<void>;
 }
 
 export interface DesktopGameRendererRecoveryShape {
-  readonly beginScriptExecution: (rendererId: number) => Effect.Effect<number>;
+  readonly beginScriptExecution: (
+    lifetime: RendererLifetime,
+  ) => Effect.Effect<void>;
   readonly finishScriptExecution: (
-    rendererId: number,
-    token: number,
+    lifetime: RendererLifetime,
   ) => Effect.Effect<void>;
   readonly install: Effect.Effect<void, never, Scope.Scope>;
 }
@@ -126,351 +110,241 @@ const isExclusiveRendererProcess = (
 export const makeDesktopGameRendererRecovery = (
   dependencies: DesktopGameRendererRecoveryDependencies,
 ): DesktopGameRendererRecovery["Service"] => {
-  const executions = new Map<number, Set<number>>();
-  const intentionalRendererCrashes = new Set<number>();
+  const pendingPrompts = new Map<
+    number,
+    {
+      readonly crash: RecoverableGameCrash | undefined;
+      readonly dismiss: Deferred.Deferred<void>;
+    }
+  >();
+  const executions = new WeakMap<RendererLifetime, number>();
+  const intentionalRendererCrashes = new WeakSet<RendererLifetime>();
   const observedContents = new Map<number, () => void>();
-  const pendingPrompts = new Set<number>();
-  const recoverableCrashes = new Map<number, RecoverableGameCrash>();
-  const unresponsiveRenderers = new Set<number>();
-  let appIsQuitting = false;
-  let nextToken = 0;
 
-  const hasActiveExecution = (rendererId: number): boolean =>
-    (executions.get(rendererId)?.size ?? 0) > 0;
+  const hasActiveExecution = (lifetime: RendererLifetime): boolean =>
+    (executions.get(lifetime) ?? 0) > 0;
 
-  const clearRenderer = (rendererId: number): void => {
-    executions.delete(rendererId);
+  const dismissPrompt = Effect.fnUntraced(function* (rendererId: number) {
+    const pending = pendingPrompts.get(rendererId);
     pendingPrompts.delete(rendererId);
-    recoverableCrashes.delete(rendererId);
-    unresponsiveRenderers.delete(rendererId);
-  };
+    if (pending !== undefined)
+      yield* Deferred.succeed(pending.dismiss, undefined);
+  });
+
+  const isCurrent = (
+    target: RecoverableGameWebContents,
+    lifetime: RendererLifetime,
+  ): Effect.Effect<boolean> =>
+    Effect.map(
+      dependencies.describe(target.id),
+      (info) =>
+        info?.lifetime === lifetime &&
+        !target.isDestroyed() &&
+        !dependencies.isQuitting(),
+    );
 
   const beginScriptExecution: DesktopGameRendererRecoveryShape["beginScriptExecution"] =
-    (rendererId) =>
+    (lifetime) =>
       Effect.sync(() => {
-        nextToken += 1;
-        const active = executions.get(rendererId) ?? new Set<number>();
-        active.add(nextToken);
-        executions.set(rendererId, active);
-        return nextToken;
+        if (lifetime.isCurrent()) {
+          executions.set(lifetime, (executions.get(lifetime) ?? 0) + 1);
+        }
       });
 
   const finishScriptExecution: DesktopGameRendererRecoveryShape["finishScriptExecution"] =
-    (rendererId, token) =>
+    (lifetime) =>
       Effect.sync(() => {
-        const active = executions.get(rendererId);
-        active?.delete(token);
-        if (active?.size === 0) executions.delete(rendererId);
+        const active = executions.get(lifetime) ?? 0;
+        if (active <= 1) executions.delete(lifetime);
+        else executions.set(lifetime, active - 1);
       });
 
-  const offerUnresponsiveRecovery = (target: RecoverableGameWebContents) =>
-    Effect.gen(function* () {
-      const rendererId = target.id;
-      if (appIsQuitting) return;
+  const recoverUnresponsive = Effect.fnUntraced(function* (
+    target: RecoverableGameWebContents,
+    lifetime: RendererLifetime,
+  ) {
+    const rendererId = target.id;
+    if (!isExclusiveRendererProcess(target, dependencies.allWebContents))
+      return;
+    yield* dependencies.suppressLaunchScript(rendererId, RECOVERY_MESSAGE);
+    if (
+      !(yield* isCurrent(target, lifetime)) ||
+      !lifetime.isCurrent() ||
+      !isExclusiveRendererProcess(target, dependencies.allWebContents)
+    )
+      return;
+    executions.delete(lifetime);
+    intentionalRendererCrashes.add(lifetime);
+    target.forcefullyCrashRenderer();
+    if (!(yield* isCurrent(target, lifetime))) return;
+    target.reload();
+    yield* Effect.logInfo("Recovered an unresponsive game renderer").pipe(
+      Effect.annotateLogs({
+        component: "game-renderer-recovery",
+        data: { rendererId },
+      }),
+    );
+  });
 
-      const kind = yield* dependencies
-        .getRendererKind(rendererId)
-        .pipe(Effect.catch(() => Effect.succeed(null)));
-      if (kind !== "game" || !hasActiveExecution(rendererId)) return;
+  const recoverCrash = Effect.fnUntraced(function* (
+    target: RecoverableGameWebContents,
+    lifetime: RendererLifetime,
+    crash: RecoverableGameCrash,
+  ) {
+    const rendererId = target.id;
 
-      if (!isExclusiveRendererProcess(target, dependencies.allWebContents)) {
-        yield* dependencies.warn(
-          "Refused to recover an unresponsive game renderer because its process is shared",
-          { rendererId },
-        );
-        return;
-      }
+    if (crash.scriptWasRunning) {
+      yield* dependencies.suppressLaunchScript(
+        rendererId,
+        RENDERER_RECOVERY_MESSAGE,
+      );
+    }
+    if (!(yield* isCurrent(target, lifetime))) return;
+    executions.delete(lifetime);
+    target.reload();
+    yield* Effect.logInfo("Recovered a crashed game renderer").pipe(
+      Effect.annotateLogs({
+        component: "game-renderer-recovery",
+        data: { reason: crash.reason, rendererId },
+      }),
+    );
+  });
 
-      const parentWindowId = yield* dependencies
-        .getNativeWindowId(rendererId)
-        .pipe(
-          Effect.match({
-            onFailure: (): undefined => undefined,
-            onSuccess: (id): number => id,
-          }),
-        );
-      if (appIsQuitting) return;
-
-      const response = yield* dependencies.showRecoveryPrompt(parentWindowId);
-      if (response !== 0) return;
+  const install = Effect.gen(function* () {
+    const runFork = yield* FiberSet.makeRuntime<never, void>();
+    const run = (effect: Effect.Effect<void>): void => {
+      runFork(effect);
+    };
+    const startAttempt = Effect.fnUntraced(function* (
+      target: RecoverableGameWebContents,
+      lifetime: RendererLifetime,
+      crash?: RecoverableGameCrash,
+    ) {
+      const info = yield* dependencies.describe(target.id);
+      const pending = pendingPrompts.get(target.id);
       if (
-        appIsQuitting ||
-        !unresponsiveRenderers.has(rendererId) ||
-        !hasActiveExecution(rendererId) ||
+        dependencies.isQuitting() ||
         target.isDestroyed() ||
+        info?.kind !== "game" ||
+        (pending !== undefined &&
+          (crash === undefined || pending.crash !== undefined)) ||
+        (crash === undefined && !lifetime.isCurrent())
+      )
+        return;
+      if (
+        crash === undefined &&
         !isExclusiveRendererProcess(target, dependencies.allWebContents)
       ) {
-        return;
-      }
-
-      yield* dependencies
-        .suppressLaunchScript(rendererId, RECOVERY_MESSAGE)
-        .pipe(
-          Effect.catch((cause) =>
-            dependencies.error(
-              "Failed to suppress a script before renderer recovery",
-              cause,
-              { rendererId },
-            ),
-          ),
-        );
-      clearRenderer(rendererId);
-      yield* Effect.sync(() => {
-        intentionalRendererCrashes.add(rendererId);
-        target.forcefullyCrashRenderer();
-        // Electron documents this immediate reload sequence for recovering an
-        // unresponsive renderer after the process has been forcefully ended.
-        target.reload();
-      });
-      yield* dependencies.info("Recovered an unresponsive game renderer", {
-        rendererId,
-      });
-    });
-
-  const offerCrashRecovery = (
-    target: RecoverableGameWebContents,
-    crash: RecoverableGameCrash,
-  ) =>
-    Effect.gen(function* () {
-      const rendererId = target.id;
-      if (appIsQuitting) return;
-
-      const kind = yield* dependencies
-        .getRendererKind(rendererId)
-        .pipe(Effect.catch(() => Effect.succeed(null)));
-      if (kind !== "game") return;
-
-      if (crash.type === "plugin") {
-        yield* dependencies.warn("Flash plugin crashed", {
-          name: crash.name,
-          rendererId,
-          version: crash.version,
-        });
-      } else {
-        yield* dependencies.warn("Game renderer crashed", {
-          reason: crash.reason,
-          rendererId,
-        });
-      }
-
-      const parentWindowId = yield* dependencies
-        .getNativeWindowId(rendererId)
-        .pipe(
-          Effect.match({
-            onFailure: (): undefined => undefined,
-            onSuccess: (id): number => id,
+        yield* Effect.logWarning(
+          "Refused to recover an unresponsive game renderer because its process is shared",
+        ).pipe(
+          Effect.annotateLogs({
+            component: "game-renderer-recovery",
+            data: { rendererId: target.id },
           }),
         );
-      if (appIsQuitting) return;
-
-      const response = yield* crash.type === "plugin"
-        ? dependencies.showPluginRecoveryPrompt(parentWindowId)
-        : dependencies.showRendererRecoveryPrompt(parentWindowId);
-      if (response !== 0) return;
-      if (
-        appIsQuitting ||
-        recoverableCrashes.get(rendererId) !== crash ||
-        target.isDestroyed()
-      ) {
         return;
       }
-
-      if (crash.scriptWasRunning) {
-        yield* dependencies
-          .suppressLaunchScript(
-            rendererId,
-            crash.type === "plugin"
-              ? PLUGIN_RECOVERY_MESSAGE
-              : RENDERER_RECOVERY_MESSAGE,
-          )
-          .pipe(
-            Effect.catch((cause) =>
-              dependencies.error(
-                crash.type === "plugin"
-                  ? "Failed to suppress a script before Flash plugin recovery"
-                  : "Failed to suppress a script before renderer crash recovery",
-                cause,
-                { rendererId },
+      const prompt = { crash, dismiss: yield* Deferred.make<void>() };
+      pendingPrompts.set(target.id, prompt);
+      if (pending !== undefined)
+        yield* Deferred.succeed(pending.dismiss, undefined);
+      yield* Effect.gen(function* () {
+        const response = yield* Effect.exit(
+          Effect.raceFirst(
+            crash === undefined
+              ? dependencies.showRecoveryPrompt(info.windowId)
+              : dependencies.showRendererRecoveryPrompt(info.windowId),
+            Deferred.await(prompt.dismiss).pipe(Effect.as(1)),
+          ),
+        );
+        const current = yield* isCurrent(target, lifetime);
+        if (pendingPrompts.get(target.id) !== prompt) return;
+        pendingPrompts.delete(target.id);
+        const answer = yield* response;
+        if (!current || answer !== 0) return;
+        yield* crash === undefined
+          ? recoverUnresponsive(target, lifetime)
+          : recoverCrash(target, lifetime, crash);
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Cause.hasInterrupts(cause)
+            ? Effect.void
+            : logFailure("Failed to offer renderer recovery", cause, {
+                failure: "error",
+              }).pipe(
+                Effect.annotateLogs({
+                  component: "game-renderer-recovery",
+                  data: { rendererId: target.id },
+                }),
               ),
-            ),
-          );
-      }
-      clearRenderer(rendererId);
-      yield* Effect.sync(() => target.reload());
-      yield* dependencies.info(
-        crash.type === "plugin"
-          ? "Recovered a crashed Flash plugin"
-          : "Recovered a crashed game renderer",
-        crash.type === "plugin"
-          ? {
-              name: crash.name,
-              rendererId,
-              version: crash.version,
-            }
-          : { reason: crash.reason, rendererId },
+        ),
       );
     });
 
-  const install = Effect.gen(function* () {
-    const context = yield* Effect.context<never>();
-    const runPromise = Effect.runPromiseWith(context);
-    const unsubscribeBeforeQuit = dependencies.onBeforeQuit(() => {
-      appIsQuitting = true;
-    });
+    yield* dependencies.observe({ kind: "game" }, (event) =>
+      Effect.gen(function* () {
+        if (event.type === "reloaded" || event.type === "closed") {
+          yield* dismissPrompt(event.rendererId);
+        } else if (event.type === "crashed") {
+          const lifetime = (yield* dependencies.describe(event.rendererId))
+            ?.lifetime;
+          if (
+            lifetime === undefined ||
+            lifetime.generation !== event.generation
+          )
+            return;
+          if (
+            intentionalRendererCrashes.delete(lifetime) ||
+            dependencies.isQuitting() ||
+            !isRecoverableRendererCrash(event.reason)
+          )
+            return;
+          const target = dependencies
+            .allWebContents()
+            .find((contents) => contents.id === event.rendererId);
+          if (target === undefined) return;
+          run(
+            startAttempt(target, lifetime, {
+              reason: event.reason,
+              scriptWasRunning: hasActiveExecution(lifetime),
+            }),
+          );
+        }
+      }),
+    );
 
     const observe = (contents: RecoverableGameWebContents): void => {
       if (observedContents.has(contents.id)) return;
-
-      const startCrashRecovery = (): void => {
-        if (
-          appIsQuitting ||
-          pendingPrompts.has(contents.id) ||
-          contents.isDestroyed()
-        ) {
-          return;
-        }
-        const crash = recoverableCrashes.get(contents.id);
-        if (crash === undefined) return;
-
-        pendingPrompts.add(contents.id);
-        void runPromise(
-          offerCrashRecovery(contents, crash).pipe(
-            Effect.catchCause((cause) =>
-              dependencies.error(
-                crash.type === "plugin"
-                  ? "Failed to offer Flash plugin recovery"
-                  : "Failed to offer renderer crash recovery",
-                cause,
-                { rendererId: contents.id },
-              ),
-            ),
-            Effect.ensuring(
-              Effect.sync(() => pendingPrompts.delete(contents.id)),
-            ),
-          ),
-        )
-          .then(() => {
-            if (recoverableCrashes.get(contents.id) === crash) {
-              recoverableCrashes.delete(contents.id);
-            }
-            startCrashRecovery();
-          })
-          .catch(() => undefined);
-      };
-      const handleResponsive = (): void => {
-        unresponsiveRenderers.delete(contents.id);
-      };
-      const handleUnresponsive = (): void => {
-        if (appIsQuitting) return;
-
-        unresponsiveRenderers.add(contents.id);
-        if (
-          !hasActiveExecution(contents.id) ||
-          pendingPrompts.has(contents.id)
-        ) {
-          return;
-        }
-
-        pendingPrompts.add(contents.id);
-        void runPromise(
-          offerUnresponsiveRecovery(contents).pipe(
-            Effect.catchCause((cause) =>
-              dependencies.error(
-                "Failed to offer game renderer recovery",
-                cause,
-                { rendererId: contents.id },
-              ),
-            ),
-            Effect.ensuring(
-              Effect.sync(() => pendingPrompts.delete(contents.id)),
-            ),
-          ),
-        )
-          .then(() => {
-            startCrashRecovery();
-          })
-          .catch(() => undefined);
-      };
-      const handlePluginCrashed = (
-        _event: ElectronEvent,
-        name: string,
-        version: string,
-      ): void => {
-        if (appIsQuitting) return;
-
-        const current = recoverableCrashes.get(contents.id);
-        if (current?.type !== "renderer") {
-          recoverableCrashes.set(
-            contents.id,
-            current ?? {
-              name,
-              scriptWasRunning: hasActiveExecution(contents.id),
-              type: "plugin",
-              version,
-            },
-          );
-        }
-        startCrashRecovery();
-      };
-      const handleRenderProcessGone = (
-        _event: ElectronEvent,
-        details: RenderProcessGoneDetails,
-      ): void => {
-        // Unresponsive recovery deliberately kills the renderer before
-        // reloading it, so that event must not open another recovery prompt.
-        if (intentionalRendererCrashes.delete(contents.id)) return;
-        if (appIsQuitting || !isRecoverableRendererCrash(details.reason)) {
-          return;
-        }
-
-        const current = recoverableCrashes.get(contents.id);
-        recoverableCrashes.set(
-          contents.id,
-          current?.type === "renderer"
-            ? current
-            : {
-                reason: details.reason,
-                scriptWasRunning:
-                  current?.scriptWasRunning ?? hasActiveExecution(contents.id),
-                type: "renderer",
-              },
+      const handleUnresponsive = (): void =>
+        run(
+          Effect.gen(function* () {
+            const lifetime = (yield* dependencies.describe(contents.id))
+              ?.lifetime;
+            if (lifetime !== undefined && hasActiveExecution(lifetime))
+              yield* startAttempt(contents, lifetime);
+          }),
         );
-        startCrashRecovery();
-      };
-      const handleDidStartLoading = (): void => {
-        clearRenderer(contents.id);
-      };
-      let cleanedUp = false;
       const cleanup = (): void => {
-        if (cleanedUp) return;
-        cleanedUp = true;
-        clearRenderer(contents.id);
-        intentionalRendererCrashes.delete(contents.id);
-        contents.removeListener("responsive", handleResponsive);
         contents.removeListener("unresponsive", handleUnresponsive);
-        contents.removeListener("plugin-crashed", handlePluginCrashed);
-        contents.removeListener("render-process-gone", handleRenderProcessGone);
-        contents.removeListener("did-start-loading", handleDidStartLoading);
-        contents.removeListener("destroyed", cleanup);
+        contents.removeListener("destroyed", handleDestroyed);
         observedContents.delete(contents.id);
       };
-
-      contents.on("responsive", handleResponsive);
+      const handleDestroyed = (): void => {
+        cleanup();
+        run(dismissPrompt(contents.id));
+      };
       contents.on("unresponsive", handleUnresponsive);
-      contents.on("plugin-crashed", handlePluginCrashed);
-      contents.on("render-process-gone", handleRenderProcessGone);
-      contents.on("did-start-loading", handleDidStartLoading);
-      contents.once("destroyed", cleanup);
+      contents.once("destroyed", handleDestroyed);
       observedContents.set(contents.id, cleanup);
     };
-
     for (const contents of dependencies.allWebContents()) observe(contents);
     const unsubscribeCreated = dependencies.onWebContentsCreated(observe);
     yield* Effect.addFinalizer(() =>
       Effect.sync(() => {
-        unsubscribeBeforeQuit();
         unsubscribeCreated();
         for (const cleanup of observedContents.values()) cleanup();
+        pendingPrompts.clear();
       }),
     );
   });
@@ -485,13 +359,14 @@ export const makeDesktopGameRendererRecovery = (
 const makeLiveDesktopGameRendererRecovery = Effect.gen(function* () {
   const accounts = yield* Accounts;
   const dialog = yield* ElectronDialog;
-  const observability = yield* DesktopObservability;
+  const lifecycle = yield* DesktopLifecycle;
   const windows = yield* DesktopWindows;
 
   return makeDesktopGameRendererRecovery({
     allWebContents: () => webContents.getAllWebContents(),
-    getNativeWindowId: windows.getNativeWindowId,
-    getRendererKind: windows.getRendererKind,
+    describe: windows.describe,
+    observe: windows.observe,
+    isQuitting: lifecycle.isQuittingSync,
     onWebContentsCreated: (listener) => {
       const handleCreated = (
         _event: ElectronEvent,
@@ -499,11 +374,6 @@ const makeLiveDesktopGameRendererRecovery = Effect.gen(function* () {
       ): void => listener(contents);
       app.on("web-contents-created", handleCreated);
       return () => app.removeListener("web-contents-created", handleCreated);
-    },
-    onBeforeQuit: (listener) => {
-      const handleBeforeQuit = (): void => listener();
-      app.on("before-quit", handleBeforeQuit);
-      return () => app.removeListener("before-quit", handleBeforeQuit);
     },
     showRecoveryPrompt: (parentWindowId) =>
       dialog
@@ -515,21 +385,6 @@ const makeLiveDesktopGameRendererRecovery = Effect.gen(function* () {
             detail: CLIENT_RELOAD_DETAIL,
             message: "A client stopped responding while a script was running.",
             title: "Client Not Responding",
-            type: "warning",
-          },
-          parentWindowId,
-        )
-        .pipe(Effect.map((result) => result.response)),
-    showPluginRecoveryPrompt: (parentWindowId) =>
-      dialog
-        .showMessageBox(
-          {
-            buttons: ["Reload", "Not Now"],
-            cancelId: 1,
-            defaultId: 0,
-            detail: CLIENT_RELOAD_DETAIL,
-            message: "The Flash plugin for a client crashed.",
-            title: "Flash Plugin Crashed",
             type: "warning",
           },
           parentWindowId,
@@ -551,12 +406,6 @@ const makeLiveDesktopGameRendererRecovery = Effect.gen(function* () {
         )
         .pipe(Effect.map((result) => result.response)),
     suppressLaunchScript: accounts.suppressGameWindowLaunchScript,
-    warn: (message, data) =>
-      observability.warn("game-renderer-recovery", message, data),
-    error: (message, cause, data) =>
-      observability.error("game-renderer-recovery", message, cause, data),
-    info: (message, data) =>
-      observability.info("game-renderer-recovery", message, data),
   });
 });
 

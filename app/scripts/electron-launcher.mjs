@@ -119,7 +119,7 @@ function assertCompleteMacAppBundle(appBundlePath, context) {
     [
       `${context} Electron app bundle is incomplete at ${appBundlePath}.`,
       `Missing required path: ${missingPath}.`,
-      "Remove packages/electron/dist and packages/electron/path.txt, then run pnpm install again.",
+      "Reinstall Electron: run pnpm rebuild electron.",
     ].join(" "),
   );
 }

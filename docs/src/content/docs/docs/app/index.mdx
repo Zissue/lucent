@@ -33,16 +33,15 @@ Control-click it on Windows and Linux, to add or remove it from the group.
 
 Each account in Lucent's **Account Manager** keeps its own AQW settings. Clients
 opened outside the Account Manager share one set. When two clients would use the
-same settings at once, Lucent gives the second one a temporary copy. Changes to
-that copy aren't saved. Tabs and separate windows work the same way.
+same settings at once, Lucent gives the second one a temporary profile with
+default settings. Changes to that profile aren't saved. Tabs and separate windows
+work the same way.
 
-::::tip[Why Lucent separates clients]
-Without this, several game clients can bottleneck a single Flash process. Lucent
-gives each client its own process, though this uses more memory and can't be
-turned off. To use less CPU, Lucent also lowers the frame rate of clients that
-aren't selected or whose window isn't focused. It respects any lower frame rate
-you set and restores your setting when you return to the client.
-::::
+Preferences saved by Pepper Flash are not imported into Ruffle.
+
+To use less CPU, Lucent lowers the frame rate of clients that aren't selected
+or whose window isn't focused. It respects any lower frame rate you set and
+restores your setting when you return to the client.
 
 ### Companion tools
 

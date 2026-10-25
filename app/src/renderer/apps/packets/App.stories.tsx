@@ -120,7 +120,7 @@ export const RuntimeError: Story = {
   args: {
     fixture: {
       activeTab: "send",
-      error: "The game renderer disconnected before the packet could be sent.",
+      error: "The connection was unavailable.",
       queue: ["%xt%zm%getMapItem%1%42%"],
       sendText: "%xt%zm%moveToCell%1%Enter%Spawn%",
     },

@@ -1,4 +1,4 @@
-import type { EnvironmentBankBoost } from "../../../shared/ipc/environment";
+import type { EnvironmentBankBoost } from "../../../shared/environmentBoosts";
 
 export interface EnvironmentBankBoostOption extends EnvironmentBankBoost {
   readonly alreadyAdded: boolean;

@@ -145,10 +145,6 @@ export const runScriptEval = Effect.fn("ScriptEvaluator.runScriptEval")(
             .pipe(Effect.map((result) => result.options)),
         source: { sourceName: "Debug Eval" },
       });
-      const fileSystem = yield* makeScriptFileSystemApi(
-        fileSystemBridge,
-        scope,
-      );
       const http = yield* makeScriptHttpApi(httpBridge, scope);
       const modules = makeScriptBuiltinModules({
         autoRelogin: automation.autoRelogin,
@@ -156,7 +152,7 @@ export const runScriptEval = Effect.fn("ScriptEvaluator.runScriptEval")(
         bridge,
         failCause: (cause: Cause.Cause<unknown>) =>
           Deferred.failCause(callbackFailure, cause).pipe(Effect.asVoid),
-        fileSystem,
+        fileSystem: makeScriptFileSystemApi(fileSystemBridge, scope),
         http,
         roomPolicy: runner
           .getOptions()

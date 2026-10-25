@@ -1,0 +1,55 @@
+name: Build Ruffle web assets
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout pinned Ruffle source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          repository: toommyliu/ruffle
+          ref: e86a3fba0cfd80175a3538d6a81917c701e6bd45
+          path: ruffle-source
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Install Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '24.22.1'
+
+      - name: Install build tools
+        run: |
+          rustup toolchain install 1.98.1 --profile minimal --target wasm32-unknown-unknown
+          rustup default 1.98.1
+          cargo install wasm-bindgen-cli --version 0.2.127 --locked
+          curl --fail --location --retry 3 --output "$RUNNER_TEMP/binaryen.tar.gz" https://github.com/WebAssembly/binaryen/releases/download/version_131/binaryen-version_131-x86_64-linux.tar.gz
+          echo "b5bf1f0eaf17c63ee588ff7a5954dc8f6ce2c26989051c66f24dfe9ece3e46db  $RUNNER_TEMP/binaryen.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/binaryen.tar.gz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/binaryen-version_131/bin" >> "$GITHUB_PATH"
+
+      - name: Build web assets
+        working-directory: ruffle-source/web
+        env:
+          CFG_RELEASE_CHANNEL: lucent
+          CARGO_INCREMENTAL: '0'
+        run: |
+          npm ci
+          npm run build --workspace=ruffle-core
+          npm run build --workspace=ruffle-selfhosted
+
+      - name: Upload web assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ruffle-web
+          path: ruffle-source/web/packages/selfhosted/dist/
+          if-no-files-found: error
+          retention-days: 90

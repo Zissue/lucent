@@ -20,7 +20,10 @@ import * as Semaphore from "effect/Semaphore";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import { selectDesktopBridge } from "../../../../shared/desktopBridge";
+import { EnvironmentRpcs } from "../../../../shared/gameRendererRpc";
+import { logFailure } from "../../../../shared/logFailure";
 import { playBeep } from "../audio/beep";
+import { makeFailureTransitions } from "../failureTransitions";
 import { Api } from "../flash/api/Api";
 import {
   runEnvironmentCycleWhenLoggedIn,
@@ -144,11 +147,12 @@ const reportDropAutomationFailure = (
 ) =>
   Cause.hasInterruptsOnly(cause)
     ? Effect.failCause(cause)
-    : Effect.logError({
-        cause,
-        ...(itemId === undefined ? {} : { itemId }),
-        message: "Environment drop reconciliation failed",
-      });
+    : Effect.logError("Environment drop reconciliation failed", cause).pipe(
+        Effect.annotateLogs({
+          component: "environment",
+          data: itemId === undefined ? {} : { itemId },
+        }),
+      );
 
 export class EnvironmentBridgeError extends Schema.TaggedError<EnvironmentBridgeError>()(
   "EnvironmentBridgeError",
@@ -178,7 +182,6 @@ const makeEnvironment = Effect.gen(function* () {
 
   const services = yield* Effect.context<never>();
   const runFork = Effect.runForkWith(services);
-  const runPromise = Effect.runPromiseWith(services);
   const stateRef = yield* Ref.make<EnvironmentState>(
     createEmptyEnvironmentState(),
   );
@@ -193,6 +196,11 @@ const makeEnvironment = Effect.gen(function* () {
     new Set(),
   );
   const questMutationSemaphore = yield* Semaphore.make(1);
+  const automationLogs = yield* makeFailureTransitions({
+    component: "environment",
+    failed: "Environment automation failed",
+    recovered: "Environment automation recovered",
+  });
 
   const getState = () => Ref.get(stateRef);
   const dropAutomation = yield* makeEnvironmentDropAutomation({
@@ -229,6 +237,10 @@ const makeEnvironment = Effect.gen(function* () {
       )) {
         const currentState = yield* getState();
         if (hasEnvironmentItemName(currentState, itemName)) {
+          yield* automationLogs.recovered(
+            `environment/quests/${quest.id}/drop-target/${itemName}`,
+            { itemName, questId: quest.id },
+          );
           continue;
         }
 
@@ -239,13 +251,18 @@ const makeEnvironment = Effect.gen(function* () {
           Effect.tap((next) =>
             Ref.set(stateRef, normalizeEnvironmentState(next)),
           ),
+          Effect.tap(() =>
+            automationLogs.recovered(
+              `environment/quests/${quest.id}/drop-target/${itemName}`,
+              { itemName, questId: quest.id },
+            ),
+          ),
           Effect.catchCause((cause) =>
-            Effect.logError({
+            automationLogs.failed(
+              `environment/quests/${quest.id}/drop-target/${itemName}`,
               cause,
-              itemName,
-              message: "Failed to auto-register quest drop target",
-              questId: quest.id,
-            }),
+              { itemName, questId: quest.id },
+            ),
           ),
         );
       }
@@ -276,12 +293,18 @@ const makeEnvironment = Effect.gen(function* () {
         yield* registerQuestDropTargets(state, quest, {
           reconcileDrops: false,
         }).pipe(
+          Effect.tap(() =>
+            automationLogs.recovered(
+              `environment/quests/${quest.id}/drop-targets`,
+              { questId: quest.id },
+            ),
+          ),
           Effect.catchCause((cause) =>
-            Effect.logError({
+            automationLogs.failed(
+              `environment/quests/${quest.id}/drop-targets`,
               cause,
-              message: "Environment quest drop target reconciliation failed",
-              questId: quest.id,
-            }),
+              { questId: quest.id },
+            ),
           ),
         );
       }
@@ -468,10 +491,12 @@ const makeEnvironment = Effect.gen(function* () {
           .map((item) => item.name),
       ),
       Effect.catchCause((cause) =>
-        Effect.logError({
-          cause,
-          message: "Failed to fetch Environment boosts",
-        }).pipe(Effect.as([])),
+        logFailure("Failed to fetch Environment boosts", cause, {
+          failure: "warning",
+        }).pipe(
+          Effect.annotateLogs({ component: "environment" }),
+          Effect.as([]),
+        ),
       ),
     );
 
@@ -488,26 +513,36 @@ const makeEnvironment = Effect.gen(function* () {
       const unloadedQuestIds = state.questIds.filter(
         (questId) => !loadedIds.has(questId),
       );
+      const key = "environment/quests/load";
+      const data = { questIds: unloadedQuestIds };
       if (unloadedQuestIds.length === 0) {
+        yield* automationLogs.recovered(key, data);
         return;
       }
 
-      const loaded = yield* api.quests.loadBatch(unloadedQuestIds, true).pipe(
+      yield* api.quests.loadBatch(unloadedQuestIds, true).pipe(
         Effect.timeoutOption(QUEST_ACTION_TIMEOUT),
+        Effect.tap((loaded) =>
+          Option.isNone(loaded)
+            ? automationLogs.failed(
+                key,
+                Cause.fail(new Cause.TimeoutError()),
+                data,
+              )
+            : loaded.value.every(Boolean)
+              ? automationLogs.recovered(key, data)
+              : automationLogs.failed(
+                  key,
+                  Cause.fail(new Error("Registered quests did not load")),
+                  data,
+                ),
+        ),
         Effect.catchCause((cause) =>
-          Effect.logError({
-            cause,
-            message: "Failed to load registered Environment quests",
-            questIds: unloadedQuestIds,
-          }).pipe(Effect.as(Option.some([]))),
+          automationLogs
+            .failed(key, cause, data)
+            .pipe(Effect.as(Option.some([]))),
         ),
       );
-      if (Option.isNone(loaded)) {
-        yield* Effect.logWarning({
-          message: "Timed out loading registered Environment quests",
-          questIds: unloadedQuestIds,
-        });
-      }
     });
 
   const warnQuestUnavailableOnce = (questId: number) =>
@@ -524,10 +559,11 @@ const makeEnvironment = Effect.gen(function* () {
         },
       );
       if (shouldWarn) {
-        yield* Effect.logWarning({
-          message: "Environment quest is unavailable; skipping accept",
-          questId,
-        });
+        yield* Effect.logWarning(
+          "Environment quest is unavailable; skipping accept",
+        ).pipe(
+          Effect.annotateLogs({ component: "environment", data: { questId } }),
+        );
       }
     });
 
@@ -551,12 +587,18 @@ const makeEnvironment = Effect.gen(function* () {
       );
       if (quest !== undefined) {
         yield* registerQuestDropTargets(state, quest).pipe(
+          Effect.tap(() =>
+            automationLogs.recovered(
+              `environment/quests/${questId}/drop-targets`,
+              { questId },
+            ),
+          ),
           Effect.catchCause((cause) =>
-            Effect.logError({
+            automationLogs.failed(
+              `environment/quests/${questId}/drop-targets`,
               cause,
-              message: "Environment quest drop target reconciliation failed",
-              questId,
-            }),
+              { questId },
+            ),
           ),
         );
       }
@@ -584,14 +626,19 @@ const makeEnvironment = Effect.gen(function* () {
         ...(rewardItemId === undefined ? {} : { rewardItemId }),
       });
     }).pipe(
+      Effect.tap(() =>
+        automationLogs.recovered(`environment/quests/${questId}/reconcile`, {
+          questId,
+        }),
+      ),
       Effect.catchCause((cause) =>
         Cause.hasInterruptsOnly(cause)
           ? Effect.failCause(cause)
-          : Effect.logError({
-              cause,
-              message: "Environment quest reconcile failed",
-              questId,
-            }).pipe(Effect.as({ action: "none", questId } as const)),
+          : automationLogs
+              .failed(`environment/quests/${questId}/reconcile`, cause, {
+                questId,
+              })
+              .pipe(Effect.as({ action: "none", questId } as const)),
       ),
     );
 
@@ -666,16 +713,30 @@ const makeEnvironment = Effect.gen(function* () {
                       ? undefined
                       : { rewardItemId: intent.rewardItemId },
                   );
+            const jobKey = `environment/quests/mutation/${key}`;
+            const data = { action: intent.action, questId: intent.questId };
             const completed = yield* mutation.pipe(
               Effect.timeoutOption(QUEST_ACTION_TIMEOUT),
+              Effect.tap((result) =>
+                Option.isNone(result)
+                  ? automationLogs.failed(
+                      jobKey,
+                      Cause.fail(new Cause.TimeoutError()),
+                      data,
+                    )
+                  : result.value
+                    ? automationLogs.recovered(jobKey, data)
+                    : automationLogs.failed(
+                        jobKey,
+                        Cause.fail(new Error("Quest mutation returned false")),
+                        data,
+                      ),
+              ),
               Effect.map(Option.getOrElse(() => false)),
               Effect.catchCause((cause) =>
-                Effect.logError({
-                  action: intent.action,
-                  cause,
-                  message: "Environment quest mutation failed",
-                  questId: intent.questId,
-                }).pipe(Effect.as(false)),
+                automationLogs
+                  .failed(jobKey, cause, data)
+                  .pipe(Effect.as(false)),
               ),
             );
             yield* Ref.update(questActionFailuresRef, (current) =>
@@ -692,7 +753,7 @@ const makeEnvironment = Effect.gen(function* () {
   const runQuestAutomation = Effect.gen(function* () {
     const state = yield* getState();
     if (!state.automation.quests || state.questIds.length === 0) {
-      return;
+      return yield* automationLogs.reset("environment/quests");
     }
     yield* loadRegisteredQuestData(state);
     const intents = yield* Effect.forEach(
@@ -703,20 +764,38 @@ const makeEnvironment = Effect.gen(function* () {
     for (const intent of intents) {
       yield* runQuestMutation(intent);
     }
+    yield* automationLogs.recovered("environment/quests");
   });
 
   const runBoostAutomation = Effect.gen(function* () {
     const state = yield* getState();
     if (!state.automation.boosts) {
-      return;
+      return yield* automationLogs.reset("environment/boosts");
     }
+    let selectionFailed = false;
+    const key = "environment/boosts";
     const item = yield* selectEnvironmentBoost(
       state.boosts,
       api.inventory.get,
       api.player.hasActiveBoost,
+      (cause) =>
+        Effect.sync(() => {
+          selectionFailed = true;
+        }).pipe(Effect.andThen(automationLogs.failed(key, cause))),
     );
     if (item !== null) {
-      yield* api.inventory.use(item.name);
+      const used = yield* api.inventory.use(item.name);
+      if (!used) {
+        yield* automationLogs.failed(
+          key,
+          Cause.fail(new Error("Environment boost use returned false")),
+          { itemName: item.name },
+        );
+        return;
+      }
+    }
+    if (!selectionFailed) {
+      yield* automationLogs.recovered(key);
     }
   });
 
@@ -728,11 +807,7 @@ const makeEnvironment = Effect.gen(function* () {
       Effect.catchCause((cause) =>
         Cause.hasInterruptsOnly(cause)
           ? Effect.failCause(cause)
-          : Effect.logError({
-              cause,
-              key,
-              message: "Environment automation failed",
-            }),
+          : automationLogs.failed(key, cause),
       ),
     );
 
@@ -762,20 +837,14 @@ const makeEnvironment = Effect.gen(function* () {
     runFork(
       applyState(state).pipe(
         Effect.catchCause((cause) =>
-          Effect.logError({
+          Effect.logError(
+            "Failed to apply changed Environment state",
             cause,
-            message: "Failed to apply changed Environment state",
-          }),
+          ).pipe(Effect.annotateLogs({ component: "environment" })),
         ),
       ),
     );
   });
-  const removeFetchBoostsListener = bridge.onFetchBoostsRequest(() =>
-    runPromise(discoverEnvironmentBoosts(api)),
-  );
-  const removeWithdrawBoostsListener = bridge.onWithdrawBoostsRequest(
-    (itemIds) => runPromise(withdrawEnvironmentBoosts(api, itemIds)),
-  );
   const removeDropListener = yield* api.events.on(
     { type: "item-drop" },
     (event) =>
@@ -801,8 +870,6 @@ const makeEnvironment = Effect.gen(function* () {
   yield* Effect.addFinalizer(() =>
     Effect.sync(() => {
       removeStateListener();
-      removeFetchBoostsListener();
-      removeWithdrawBoostsListener();
       removeDropListener();
     }),
   );
@@ -812,10 +879,10 @@ const makeEnvironment = Effect.gen(function* () {
     bridge.getState,
   ).pipe(
     Effect.catchCause((cause) =>
-      Effect.logError({
-        cause,
-        message: "Failed to load Environment state",
-      }).pipe(Effect.as(createEmptyEnvironmentState())),
+      Effect.logError("Failed to load Environment state", cause).pipe(
+        Effect.annotateLogs({ component: "environment" }),
+        Effect.as(createEmptyEnvironmentState()),
+      ),
     ),
   );
   yield* applyState(initialState, { reconcileDrops: true });
@@ -854,3 +921,14 @@ const makeEnvironment = Effect.gen(function* () {
 });
 
 export const layer = Layer.effect(Environment, makeEnvironment);
+
+export const environmentRpcHandlers = EnvironmentRpcs.toLayer(
+  Effect.gen(function* () {
+    const api = yield* Api;
+    return EnvironmentRpcs.of({
+      EnvironmentFetchBoosts: () => discoverEnvironmentBoosts(api),
+      EnvironmentWithdrawBoosts: ({ itemIds }) =>
+        withdrawEnvironmentBoosts(api, itemIds),
+    });
+  }),
+);

@@ -519,7 +519,12 @@ export const makeCombat = (
         },
       );
       for (const warning of yield* session.warnings) {
-        yield* Effect.logWarning({ message: warning, profile: profile.label });
+        yield* Effect.logWarning("Combat profile session degraded").pipe(
+          Effect.annotateLogs({
+            component: "combat",
+            data: { profile: profile.label, warning },
+          }),
+        );
       }
       return session;
     });

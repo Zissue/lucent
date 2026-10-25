@@ -13,132 +13,74 @@ const businessResult = <A>(effect: Effect.Effect<A, FileSystemError>) =>
     }),
   );
 
-export const openSession = makeDesktopIpcMethod({
-  descriptor: FileSystemIpc.openSession,
-  allowedSenders: ["game"],
-  handler: Effect.fn("desktop.ipc.filesystem.openSession")(
-    function* (_payload, sender) {
-      const fileSystem = yield* ScriptFileSystem;
-      return yield* fileSystem.openSession(sender.rendererId);
-    },
-  ),
-});
-
-export const closeSession = makeDesktopIpcMethod({
-  descriptor: FileSystemIpc.closeSession,
-  allowedSenders: ["game"],
-  handler: Effect.fn("desktop.ipc.filesystem.closeSession")(
-    function* (payload, sender) {
-      const fileSystem = yield* ScriptFileSystem;
-      yield* fileSystem.closeSession(sender.rendererId, payload.sessionId);
-    },
-  ),
-});
-
 export const exists = makeDesktopIpcMethod({
   descriptor: FileSystemIpc.exists,
   allowedSenders: ["game"],
-  handler: Effect.fn("desktop.ipc.filesystem.exists")(
-    function* (payload, sender) {
-      const fileSystem = yield* ScriptFileSystem;
-      return yield* businessResult(
-        fileSystem.exists(sender.rendererId, payload.sessionId, payload.path),
-      );
-    },
-  ),
+  handler: Effect.fn("desktop.ipc.filesystem.exists")(function* (payload) {
+    const fileSystem = yield* ScriptFileSystem;
+    return yield* businessResult(fileSystem.exists(payload.path));
+  }),
 });
 
 export const list = makeDesktopIpcMethod({
   descriptor: FileSystemIpc.list,
   allowedSenders: ["game"],
-  handler: Effect.fn("desktop.ipc.filesystem.list")(
-    function* (payload, sender) {
-      const fileSystem = yield* ScriptFileSystem;
-      return yield* businessResult(
-        fileSystem.list(sender.rendererId, payload.sessionId, payload.path),
-      );
-    },
-  ),
+  handler: Effect.fn("desktop.ipc.filesystem.list")(function* (payload) {
+    const fileSystem = yield* ScriptFileSystem;
+    return yield* businessResult(fileSystem.list(payload.path));
+  }),
 });
 
 export const readJson = makeDesktopIpcMethod({
   descriptor: FileSystemIpc.readJson,
   allowedSenders: ["game"],
-  handler: Effect.fn("desktop.ipc.filesystem.readJson")(
-    function* (payload, sender) {
-      const fileSystem = yield* ScriptFileSystem;
-      return yield* businessResult(
-        fileSystem.readJson(sender.rendererId, payload.sessionId, payload.path),
-      );
-    },
-  ),
+  handler: Effect.fn("desktop.ipc.filesystem.readJson")(function* (payload) {
+    const fileSystem = yield* ScriptFileSystem;
+    return yield* businessResult(fileSystem.readJson(payload.path));
+  }),
 });
 
 export const readText = makeDesktopIpcMethod({
   descriptor: FileSystemIpc.readText,
   allowedSenders: ["game"],
-  handler: Effect.fn("desktop.ipc.filesystem.readText")(
-    function* (payload, sender) {
-      const fileSystem = yield* ScriptFileSystem;
-      return yield* businessResult(
-        fileSystem.readText(sender.rendererId, payload.sessionId, payload.path),
-      );
-    },
-  ),
+  handler: Effect.fn("desktop.ipc.filesystem.readText")(function* (payload) {
+    const fileSystem = yield* ScriptFileSystem;
+    return yield* businessResult(fileSystem.readText(payload.path));
+  }),
 });
 
 export const remove = makeDesktopIpcMethod({
   descriptor: FileSystemIpc.remove,
   allowedSenders: ["game"],
-  handler: Effect.fn("desktop.ipc.filesystem.remove")(
-    function* (payload, sender) {
-      const fileSystem = yield* ScriptFileSystem;
-      return yield* businessResult(
-        fileSystem.remove(sender.rendererId, payload.sessionId, payload.path),
-      );
-    },
-  ),
+  handler: Effect.fn("desktop.ipc.filesystem.remove")(function* (payload) {
+    const fileSystem = yield* ScriptFileSystem;
+    return yield* businessResult(fileSystem.remove(payload.path));
+  }),
 });
 
 export const writeJson = makeDesktopIpcMethod({
   descriptor: FileSystemIpc.writeJson,
   allowedSenders: ["game"],
-  handler: Effect.fn("desktop.ipc.filesystem.writeJson")(
-    function* (payload, sender) {
-      const fileSystem = yield* ScriptFileSystem;
-      return yield* businessResult(
-        fileSystem.writeJson(
-          sender.rendererId,
-          payload.sessionId,
-          payload.path,
-          payload.value,
-        ),
-      );
-    },
-  ),
+  handler: Effect.fn("desktop.ipc.filesystem.writeJson")(function* (payload) {
+    const fileSystem = yield* ScriptFileSystem;
+    return yield* businessResult(
+      fileSystem.writeJson(payload.path, payload.value),
+    );
+  }),
 });
 
 export const writeText = makeDesktopIpcMethod({
   descriptor: FileSystemIpc.writeText,
   allowedSenders: ["game"],
-  handler: Effect.fn("desktop.ipc.filesystem.writeText")(
-    function* (payload, sender) {
-      const fileSystem = yield* ScriptFileSystem;
-      return yield* businessResult(
-        fileSystem.writeText(
-          sender.rendererId,
-          payload.sessionId,
-          payload.path,
-          payload.contents,
-        ),
-      );
-    },
-  ),
+  handler: Effect.fn("desktop.ipc.filesystem.writeText")(function* (payload) {
+    const fileSystem = yield* ScriptFileSystem;
+    return yield* businessResult(
+      fileSystem.writeText(payload.path, payload.contents),
+    );
+  }),
 });
 
 export const methods = [
-  openSession,
-  closeSession,
   exists,
   list,
   readJson,

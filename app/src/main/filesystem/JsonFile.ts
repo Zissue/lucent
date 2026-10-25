@@ -2,10 +2,10 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import { makeAtomicFile } from "./AtomicFile";
-import {
-  type DesktopFileSystem,
-  type DesktopFileSystemError,
-} from "./DesktopFileSystem";
+import type { FileSystem } from "effect/FileSystem";
+import type { PlatformError } from "effect/PlatformError";
+import { FileSystemLimitError, readFileBounded } from "./BoundedFileSystem";
+import { parseLocalJson } from "./parseLocalJson";
 
 /** JSON state files are intentionally bounded to protect the main process. */
 export const JSON_FILE_MAX_BYTES = 8 * 1024 * 1024;
@@ -34,7 +34,11 @@ export class JsonFileError extends Schema.TaggedError<JsonFileError>()(
   },
 ) {
   override get message(): string {
-    return `JSON file ${this.operation} failed at ${this.path}.`;
+    const reason =
+      this.cause instanceof FileSystemLimitError
+        ? ` The document exceeds the limit of ${this.cause.limit} ${this.cause.kind}.`
+        : "";
+    return `JSON file ${this.operation} failed at ${this.path}.${reason}`;
   }
 }
 
@@ -44,41 +48,43 @@ const makeError = (
   cause: unknown,
 ): JsonFileError => new JsonFileError({ operation, path, cause });
 
-const atomicOperation = (error: DesktopFileSystemError): JsonFileOperation => {
-  switch (error.operation) {
-    case "make-directory":
+const atomicOperation = (error: PlatformError): JsonFileOperation => {
+  switch (error.reason.method) {
+    case "makeDirectory":
       return "mkdir";
     case "rename":
       return "rename";
-    case "remove-file":
+    case "remove":
       return "unlink";
     default:
       return "write";
   }
 };
 
-export const makeJsonFile = (fileSystem: DesktopFileSystem["Service"]) => {
+export const makeJsonFile = (fileSystem: FileSystem) => {
   const atomicFile = makeAtomicFile(fileSystem);
 
   const read = Effect.fn("JsonFile.read")(function* (
     path: string,
   ): Effect.fn.Return<JsonFileReadResult, JsonFileError> {
-    const bytes = yield* fileSystem
-      .readFile(path, { maxBytes: JSON_FILE_MAX_BYTES })
-      .pipe(
-        Effect.catch((error) =>
-          error.reason === "NotFound"
-            ? Effect.void
-            : Effect.fail(makeError(path, "read", error)),
-        ),
-      );
+    const bytes = yield* readFileBounded(
+      fileSystem,
+      path,
+      JSON_FILE_MAX_BYTES,
+    ).pipe(
+      Effect.catch((error) =>
+        error._tag === "PlatformError" && error.reason._tag === "NotFound"
+          ? Effect.void
+          : Effect.fail(makeError(path, "read", error)),
+      ),
+    );
     if (bytes === undefined) return { status: "missing" };
 
     return yield* Effect.try({
       try: () =>
         ({
           status: "ok",
-          value: JSON.parse(Buffer.from(bytes).toString("utf8")) as unknown,
+          value: parseLocalJson(Buffer.from(bytes).toString("utf8")),
         }) as const,
       catch: (cause) => makeError(path, "parse", cause),
     });
@@ -100,8 +106,21 @@ export const makeJsonFile = (fileSystem: DesktopFileSystem["Service"]) => {
       catch: (cause) => makeError(path, "write", cause),
     });
 
-    yield* atomicFile
-      .write(path, source, options)
+    const bytes = Buffer.from(source, "utf8");
+    if (bytes.byteLength > JSON_FILE_MAX_BYTES) {
+      return yield* makeError(
+        path,
+        "write",
+        new FileSystemLimitError({
+          path,
+          limit: JSON_FILE_MAX_BYTES,
+          kind: "bytes",
+        }),
+      );
+    }
+
+    return yield* atomicFile
+      .write(path, bytes, options)
       .pipe(
         Effect.mapError((error) =>
           makeError(path, atomicOperation(error), error),

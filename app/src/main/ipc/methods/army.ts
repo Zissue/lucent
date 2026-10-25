@@ -4,15 +4,13 @@ import { ArmyIpc } from "../../../shared/ipc";
 import {
   ArmyConfigRepository,
   type ArmyConfigRepositoryError,
-} from "../../internal/army/ArmyConfigRepository";
-import {
-  ArmyCoordinator,
-  type ArmyCoordinatorError,
-} from "../../internal/army/ArmyCoordinator";
+} from "../../game/army/ArmyConfigRepository";
+import { ArmyCoordinator } from "../../game/army/ArmyCoordinator";
+import type { ArmyCoordinatorError } from "../../game/army/ArmySession";
 import {
   ArmyLoopTauntOrchestrator,
   type ArmyLoopTauntOrchestratorError,
-} from "../../internal/army/ArmyLoopTauntOrchestrator";
+} from "../../game/army/ArmyLoopTauntOrchestrator";
 import { DesktopWindows } from "../../window/DesktopWindows";
 import {
   DesktopIpc,
@@ -22,15 +20,6 @@ import {
 
 const gameSenders = ["game"] as const;
 
-export const loadConfig = makeDesktopIpcMethod({
-  descriptor: ArmyIpc.loadConfig,
-  allowedSenders: gameSenders,
-  handler: Effect.fn("desktop.ipc.army.loadConfig")(function* (payload) {
-    const configs = yield* ArmyConfigRepository;
-    return yield* configs.read(payload.configName);
-  }),
-});
-
 export const start = makeDesktopIpcMethod({
   descriptor: ArmyIpc.start,
   allowedSenders: gameSenders,
@@ -38,20 +27,16 @@ export const start = makeDesktopIpcMethod({
     const configs = yield* ArmyConfigRepository;
     const coordinator = yield* ArmyCoordinator;
     const config = yield* configs.read(payload.configName);
-    return yield* coordinator.join(
-      config,
-      payload.playerName,
-      sender.rendererId,
-    );
+    return yield* coordinator.join(config, payload.playerName, sender.lifetime);
   }),
 });
 
 export const leave = makeDesktopIpcMethod({
   descriptor: ArmyIpc.leave,
   allowedSenders: gameSenders,
-  handler: Effect.fn("desktop.ipc.army.leave")(function* (payload, sender) {
+  handler: Effect.fn("desktop.ipc.army.leave")(function* (_payload, sender) {
     const coordinator = yield* ArmyCoordinator;
-    return yield* coordinator.leave(payload.sessionId, sender.rendererId);
+    return yield* coordinator.leave(sender.rendererId);
   }),
 });
 
@@ -157,7 +142,6 @@ type ArmyIpcMethod = DesktopIpcMethodRegistration<
 >;
 
 export const methods: readonly ArmyIpcMethod[] = [
-  loadConfig,
   start,
   leave,
   sync,
@@ -177,76 +161,38 @@ export const installLifecycle = Effect.fn("desktop.ipc.army.installLifecycle")(
     const ipc = yield* DesktopIpc;
     const windows = yield* DesktopWindows;
 
-    yield* Effect.acquireRelease(
-      loopTauntOrchestrator.onCommand((event) =>
-        ipc.sendToRendererIds(
-          event.participantIds,
-          ArmyIpc.loopTauntCommand,
-          event.command,
-        ),
+    yield* loopTauntOrchestrator.onCommand((event) =>
+      ipc.sendToRendererIds(
+        event.participantIds,
+        ArmyIpc.loopTauntCommand,
+        event.command,
       ),
-      (unsubscribe) => Effect.sync(unsubscribe),
     );
 
-    yield* Effect.acquireRelease(
-      coordinator.onSessionEnded((event) =>
-        ipc.sendToRendererIds(event.participantIds, ArmyIpc.ended, {
-          reason: event.reason,
-          sessionId: event.sessionId,
-        }),
-      ),
-      (unsubscribe) => Effect.sync(unsubscribe),
+    yield* coordinator.onSessionEnded((event) =>
+      ipc.sendToRendererIds(event.participantIds, ArmyIpc.ended, {
+        reason: event.reason,
+        sessionId: event.sessionId,
+      }),
     );
 
-    yield* Effect.acquireRelease(
-      windows.onRendererUnavailable((event) =>
-        event.kind === "game"
-          ? coordinator.abortParticipant(event.rendererId, {
-              kind: "participant-unavailable",
-              reason:
-                event.failure.type === "plugin-crashed"
-                  ? "An army participant's Flash plugin crashed"
-                  : `An army participant's game renderer stopped (${event.failure.reason})`,
-            })
-          : Effect.void,
-      ),
-      (unsubscribe) => Effect.sync(unsubscribe),
-    );
-
-    yield* Effect.acquireRelease(
-      windows.onRendererReloaded((event) =>
-        event.kind === "game"
-          ? coordinator.abortParticipant(event.rendererId, {
-              kind: "participant-unavailable",
-              reason: `Army window reloaded into renderer generation ${event.generation}`,
-            })
-          : Effect.void,
-      ),
-      (unsubscribe) => Effect.sync(unsubscribe),
-    );
-
-    yield* Effect.acquireRelease(
-      windows.onRendererDestroyed((event) =>
-        event.kind === "game"
-          ? coordinator.abortParticipant(event.rendererId, {
-              kind: "participant-unavailable",
-              reason: "Army window destroyed",
-            })
-          : Effect.void,
-      ),
-      (unsubscribe) => Effect.sync(unsubscribe),
-    );
-
-    yield* Effect.acquireRelease(
-      windows.onClosed((event) =>
-        event.kind === "game"
-          ? coordinator.abortParticipant(event.rendererId, {
-              kind: "participant-unavailable",
-              reason: "Army window closed",
-            })
-          : Effect.void,
-      ),
-      (unsubscribe) => Effect.sync(unsubscribe),
-    );
+    yield* windows.observe({ kind: "game" }, (event) => {
+      switch (event.type) {
+        case "crashed":
+        case "reloaded":
+        case "closed":
+          return coordinator.abortParticipant(event.rendererId, {
+            kind: "participant-unavailable",
+            reason:
+              event.type === "crashed"
+                ? "An army player's game stopped unexpectedly"
+                : event.type === "reloaded"
+                  ? "An army player's game reloaded"
+                  : "Army window closed",
+          });
+        default:
+          return Effect.void;
+      }
+    });
   },
 );

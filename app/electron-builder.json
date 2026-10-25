@@ -1,7 +1,7 @@
 {
   "appId": "com.app.lucent",
   "productName": "Lucent",
-  "electronVersion": "11.5.0",
+  "electronVersion": "44.4.5",
   "electronLanguages": ["en-US"],
   "npmRebuild": false,
   "directories": {
@@ -24,13 +24,12 @@
       {
         "from": "../assets",
         "to": "assets",
-        "filter": ["**/*", "!icons{,/**/*}", "!pepflashplayer.dll", "!icon.png", "!icon-dev.png", "!icon.ico"]
+        "filter": ["**/*", "!icons{,/**/*}", "!icon.png", "!icon-dev.png", "!icon.ico"]
       }
     ],
-    "asar": false,
     "target": {
       "target": "dmg",
-      "arch": ["x64"]
+      "arch": ["universal"]
     },
     "icon": "../assets/icons/lucent.icon",
     "artifactName": "${productName}-${version}-mac-${arch}.${ext}"
@@ -40,14 +39,13 @@
       {
         "from": "../assets",
         "to": "assets",
-        "filter": ["**/*", "!icons{,/**/*}", "!PepperFlashPlayer.plugin", "!icon.png", "!icon-dev.png", "!icon.ico"]
+        "filter": ["**/*", "!icons{,/**/*}", "!icon.png", "!icon-dev.png", "!icon.ico"]
       }
     ],
     "icon": "../assets/icon.ico",
-    "asar": false,
     "target": {
       "target": "zip",
-      "arch": ["x64"]
+      "arch": ["x64", "arm64"]
     },
     "artifactName": "${productName}-${version}-win-${arch}.${ext}"
   },
@@ -59,22 +57,19 @@
         "filter": [
           "**/*",
           "!icons{,/**/*}",
-          "!PepperFlashPlayer.plugin",
-          "!pepflashplayer.dll",
           "!icon-dev.png",
           "!icon.ico"
         ]
       }
     ],
-    "asar": false,
     "target": [
       {
         "target": "AppImage",
-        "arch": ["x64"]
+        "arch": ["x64", "arm64"]
       },
       {
         "target": "zip",
-        "arch": ["x64"]
+        "arch": ["x64", "arm64"]
       }
     ],
     "icon": "../assets/icon.png",

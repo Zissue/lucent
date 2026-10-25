@@ -1,12 +1,12 @@
-import { join } from "path";
+import { join } from "node:path";
 
 import * as Context from "effect/Context";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as Ref from "effect/Ref";
+import * as SynchronizedRef from "effect/SynchronizedRef";
 import * as Schema from "effect/Schema";
-import * as Semaphore from "effect/Semaphore";
 
 import {
   ScriptPackageDirectorySchema,
@@ -21,7 +21,7 @@ import {
   type ScriptPackageUpdateState,
 } from "@lucent/core/scriptPackages";
 import { DesktopEnvironment } from "../app/DesktopEnvironment";
-import { DesktopFileSystem } from "../filesystem/DesktopFileSystem";
+import { FileSystem } from "effect/FileSystem";
 import { makeJsonFile } from "../filesystem/JsonFile";
 
 const FileHashesSchema = Schema.Record(Schema.String, Schema.String);
@@ -99,13 +99,6 @@ export class ScriptPackageState extends Context.Service<
   ScriptPackageStateShape
 >()("lucent/desktop/scripting/ScriptPackageState") {}
 
-const cloneRecord = (value: ManagedScriptPackage): ManagedScriptPackage => ({
-  ...value,
-  files: { ...value.files },
-  source: { ...value.source },
-  ...(value.update === undefined ? {} : { update: { ...value.update } }),
-});
-
 const invalidState = (message: string): ScriptPackageLoadState => ({
   status: "failed",
   error: new ScriptPackageStateError({
@@ -139,7 +132,7 @@ const stateFromUnknown = (value: unknown): ScriptPackageLoadState => {
   return {
     status: "loaded",
     packages: new Map(
-      decoded.value.packages.map((entry) => [entry.name, cloneRecord(entry)]),
+      decoded.value.packages.map((entry) => [entry.name, entry]),
     ),
   };
 };
@@ -148,16 +141,16 @@ const serializeState = (
   values: ReadonlyMap<string, ManagedScriptPackage>,
 ): unknown => ({
   version: 1,
-  packages: [...values.values()]
-    .map(cloneRecord)
-    .sort((left, right) => left.name.localeCompare(right.name)),
+  packages: [...values.values()].sort((left, right) =>
+    left.name.localeCompare(right.name),
+  ),
 });
 
 export const layer = Layer.effect(
   ScriptPackageState,
   Effect.gen(function* () {
     const env = yield* DesktopEnvironment;
-    const jsonFile = makeJsonFile(yield* DesktopFileSystem);
+    const jsonFile = makeJsonFile(yield* FileSystem);
     const statePath = join(env.appDataDir, "script-packages.json");
     const initial = yield* jsonFile.read(statePath).pipe(
       Effect.match({
@@ -172,14 +165,12 @@ export const layer = Layer.effect(
       }),
     );
     if (initial.status === "failed") {
-      yield* Effect.logWarning({
-        message:
-          "Failed to load script package state; local packages remain available as unmanaged and package mutations are disabled.",
-        cause: initial.error,
-      });
+      yield* Effect.logWarning(
+        "Failed to load script package state; local packages remain available as unmanaged and package mutations are disabled.",
+        Cause.fail(initial.error),
+      ).pipe(Effect.annotateLogs({ component: "script-package-state" }));
     }
-    const stateRef = yield* Ref.make(initial);
-    const writeGate = yield* Semaphore.make(1);
+    const stateRef = yield* SynchronizedRef.make(initial);
 
     const persist = (state: ReadonlyMap<string, ManagedScriptPackage>) =>
       jsonFile
@@ -196,9 +187,8 @@ export const layer = Layer.effect(
         state: ReadonlyMap<string, ManagedScriptPackage>,
       ) => Map<string, ManagedScriptPackage>,
     ) =>
-      writeGate.withPermits(1)(
+      SynchronizedRef.updateEffect(stateRef, (loaded) =>
         Effect.gen(function* () {
-          const loaded = yield* Ref.get(stateRef);
           if (loaded.status === "failed") return yield* loaded.error;
           const next = update(loaded.packages);
           if (hasDuplicateMappings(next.values())) {
@@ -208,24 +198,21 @@ export const layer = Layer.effect(
             });
           }
           yield* persist(next);
-          yield* Ref.set(stateRef, { status: "loaded", packages: next });
+          return { status: "loaded", packages: next } as const;
         }),
       );
 
     return ScriptPackageState.of({
       get: (name) =>
-        Ref.get(stateRef).pipe(
+        SynchronizedRef.get(stateRef).pipe(
           Effect.map((state) => {
             if (state.status === "failed") return undefined;
-            const value = state.packages.get(name);
-            return value === undefined ? undefined : cloneRecord(value);
+            return state.packages.get(name);
           }),
         ),
-      getAll: Ref.get(stateRef).pipe(
+      getAll: SynchronizedRef.get(stateRef).pipe(
         Effect.map((state) =>
-          state.status === "failed"
-            ? []
-            : [...state.packages.values()].map(cloneRecord),
+          state.status === "failed" ? [] : [...state.packages.values()],
         ),
       ),
       remove: (name) =>
@@ -237,7 +224,7 @@ export const layer = Layer.effect(
       save: (value) =>
         mutate((current) => {
           const next = new Map(current);
-          next.set(value.name, cloneRecord(value));
+          next.set(value.name, value);
           return next;
         }),
     });

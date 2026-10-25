@@ -2,10 +2,6 @@ import { afterEach, describe, expect, it, vi } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 
 import type { DesktopGamePacketsBridge } from "../../../shared/desktopBridge";
-import type {
-  PacketsRequest,
-  PacketsResponse,
-} from "../../../shared/ipc/packets";
 import { Api, type ApiService } from "./flash";
 import { installPacketsBridge } from "./packetsBridge";
 
@@ -40,35 +36,17 @@ describe("packets bridge", () => {
         runPromise: Effect.runPromiseWith(context),
       } as unknown as Parameters<typeof installPacketsBridge>[0];
 
-      let requestListener: ((request: PacketsRequest) => void) | undefined;
-      let resolveResponse: ((response: PacketsResponse) => void) | undefined;
-      const response = new Promise<PacketsResponse>((resolve) => {
-        resolveResponse = resolve;
-      });
       const bridge: DesktopGamePacketsBridge = {
-        onRequest: (listener: (request: PacketsRequest) => void) => {
-          requestListener = listener;
-          return () => {
-            requestListener = undefined;
-          };
-        },
         publishCaptured: async () => undefined,
         publishStatus: async () => undefined,
-        respond: async (payload: PacketsResponse) => {
-          resolveResponse?.(payload);
-        },
       };
       const controller = installPacketsBridge(runtime, bridge);
-      requestListener?.({
-        kind: "start-queue",
-        payload: {
-          delayMs: 1_000,
-          packets: ["first", "second"],
-          target: "server-string",
-        },
-        requestId: "start-queue",
+      controller.startQueue({
+        delayMs: 1_000,
+        packets: ["first", "second"],
+        target: "server-string",
       });
-      yield* Effect.promise(() => response);
+      yield* Effect.promise(() => vi.advanceTimersByTimeAsync(0));
 
       expect(sends).toEqual([{ at: 1_000, packet: "first" }]);
 

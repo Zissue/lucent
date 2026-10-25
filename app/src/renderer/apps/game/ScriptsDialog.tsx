@@ -109,6 +109,7 @@ import {
   touchScriptCatalogPages,
   type ScriptCatalogPageCache,
 } from "./scriptCatalogPages";
+import { confirmScriptPackageRemoval } from "./scriptPackageRemoval";
 import {
   checkScriptPackageUpdatesSerially,
   formatScriptPackageUpdateCheckFailures,
@@ -1529,8 +1530,6 @@ export function ScriptsDialog(props: ScriptsDialogProps): JSX.Element {
     }
   };
 
-  const refreshCatalog = (): Promise<void> => loadCatalog(true);
-
   const refreshCredentials = async (): Promise<void> => {
     const bridge = props.bridge;
     if (bridge === undefined || fixtureMode) return;
@@ -1832,9 +1831,9 @@ export function ScriptsDialog(props: ScriptsDialogProps): JSX.Element {
   };
 
   const applyMutation = (result: ScriptPackageMutationResult): void => {
+    setConfirmation(null);
     if (result.status === "completed" || result.status === "unchanged") {
       replaceCatalog(result.catalog);
-      setConfirmation(null);
     }
   };
 
@@ -1952,10 +1951,15 @@ export function ScriptsDialog(props: ScriptsDialogProps): JSX.Element {
         ? "Restore package"
         : "Discard changes and update",
       description: restoring
-        ? `${entry.name} has local changes. Restoring will replace the entire package with Lucent's saved copy and permanently discard your changes.`
+        ? `${entry.name} has local changes. Restoring will replace the entire package with the installed version and permanently discard your changes.`
         : `${entry.name} has local changes. Updating will replace the entire package with the latest version from GitHub and permanently discard your changes.`,
       destructive: true,
-      onConfirm: () => updatePackage(entry, true),
+      onConfirm: async () => {
+        if (!restoring) return updatePackage(entry, true);
+        const bridge = props.bridge;
+        if (bridge === undefined) return;
+        applyMutation(await bridge.restorePackage({ packageName: entry.name }));
+      },
       title: restoring ? "Restore this package?" : "Replace local changes?",
     });
   };
@@ -1976,27 +1980,18 @@ export function ScriptsDialog(props: ScriptsDialogProps): JSX.Element {
   };
 
   const removePackage = (entry: ValidScriptPackage): void => {
-    askForConfirmation({
-      confirmLabel: "Remove package",
-      description:
-        entry.integrity === "modified"
-          ? `${entry.name} has local changes. Removing it will permanently delete the entire package folder, including your changes.`
-          : `Remove ${entry.name} and delete its entire package folder?`,
-      destructive: true,
-      onConfirm: async () => {
-        const bridge = props.bridge;
-        if (bridge === undefined) return;
-        const result = await bridge.removePackage({
-          packageName: entry.name,
-          confirmModified: true,
-        });
+    const bridge = props.bridge;
+    if (bridge === undefined) return;
+    confirmScriptPackageRemoval(entry, {
+      askForConfirmation,
+      removePackage: (request) => bridge.removePackage(request),
+      applyMutation: (result) => {
         applyMutation(result);
         if (result.status === "completed" || result.status === "unchanged") {
           setSelectedPackagePath(undefined);
           setPackageManagementView("installed");
         }
       },
-      title: "Remove this package?",
     });
   };
 
@@ -2447,7 +2442,7 @@ export function ScriptsDialog(props: ScriptsDialogProps): JSX.Element {
                 <CatalogRefreshButton
                   disabled={busy() || catalogLoading()}
                   loading={catalogLoading() && catalog().revision !== ""}
-                  onClick={() => void refreshCatalog()}
+                  onClick={() => void loadCatalog(true)}
                 />
               </div>
               <div
@@ -3197,7 +3192,7 @@ export function ScriptsDialog(props: ScriptsDialogProps): JSX.Element {
                     <CatalogRefreshButton
                       disabled={busy() || catalogLoading()}
                       loading={catalogLoading() && catalog().revision !== ""}
-                      onClick={() => void refreshCatalog()}
+                      onClick={() => void loadCatalog(true)}
                     />
                   </div>
                 </div>

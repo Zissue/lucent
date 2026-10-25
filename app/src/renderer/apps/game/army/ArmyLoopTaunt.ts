@@ -451,12 +451,17 @@ export const makeArmyLoopTauntRuntime = (
 
           const run = Effect.scoped(
             Effect.gen(function* () {
-              const runScope = yield* Effect.scope;
-              const startup = yield* Deferred.make<
-                LoopTauntRun,
-                ArmyLoopTauntError
-              >();
               const mapExited = yield* Deferred.make<void>();
+              const mapArmed = yield* Deferred.make<void>();
+              const mapChangedDuringStartup = Deferred.await(mapExited).pipe(
+                Effect.andThen(
+                  Effect.fail(
+                    new ArmyLoopTauntError(
+                      "The map changed while Loop Taunt was starting",
+                    ),
+                  ),
+                ),
+              );
 
               const setup = Effect.gen(function* () {
                 const mapIdentity: ArmyLoopTauntMapIdentity = yield* Effect.all(
@@ -589,15 +594,7 @@ export const makeArmyLoopTauntRuntime = (
                   () => bridge.loopTauntReady(loopRun),
                 );
                 const startupInterrupted = Effect.raceFirst(
-                  Deferred.await(mapExited).pipe(
-                    Effect.flatMap(() =>
-                      Effect.fail(
-                        new ArmyLoopTauntError(
-                          "The map changed while Loop Taunt was starting",
-                        ),
-                      ),
-                    ),
-                  ),
+                  mapChangedDuringStartup,
                   Effect.raceFirst(
                     Deferred.await(stopRequested).pipe(
                       Effect.flatMap((reason) =>
@@ -633,10 +630,12 @@ export const makeArmyLoopTauntRuntime = (
                 const reportBestEffort = (value: ArmyLoopTauntReport) =>
                   report(value).pipe(
                     Effect.catchCause((cause) =>
-                      Effect.logWarning({
-                        cause,
-                        message: "Loop Taunt report failed",
-                      }),
+                      Effect.logWarning("Loop Taunt report failed", cause).pipe(
+                        Effect.annotateLogs({
+                          component: "army",
+                          data: { runId: loopRun.runId },
+                        }),
+                      ),
                     ),
                   );
 
@@ -864,7 +863,6 @@ export const makeArmyLoopTauntRuntime = (
                               lifeRevision: target.lifeRevision,
                               message: event.message,
                               monsterMapId: target.monsterMapId,
-                              source: event.source,
                               type: "message",
                             }),
                           { discard: true },
@@ -874,10 +872,15 @@ export const makeArmyLoopTauntRuntime = (
                     }
                   }).pipe(
                     Effect.catchCause((cause) =>
-                      Effect.logWarning({
+                      Effect.logWarning(
+                        "Loop Taunt event handling failed",
                         cause,
-                        message: "Loop Taunt event handling failed",
-                      }),
+                      ).pipe(
+                        Effect.annotateLogs({
+                          component: "army",
+                          data: { runId: loopRun.runId },
+                        }),
+                      ),
                     ),
                   );
 
@@ -901,17 +904,9 @@ export const makeArmyLoopTauntRuntime = (
                   ]);
                   const scrollEquipped =
                     item?.itemId === LOOP_TAUNT_SCROLL_ITEM_ID;
-                  let reason: string | undefined;
-                  if (!assigned) reason = "not-assigned";
-                  else if (!alive) reason = "dead";
-                  else if (!scrollEquipped) reason = "scroll-not-equipped";
-                  else if (cooldownMs === null) reason = "cooldown-unavailable";
-                  else if (cooldownMs > 0) reason = "cooldown";
-                  else if (item?.ready !== true) reason = "scroll-not-ready";
                   return {
                     alive,
                     cooldownMs,
-                    reason,
                     usable:
                       assigned &&
                       alive &&
@@ -934,9 +929,6 @@ export const makeArmyLoopTauntRuntime = (
                   yield* report({
                     alive: state.alive,
                     cooldownMs: state.cooldownMs,
-                    ...(state.reason === undefined
-                      ? {}
-                      : { reason: state.reason }),
                     type: "participant-state",
                     usable: state.usable,
                   });
@@ -952,7 +944,6 @@ export const makeArmyLoopTauntRuntime = (
                     | "skipped",
                   details?: {
                     readonly cooldownMs?: number | null;
-                    readonly reason?: string;
                   },
                 ) =>
                   reportBestEffort({
@@ -961,23 +952,16 @@ export const makeArmyLoopTauntRuntime = (
                       ? {}
                       : { cooldownMs: details.cooldownMs }),
                     outcome,
-                    ...(details?.reason === undefined
-                      ? {}
-                      : { reason: details.reason }),
                     type: "command-result",
                   });
                 const reportNotReady = (
                   commandId: number,
                   readiness: {
                     readonly cooldownMs: number | null;
-                    readonly reason: string | undefined;
                   },
                 ) =>
                   reportCommandResult(commandId, "not-ready", {
                     cooldownMs: readiness.cooldownMs,
-                    ...(readiness.reason === undefined
-                      ? {}
-                      : { reason: readiness.reason }),
                   });
 
                 const executeCommand = (payload: ArmyLoopTauntCommandPayload) =>
@@ -990,21 +974,6 @@ export const makeArmyLoopTauntRuntime = (
                     }
                     const command = payload.command;
                     switch (command.type) {
-                      case "probe":
-                        yield* reportParticipantState.pipe(
-                          Effect.catchCause((cause) =>
-                            reportBestEffort(reportFailure(cause)),
-                          ),
-                        );
-                        return;
-                      case "diagnostic":
-                        yield* Effect.logWarning({
-                          assignmentId: command.assignmentId,
-                          code: command.code,
-                          message: command.message,
-                          runId: loopRun.runId,
-                        });
-                        return;
                       case "taunt":
                         yield* Effect.gen(function* () {
                           const target = matchesTauntCommand(
@@ -1048,18 +1017,14 @@ export const makeArmyLoopTauntRuntime = (
                                   ),
                               { concurrency: "unbounded" },
                             );
-                            const unavailablePlayerNumbers =
-                              target.players.filter(
-                                (_, index) =>
-                                  participantSnapshots[index] === null,
-                              );
-                            if (unavailablePlayerNumbers.length > 0) {
+                            if (
+                              participantSnapshots.some(
+                                (participant) => participant === null,
+                              )
+                            ) {
                               yield* reportCommandResult(
                                 payload.commandId,
                                 "not-ready",
-                                {
-                                  reason: `Army player snapshots unavailable: ${unavailablePlayerNumbers.join(", ")}`,
-                                },
                               );
                               return;
                             }
@@ -1086,14 +1051,9 @@ export const makeArmyLoopTauntRuntime = (
                               yield* reportCommandResult(
                                 payload.commandId,
                                 "not-ready",
-                                {
-                                  reason: "Loop Taunt command lease expired",
-                                },
                               );
                               return;
                             }
-                            const leaseLimitedCallback =
-                              callbackBudgetMs < LOOP_TAUNT_SKIP_TIMEOUT_MS;
                             const skip = yield* target
                               .skipWhen({
                                 participants: snapshots,
@@ -1108,11 +1068,6 @@ export const makeArmyLoopTauntRuntime = (
                               yield* reportCommandResult(
                                 payload.commandId,
                                 "not-ready",
-                                {
-                                  reason: leaseLimitedCallback
-                                    ? "Loop Taunt command lease expired"
-                                    : "Loop Taunt skip callback timed out",
-                                },
                               );
                               return;
                             }
@@ -1158,9 +1113,6 @@ export const makeArmyLoopTauntRuntime = (
                             yield* reportCommandResult(
                               payload.commandId,
                               "not-ready",
-                              {
-                                reason: "Loop Taunt command lease expired",
-                              },
                             );
                             return;
                           }
@@ -1208,20 +1160,26 @@ export const makeArmyLoopTauntRuntime = (
                                 ? "Server rejected the scroll cast"
                                 : "Scroll cast confirmed a different target";
                           if (reason !== undefined) {
-                            yield* Effect.logWarning({
-                              commandId: payload.commandId,
-                              cooldownMs,
-                              message: reason,
-                              monsterMapId: dispatchTarget.monsterMapId,
-                              playerNumber: session.playerNumber,
-                            });
+                            yield* Effect.logWarning(
+                              "Loop Taunt scroll cast failed",
+                              Cause.fail(reason),
+                            ).pipe(
+                              Effect.annotateLogs({
+                                component: "army",
+                                data: {
+                                  commandId: payload.commandId,
+                                  cooldownMs,
+                                  monsterMapId: dispatchTarget.monsterMapId,
+                                  playerNumber: session.playerNumber,
+                                },
+                              }),
+                            );
                           }
                           yield* reportCommandResult(
                             payload.commandId,
                             confirmed ? "confirmed" : "cast-failed",
                             {
                               cooldownMs,
-                              ...(reason === undefined ? {} : { reason }),
                             },
                           );
 
@@ -1261,10 +1219,15 @@ export const makeArmyLoopTauntRuntime = (
                   // event source, so readiness must be sampled while active.
                   reportParticipantState.pipe(
                     Effect.catchCause((cause) =>
-                      Effect.logWarning({
+                      Effect.logWarning(
+                        "Loop Taunt readiness report failed",
                         cause,
-                        message: "Loop Taunt readiness report failed",
-                      }),
+                      ).pipe(
+                        Effect.annotateLogs({
+                          component: "army",
+                          data: { runId: loopRun.runId },
+                        }),
+                      ),
                     ),
                     Effect.andThen(
                       Effect.sleep(`${LOOP_TAUNT_STATUS_INTERVAL_MS} millis`),
@@ -1284,10 +1247,15 @@ export const makeArmyLoopTauntRuntime = (
                     },
                   ).pipe(
                     Effect.catchCause((cause) =>
-                      Effect.logWarning({
+                      Effect.logWarning(
+                        "Loop Taunt target refresh failed",
                         cause,
-                        message: "Loop Taunt target refresh failed",
-                      }),
+                      ).pipe(
+                        Effect.annotateLogs({
+                          component: "army",
+                          data: { runId: loopRun.runId },
+                        }),
+                      ),
                     ),
                     Effect.andThen(
                       Effect.sleep(`${LOOP_TAUNT_TARGET_INTERVAL_MS} millis`),
@@ -1300,50 +1268,29 @@ export const makeArmyLoopTauntRuntime = (
 
               // Arm map exit before setup so a transition during target
               // resolution or registration cannot expose a stale run handle.
-              const mapWatcher = api.events
+              yield* api.events
                 .once(
                   { type: "join-map" },
                   {
-                    trigger: setup.pipe(
-                      Effect.matchCauseEffect({
-                        onFailure: (cause) =>
-                          Deferred.failCause(startup, cause).pipe(
-                            Effect.asVoid,
-                          ),
-                        onSuccess: (loopRun) =>
-                          Deferred.succeed(startup, loopRun).pipe(
-                            Effect.asVoid,
-                          ),
-                      }),
-                      Effect.forkIn(runScope, {
-                        startImmediately: true,
-                      }),
+                    trigger: Deferred.succeed(mapArmed, undefined).pipe(
                       Effect.as(true),
                     ),
                   },
                 )
                 .pipe(
-                  Effect.matchCauseEffect({
-                    onFailure: (cause) =>
-                      Deferred.failCause(startup, cause).pipe(Effect.asVoid),
-                    onSuccess: () =>
-                      Deferred.succeed(mapExited, undefined).pipe(
-                        Effect.asVoid,
-                      ),
-                  }),
+                  Effect.asVoid,
+                  Deferred.into(mapExited),
                   Effect.forkScoped,
                 );
-              yield* mapWatcher;
+              yield* Deferred.await(mapArmed).pipe(
+                Effect.raceFirst(mapChangedDuringStartup),
+              );
 
-              const loopRun = yield* Deferred.await(startup);
+              const loopRun = yield* setup;
               // Let an exit published with startup win before exposing the run.
               yield* Effect.yieldNow;
               if (yield* Deferred.isDone(mapExited)) {
-                return yield* Effect.fail(
-                  new ArmyLoopTauntError(
-                    "The map changed while Loop Taunt was starting",
-                  ),
-                );
+                return yield* mapChangedDuringStartup;
               }
 
               yield* Ref.set(startedRef, true);
@@ -1360,7 +1307,9 @@ export const makeArmyLoopTauntRuntime = (
                 ),
               );
               yield* Effect.raceFirst(
-                Deferred.await(mapExited),
+                Deferred.await(mapExited).pipe(
+                  Effect.catchCause(() => Effect.never),
+                ),
                 Effect.raceFirst(
                   Deferred.await(stopRequested),
                   Effect.raceFirst(Deferred.await(ended), terminal),

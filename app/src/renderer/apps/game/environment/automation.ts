@@ -1,5 +1,6 @@
 import type { EnvironmentState } from "@lucent/core/environment";
 import type { BoostType } from "@lucent/game";
+import type * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 
 export interface EnvironmentBoostCandidate {
@@ -34,10 +35,12 @@ export const selectEnvironmentBoost = Effect.fn("Environment.selectBoost")(
       name: string,
     ) => Effect.Effect<EnvironmentBoostCandidate | null, unknown>,
     hasActiveBoost: (type: BoostType) => Effect.Effect<boolean, unknown>,
+    onFailure: (cause: Cause.Cause<unknown>) => Effect.Effect<void> = () =>
+      Effect.void,
   ) {
     for (const name of names) {
       const item = yield* getItem(name).pipe(
-        Effect.catchCause(() => Effect.succeed(null)),
+        Effect.catchCause((cause) => onFailure(cause).pipe(Effect.as(null))),
       );
       if (item === null || item.category !== "ServerUse") {
         continue;
@@ -49,7 +52,7 @@ export const selectEnvironmentBoost = Effect.fn("Environment.selectBoost")(
       }
 
       const active = yield* hasActiveBoost(type).pipe(
-        Effect.catchCause(() => Effect.succeed(true)),
+        Effect.catchCause((cause) => onFailure(cause).pipe(Effect.as(true))),
       );
       if (!active) {
         return item;

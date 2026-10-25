@@ -1,11 +1,30 @@
-import { watchFile, unwatchFile, type Stats } from "fs";
+import type { WebContents } from "electron";
+import { watchFile, unwatchFile, type Stats } from "node:fs";
 
-import { webContents } from "electron";
+import { electronRendererRegistry } from "../electron/ElectronRendererRegistry";
 
 import * as Effect from "effect/Effect";
+import * as FiberSet from "effect/FiberSet";
 
-import { DesktopObservability } from "./observability/DesktopObservability";
-import { reloadUsableRendererContents } from "./DesktopDevRendererReloadContents";
+export type RendererReloadContentTarget = Pick<
+  WebContents,
+  "isDestroyed" | "reloadIgnoringCache"
+>;
+
+export const reloadUsableRendererContents = (
+  contents: Iterable<RendererReloadContentTarget>,
+): number => {
+  let reloadCount = 0;
+  for (const renderer of contents) {
+    if (renderer.isDestroyed()) {
+      continue;
+    }
+
+    renderer.reloadIgnoringCache();
+    reloadCount += 1;
+  }
+  return reloadCount;
+};
 
 const RELOAD_WATCH_INTERVAL_MS = 100;
 
@@ -16,10 +35,9 @@ const shouldIgnoreReloadFileChange = (
   current.mtimeMs === 0 ||
   (current.mtimeMs === previous.mtimeMs && current.size === previous.size);
 
-// The global registry includes detached BrowserViews, such as the preloaded
-// group-controls view while its popover is closed.
+// The owned registry includes detached views, such as preloaded group controls.
 const reloadOpenRendererContents = (): number =>
-  reloadUsableRendererContents(webContents.getAllWebContents());
+  reloadUsableRendererContents(electronRendererRegistry.getAllWebContents());
 
 export const installDesktopDevRendererReload = Effect.gen(function* () {
   const reloadPath = process.env["LUCENT_DEV_RENDERER_RELOAD"];
@@ -27,21 +45,24 @@ export const installDesktopDevRendererReload = Effect.gen(function* () {
     return;
   }
 
-  const observability = yield* DesktopObservability;
-  const context = yield* Effect.context<never>();
-  const runPromise = Effect.runPromiseWith(context);
+  const runFork = yield* FiberSet.makeRuntime();
   const listener = (current: Stats, previous: Stats): void => {
     if (shouldIgnoreReloadFileChange(current, previous)) {
       return;
     }
 
     const rendererCount = reloadOpenRendererContents();
-    void runPromise(
-      observability.info("dev", "Renderer reload requested", {
-        reloadPath,
-        rendererCount,
-      }),
-    ).catch(() => undefined);
+    runFork(
+      Effect.logDebug("Renderer reload requested").pipe(
+        Effect.annotateLogs({
+          component: "dev",
+          data: {
+            reloadPath,
+            rendererCount,
+          },
+        }),
+      ),
+    );
   };
 
   yield* Effect.sync(() => {

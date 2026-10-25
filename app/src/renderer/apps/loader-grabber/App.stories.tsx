@@ -78,7 +78,7 @@ export const NoDataReturned: Story = {
 export const GrabError: Story = {
   args: {
     fixture: {
-      error: "The game client did not expose the requested shop data.",
+      error: "The game did not return the requested shop data.",
       source: "shop",
       sourceId: "1550",
     },

@@ -6,7 +6,7 @@ import type { Event } from "../contract/Event";
 import type { Packet } from "../contract/Packet";
 import { toItem } from "../contract/payload/Items";
 import { makeBridge } from "../bridge/Bridge";
-import { makePipeline, type ProjectionTrace } from "../protocol/Pipeline";
+import { makePipeline } from "../protocol/Pipeline";
 import { makeStore } from "../state/Store";
 import { auraEvents } from "./Auras";
 
@@ -55,7 +55,6 @@ const makeItemProjection = () =>
     const store = yield* makeStore;
     const diagnostics: string[] = [];
     const events: Event[] = [];
-    const traces: ProjectionTrace[] = [];
     const pipeline = makePipeline(store, {
       publishEvent: (event) =>
         Effect.sync(() => {
@@ -65,13 +64,9 @@ const makeItemProjection = () =>
         Effect.sync(() => {
           diagnostics.push(operation);
         }),
-      reportProjectionTrace: (_operation, trace) =>
-        Effect.sync(() => {
-          traces.push(trace);
-        }),
     });
 
-    return { store, pipeline, diagnostics, events, traces };
+    return { store, pipeline, diagnostics, events };
   });
 
 const makeWorldProjection = () =>
@@ -264,8 +259,7 @@ describe("Projection", () => {
     "indexes valid inventory entries and diagnoses malformed neighbors",
     () =>
       Effect.gen(function* () {
-        const { store, pipeline, diagnostics, traces } =
-          yield* makeItemProjection();
+        const { store, pipeline, diagnostics } = yield* makeItemProjection();
         yield* pipeline.packet(
           extension("loadInventoryBig", {
             items: [
@@ -286,12 +280,9 @@ describe("Projection", () => {
         ).toBe(7);
         expect(diagnostics).toEqual(["items:loadInventoryBig:entries"]);
 
-        expect(traces).toHaveLength(1);
-        expect(traces[0]).toMatchObject({
-          before: expect.any(Object),
-          diff: expect.any(Object),
-          packet: { command: "loadInventoryBig" },
-        });
+        expect(yield* store.items.getAll("inventory")).toMatchObject([
+          { charItemId: 77, itemId: 7, name: "Health Potion", quantity: 3 },
+        ]);
       }),
   );
 
@@ -679,15 +670,8 @@ describe("Projection", () => {
   it.effect("derives omitted item ids from item record keys", () =>
     Effect.gen(function* () {
       const store = yield* makeStore;
-      let addItemsChanged: boolean | undefined;
       const pipeline = makePipeline(store, {
         publishEvent: () => Effect.void,
-        reportProjectionTrace: (operation, trace) =>
-          Effect.sync(() => {
-            if (operation === "projection:addItems") {
-              addItemsChanged = trace.changed;
-            }
-          }),
       });
 
       yield* store.items.replace("inventory", [
@@ -716,7 +700,13 @@ describe("Projection", () => {
         }),
       );
       expect((yield* store.items.get("inventory", 12_917))?.quantity).toBe(400);
-      expect(addItemsChanged).toBe(true);
+      expect(
+        yield* store.items.getByCharItemId("inventory", 200),
+      ).toMatchObject({
+        itemId: 12_917,
+        name: "Scroll of Enrage",
+        quantity: 400,
+      });
       yield* pipeline.packet(
         extension("forceAddItem", {
           items: {

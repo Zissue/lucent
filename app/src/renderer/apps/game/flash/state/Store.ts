@@ -437,65 +437,6 @@ export const makeStore = Effect.gen(function* () {
       }),
   };
 
-  const snapshot = Effect.all({
-    auth: SynchronizedRef.get(authRef).pipe(
-      Effect.map((state) => ({
-        loggedIn: state.loggedIn,
-        password: state.password,
-        servers: Object.fromEntries(
-          Array.from(state.servers, ([key, server]) => [key, server.toJSON()]),
-        ),
-        username: state.username,
-      })),
-    ),
-    items: SynchronizedRef.get(itemsRef).pipe(
-      Effect.map((state) => ({
-        containers: Object.fromEntries(
-          Array.from(state.containers, ([container, items]) => [
-            container,
-            Object.fromEntries(
-              Array.from(items, ([key, item]) => [key, item.toJSON()]),
-            ),
-          ]),
-        ),
-        hydration: Object.fromEntries(state.hydration),
-      })),
-    ),
-    projection: projection.get,
-    quests: SynchronizedRef.get(questsRef).pipe(
-      Effect.map((state) => ({
-        accepted: Array.from(state.accepted),
-        quests: Object.fromEntries(
-          Array.from(state.quests, ([key, quest]) => [key, quest.toJSON()]),
-        ),
-      })),
-    ),
-    settings: SubscriptionRef.get(settingsRef).pipe(
-      Effect.map((state) => ({ ...state })),
-    ),
-    shops: SynchronizedRef.get(shopsRef).pipe(
-      Effect.map((state) => state.current?.toJSON() ?? null),
-    ),
-    world: SynchronizedRef.get(worldRef).pipe(
-      Effect.map((state) => ({
-        cellPads: [...state.cellPads],
-        cells: [...state.cells],
-        map: { ...state.map },
-        monsters: Object.fromEntries(
-          Array.from(state.monsters, ([id, monster]) => [id, monster.toJSON()]),
-        ),
-        players: Object.fromEntries(
-          Array.from(state.players, ([username, player]) => [
-            username,
-            player.toJSON(),
-          ]),
-        ),
-        self: state.self,
-        selfEntityId: state.selfEntityId,
-      })),
-    ),
-  });
-
   return {
     auth,
     items,
@@ -503,10 +444,8 @@ export const makeStore = Effect.gen(function* () {
     quests,
     settings,
     shops,
-    snapshot,
     world,
   };
 });
 
 export type Store = Effect.Success<typeof makeStore>;
-export type StoreSnapshot = Effect.Success<Store["snapshot"]>;

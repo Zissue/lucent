@@ -119,8 +119,7 @@ export const Empty: Story = {
 export const AutomationFailure: Story = {
   args: {
     fixture: {
-      error:
-        "The game renderer stopped responding while applying this Environment.",
+      error: "The game did not respond in time. Try again.",
       state: configuredState,
     },
   },

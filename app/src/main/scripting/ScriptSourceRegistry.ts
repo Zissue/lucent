@@ -1,6 +1,7 @@
-import { extname, relative, resolve } from "path";
+import { extname, relative, resolve } from "node:path";
 
 import * as Context from "effect/Context";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -23,11 +24,19 @@ import {
   resolveRelativeScriptModulePath,
   scriptModulePathCandidates,
 } from "@lucent/core/scriptPackages";
-import { ScriptFiles } from "../internal/scripting/ScriptFiles";
-import type { ScriptFileAnalysis } from "../internal/scripting/ScriptFileWorkerProtocol";
+import { isMissingFileError } from "../filesystem/BoundedFileSystem";
 import {
-  type DiscoveredScriptPackage,
+  analyzeScriptFile,
+  logScriptFileResolutionFailure,
+  readScriptFile,
+  resolveScriptFile,
+  ScriptFilesError,
+  type ScriptFileAnalysis,
+} from "./ScriptFileAnalysis";
+import type { DiscoveredScriptPackage } from "./ScriptCatalogDiscovery";
+import {
   ScriptPackageCatalog,
+  ScriptPackageCatalogError,
 } from "./ScriptPackageCatalog";
 import {
   portablePath,
@@ -35,13 +44,12 @@ import {
   sha256Revision,
 } from "./ScriptPackageFileSystem";
 import {
-  formatScriptByteLimit,
+  formatBytes,
   SCRIPT_SNAPSHOT_MAX_BYTES,
   SCRIPT_SOURCE_CACHE_MAX_BYTES,
   SCRIPT_SOURCE_CACHE_MAX_ENTRIES,
 } from "./ScriptLimits";
 
-const SNAPSHOT_MAX_ATTEMPTS = 3;
 const SOURCE_READ_CONCURRENCY = 8;
 
 export class ScriptSourceRegistryError extends Schema.TaggedError<ScriptSourceRegistryError>()(
@@ -162,6 +170,41 @@ const failedResolution = (
   };
 };
 
+const isScriptFilesError = Schema.is(ScriptFilesError);
+const isScriptSourceRegistryError = Schema.is(ScriptSourceRegistryError);
+const isScriptPackageCatalogError = Schema.is(ScriptPackageCatalogError);
+
+const resolutionFailureCause = (
+  cause: Cause.Cause<unknown>,
+): Cause.Cause<unknown> =>
+  Cause.fromReasons(
+    cause.reasons.flatMap((reason): readonly Cause.Reason<unknown>[] => {
+      if (!Cause.isFailReason(reason)) return [reason];
+      const error = reason.error;
+      if (isScriptFilesError(error)) {
+        return error.failureCause?.reasons ?? [];
+      }
+      if (
+        isScriptSourceRegistryError(error) ||
+        isScriptPackageCatalogError(error)
+      ) {
+        return error.cause === undefined
+          ? []
+          : resolutionFailureCause(Cause.fail(error.cause)).reasons;
+      }
+      if (isMissingFileError(error)) {
+        return [];
+      }
+      return [reason];
+    }),
+  );
+
+const resolveFailure = (path: string, error: unknown) =>
+  logScriptFileResolutionFailure(
+    path,
+    resolutionFailureCause(Cause.fail(error)),
+  ).pipe(Effect.as(failedResolution(path, error)));
+
 const moduleFromAnalysis = (
   target: ModuleTarget,
   analysis: ScriptFileAnalysis,
@@ -178,11 +221,15 @@ const moduleFromAnalysis = (
   source: analysis.file.source,
 });
 
-export const layer = Layer.effect(
-  ScriptSourceRegistry,
-  Effect.gen(function* () {
+export const makeScriptSourceRegistry = Effect.fn("makeScriptSourceRegistry")(
+  function* (
+    limits = {
+      maxBytes: SCRIPT_SOURCE_CACHE_MAX_BYTES,
+      maxEntries: SCRIPT_SOURCE_CACHE_MAX_ENTRIES,
+    },
+    analyze: typeof analyzeScriptFile = analyzeScriptFile,
+  ) {
     const catalog = yield* ScriptPackageCatalog;
-    const scriptFiles = yield* ScriptFiles;
     const sourceCache = new Map<string, CachedSource>();
     let sourceCacheBytes = 0;
 
@@ -241,7 +288,7 @@ export const layer = Layer.effect(
         return cached;
       }
 
-      const analysis = yield* scriptFiles.analyze(target.absolutePath).pipe(
+      const analysis = yield* analyze(target.absolutePath).pipe(
         Effect.mapError(
           (cause) =>
             new ScriptSourceRegistryError({
@@ -257,13 +304,14 @@ export const layer = Layer.effect(
         module: moduleFromAnalysis(target, analysis),
         requirements: target.format === "commonjs" ? analysis.requirements : [],
       };
-      if (cached !== undefined) sourceCacheBytes -= cached.bytes;
+      const previous = sourceCache.get(target.absolutePath);
+      if (previous !== undefined) sourceCacheBytes -= previous.bytes;
       sourceCache.delete(target.absolutePath);
       sourceCache.set(target.absolutePath, next);
       sourceCacheBytes += next.bytes;
       while (
-        sourceCacheBytes > SCRIPT_SOURCE_CACHE_MAX_BYTES ||
-        sourceCache.size > SCRIPT_SOURCE_CACHE_MAX_ENTRIES
+        sourceCacheBytes > limits.maxBytes ||
+        sourceCache.size > limits.maxEntries
       ) {
         const oldestPath = sourceCache.keys().next().value;
         if (oldestPath === undefined) break;
@@ -284,7 +332,6 @@ export const layer = Layer.effect(
         path: importer.absolutePath,
       });
 
-    /** Reads only modules reachable through Lucent's literal CommonJS contract. */
     const collectExecutionClosure = Effect.fn(
       "ScriptSourceRegistry.collectExecutionClosure",
     )(function* (
@@ -294,7 +341,6 @@ export const layer = Layer.effect(
     ) {
       const modules = new Map<string, ScriptModuleSource>();
       const packages = new Map<string, ScriptExecutionPackage>();
-      const fingerprints = new Map<string, string>();
       const scheduled = new Set([selectedTarget.id]);
       const queue: ModuleTarget[] = [selectedTarget];
       let totalBytes = 0;
@@ -333,13 +379,10 @@ export const layer = Layer.effect(
         );
 
         for (const { loaded, target } of loadedBatch) {
-          if (target.id !== selectedTarget.id) {
-            fingerprints.set(target.absolutePath, loaded.fingerprint);
-          }
           totalBytes += loaded.bytes;
           if (totalBytes > SCRIPT_SNAPSHOT_MAX_BYTES) {
             return yield* new ScriptSourceRegistryError({
-              detail: `Script sources exceed the ${formatScriptByteLimit(SCRIPT_SNAPSHOT_MAX_BYTES)} execution limit.`,
+              detail: `Script sources exceed the ${formatBytes(SCRIPT_SNAPSHOT_MAX_BYTES)} execution limit.`,
               path: selectedTarget.absolutePath,
             });
           }
@@ -440,42 +483,6 @@ export const layer = Layer.effect(
         }
       }
 
-      const fingerprintEntries = [...fingerprints];
-      for (
-        let index = 0;
-        index < fingerprintEntries.length;
-        index += SOURCE_READ_CONCURRENCY
-      ) {
-        const batch = fingerprintEntries.slice(
-          index,
-          index + SOURCE_READ_CONCURRENCY,
-        );
-        const current = yield* Effect.all(
-          batch.map(([path]) =>
-            Effect.tryPromise({
-              try: () => regularFileFingerprint(path),
-              catch: (cause) =>
-                new ScriptSourceRegistryError({
-                  detail: errorMessage(
-                    cause,
-                    "Failed to verify script source.",
-                  ),
-                  path,
-                  cause,
-                }),
-            }),
-          ),
-          { concurrency: SOURCE_READ_CONCURRENCY },
-        );
-        if (
-          current.some(
-            (fingerprint, batchIndex) => fingerprint !== batch[batchIndex]?.[1],
-          )
-        ) {
-          return null;
-        }
-      }
-
       return {
         modules: [...modules.values()].toSorted((left, right) =>
           left.id.localeCompare(right.id),
@@ -488,112 +495,85 @@ export const layer = Layer.effect(
 
     const readReference = Effect.fn("ScriptSourceRegistry.readReference")(
       function* (reference: ScriptReference) {
-        for (let attempt = 0; attempt < SNAPSHOT_MAX_ATTEMPTS; attempt += 1) {
-          // Keep package metadata consistent within an attempt, but only discover
-          // packages when the selected script or a reachable import needs them.
-          const getSnapshotDiscovery = yield* Effect.cached(getDiscovery);
-          const discovery =
-            reference.kind === "package"
-              ? yield* getSnapshotDiscovery
-              : undefined;
-          const entry =
-            reference.kind === "loose"
-              ? yield* resolveEntry(reference)
-              : discovery?.scripts.get(
-                  `package:${reference.packageName}:${reference.path}`,
-                );
-          if (entry === undefined) {
-            return yield* new ScriptSourceRegistryError({
-              detail: "The selected script is no longer available.",
-            });
-          }
-
-          let target: ModuleTarget | undefined;
-          if (reference.kind === "package") {
-            const owner = discovery?.packages.get(reference.packageName);
-            if (owner?.compatibility.status === "incompatible") {
-              return yield* new ScriptSourceRegistryError({
-                detail: `${owner.name} requires Lucent ${owner.compatibility.requiredVersion}; this app is ${owner.compatibility.currentVersion}.`,
-                path: entry.path,
-              });
-            }
-            if (owner?.dependencyStatus.status === "blocked") {
-              return yield* new ScriptSourceRegistryError({
-                detail: `${owner.name} can't run because one or more required packages are unavailable.`,
-                path: entry.path,
-              });
-            }
-            target =
-              owner === undefined
-                ? undefined
-                : packageTarget(owner, reference.path);
-          } else {
-            target = looseTarget(entry);
-          }
-          if (target === undefined) continue;
-          const parsedEntry = yield* scriptFiles.analyze(entry.path).pipe(
-            Effect.mapError(
-              (cause) =>
-                new ScriptSourceRegistryError({
-                  detail: cause.message,
-                  path: entry.path,
-                  cause,
-                }),
-            ),
-          );
-          const closure = yield* collectExecutionClosure(
-            getSnapshotDiscovery,
-            target,
-            parsedEntry,
-          );
-          if (closure === null) continue;
-          const verifiedEntry = yield* scriptFiles.analyze(entry.path).pipe(
-            Effect.mapError(
-              (cause) =>
-                new ScriptSourceRegistryError({
-                  detail: cause.message,
-                  path: entry.path,
-                  cause,
-                }),
-            ),
-          );
-          if (
-            verifiedEntry.file.revision !== parsedEntry.file.revision ||
-            verifiedEntry.fingerprint !== parsedEntry.fingerprint
-          ) {
-            continue;
-          }
-
-          const snapshotRevision = sha256Revision(
-            JSON.stringify({
-              entryId: target.id,
-              modules: closure.modules.map(({ id, imports, revision }) => ({
-                id,
-                imports,
-                revision,
-              })),
-              packages: closure.packages,
-            }),
-          );
-          const snapshot: ScriptExecutionSnapshot = {
-            entryModuleId: target.id,
-            modules: closure.modules,
-            packages: closure.packages,
-            revision: snapshotRevision,
-          };
-          return {
-            ...verifiedEntry.file,
-            name: entry.name,
-            path: entry.path,
-            reference,
-            snapshot,
-          } satisfies ScriptFile;
+        const getSnapshotDiscovery = yield* Effect.cached(getDiscovery);
+        const discovery =
+          reference.kind === "package"
+            ? yield* getSnapshotDiscovery
+            : undefined;
+        const entry = yield* resolveEntry(reference);
+        if (entry === undefined) {
+          return yield* new ScriptSourceRegistryError({
+            detail: "The selected script is no longer available.",
+          });
         }
 
-        return yield* new ScriptSourceRegistryError({
-          detail:
-            "Script files kept changing while Lucent prepared an execution snapshot. Try starting again.",
-        });
+        let target: ModuleTarget | undefined;
+        if (reference.kind === "package") {
+          const owner = discovery?.packages.get(reference.packageName);
+          if (owner?.compatibility.status === "incompatible") {
+            return yield* new ScriptSourceRegistryError({
+              detail: `${owner.name} requires Lucent ${owner.compatibility.requiredVersion}; this app is ${owner.compatibility.currentVersion}.`,
+              path: entry.path,
+            });
+          }
+          if (owner?.dependencyStatus.status === "blocked") {
+            return yield* new ScriptSourceRegistryError({
+              detail: `${owner.name} can't run because one or more required packages are unavailable.`,
+              path: entry.path,
+            });
+          }
+          target =
+            owner === undefined
+              ? undefined
+              : packageTarget(owner, reference.path);
+        } else {
+          target = looseTarget(entry);
+        }
+        if (target === undefined) {
+          return yield* new ScriptSourceRegistryError({
+            detail: "The selected script is no longer available.",
+            path: entry.path,
+          });
+        }
+        const parsedEntry = yield* analyze(entry.path).pipe(
+          Effect.mapError(
+            (cause) =>
+              new ScriptSourceRegistryError({
+                detail: cause.message,
+                path: entry.path,
+                cause,
+              }),
+          ),
+        );
+        const closure = yield* collectExecutionClosure(
+          getSnapshotDiscovery,
+          target,
+          parsedEntry,
+        );
+        const snapshotRevision = sha256Revision(
+          JSON.stringify({
+            entryId: target.id,
+            modules: closure.modules.map(({ id, imports, revision }) => ({
+              id,
+              imports,
+              revision,
+            })),
+            packages: closure.packages,
+          }),
+        );
+        const snapshot: ScriptExecutionSnapshot = {
+          entryModuleId: target.id,
+          modules: closure.modules,
+          packages: closure.packages,
+          revision: snapshotRevision,
+        };
+        return {
+          ...parsedEntry.file,
+          name: entry.name,
+          path: entry.path,
+          reference,
+          snapshot,
+        } satisfies ScriptFile;
       },
     );
 
@@ -609,7 +589,7 @@ export const layer = Layer.effect(
         ),
         Effect.flatMap((reference) =>
           reference === undefined
-            ? scriptFiles.read(path).pipe(
+            ? readScriptFile(path).pipe(
                 Effect.mapError(
                   (cause) =>
                     new ScriptSourceRegistryError({
@@ -633,24 +613,20 @@ export const layer = Layer.effect(
       return catalog.resolveReference(reference).pipe(
         Effect.flatMap((entry) =>
           entry === undefined
-            ? Effect.succeed({
+            ? Effect.succeed<ScriptFileResolution>({
                 status: "missing",
                 path: displayPath,
-              } satisfies ScriptFileResolution)
+              })
             : readReference(reference).pipe(
-                Effect.match({
-                  onFailure: (cause) => failedResolution(displayPath, cause),
-                  onSuccess: (file) =>
-                    ({
-                      status: "found",
-                      file,
-                    }) satisfies ScriptFileResolution,
-                }),
+                Effect.map(
+                  (file): ScriptFileResolution => ({
+                    status: "found",
+                    file,
+                  }),
+                ),
               ),
         ),
-        Effect.catch((cause) =>
-          Effect.succeed(failedResolution(displayPath, cause)),
-        ),
+        Effect.catch((cause) => resolveFailure(displayPath, cause)),
       );
     };
 
@@ -658,12 +634,10 @@ export const layer = Layer.effect(
       catalog.referenceForPath(path).pipe(
         Effect.flatMap((reference) =>
           reference === undefined
-            ? scriptFiles.resolve(path)
+            ? resolveScriptFile(path)
             : resolveReference(reference),
         ),
-        Effect.catch((cause) =>
-          Effect.succeed(failedResolution(resolve(path), cause)),
-        ),
+        Effect.catch((cause) => resolveFailure(resolve(path), cause)),
       );
 
     return ScriptSourceRegistry.of({
@@ -672,5 +646,10 @@ export const layer = Layer.effect(
       resolvePath,
       resolveReference,
     });
-  }),
+  },
+);
+
+export const layer = Layer.effect(
+  ScriptSourceRegistry,
+  makeScriptSourceRegistry(),
 );

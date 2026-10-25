@@ -1,4 +1,4 @@
-import { join } from "path";
+import { join } from "node:path";
 
 /** Resolves the user-owned directories shared by desktop scripting services. */
 export const resolveScriptWorkspacePaths = (workspaceDir: string) =>

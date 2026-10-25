@@ -1,41 +1,69 @@
-import { tmpdir } from "os";
-import { join } from "path";
-
-import { describe, expect, it } from "@effect/vitest";
+import { describe, expect, it } from "vitest";
 
 import { parseCliOptions } from "./cli";
 
-describe("main CLI", () => {
-  it("parses supported options and ignores malformed values", () => {
-    const cwd = join(tmpdir(), "lucent-cli");
+describe("parseCliOptions", () => {
+  it.each([
+    ["--launch-mode", "game"],
+    ["--launch-mode=game"],
+    ["--launchMode", "game"],
+    ["--launchMode=game"],
+  ])("accepts launch-mode arguments %j", (...args) => {
+    expect(parseCliOptions(args)).toEqual({ launchMode: "game" });
+  });
 
-    const parsed = parseCliOptions(
-      [
-        "--flash-plugin-path=PepperFlashPlayer.plugin",
-        "--flash-version",
-        "32.0.0.371",
-        "--launch-mode",
-        "account-manager",
-        "--debug",
-      ],
-      { cwd },
-    );
-    expect(parsed).toEqual({
-      debug: true,
-      flashPluginPath: join(cwd, "PepperFlashPlayer.plugin"),
-      flashVersion: "32.0.0.371",
+  it("normalizes the manager shorthand and accepts the canonical mode", () => {
+    expect(parseCliOptions(["--launch-mode", " MANAGER "])).toEqual({
       launchMode: "account-manager",
     });
+    expect(parseCliOptions(["--launch-mode=account-manager"])).toEqual({
+      launchMode: "account-manager",
+    });
+  });
 
+  it("uses the last valid launch mode across both aliases", () => {
     expect(
       parseCliOptions([
         "--launch-mode",
-        "settings",
-        "--flash-plugin-path",
-        "--flash-version=   ",
-        "--another-flag",
-        "--debug=10637",
+        "game",
+        "--launchMode=manager",
+        "--launch-mode=unknown",
       ]),
-    ).toEqual({});
+    ).toEqual({ launchMode: "account-manager" });
+  });
+
+  it("ignores Electron arguments while enabling requested diagnostics", () => {
+    expect(
+      parseCliOptions([
+        "/Applications/Lucent.app/Contents/MacOS/Lucent",
+        "--inspect=9229",
+        "--original-process-start-time=123",
+        "-psn_0_42",
+        "--debug",
+        "--launch-mode=game",
+      ]),
+    ).toEqual({ debug: true, launchMode: "game" });
+  });
+
+  it("ignores missing and invalid values without consuming the next flag", () => {
+    expect(parseCliOptions(["--launch-mode", "--debug"])).toEqual({
+      debug: true,
+    });
+    expect(parseCliOptions(["--launch-mode"])).toEqual({});
+    expect(parseCliOptions(["--launchMode=invalid", "--launch-mode="])).toEqual(
+      {},
+    );
+    expect(parseCliOptions(["--debug=false"])).toEqual({});
+  });
+
+  it("stops parsing options after the argument terminator", () => {
+    expect(
+      parseCliOptions([
+        "--launch-mode=game",
+        "--",
+        "--debug",
+        "--launch-mode=manager",
+      ]),
+    ).toEqual({ launchMode: "game" });
   });
 });
