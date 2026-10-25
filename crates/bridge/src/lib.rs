@@ -10,7 +10,7 @@ use std::task::Waker;
 pub use calls::{CallError, Caller, Execution, Inbox, NotRun, Run, RunId, Unknown};
 pub use events::{
     Boot, CloseCause, Delivery, Ended, Event, EventStream, EventWriter, GameEvent, Lifecycle,
-    LoaderEvent, Seq, Server, SfsConnection, SocketEvent, Status,
+    LoaderEvent, Seq, Server, SfsConnection, SocketEvent, Status, StatusChanges,
 };
 pub use packet::{ConnId, Direction, Packet};
 pub use value::{AsValue, CallbackName, InvalidCallbackName};
@@ -47,6 +47,10 @@ impl Session {
 
     pub fn status(&self) -> Status {
         events::status(&self.events)
+    }
+
+    pub fn status_changes(&self) -> StatusChanges {
+        events::status_changes(&self.events)
     }
 }
 

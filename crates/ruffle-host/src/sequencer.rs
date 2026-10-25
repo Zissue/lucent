@@ -87,6 +87,7 @@ impl Sequencer {
             let _ = to_avm.try_send(SocketAction::Connect(handle, ConnectionState::Failed));
             return;
         }
+        tracing::info!(host, port, "game socket connecting");
         self.publish(GameEvent::Socket(SocketEvent::Connecting {
             conn,
             host: host.clone(),
@@ -127,6 +128,7 @@ impl Sequencer {
             };
             match kind {
                 NetEventKind::Connected => {
+                    tracing::info!(?conn, "game socket connected");
                     self.events
                         .publish(GameEvent::Socket(SocketEvent::Connected { conn }));
                     let _ = bridge.to_avm.try_send(SocketAction::Connect(
@@ -160,6 +162,7 @@ impl Sequencer {
                         .try_send(SocketAction::Data(bridge.handle, bytes));
                 }
                 NetEventKind::Closed(cause) => {
+                    tracing::info!(?conn, ?cause, "game socket closed");
                     self.events.publish(GameEvent::Socket(SocketEvent::Closed {
                         conn,
                         cause,

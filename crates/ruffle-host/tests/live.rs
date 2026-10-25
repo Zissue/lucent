@@ -239,3 +239,60 @@ fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     }
     out
 }
+
+#[test]
+#[ignore = "needs a GPU and the AQW servers; run with TMPDIR set to an empty directory"]
+fn a5_twenty_start_stop_cycles_leave_threads_sockets_and_temp_files_unchanged() {
+    let settle = || thread::sleep(Duration::from_secs(12));
+    let engine = Engine::start().unwrap();
+    let data = std::env::temp_dir().join(format!("lucent-a5-{}", std::process::id()));
+    let cycle = || {
+        let profile = Profile::account(&data, "cycle").unwrap();
+        let (host, presentation) =
+            PlayerHost::spawn(&engine, PlayerConfig::launcher(profile)).unwrap();
+        assert_eq!(
+            support::wait_for_boot(host.session(), BOOT_TIMEOUT),
+            Boot::Ready
+        );
+        let run = host.session().begin_run().unwrap();
+        let caller = run.caller();
+        let in_flight = thread::spawn(move || {
+            let name = CallbackName::from_static("auth.isLoggedIn");
+            while caller
+                .call(&name, vec![], Instant::now() + Duration::from_secs(1))
+                .is_ok()
+            {}
+        });
+        thread::sleep(Duration::from_millis(500));
+        let report = host.shutdown(Instant::now() + SHUTDOWN);
+        in_flight.join().unwrap();
+        drop(presentation);
+        report
+    };
+    cycle();
+    settle();
+    let before = support::resources();
+    let temp_before = support::files_in(&std::env::temp_dir());
+    let mut elapsed = Vec::new();
+    for index in 0..20 {
+        let report = cycle();
+        println!("cycle {index}: {report:?}");
+        assert_eq!(report.outcome, ruffle_host::ShutdownOutcome::Clean);
+        assert_eq!((report.leaked_tasks, report.net_tasks_left), (0, 0));
+        assert!(
+            report.elapsed < SHUTDOWN,
+            "cycle {index} took {:?}",
+            report.elapsed
+        );
+        elapsed.push(report.elapsed);
+    }
+    settle();
+    let after = support::resources();
+    let temp_after = support::files_in(&std::env::temp_dir());
+    summary("shutdown", &mut elapsed);
+    println!("before {before:?} temp files {temp_before}");
+    println!("after  {after:?} temp files {temp_after}");
+    assert_eq!(after, before);
+    assert_eq!(temp_after, temp_before);
+    let _ = std::fs::remove_dir_all(&data);
+}

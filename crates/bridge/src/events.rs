@@ -1,8 +1,8 @@
 use std::num::NonZeroUsize;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Instant;
 
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 
 use crate::packet::{ConnId, Direction, Packet};
 use crate::value::AsValue;
@@ -227,8 +227,8 @@ fn delivery(result: Result<Arc<Event>, broadcast::error::RecvError>) -> Result<D
 }
 
 pub struct EventWriter {
-    shared: Arc<Shared>,
     tx: broadcast::Sender<Arc<Event>>,
+    status: watch::Sender<Status>,
     last: Seq,
 }
 
@@ -240,7 +240,11 @@ impl EventWriter {
             at: Instant::now(),
             kind,
         });
-        self.shared.status.lock().unwrap().apply(&event);
+        self.status.send_if_modified(|status| {
+            let shown = (status.boot.clone(), status.server);
+            status.apply(&event);
+            (status.boot.clone(), status.server) != shown
+        });
         let _ = self.tx.send(event);
         self.last
     }
@@ -253,18 +257,19 @@ impl EventWriter {
 pub(crate) struct Shared {
     // Weak so that every stream ends once the writer drops.
     weak: broadcast::WeakSender<Arc<Event>>,
-    status: Mutex<Status>,
+    status: watch::Receiver<Status>,
 }
 
 pub(crate) fn channel(capacity: NonZeroUsize) -> (Arc<Shared>, EventWriter) {
     let (tx, _) = broadcast::channel(capacity.get());
+    let (status, status_rx) = watch::channel(Status::initial());
     let shared = Arc::new(Shared {
         weak: tx.downgrade(),
-        status: Mutex::new(Status::initial()),
+        status: status_rx,
     });
     let writer = EventWriter {
-        shared: shared.clone(),
         tx,
+        status,
         last: Seq::ZERO,
     };
     (shared, writer)
@@ -276,7 +281,24 @@ pub(crate) fn subscribe(shared: &Shared) -> Result<EventStream, Ended> {
 }
 
 pub(crate) fn status(shared: &Shared) -> Status {
-    shared.status.lock().unwrap().clone()
+    shared.status.borrow().clone()
+}
+
+pub struct StatusChanges {
+    rx: watch::Receiver<Status>,
+}
+
+impl StatusChanges {
+    pub async fn changed(&mut self) -> Result<Status, Ended> {
+        self.rx.changed().await.map_err(|_| Ended)?;
+        Ok(self.rx.borrow_and_update().clone())
+    }
+}
+
+pub(crate) fn status_changes(shared: &Shared) -> StatusChanges {
+    StatusChanges {
+        rx: shared.status.clone(),
+    }
 }
 
 #[cfg(test)]
@@ -330,6 +352,29 @@ mod tests {
         writer.publish(GameEvent::Loader(LoaderEvent::Progress(90)));
         assert_eq!(status(&shared).boot, Boot::Ready);
         assert_eq!(status(&shared).last.get(), 3);
+    }
+
+    #[test]
+    fn signals_status_changes_only_when_boot_or_server_change() {
+        let (shared, mut writer) = opened(8);
+        let mut changes = status_changes(&shared);
+        writer.publish(GameEvent::Loader(LoaderEvent::Debug("a".into())));
+        writer.publish(GameEvent::Loader(LoaderEvent::Debug("b".into())));
+        assert!(!changes.rx.has_changed().unwrap());
+        writer.publish(GameEvent::Loader(LoaderEvent::Loaded));
+        let status = block_on(changes.changed()).unwrap();
+        assert_eq!((status.boot, status.last.get()), (Boot::Ready, 3));
+        writer.publish(GameEvent::Loader(LoaderEvent::Debug("c".into())));
+        assert!(!changes.rx.has_changed().unwrap());
+        drop(writer);
+        assert_eq!(block_on(changes.changed()).unwrap_err(), Ended);
+    }
+
+    fn block_on<F: std::future::Future>(future: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(future)
     }
 
     #[test]

@@ -3,7 +3,7 @@ use std::ops::Range;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use bridge::{Boot, Delivery};
+use bridge::Boot;
 use gpui::{
     App, Bounds, ClipboardItem, Context, Corners, CursorStyle, DispatchPhase, ElementInputHandler,
     EntityInputHandler, FocusHandle, HitboxBehavior, KeyDownEvent, KeyUpEvent,
@@ -60,21 +60,12 @@ impl GameWindow {
                 }
             }
         });
-        let session = host.session().clone();
+        let mut changes = host.session().status_changes();
         let status_task = cx.spawn(async move |this, cx| {
-            let Ok(mut events) = session.subscribe() else {
-                return;
-            };
-            let mut shown = session.status().boot;
-            while let Ok(Delivery::Event(_) | Delivery::Gap { .. }) = events.recv().await {
-                let boot = session.status().boot;
-                if boot == shown {
-                    continue;
-                }
-                shown = boot.clone();
+            while let Ok(status) = changes.changed().await {
                 if this
                     .update(cx, |view, cx| {
-                        view.boot = boot;
+                        view.boot = status.boot;
                         cx.notify();
                     })
                     .is_err()
