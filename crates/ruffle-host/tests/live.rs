@@ -39,7 +39,12 @@ fn summary(label: &str, samples: &mut [Duration]) -> (Duration, Duration) {
 #[ignore = "needs a GPU and the AQW servers"]
 fn a3_calls_from_another_thread_run_without_waiting_for_a_frame() {
     let engine = Engine::start().unwrap();
-    let (host, frames) = boot(&engine, Viewport::AUTHORED);
+    let retina = Viewport {
+        width: 1916,
+        height: 1100,
+        scale: 2.0,
+    };
+    let (host, frames) = boot(&engine, retina);
     let drain =
         thread::spawn(move || while futures::executor::block_on(frames.next()).is_some() {});
     let run = host.session().begin_run().unwrap();
