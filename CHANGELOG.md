@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+# [0.1.0-beta.1](https://github.com/toommyliu/lucent/compare/v0.0.4...v0.1.0-beta.1) - (2026-10-25)
+
+## Bug Fixes
+
+- **follower:** Only read id:N attack targets as monster IDs (#465) ([22b05ac](https://github.com/toommyliu/lucent/commit/22b05ac955b1ee9882371e2df25b55329c9cd09d))
+
+- **follower:** Skip publishing unchanged follower state (#457) ([80f2d93](https://github.com/toommyliu/lucent/commit/80f2d936fe12dc67c841ef8c4c936458b99e8aaf))
+
+
+## Features
+
+- Replace Flash Player with Ruffle (#245) ([ea961b7](https://github.com/toommyliu/lucent/commit/ea961b7b8a0f67bb56f581ea2e43ade535b7c671))
+
+  - Ruffle support is experimental. Lucent uses a [patched Ruffle Web build](https://github.com/toommyliu/ruffle/tree/e86a3fba0cfd80175a3538d6a81917c701e6bd45).
+  - Ruffle renders with WebGPU when your GPU supports it. Older GPUs or outdated drivers may show glitches or crash.
+  - Requires a 64-bit system running macOS 13 (Ventura) or later, or Windows 10 or later. On Linux, use a distribution release that is still supported by its maintainer.
+  - AQW settings saved by Pepper Flash don't carry over to Ruffle.
+
+- **combat-profiles:** Warn on class mismatch (#459) ([c2cfe88](https://github.com/toommyliu/lucent/commit/c2cfe8806ca254f3cdeca7eb11f6080e42ea4c12))
+
+
 # [0.0.4](https://github.com/toommyliu/lucent/compare/v0.0.3...v0.0.4) - (2026-10-11)
 
 ## Bug Fixes
