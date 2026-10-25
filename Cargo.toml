@@ -1,0 +1,42 @@
+[workspace]
+members = ["crates/bridge", "crates/game-window", "crates/ruffle-host"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98.1"
+publish = false
+
+[workspace.dependencies]
+bridge = { path = "crates/bridge" }
+ruffle-host = { path = "crates/ruffle-host" }
+
+ruffle_core = { git = "https://github.com/toommyliu/ruffle", rev = "687ef26ea0a31ef135f1a49fc673b26a29f89b7a", features = ["aac", "audio", "default_compatibility_rules", "default_font", "lzma", "mp3", "nellymoser"] }
+ruffle_render_wgpu = { git = "https://github.com/toommyliu/ruffle", rev = "687ef26ea0a31ef135f1a49fc673b26a29f89b7a" }
+
+gpui = { git = "https://github.com/zed-industries/zed", rev = "1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba", default-features = false }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba", features = ["font-kit", "wayland", "x11"] }
+
+async-channel = "2.5.0"
+async-task = "4.7.1"
+futures = "0.3.31"
+image = { version = "0.25", default-features = false }
+reqwest = { version = "0.12.28", default-features = false, features = ["brotli", "charset", "cookies", "deflate", "gzip", "http2", "rustls-tls-native-roots"] }
+tokio = { version = "1.52", default-features = false }
+tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["ansi", "env-filter", "fmt"] }
+url = "2.5"
+
+[patch.crates-io]
+naga = { git = "https://github.com/toommyliu/ruffle", rev = "687ef26ea0a31ef135f1a49fc673b26a29f89b7a" }
+wgpu-core = { git = "https://github.com/toommyliu/ruffle", rev = "687ef26ea0a31ef135f1a49fc673b26a29f89b7a" }
+wgpu-hal = { git = "https://github.com/toommyliu/ruffle", rev = "687ef26ea0a31ef135f1a49fc673b26a29f89b7a" }
+wgpu-types = { git = "https://github.com/toommyliu/ruffle", rev = "687ef26ea0a31ef135f1a49fc673b26a29f89b7a" }
+
+[profile.dev.package.ruffle_core]
+opt-level = 2
+
+[profile.dev.package.ruffle_render_wgpu]
+opt-level = 2

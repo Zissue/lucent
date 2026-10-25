@@ -1,0 +1,24 @@
+[package]
+name = "ruffle-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+bridge.workspace = true
+
+ruffle_core.workspace = true
+ruffle_render_wgpu.workspace = true
+
+async-channel.workspace = true
+async-task.workspace = true
+futures.workspace = true
+reqwest.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time"] }
+tokio-util.workspace = true
+tracing.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["io-util", "net"] }
