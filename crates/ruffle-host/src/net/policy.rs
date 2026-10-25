@@ -22,6 +22,10 @@ pub(crate) fn is_artix_host(host: &str) -> bool {
     })
 }
 
+pub(crate) fn allow_socket(host: &str, port: u16) -> bool {
+    port != 0 && is_artix_host(host)
+}
+
 pub(crate) fn apply_launcher_headers(headers: &mut HeaderMap, method: &Method, url: &Url) {
     headers.insert(USER_AGENT, HeaderValue::from_static(USER_AGENT_VALUE));
     headers.insert(
@@ -195,5 +199,15 @@ mod tests {
             "aq.com.",
         ];
         assert_eq!(hosts.map(is_artix_host), [false; 5]);
+    }
+
+    #[test]
+    fn allows_sockets_only_to_artix_hosts_on_a_real_port() {
+        assert!(allow_socket("socket.aq.com", 5588));
+        assert!(allow_socket("AQWorlds.com", 65535));
+        assert!(allow_socket("aq.com", 1));
+        assert!(!allow_socket("aq.com", 0));
+        assert!(!allow_socket("127.0.0.1", 5588));
+        assert!(!allow_socket("aq.com.evil.test", 5588));
     }
 }

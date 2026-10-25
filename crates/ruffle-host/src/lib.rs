@@ -3,10 +3,12 @@ mod engine;
 mod executor;
 mod external;
 mod frame;
+mod framing;
 mod host;
 mod input;
 mod net;
 mod player_loop;
+mod sequencer;
 
 pub use engine::{Engine, EngineError};
 pub use frame::{Frame, FrameStream};

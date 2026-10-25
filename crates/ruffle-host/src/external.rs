@@ -1,12 +1,14 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use bridge::{AsValue, EventWriter, GameEvent, LoaderEvent};
+use bridge::{AsValue, GameEvent, LoaderEvent};
 use ruffle_core::context::UpdateContext;
 use ruffle_core::external::{ExternalInterfaceProvider, Value};
 
+use crate::sequencer::Sequencer;
+
 pub(crate) struct LoaderInterface {
-    pub(crate) events: Rc<RefCell<EventWriter>>,
+    pub(crate) sequencer: Rc<RefCell<Sequencer>>,
 }
 
 impl ExternalInterfaceProvider for LoaderInterface {
@@ -16,7 +18,9 @@ impl ExternalInterfaceProvider for LoaderInterface {
         if event == LoaderEvent::Loaded {
             tracing::info!("loader registered its callbacks");
         }
-        self.events.borrow_mut().publish(GameEvent::Loader(event));
+        self.sequencer
+            .borrow_mut()
+            .publish(GameEvent::Loader(event));
         Value::Undefined
     }
 

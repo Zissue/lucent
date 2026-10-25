@@ -4,6 +4,7 @@ use std::time::Instant;
 
 use tokio::sync::broadcast;
 
+use crate::packet::{ConnId, Direction, Packet};
 use crate::value::AsValue;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -26,8 +27,50 @@ pub struct Event {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum GameEvent {
+    Packet(Packet),
+    Socket(SocketEvent),
     Loader(LoaderEvent),
     Lifecycle(Lifecycle),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum SocketEvent {
+    Connecting {
+        conn: ConnId,
+        host: String,
+        port: u16,
+    },
+    Refused {
+        conn: ConnId,
+        host: String,
+        port: u16,
+    },
+    Connected {
+        conn: ConnId,
+    },
+    ConnectFailed {
+        conn: ConnId,
+        timed_out: bool,
+    },
+    Closed {
+        conn: ConnId,
+        cause: CloseCause,
+        partial_inbound: usize,
+        partial_outbound: usize,
+    },
+    Oversize {
+        conn: ConnId,
+        dir: Direction,
+        len: usize,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CloseCause {
+    Remote,
+    Local,
+    Error(String),
+    Shutdown,
 }
 
 #[derive(Clone, Debug, PartialEq)]

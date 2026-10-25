@@ -3,7 +3,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
-use bridge::{EventWriter, GameEvent, Lifecycle, PlayerSide};
+use bridge::{GameEvent, Lifecycle, PlayerSide};
 use ruffle_core::config::Letterbox;
 use ruffle_core::{FloatDuration, Player, PlayerBuilder, ViewportDimensions};
 use ruffle_render_wgpu::backend::WgpuRenderBackend;
@@ -18,6 +18,8 @@ use crate::host::{Movie, ShutdownOutcome, ShutdownReport};
 use crate::input::{Command, Viewport, Visibility};
 use crate::net::LucentNavigator;
 use crate::net::http::{HttpClient, NetTasks};
+use crate::net::policy;
+use crate::sequencer::Sequencer;
 
 pub(crate) struct PlayerInit {
     pub(crate) engine: Engine,
@@ -34,7 +36,7 @@ const AS3_EXECUTION_LIMIT: Duration = Duration::from_secs(15);
 
 struct PlayerLoop {
     player: Arc<Mutex<Player>>,
-    events: Rc<RefCell<EventWriter>>,
+    sequencer: Rc<RefCell<Sequencer>>,
     commands: mpsc::Receiver<Command>,
     tasks: LocalExecutor,
     net: NetTasks,
@@ -45,8 +47,13 @@ struct PlayerLoop {
 }
 
 pub(crate) fn run(init: PlayerInit) -> ShutdownReport {
-    let events = Rc::new(RefCell::new(init.side.events));
     let net = NetTasks::new(init.engine.inner.net.handle().clone());
+    let sequencer = Rc::new(RefCell::new(Sequencer::new(
+        init.side.events,
+        net.clone(),
+        init.doorbell.clone(),
+        policy::allow_socket,
+    )));
     let tasks = LocalExecutor::new(init.doorbell.clone());
     let gpu = init.engine.inner.gpu.clone();
     let Viewport {
@@ -59,7 +66,7 @@ pub(crate) fn run(init: PlayerInit) -> ShutdownReport {
     let renderer = match renderer {
         Ok(renderer) => renderer,
         Err(error) => {
-            events
+            sequencer
                 .borrow_mut()
                 .publish(GameEvent::Lifecycle(Lifecycle::Failed {
                     error: error.to_string(),
@@ -76,19 +83,20 @@ pub(crate) fn run(init: PlayerInit) -> ShutdownReport {
         init.movie.clone(),
         HttpClient::new(net.clone()),
         tasks.spawner(),
+        sequencer.clone(),
     );
     let player = PlayerBuilder::new()
         .with_renderer(renderer)
         .with_navigator(navigator)
         .with_external_interface(Box::new(LoaderInterface {
-            events: events.clone(),
+            sequencer: sequencer.clone(),
         }))
         .with_viewport_dimensions(width, height, scale)
         .with_letterbox(Letterbox::On)
         .with_autoplay(true)
         .with_max_execution_duration(AS3_EXECUTION_LIMIT)
         .build();
-    let metadata_events = events.clone();
+    let metadata_events = sequencer.clone();
     player.lock().expect("player lock").fetch_root_movie(
         init.movie.url.to_string(),
         Vec::new(),
@@ -105,7 +113,7 @@ pub(crate) fn run(init: PlayerInit) -> ShutdownReport {
     );
     PlayerLoop {
         player,
-        events,
+        sequencer,
         commands: init.commands,
         tasks,
         net,
@@ -123,9 +131,14 @@ impl PlayerLoop {
             if let Some(deadline) = self.apply_commands() {
                 return self.shut_down(deadline);
             }
+            self.drain_outbound();
             let more = self.tasks.run_ready(Instant::now() + BUDGET);
+            self.drain_outbound();
+            self.deliver_inbound();
             self.tick();
+            self.drain_outbound();
             self.render();
+            self.drain_outbound();
             if !more {
                 self.wait();
             }
@@ -193,7 +206,22 @@ impl PlayerLoop {
         }
     }
 
+    fn drain_outbound(&mut self) {
+        self.sequencer.borrow_mut().drain_outbound();
+    }
+
+    fn deliver_inbound(&mut self) {
+        let delivered = self.sequencer.borrow_mut().deliver_inbound();
+        if delivered {
+            self.player.lock().expect("player lock").update_sockets();
+            self.drain_outbound();
+        }
+    }
+
     fn wait(&mut self) {
+        if self.sequencer.borrow().has_inbound() {
+            return;
+        }
         let next = self
             .player
             .lock()
@@ -204,9 +232,11 @@ impl PlayerLoop {
 
     fn shut_down(self, deadline: Instant) -> ShutdownReport {
         let begun = Instant::now();
-        self.events
-            .borrow_mut()
-            .publish(GameEvent::Lifecycle(Lifecycle::Stopping));
+        {
+            let mut sequencer = self.sequencer.borrow_mut();
+            sequencer.publish(GameEvent::Lifecycle(Lifecycle::Stopping));
+            sequencer.close_all();
+        }
         drop(self.frames);
         self.net.cancel.cancel();
         self.net.tracker.close();
@@ -219,7 +249,7 @@ impl PlayerLoop {
         let net_tasks_left = self.net.tracker.len();
         let leaked_tasks = self.tasks.drain(deadline);
         drop(self.player);
-        drop(self.events);
+        drop(self.sequencer);
         ShutdownReport {
             elapsed: begun.elapsed(),
             outcome: ShutdownOutcome::Clean,

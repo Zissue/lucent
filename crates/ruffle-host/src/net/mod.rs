@@ -1,6 +1,9 @@
 pub(crate) mod http;
 pub(crate) mod policy;
+pub(crate) mod socket;
 
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::time::Duration;
 
 use async_channel::{Receiver, Sender};
@@ -10,11 +13,12 @@ use ruffle_core::backend::navigator::{
 };
 use ruffle_core::indexmap::IndexMap;
 use ruffle_core::loader::Error as LoaderError;
-use ruffle_core::socket::{ConnectionState, SocketAction, SocketHandle};
+use ruffle_core::socket::{SocketAction, SocketHandle};
 use url::{ParseError, Url};
 
 use crate::executor::LocalSpawner;
 use crate::host::Movie;
+use crate::sequencer::Sequencer;
 use http::{AssetResponse, HttpClient};
 
 const ASSET_SCHEME: &str = "lucent-asset";
@@ -24,16 +28,23 @@ pub(crate) struct LucentNavigator {
     movie: Movie,
     http: HttpClient,
     spawner: LocalSpawner,
+    sequencer: Rc<RefCell<Sequencer>>,
 }
 
 impl LucentNavigator {
-    pub(crate) fn new(movie: Movie, http: HttpClient, spawner: LocalSpawner) -> Self {
+    pub(crate) fn new(
+        movie: Movie,
+        http: HttpClient,
+        spawner: LocalSpawner,
+        sequencer: Rc<RefCell<Sequencer>>,
+    ) -> Self {
         let base = movie.url.join("./").expect("the movie URL has a path");
         Self {
             base,
             movie,
             http,
             spawner,
+            sequencer,
         }
     }
 }
@@ -86,16 +97,13 @@ impl NavigatorBackend for LucentNavigator {
         &mut self,
         host: String,
         port: u16,
-        _timeout: Duration,
+        timeout: Duration,
         handle: SocketHandle,
-        _receiver: Receiver<Vec<u8>>,
+        receiver: Receiver<Vec<u8>>,
         sender: Sender<SocketAction>,
     ) {
-        tracing::warn!(
-            host,
-            port,
-            "the game opened a socket, which this build refuses"
-        );
-        let _ = sender.try_send(SocketAction::Connect(handle, ConnectionState::Failed));
+        self.sequencer
+            .borrow_mut()
+            .open_socket(host, port, timeout, handle, receiver, sender);
     }
 }

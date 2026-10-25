@@ -1,13 +1,15 @@
 mod events;
+mod packet;
 mod value;
 
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 pub use events::{
-    Boot, Delivery, Ended, Event, EventStream, EventWriter, GameEvent, Lifecycle, LoaderEvent, Seq,
-    Server, SfsConnection, Status,
+    Boot, CloseCause, Delivery, Ended, Event, EventStream, EventWriter, GameEvent, Lifecycle,
+    LoaderEvent, Seq, Server, SfsConnection, SocketEvent, Status,
 };
+pub use packet::{ConnId, Direction, Packet};
 pub use value::AsValue;
 
 #[derive(Clone, Copy, Debug)]
