@@ -26,6 +26,9 @@ Do not run repository-wide formatting, lint, typecheck, or test commands unless 
 - `packages/core`: Shared application schemas and domain types.
 - `packages/game`: AQW game-domain models and types.
 - `packages/ui`: Reusable SolidJS components, styles, and design tokens.
+- `crates/bridge`: The Ruffle-free view of a running game that the rest of native Lucent uses.
+- `crates/ruffle-host`: Runs Ruffle on a player thread and owns the game connection.
+- `crates/game-window`: The GPUI process for one game window.
 
 ## Vendored Repositories
 

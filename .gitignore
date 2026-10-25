@@ -10,3 +10,5 @@ RELEASE_NOTES.md
 /.repos/*
 !/.repos/effect-smol/
 !/.repos/effect-smol/**
+/target
+!/Cargo.lock
