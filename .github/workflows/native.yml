@@ -11,6 +11,7 @@ on:
       - rust-toolchain.toml
   push:
     branches:
+      - feat/ruffle-native
       - main
     paths:
       - .github/workflows/native.yml
