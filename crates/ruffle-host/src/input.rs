@@ -38,6 +38,10 @@ impl InputSink {
         self.push(Command::Input(event));
     }
 
+    pub fn paste(&self, text: String) {
+        self.push(Command::Paste(text));
+    }
+
     pub fn resize(&self, viewport: Viewport) {
         self.push(Command::Resize(viewport));
     }
@@ -55,6 +59,7 @@ impl InputSink {
 
 pub(crate) enum Command {
     Input(PlayerEvent),
+    Paste(String),
     Resize(Viewport),
     Visibility(Visibility),
     Shutdown { deadline: Instant },

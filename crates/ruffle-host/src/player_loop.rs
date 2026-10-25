@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use bridge::{Execution, GameEvent, Inbox, Lifecycle, NotRun, PlayerSide};
 use ruffle_core::config::Letterbox;
-use ruffle_core::{FloatDuration, Player, PlayerBuilder, ViewportDimensions};
+use ruffle_core::{FloatDuration, Player, ViewportDimensions};
 use ruffle_render_wgpu::backend::WgpuRenderBackend;
 use ruffle_render_wgpu::target::TextureTarget;
 
@@ -23,6 +23,7 @@ use crate::net::policy;
 use crate::sequencer::Sequencer;
 
 pub(crate) struct PlayerInit {
+    pub(crate) platform: crate::platform::PlatformConfig,
     pub(crate) engine: Engine,
     pub(crate) movie: Movie,
     pub(crate) viewport: Viewport,
@@ -49,7 +50,7 @@ struct PlayerLoop {
     last_tick: Instant,
 }
 
-pub(crate) fn run(init: PlayerInit) -> ShutdownReport {
+pub(crate) fn run(init: PlayerInit, lease: &mut crate::ProfileLease) -> ShutdownReport {
     init.side.inbox.bind_consumer();
     let callbacks = Rc::new(RefCell::new(HashSet::new()));
     let net = NetTasks::new(init.engine.inner.net.handle().clone());
@@ -89,8 +90,9 @@ pub(crate) fn run(init: PlayerInit) -> ShutdownReport {
         HttpClient::new(net.clone()),
         tasks.spawner(),
         sequencer.clone(),
+        init.platform.ui.clone(),
     );
-    let player = PlayerBuilder::new()
+    let player = crate::platform::builder(lease, init.platform.ui)
         .with_renderer(renderer)
         .with_navigator(navigator)
         .with_external_interface(Box::new(LoaderInterface {
@@ -165,6 +167,7 @@ impl PlayerLoop {
                 Command::Input(event) => {
                     player.handle_event(event);
                 }
+                Command::Paste(text) => crate::platform::paste(&mut player, text),
                 Command::Resize(viewport) => resize = Some(viewport),
                 Command::Visibility(visibility) => self.visibility = visibility,
                 Command::Shutdown { deadline } => {

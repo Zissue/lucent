@@ -5,13 +5,16 @@ use std::time::{Duration, Instant};
 
 use bridge::{Boot, Delivery};
 use gpui::{
-    App, Bounds, Context, Corners, DispatchPhase, ElementInputHandler, EntityInputHandler,
-    FocusHandle, HitboxBehavior, KeyDownEvent, KeyUpEvent, ModifiersChangedEvent, MouseButton,
-    MouseDownEvent, MouseExitEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Render,
-    ScrollDelta, ScrollWheelEvent, Task, UTF16Selection, Window, canvas, div, prelude::*, px, rgb,
+    App, Bounds, ClipboardItem, Context, Corners, CursorStyle, DispatchPhase, ElementInputHandler,
+    EntityInputHandler, FocusHandle, HitboxBehavior, KeyDownEvent, KeyUpEvent,
+    ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, Point, Render, ScrollDelta, ScrollWheelEvent, Task, UTF16Selection,
+    Window, canvas, div, prelude::*, px, rgb,
 };
-use ruffle_host::ruffle::{ImeEvent, MouseButton as GameButton, MouseWheelDelta, PlayerEvent};
-use ruffle_host::{InputSink, PlayerHost, Presentation, Viewport};
+use ruffle_host::ruffle::{
+    ImeEvent, MouseButton as GameButton, MouseCursor, MouseWheelDelta, PlayerEvent, TextControlCode,
+};
+use ruffle_host::{InputSink, PlayerHost, Presentation, UiRequest, Viewport};
 
 use crate::keys;
 use crate::present::Presented;
@@ -27,6 +30,7 @@ pub struct GameWindow {
     viewport: Rc<Cell<Viewport>>,
     modifiers: gpui::Modifiers,
     composing: Option<Range<usize>>,
+    cursor: CursorStyle,
     _tasks: Vec<Task<()>>,
 }
 
@@ -37,7 +41,7 @@ impl GameWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let frames = presentation.frames;
+        let Presentation { frames, ui } = presentation;
         let frame_task = cx.spawn(async move |this, cx| {
             while let Some(frame) = frames.next().await {
                 let presented = this.update(cx, |view, cx| {
@@ -45,6 +49,13 @@ impl GameWindow {
                     cx.notify();
                 });
                 if presented.is_err() {
+                    break;
+                }
+            }
+        });
+        let ui_task = cx.spawn(async move |this, cx| {
+            while let Some(request) = ui.next().await {
+                if this.update(cx, |view, cx| view.apply(request, cx)).is_err() {
                     break;
                 }
             }
@@ -87,7 +98,8 @@ impl GameWindow {
             viewport: Rc::new(Cell::new(Viewport::AUTHORED)),
             modifiers: gpui::Modifiers::default(),
             composing: None,
-            _tasks: vec![frame_task, status_task],
+            cursor: CursorStyle::Arrow,
+            _tasks: vec![frame_task, ui_task, status_task],
         }
     }
 
@@ -107,12 +119,42 @@ impl GameWindow {
         false
     }
 
-    fn key_down(&mut self, event: &KeyDownEvent) {
+    fn apply(&mut self, request: UiRequest, cx: &mut Context<Self>) {
+        match request {
+            UiRequest::Cursor(cursor) => {
+                self.cursor = match cursor {
+                    MouseCursor::Arrow => CursorStyle::Arrow,
+                    MouseCursor::Hand => CursorStyle::PointingHand,
+                    MouseCursor::IBeam => CursorStyle::IBeam,
+                    MouseCursor::Grab => CursorStyle::ClosedHand,
+                };
+                cx.notify();
+            }
+            UiRequest::CursorVisible(visible) => {
+                tracing::debug!(
+                    visible,
+                    "the game changed cursor visibility, which the window does not support"
+                );
+            }
+            UiRequest::SetClipboard(text) => cx.write_to_clipboard(ClipboardItem::new_string(text)),
+            UiRequest::OpenUrl(url) => cx.open_url(url.as_str()),
+        }
+    }
+
+    fn key_down(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
         self.input.send(PlayerEvent::KeyDown {
             key: keys::descriptor(&event.keystroke),
         });
-        if let Some(code) = keys::text_control(&event.keystroke) {
-            self.input.send(PlayerEvent::TextControl { code });
+        match keys::text_control(&event.keystroke) {
+            Some(TextControlCode::Paste) => {
+                let text = cx
+                    .read_from_clipboard()
+                    .and_then(|item| item.text())
+                    .unwrap_or_default();
+                self.input.paste(text);
+            }
+            Some(code) => self.input.send(PlayerEvent::TextControl { code }),
+            None => {}
         }
     }
 
@@ -168,6 +210,7 @@ impl Render for GameWindow {
         let input = self.input.clone();
         let viewport = self.viewport.clone();
         let focus = self.focus.clone();
+        let cursor = self.cursor;
         let entity = cx.entity();
         let game = canvas(
             move |bounds, window, _| {
@@ -187,6 +230,7 @@ impl Render for GameWindow {
                 if let Some(image) = image {
                     let _ = window.paint_image(bounds, Corners::default(), image, 0, false);
                 }
+                window.set_cursor_style(cursor, &hitbox);
                 window.handle_input(&focus, ElementInputHandler::new(bounds, entity), cx);
                 let scale = window.scale_factor();
                 window.on_mouse_event({
@@ -256,7 +300,7 @@ impl Render for GameWindow {
             .size_full()
             .bg(rgb(0x000000))
             .track_focus(&self.focus)
-            .on_key_down(cx.listener(|view, event, _, _| view.key_down(event)))
+            .on_key_down(cx.listener(|view, event, _, cx| view.key_down(event, cx)))
             .on_key_up(cx.listener(|view, event, _, _| view.key_up(event)))
             .on_modifiers_changed(cx.listener(|view, event, _, _| view.modifiers_changed(event)))
             .child(game)

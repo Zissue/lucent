@@ -11,7 +11,9 @@ use crate::doorbell::Doorbell;
 use crate::engine::Engine;
 use crate::frame::{self, FrameStream};
 use crate::input::{Command, InputSink, Viewport};
-use crate::player_loop::{self, PlayerInit};
+use crate::player_loop::PlayerInit;
+use crate::profile::Profile;
+use crate::ui::{self, UiRequests};
 
 #[derive(Clone)]
 pub struct Movie {
@@ -29,14 +31,16 @@ impl Movie {
 }
 
 pub struct PlayerConfig {
+    pub profile: Profile,
     pub movie: Movie,
     pub viewport: Viewport,
     pub session: SessionConfig,
 }
 
 impl PlayerConfig {
-    pub fn launcher() -> Self {
+    pub fn launcher(profile: Profile) -> Self {
         Self {
+            profile,
             movie: Movie::lucent_loader(),
             viewport: Viewport::AUTHORED,
             session: SessionConfig::default(),
@@ -46,6 +50,7 @@ impl PlayerConfig {
 
 pub struct Presentation {
     pub frames: FrameStream,
+    pub ui: UiRequests,
 }
 
 #[derive(Debug)]
@@ -84,7 +89,12 @@ impl PlayerHost {
         let (commands_tx, commands) = mpsc::channel();
         let (frames_tx, frames) = frame::mailbox();
         let (report_tx, report) = mpsc::sync_channel(1);
+        let (ui_tx, ui) = ui::channel();
         let init = PlayerInit {
+            platform: crate::platform::PlatformConfig {
+                profile: config.profile,
+                ui: ui_tx,
+            },
             engine: engine.clone(),
             movie: config.movie,
             viewport: config.viewport,
@@ -96,7 +106,7 @@ impl PlayerHost {
         let thread = thread::Builder::new()
             .name("lucent-player".into())
             .spawn(move || {
-                let _ = report_tx.send(player_loop::run(init));
+                let _ = report_tx.send(crate::platform::run(init));
             })?;
         let input = InputSink {
             tx: commands_tx,
@@ -110,7 +120,7 @@ impl PlayerHost {
                 report,
                 thread,
             },
-            Presentation { frames },
+            Presentation { frames, ui },
         ))
     }
 

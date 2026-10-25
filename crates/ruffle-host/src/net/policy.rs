@@ -4,6 +4,32 @@ use url::Url;
 
 const ARTIX_DOMAINS: [&str; 3] = ["aq.com", "aqworlds.com", "artix.com"];
 
+pub(crate) fn allowed_link(raw: &str) -> Option<Url> {
+    let url = Url::parse(raw).ok()?;
+    if url.port().is_some() || !url.username().is_empty() || url.password().is_some() {
+        return None;
+    }
+    let host = url.host_str()?;
+    let allowed = url.as_str() == "https://github.com/settings/personal-access-tokens/new"
+        || [
+            ("https", "aq.com"),
+            ("https", "artix.com"),
+            ("https", "account.aq.com"),
+            ("http", "aqwwiki.wikidot.com"),
+            ("https", "heromart.com"),
+            ("http", "account.aqworlds.com"),
+        ]
+        .iter()
+        .any(|(scheme, root)| {
+            url.scheme() == *scheme
+                && (host == *root
+                    || host
+                        .strip_suffix(root)
+                        .is_some_and(|prefix| prefix.ends_with('.')))
+        });
+    allowed.then_some(url)
+}
+
 pub(crate) const USER_AGENT_VALUE: &str = if cfg!(target_os = "macos") {
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_16_0) AppleWebKit/537.36 (KHTML, like Gecko) ArtixGameLauncher/2.2.0 Chrome/80.0.3987.163 Electron/8.5.5 Safari/537.36"
 } else if cfg!(target_os = "linux") {
@@ -69,6 +95,55 @@ pub(crate) fn apply_launcher_headers(headers: &mut HeaderMap, method: &Method, u
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn allows_configured_game_domains_and_rejects_other_external_urls() {
+        for raw in [
+            "https://account.aq.com/CharPage?id=1",
+            "https://support.artix.com/help",
+            "https://github.com/settings/personal-access-tokens/new",
+        ] {
+            assert_eq!(allowed_link(raw).as_ref().map(Url::as_str), Some(raw));
+        }
+        for raw in [
+            "https://github.com/settings/profile",
+            "https://aq.com.evil.test/help",
+            "https://user@aq.com/help",
+            "https://aq.com:8443/help",
+            "file:///tmp/lucent",
+            "not a URL",
+            "https://:password@aq.com/",
+            "https://github.com/settings/personal-access-tokens/new?extra=1",
+        ] {
+            assert_eq!(allowed_link(raw), None, "{raw}");
+        }
+    }
+
+    #[test]
+    fn requires_the_configured_scheme() {
+        assert_eq!(allowed_link("http://aq.com/"), None);
+        assert_eq!(allowed_link("https://aqwwiki.wikidot.com/"), None);
+        assert_eq!(
+            allowed_link("http://aqwwiki.wikidot.com/class")
+                .unwrap()
+                .as_str(),
+            "http://aqwwiki.wikidot.com/class"
+        );
+        assert_eq!(
+            allowed_link("https://aq.com:443/").unwrap().as_str(),
+            "https://aq.com/"
+        );
+        assert_eq!(
+            allowed_link("https://heromart.com/shop").unwrap().as_str(),
+            "https://heromart.com/shop"
+        );
+        assert_eq!(
+            allowed_link("http://account.aqworlds.com/")
+                .unwrap()
+                .as_str(),
+            "http://account.aqworlds.com/"
+        );
+    }
 
     fn sent(method: Method, url: &str, initial: &[(&str, &str)]) -> Vec<(String, String)> {
         let mut headers = HeaderMap::new();

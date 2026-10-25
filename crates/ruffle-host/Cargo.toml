@@ -9,12 +9,14 @@ publish.workspace = true
 bridge.workspace = true
 
 ruffle_core.workspace = true
+ruffle_frontend_utils.workspace = true
 ruffle_render_wgpu.workspace = true
 
 async-channel.workspace = true
 async-task.workspace = true
 futures.workspace = true
 reqwest.workspace = true
+sha2 = "0.10"
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 tokio-util.workspace = true
 tracing.workspace = true
@@ -22,6 +24,7 @@ url.workspace = true
 
 [dev-dependencies]
 futures.workspace = true
+tempfile = "3"
 tokio = { workspace = true, features = ["io-util", "net"] }
 
 [target.'cfg(unix)'.dev-dependencies]

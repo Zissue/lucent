@@ -1,4 +1,5 @@
 pub(crate) mod http;
+mod links;
 pub(crate) mod policy;
 pub(crate) mod socket;
 
@@ -29,6 +30,7 @@ pub(crate) struct LucentNavigator {
     http: HttpClient,
     spawner: LocalSpawner,
     sequencer: Rc<RefCell<Sequencer>>,
+    ui: Sender<crate::UiRequest>,
 }
 
 impl LucentNavigator {
@@ -37,6 +39,7 @@ impl LucentNavigator {
         http: HttpClient,
         spawner: LocalSpawner,
         sequencer: Rc<RefCell<Sequencer>>,
+        ui: Sender<crate::UiRequest>,
     ) -> Self {
         let base = movie.url.join("./").expect("the movie URL has a path");
         Self {
@@ -45,6 +48,7 @@ impl LucentNavigator {
             http,
             spawner,
             sequencer,
+            ui,
         }
     }
 }
@@ -54,12 +58,9 @@ impl NavigatorBackend for LucentNavigator {
         &self,
         url: &str,
         _target: &str,
-        _vars_method: Option<(NavigationMethod, IndexMap<String, String>)>,
+        vars_method: Option<(NavigationMethod, IndexMap<String, String>)>,
     ) {
-        tracing::warn!(
-            url,
-            "the game asked to open a link, which this build ignores"
-        );
+        self.open_link(url, vars_method);
     }
 
     fn fetch(&self, request: Request) -> OwnedFuture<Box<dyn SuccessResponse>, ErrorResponse> {

@@ -4,13 +4,14 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use bridge::{AsValue, Boot, CallbackName};
-use ruffle_host::{Engine, FrameStream, PlayerConfig, PlayerHost, Viewport, Visibility};
+use ruffle_host::{Engine, FrameStream, PlayerConfig, PlayerHost, Profile, Viewport, Visibility};
 
 const BOOT_TIMEOUT: Duration = Duration::from_secs(90);
 const SHUTDOWN: Duration = Duration::from_secs(2);
 
 fn boot(engine: &Engine, viewport: Viewport) -> (PlayerHost, FrameStream) {
-    let mut config = PlayerConfig::launcher();
+    let data = std::env::temp_dir().join(format!("lucent-live-{}", std::process::id()));
+    let mut config = PlayerConfig::launcher(Profile::default_profile(data));
     config.viewport = viewport;
     let (host, presentation) = PlayerHost::spawn(engine, config).unwrap();
     assert_eq!(
@@ -149,4 +150,92 @@ async fn async_sleep(duration: Duration) {
         let _ = tx.send(());
     });
     let _ = rx.await;
+}
+
+fn boot_account(engine: &Engine, data: &std::path::Path, account: &str) -> PlayerHost {
+    let profile = Profile::account(data, account).unwrap();
+    let (host, _) = PlayerHost::spawn(engine, PlayerConfig::launcher(profile)).unwrap();
+    assert_eq!(
+        support::wait_for_boot(host.session(), BOOT_TIMEOUT),
+        Boot::Ready
+    );
+    host
+}
+
+fn call(host: &PlayerHost, name: &'static str, args: Vec<AsValue>) -> AsValue {
+    let run = host.session().begin_run().unwrap();
+    run.caller()
+        .call(
+            &CallbackName::from_static(name),
+            args,
+            Instant::now() + Duration::from_secs(2),
+        )
+        .unwrap()
+}
+
+fn text(value: &str) -> AsValue {
+    AsValue::String(value.into())
+}
+
+#[test]
+#[ignore = "needs a GPU and the AQW servers"]
+fn a4_shared_objects_persist_per_account_across_restarts() {
+    let engine = Engine::start().unwrap();
+    let data = std::env::temp_dir().join(format!("lucent-a4-{}", std::process::id()));
+    let token = format!("probe-{}", std::process::id());
+    let probe = "userPreference.data.lucentProbe";
+
+    let first = boot_account(&engine, &data, "probe-a");
+    call(
+        &first,
+        "flash.setGameObject",
+        vec![text(probe), text(&token)],
+    );
+    assert_eq!(
+        call(
+            &first,
+            "flash.callGameFunction",
+            vec![text("userPreference.flush")]
+        ),
+        text("\"flushed\"")
+    );
+    assert_eq!(
+        first.shutdown(Instant::now() + SHUTDOWN).outcome,
+        ruffle_host::ShutdownOutcome::Clean
+    );
+
+    let saved = Profile::account(&data, "probe-a")
+        .unwrap()
+        .directory()
+        .join("SharedObjects");
+    let files: Vec<_> = walk(&saved);
+    println!("saved SharedObjects: {files:?}");
+    assert!(files.iter().any(|path| path.ends_with("AQWUserPref.sol")));
+
+    let again = boot_account(&engine, &data, "  Probe-A ");
+    assert_eq!(
+        call(&again, "flash.getGameObject", vec![text(probe)]),
+        text(&format!("\"{token}\""))
+    );
+    again.shutdown(Instant::now() + SHUTDOWN);
+
+    let other = boot_account(&engine, &data, "probe-b");
+    let seen = call(&other, "flash.getGameObject", vec![text(probe)]);
+    println!("another account reads: {seen:?}");
+    assert_ne!(seen, text(&format!("\"{token}\"")));
+    other.shutdown(Instant::now() + SHUTDOWN);
+    let _ = std::fs::remove_dir_all(&data);
+}
+
+fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            out.extend(walk(&path));
+        } else {
+            out.push(path);
+        }
+    }
+    out
 }
