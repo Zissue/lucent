@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "lib": ["es2024", "dom", "dom.iterable"],
+    "types": ["node"],
+    "typeRoots": ["../../../node_modules/@types"]
+  },
+  "include": ["./**/*.ts", "../renderer/apps/game/bridge.d.ts", "../renderer/desktop.d.ts"],
+  "exclude": ["./**/*.test.ts"]
+}

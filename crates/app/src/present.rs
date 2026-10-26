@@ -20,16 +20,9 @@ impl Presented {
             );
             return;
         };
-        let image = Arc::new(RenderImage::new([image::Frame::new(pixels)]));
-        if let Some(old) = self.current.replace(image) {
-            let drawn = self
-                .last_drawn
-                .as_ref()
-                .is_some_and(|last| last.id == old.id);
-            if !drawn {
-                self.retiring.push(old);
-            }
-        }
+        // A frame replaced before any render was never uploaded, so dropping it frees it.
+        // Only `last_drawn` holds an atlas entry, which `retire` releases.
+        self.current = Some(Arc::new(RenderImage::new([image::Frame::new(pixels)])));
     }
 
     pub fn image(&self) -> Option<Arc<RenderImage>> {

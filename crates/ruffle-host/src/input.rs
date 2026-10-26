@@ -50,6 +50,11 @@ impl InputSink {
         self.push(Command::Visibility(visibility));
     }
 
+    /// 0.0 mutes the game; 1.0 is full volume.
+    pub fn set_volume(&self, volume: f32) {
+        self.push(Command::Volume(volume.clamp(0.0, 1.0)));
+    }
+
     pub(crate) fn push(&self, command: Command) {
         if self.tx.send(command).is_ok() {
             self.doorbell.ring();
@@ -62,5 +67,6 @@ pub(crate) enum Command {
     Paste(String),
     Resize(Viewport),
     Visibility(Visibility),
+    Volume(f32),
     Shutdown { deadline: Instant },
 }

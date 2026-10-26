@@ -28,7 +28,10 @@ Do not run repository-wide formatting, lint, typecheck, or test commands unless 
 - `packages/ui`: Reusable SolidJS components, styles, and design tokens.
 - `crates/bridge`: The Ruffle-free view of a running game that the rest of native Lucent uses.
 - `crates/ruffle-host`: Runs Ruffle on a player thread and owns the game connection.
-- `crates/game-window`: The GPUI process for one game window.
+- `crates/js`: Embeds V8: one thread per isolate, its event loop, host ops, and the watchdog.
+- `crates/scripting`: Runs each account's game runtime and the shared hub in V8, and serves their host ops.
+- `crates/app`: The `lucent` GPUI app: the account manager and tabbed game windows.
+- `app/src/native`: The TypeScript entries for the account and hub runtimes. `pnpm native:runtime` bundles them into `assets/native/`.
 
 ## Vendored Repositories
 

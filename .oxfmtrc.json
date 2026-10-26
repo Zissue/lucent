@@ -6,6 +6,7 @@
     ".repos",
     "dist",
     "build",
+    "assets/native",
     "scripts",
     "docs/.astro",
     "docs/public/script-api.d.ts",

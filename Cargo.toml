@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/bridge", "crates/game-window", "crates/ruffle-host"]
+members = ["crates/app", "crates/bridge", "crates/js", "crates/ruffle-host", "crates/scripting"]
 resolver = "3"
 
 [workspace.package]
@@ -10,7 +10,9 @@ publish = false
 
 [workspace.dependencies]
 bridge = { path = "crates/bridge" }
+js = { path = "crates/js" }
 ruffle-host = { path = "crates/ruffle-host" }
+scripting = { path = "crates/scripting" }
 
 ruffle_core = { git = "https://github.com/toommyliu/ruffle", rev = "687ef26ea0a31ef135f1a49fc673b26a29f89b7a", features = ["aac", "audio", "default_compatibility_rules", "default_font", "lzma", "mp3", "nellymoser"] }
 ruffle_render_wgpu = { git = "https://github.com/toommyliu/ruffle", rev = "687ef26ea0a31ef135f1a49fc673b26a29f89b7a" }
@@ -21,9 +23,15 @@ gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1a246efd
 
 async-channel = "2.5.0"
 async-task = "4.7.1"
+base64 = "0.22"
+dirs = "6"
 futures = "0.3.31"
+getrandom = "0.3"
 libc = "0.2"
+open = "5"
 image = { version = "0.25", default-features = false }
+serde_json = "1"
+sha1 = "0.10"
 sha2 = "0.10"
 tempfile = "3"
 reqwest = { version = "0.12.28", default-features = false, features = ["brotli", "charset", "cookies", "deflate", "gzip", "http2", "rustls-tls-native-roots"] }
@@ -31,7 +39,9 @@ tokio = { version = "1.52", default-features = false }
 tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["ansi", "env-filter", "fmt"] }
+unicode-segmentation = "1.13"
 url = "2.5"
+v8 = "=152.2.0"
 
 [patch.crates-io]
 naga = { git = "https://github.com/toommyliu/ruffle", rev = "687ef26ea0a31ef135f1a49fc673b26a29f89b7a" }

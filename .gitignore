@@ -12,3 +12,4 @@ RELEASE_NOTES.md
 !/.repos/effect-smol/**
 /target
 !/Cargo.lock
+/assets/native/

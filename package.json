@@ -22,6 +22,7 @@
     "lint": "pnpm lint:css && oxlint --disable-nested-config",
     "lint:css": "stylelint \"packages/ui/src/**/*.css\" \"app/src/renderer/**/*.css\"",
     "lint:fix": "oxlint --disable-nested-config --fix",
+    "native:runtime": "tsx app/scripts/build-native-runtime.ts",
     "format": "oxfmt --check",
     "format:write": "oxfmt",
     "prepare": "effect-tsgo patch --oxlint",

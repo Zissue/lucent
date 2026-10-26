@@ -61,7 +61,7 @@ pub(crate) fn run(init: PlayerInit, lease: &mut crate::ProfileLease) -> Shutdown
         policy::allow_socket,
     )));
     let tasks = LocalExecutor::new(init.doorbell.clone());
-    let gpu = init.engine.inner.gpu.clone();
+    let gpu = init.engine.inner.descriptors();
     let Viewport {
         width,
         height,
@@ -170,6 +170,7 @@ impl PlayerLoop {
                 Command::Paste(text) => crate::platform::paste(&mut player, text),
                 Command::Resize(viewport) => resize = Some(viewport),
                 Command::Visibility(visibility) => self.visibility = visibility,
+                Command::Volume(volume) => player.set_volume(volume),
                 Command::Shutdown { deadline } => {
                     shutdown = Some(deadline);
                     break;

@@ -8,6 +8,7 @@
     ".repos/**",
     "dist",
     "build",
+    "assets/native",
     "/scripts",
     "app/scripts",
     "packages/*/scripts",

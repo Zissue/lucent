@@ -11,7 +11,34 @@ pub struct Engine {
 
 pub(crate) struct EngineInner {
     pub(crate) net: tokio::runtime::Runtime,
-    pub(crate) gpu: Arc<Descriptors>,
+    gpu: Gpu,
+}
+
+struct Gpu {
+    instance: wgpu::Instance,
+    adapter: wgpu::Adapter,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+}
+
+impl EngineInner {
+    /// Each player gets its own descriptors on the shared device: they hold a scratch
+    /// buffer that a player resets, destroying retired buffers, at the end of every frame,
+    /// which would break another player's commands that are recorded but not yet submitted.
+    pub(crate) fn descriptors(&self) -> Arc<Descriptors> {
+        let Gpu {
+            instance,
+            adapter,
+            device,
+            queue,
+        } = &self.gpu;
+        Arc::new(Descriptors::new(
+            instance.clone(),
+            adapter.clone(),
+            device.clone(),
+            queue.clone(),
+        ))
+    }
 }
 
 #[derive(Debug)]
@@ -51,7 +78,12 @@ impl Engine {
             wgpu::PowerPreference::LowPower,
         ))
         .map_err(|error| EngineError::Gpu(error.to_string()))?;
-        let gpu = Arc::new(Descriptors::new(instance, adapter, device, queue));
+        let gpu = Gpu {
+            instance,
+            adapter,
+            device,
+            queue,
+        };
         Ok(Engine {
             inner: Arc::new(EngineInner { net, gpu }),
         })

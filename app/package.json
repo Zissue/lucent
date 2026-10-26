@@ -8,7 +8,7 @@
     "url": "https://github.com/toommyliu/lucent.git"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit && tsc -p src/main/tsconfig.json --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p src/main/tsconfig.json --noEmit && tsc -p src/native/tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "compile": "node esbuild.config.js",

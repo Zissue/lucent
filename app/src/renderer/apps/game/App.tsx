@@ -122,6 +122,7 @@ import {
 } from "./scripting/roomPolicyInput";
 import { prepareScriptStart } from "./scripting/scriptStartPreparation";
 import { runScriptEval } from "./scripting/ScriptEvaluator";
+import { gameViewFrameRateLimit } from "./gameViewFrameRate";
 import { makeGameViewGroupCommandQueue } from "./groupCommandQueue";
 import {
   fatalScriptAlertFromError,
@@ -221,18 +222,7 @@ const PLAYER_READY_RETRY_INTERVAL_MS = 250;
 const PLAYER_READY_RETRY_TIMEOUT_MS = 10_000;
 const GAME_LOAD_RECOVERY_DELAY_MS = 10_000;
 const ACCOUNT_LAUNCH_GAME_LOAD_TIMEOUT_MS = 30_000;
-const INACTIVE_FOCUSED_LAYOUT_FRAME_RATE_LIMIT = 2;
-const INACTIVE_GRID_VIEW_FRAME_RATE_LIMIT = 8;
 const SCRIPT_OPTIONS_SAVING_DELAY_MS = 500;
-
-const gameViewFrameRateLimit = (
-  presentation: GameViewPresentation,
-): number | null => {
-  if (presentation.active && presentation.windowActive) return null;
-  return presentation.layout === "grid"
-    ? INACTIVE_GRID_VIEW_FRAME_RATE_LIMIT
-    : INACTIVE_FOCUSED_LAYOUT_FRAME_RATE_LIMIT;
-};
 
 const wait = (delayMs: number): Promise<void> =>
   new Promise((resolve) => window.setTimeout(resolve, delayMs));
