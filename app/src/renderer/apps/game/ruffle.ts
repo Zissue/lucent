@@ -1,28 +1,25 @@
 const LOADER_URL = "lucent-asset://assets/loader.swf";
-// Stored per session partition, so each account remembers its own choice.
 const SMOOTH_MOTION_KEY = "lucent:smooth-motion";
 
 interface RufflePlayerElement extends HTMLElement {
   ruffle(): {
     load(options: Record<string, unknown>): Promise<void>;
-    frameInterpolation: boolean;
+    smoothMotion: boolean;
   };
 }
 
 const readSmoothMotion = (): boolean => {
   try {
-    return localStorage.getItem(SMOOTH_MOTION_KEY) !== "off";
+    return localStorage.getItem(SMOOTH_MOTION_KEY) === "on";
   } catch {
-    return true;
+    return false;
   }
 };
 
 const saveSmoothMotion = (on: boolean): void => {
   try {
     localStorage.setItem(SMOOTH_MOTION_KEY, on ? "on" : "off");
-  } catch {
-    // Not remembered; the toggle still works for this session.
-  }
+  } catch {}
 };
 
 declare global {
@@ -41,10 +38,9 @@ export const mountRufflePlayer = async (): Promise<void> => {
   const player = ruffle.createPlayer();
   player.id = "swf";
   placeholder.replaceWith(player);
-  // Smooth Motion is toggled from Ruffle's right-click menu.
-  player.ruffle().frameInterpolation = readSmoothMotion();
-  player.addEventListener("frameinterpolationchange", () =>
-    saveSmoothMotion(player.ruffle().frameInterpolation),
+  player.ruffle().smoothMotion = readSmoothMotion();
+  player.addEventListener("smoothmotionchange", () =>
+    saveSmoothMotion(player.ruffle().smoothMotion),
   );
   await player.ruffle().load({
     url: LOADER_URL,
