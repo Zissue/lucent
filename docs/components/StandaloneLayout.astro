@@ -1,0 +1,55 @@
+---
+import RootLayout from "blume/components/layout/RootLayout.astro";
+import { withBase } from "blume/components/islands/base-path.ts";
+import data from "blume:data";
+import LandingHeader from "./LandingHeader.astro";
+import Search from "./Search.astro";
+
+interface Props {
+  title: string;
+  description: string;
+  route: string;
+  ogSlug: string;
+}
+
+const { title, description, route, ogSlug } = Astro.props;
+const { config } = data;
+const layout = { Header: LandingHeader, Search };
+const siteBase = config.site?.replace(/\/$/u, "") ?? null;
+const routePath = withBase(route);
+const canonical =
+  siteBase === null
+    ? null
+    : `${siteBase}${routePath === "/" ? "" : routePath}`;
+const ogImage =
+  config.og.enabled && siteBase
+    ? `${siteBase}${withBase(`/og/${ogSlug}.png`)}`
+    : null;
+---
+
+<RootLayout
+  analytics={config.analytics}
+  appleIcon={config.appleIcon}
+  banner={config.banner}
+  canonical={canonical}
+  contentLayout="bare"
+  favicon={config.favicon}
+  fontCssVars={data.fontCssVars}
+  headings={[]}
+  indexable
+  layout={layout}
+  logo={config.logo}
+  navigation={data.navigation}
+  ogGenerated={Boolean(ogImage)}
+  ogImage={ogImage}
+  page={{ title, description, route }}
+  searchEnabled={config.search.enabled}
+  site={{ title: config.title, description: config.description }}
+  siteUrl={config.site}
+  structuredDataEnabled={false}
+  themeMode={config.theme.mode}
+  toc={config.toc}
+  ui={data.ui}
+>
+  <slot />
+</RootLayout>

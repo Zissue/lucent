@@ -1,0 +1,339 @@
+---
+import Icon from "blume/components/Icon.astro";
+import { withBase } from "blume/components/islands/base-path.ts";
+import PlatformIcon from "../components/PlatformIcon.astro";
+import StandaloneLayout from "../components/StandaloneLayout.astro";
+import {
+  downloads,
+  latestAssetsUrl,
+  releasesUrl,
+  type DownloadArch,
+  type DownloadPlatform,
+} from "../components/downloads.ts";
+
+const description =
+  "Download Lucent for macOS, Windows, and Linux on x64 and ARM64.";
+const changelogUrl = withBase("/changelog");
+const archLabels: Record<DownloadArch, string> = {
+  universal: "Universal",
+  x64: "x64",
+  arm64: "ARM64",
+};
+const platforms: readonly {
+  platform: DownloadPlatform;
+  name: string;
+  requirement: string;
+}[] = [
+  {
+    platform: "mac",
+    name: "macOS",
+    requirement: "macOS 13 (Ventura) or later, Apple silicon or Intel",
+  },
+  {
+    platform: "windows",
+    name: "Windows",
+    requirement: "Windows 10 or later, 64-bit",
+  },
+  {
+    platform: "linux",
+    name: "Linux",
+    requirement: "A 64-bit distribution release that its maintainer still supports",
+  },
+];
+---
+
+<StandaloneLayout
+  description={description}
+  ogSlug="download"
+  route="/download"
+  title="Download Lucent"
+>
+  <lucent-download-page class="not-prose" id="lucent-download">
+    <header class="download-header">
+      <h1>Download Lucent</h1>
+      <p class="download-release">
+        <span data-release-version>Latest release</span>
+        <a href={releasesUrl} rel="noreferrer" target="_blank">
+          <span>All releases</span>
+          <Icon aria-hidden="true" name="arrow-up-right" size={14} />
+        </a>
+      </p>
+    </header>
+
+    <div class="download-platforms">
+      {platforms.map(({ platform, name, requirement }) => (
+        <section aria-labelledby={`download-${platform}`} class="download-platform">
+          <div>
+            <div class="download-platform-heading">
+              <span class="download-platform-icon">
+                <PlatformIcon platform={platform} />
+              </span>
+              <h2 id={`download-${platform}`}>{name}</h2>
+            </div>
+            <p class="download-requirement">{requirement}</p>
+          </div>
+          <ul class="download-files">
+            {downloads
+              .filter((download) => download.platform === platform)
+              .map((download) => (
+                <li>
+                  <a
+                    aria-label={`Download ${name} ${archLabels[download.arch]} ${download.format}`}
+                    data-download-suffix={download.suffix}
+                    href={latestAssetsUrl}
+                  >
+                    <span class="download-file-arch">{archLabels[download.arch]}</span>
+                    <span class="download-file-format">{download.format}</span>
+                    <span class="download-file-size" data-download-size></span>
+                    <Icon aria-hidden="true" name="download" size={16} />
+                  </a>
+                </li>
+              ))}
+          </ul>
+        </section>
+      ))}
+    </div>
+
+    <ul class="download-notes">
+      <li>
+        As of v0.1.0-beta.1, Lucent runs on a{" "}
+        <a href="https://github.com/toommyliu/ruffle/tree/e86a3fba0cfd80175a3538d6a81917c701e6bd45" rel="noreferrer" target="_blank">patched version of Ruffle Web</a>.
+        The integration is experimental, so please{" "}
+        <a href="https://github.com/toommyliu/lucent/issues" rel="noreferrer" target="_blank">report any bugs</a>{" "}
+        you encounter.
+      </li>
+      <li>
+        Lucent can't update itself, so check the{" "}
+        <a href={changelogUrl}>changelog</a> for new releases.
+      </li>
+    </ul>
+  </lucent-download-page>
+</StandaloneLayout>
+
+<style is:global>
+  #lucent-download {
+    position: relative;
+    display: block;
+    width: min(72rem, calc(100vw - 2rem));
+    margin-inline-start: 50%;
+    padding-block: clamp(1.25rem, 3vw, 2.25rem) clamp(2.5rem, 5vw, 4rem);
+    color: var(--color-foreground);
+    transform: translateX(-50%);
+  }
+
+  #lucent-download a {
+    color: inherit;
+  }
+
+  #lucent-download h1 {
+    margin: 0;
+    font-size: clamp(2rem, 4vw, 3rem);
+    font-weight: 600;
+    letter-spacing: -0.055em;
+    line-height: 1.02;
+  }
+
+  #lucent-download .download-release {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.25rem 1rem;
+    margin: 0.9rem 0 0;
+    color: var(--color-muted-foreground);
+    font-size: 0.9375rem;
+  }
+
+  #lucent-download .download-release a {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    text-decoration: none;
+  }
+
+  #lucent-download .download-platforms {
+    margin-top: clamp(1.75rem, 4vw, 2.5rem);
+    border-block-end: 1px solid var(--color-border);
+  }
+
+  #lucent-download .download-platform {
+    display: grid;
+    gap: 1rem;
+    padding-block: 1.5rem;
+    border-block-start: 1px solid var(--color-border);
+  }
+
+  #lucent-download .download-platform-heading {
+    display: flex;
+    align-items: center;
+    gap: 0.625rem;
+  }
+
+  #lucent-download .download-platform-icon {
+    display: inline-flex;
+    width: 1.25rem;
+    height: 1.25rem;
+  }
+
+  #lucent-download .download-platform-icon > svg {
+    width: 100%;
+    height: 100%;
+  }
+
+  #lucent-download h2 {
+    margin: 0;
+    font-size: 1.125rem;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+  }
+
+  #lucent-download .download-requirement {
+    margin: 0.375rem 0 0;
+    color: var(--color-muted-foreground);
+    font-size: 0.875rem;
+    line-height: 1.5;
+    text-wrap: pretty;
+  }
+
+  #lucent-download .download-files {
+    display: grid;
+    gap: 0.5rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  #lucent-download .download-files a {
+    display: flex;
+    min-height: 2.75rem;
+    align-items: center;
+    gap: 0.5rem;
+    border-radius: 0.75rem;
+    padding-inline: 0.875rem;
+    background: var(--color-muted);
+    font-size: 0.9375rem;
+    text-decoration: none;
+  }
+
+  #lucent-download .download-file-arch {
+    font-weight: 500;
+  }
+
+  #lucent-download .download-file-format,
+  #lucent-download .download-file-size {
+    color: var(--color-muted-foreground);
+    font-size: 0.8125rem;
+    white-space: nowrap;
+  }
+
+  #lucent-download .download-file-size {
+    margin-inline-start: auto;
+    font-variant-numeric: tabular-nums;
+  }
+
+  #lucent-download .download-files a > svg {
+    flex: none;
+    color: var(--color-muted-foreground);
+  }
+
+  @media (min-width: 34rem) {
+    #lucent-download .download-files {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    #lucent-download .download-files > li:only-child {
+      grid-column: 1 / -1;
+    }
+  }
+
+  @media (min-width: 48rem) {
+    #lucent-download .download-platform {
+      grid-template-columns: minmax(12rem, 18rem) minmax(0, 1fr);
+      gap: 2rem;
+    }
+  }
+
+  #lucent-download .download-notes {
+    display: grid;
+    gap: 0.5rem;
+    max-width: 65ch;
+    margin: clamp(1.75rem, 4vw, 2.5rem) 0 0;
+    padding: 0;
+    list-style: none;
+    color: var(--color-muted-foreground);
+    font-size: 0.875rem;
+    line-height: 1.6;
+  }
+
+  #lucent-download .download-notes a {
+    text-decoration: underline;
+    text-decoration-thickness: from-font;
+    text-underline-offset: 0.18em;
+  }
+
+  #lucent-download a:focus-visible {
+    outline: 2px solid var(--color-foreground);
+    outline-offset: 3px;
+  }
+
+  @media (hover: hover) {
+    #lucent-download .download-files a:hover {
+      background: color-mix(
+        in oklab,
+        var(--color-muted) 84%,
+        var(--color-foreground) 16%
+      );
+    }
+
+    #lucent-download .download-release a:hover {
+      color: var(--color-foreground);
+    }
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    #lucent-download .download-files a {
+      transition: background-color 150ms ease;
+    }
+  }
+</style>
+
+<script>
+  import { fetchLatestRelease } from "../components/downloads.ts";
+
+  const sizeFormat = new Intl.NumberFormat(undefined, {
+    maximumFractionDigits: 0,
+    style: "unit",
+    unit: "megabyte",
+  });
+  const dateFormat = new Intl.DateTimeFormat(undefined, { dateStyle: "medium" });
+
+  class LucentDownloadPage extends HTMLElement {
+    async #resolveDownloads(): Promise<void> {
+      const release = await fetchLatestRelease();
+      if (release === null || !this.isConnected) return;
+
+      const version = this.querySelector("[data-release-version]");
+      if (version) {
+        version.textContent = release.publishedAt === null
+          ? release.tag
+          : `${release.tag}, released ${dateFormat.format(release.publishedAt)}`;
+      }
+
+      for (const link of this.querySelectorAll<HTMLAnchorElement>("a[data-download-suffix]")) {
+        const asset = release.assets.get(link.dataset.downloadSuffix ?? "");
+        if (asset === undefined) continue;
+
+        link.href = asset.url;
+        const size = link.querySelector("[data-download-size]");
+        if (size) size.textContent = sizeFormat.format(asset.size / 1_000_000);
+      }
+    }
+
+    connectedCallback(): void {
+      void this.#resolveDownloads();
+    }
+  }
+
+  if (!customElements.get("lucent-download-page")) {
+    customElements.define("lucent-download-page", LucentDownloadPage);
+  }
+</script>
