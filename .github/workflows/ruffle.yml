@@ -12,14 +12,17 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      - name: Checkout pinned Ruffle source
+      - name: Checkout Ruffle source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           repository: toommyliu/ruffle
-          ref: b4592d164207d356443d01a8472dd5845b63f6ca
+          ref: main
           path: ruffle-source
           persist-credentials: false
           submodules: recursive
+
+      - name: Record Ruffle revision
+        run: git -C ruffle-source log -1 --format='Ruffle source [%H](https://github.com/toommyliu/ruffle/commit/%H)' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
